@@ -1,0 +1,26 @@
+{
+  "_comment": "The headless YouTube / brand-intel roster. @bigthink + the Bluesky adamgrant.bsky.social entry are a general-interest psychology source unrelated to the headless-YouTube corpus (kept here only because this manifest tracks the whole brand-intel roster this toolkit can pull) — ContentStudio's six skills do NOT use it; see docs/README.md's 14-channel list for the actual corpus. The remaining YouTube entries are the 14 creator-education channels the audit/gameplan/playbook/MJ/ElevenLabs guides were synthesized from. Edit this file to add/remove sources. keyword_filter (when set) keeps only videos whose title contains that string.",
+  "youtube": [
+    { "handle": "@bigthink", "display_name": "Adam Grant (via Big Think)", "keyword_filter": "Adam Grant", "note": "app-seeded; Big Think channel filtered to Adam Grant videos" },
+    { "handle": "@Romayroh", "display_name": "Romayroh", "keyword_filter": null, "note": "guru channel (manual-seed)" },
+    { "handle": "@danthecreatr", "display_name": "Dan the Creator", "keyword_filter": null, "note": "guru channel (manual-seed)" },
+    { "handle": "@makemoneymatt", "display_name": "Make Money Matt", "keyword_filter": null, "note": "guru channel (manual-seed)" },
+    { "handle": "@kallawaymarketing", "display_name": "Kallaway", "keyword_filter": null, "note": "guru channel (manual-seed)" },
+    { "handle": "@One-Person-Business", "display_name": "One Person Business", "keyword_filter": null, "note": "guru channel (manual-seed)" },
+    { "handle": "@JennyHoyos", "display_name": "Jenny Hoyos", "keyword_filter": null, "note": "shorts specialist (exemplar shorts); added 2026-07-23 for the shorts-launch corpus" },
+    { "handle": "@ThatNateBlack", "display_name": "Nate Black", "keyword_filter": null, "note": "shorts specialist (data-driven teaching); added 2026-07-23 for the shorts-launch corpus" },
+    { "handle": "@vidIQ", "display_name": "vidIQ", "keyword_filter": null, "note": "shorts/algorithm teaching; added 2026-07-23 for the shorts-launch corpus" },
+    { "handle": "@nicknimmin", "display_name": "Nick Nimmin", "keyword_filter": null, "note": "small-channel tactics + packaging teaching; added 2026-07-23 for the shorts-launch corpus" },
+    { "handle": "@robertoblake", "display_name": "Roberto Blake", "keyword_filter": null, "note": "monetization + packaging teaching; added 2026-07-23 for the shorts-launch corpus" },
+    { "handle": "@FutureTechPilot", "display_name": "Future Tech Pilot", "keyword_filter": null, "note": "Midjourney prompting/features/styles (image+video); added 2026-07-23 for the MJ asset-creation corpus" },
+    { "handle": "@WadeMcMaster", "display_name": "Wade McMaster", "keyword_filter": null, "note": "Midjourney art styles + tutorials; added 2026-07-23 for the MJ asset-creation corpus" },
+    { "handle": "@TaoPrompts", "display_name": "Tao Prompts", "keyword_filter": null, "note": "Midjourney prompting + AI film/video workflows; added 2026-07-23 for the MJ asset-creation corpus" },
+    { "handle": "@tokenizedai", "display_name": "Tokenized AI", "keyword_filter": null, "note": "Midjourney + AI video/creative (Runway/Luma); added 2026-07-23 for the MJ asset-creation corpus" }
+  ],
+  "bluesky": [
+    { "handle": "adamgrant.bsky.social", "display_name": "Adam Grant", "note": "app-seeded" }
+  ],
+  "rss": [
+    { "_comment": "No RSS/Atom feed sources are seeded in the app today. Add feed URLs here as {\"handle\": \"https://example.com/feed.xml\", \"display_name\": \"...\"} to include them; the RSS adapter treats the feed URL as the handle." }
+  ]
+}

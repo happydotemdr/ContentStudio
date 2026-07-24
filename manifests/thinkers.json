@@ -1,0 +1,946 @@
+[
+  {
+    "slug": "aurelius-meditations",
+    "thinker": "Marcus Aurelius",
+    "title": "The Meditations of Marcus Aurelius",
+    "pubYear": 180,
+    "translator": "George W. Chrystal",
+    "translationYear": 1902,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/55317.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "epictetus-enchiridion",
+    "thinker": "Epictetus",
+    "title": "A Selection from the Discourses of Epictetus with the Encheiridion",
+    "pubYear": 125,
+    "translator": "George Long",
+    "translationYear": 1877,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/10661.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "aristotle-politics",
+    "thinker": "Aristotle",
+    "title": "Politics: A Treatise on Government",
+    "pubYear": -350,
+    "translator": "William Ellis",
+    "translationYear": 1912,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/6762.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics",
+      "parenting"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Discusses household governance, slavery, and women's role in period terms — quote household/education passages only with context, never the slavery/gender-hierarchy sections."
+  },
+  {
+    "slug": "plutarch-lives-vol1",
+    "thinker": "Plutarch",
+    "title": "Plutarch's Lives, Volume I (of 4)",
+    "pubYear": 100,
+    "translator": "Aubrey Stewart and George Long",
+    "translationYear": 1894,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/14033.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "plutarch-morals-on-education",
+    "thinker": "Plutarch",
+    "title": "Plutarch's Morals: On Education",
+    "pubYear": 100,
+    "translator": "Arthur Richard Shilleto",
+    "translationYear": 1898,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/23639.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "parenting",
+      "education"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "smith-wealth-of-nations",
+    "thinker": "Adam Smith",
+    "title": "An Inquiry into the Nature and Causes of the Wealth of Nations",
+    "pubYear": 1776,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/3300.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "finance"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "veblen-theory-of-the-leisure-class",
+    "thinker": "Thorstein Veblen",
+    "title": "The Theory of the Leisure Class",
+    "pubYear": 1899,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/833.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "finance",
+      "self-development"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Written as economic satire/irony (\"conspicuous consumption\") — short excerpts pulled out of context easily invert Veblen's meaning."
+  },
+  {
+    "slug": "smiles-thrift",
+    "thinker": "Samuel Smiles",
+    "title": "Thrift",
+    "pubYear": 1875,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/14418.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "finance",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "smiles-self-help",
+    "thinker": "Samuel Smiles",
+    "title": "Self-Help; With Illustrations of Conduct and Perseverance",
+    "pubYear": 1859,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/935.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "barnum-art-of-money-getting",
+    "thinker": "P. T. Barnum",
+    "title": "The Art of Money Getting",
+    "pubYear": 1880,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/8581.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "finance"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "barnum-struggles-and-triumphs",
+    "thinker": "P. T. Barnum",
+    "title": "Struggles and Triumphs",
+    "pubYear": 1869,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/50115.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "finance",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "franklin-way-to-wealth",
+    "thinker": "Benjamin Franklin",
+    "title": "The Way to Wealth",
+    "pubYear": 1758,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/43855.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "finance",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "franklin-autobiography",
+    "thinker": "Benjamin Franklin",
+    "title": "Autobiography of Benjamin Franklin",
+    "pubYear": 1791,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/20203.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "self-development",
+      "finance"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "emerson-self-reliance",
+    "thinker": "Ralph Waldo Emerson",
+    "title": "Self-Reliance (in Essays, First Series)",
+    "pubYear": 1841,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/2944.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "self-development",
+      "ethics"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "emerson-conduct-of-life",
+    "thinker": "Ralph Waldo Emerson",
+    "title": "The Conduct of Life",
+    "pubYear": 1860,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/39827.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "self-development",
+      "ethics"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "thoreau-walden",
+    "thinker": "Henry David Thoreau",
+    "title": "Walden",
+    "pubYear": 1854,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/205.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "washington-up-from-slavery",
+    "thinker": "Booker T. Washington",
+    "title": "Up From Slavery: An Autobiography",
+    "pubYear": 1901,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/2376.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "self-development",
+      "education"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "washington-character-building",
+    "thinker": "Booker T. Washington",
+    "title": "Character Building",
+    "pubYear": 1902,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/60484.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "self-development",
+      "education"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "rousseau-emile",
+    "thinker": "Jean-Jacques Rousseau",
+    "title": "Émile, or On Education",
+    "pubYear": 1762,
+    "translator": "Barbara Foxley",
+    "translationYear": 1911,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/5427.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "parenting",
+      "education"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Book V (Sophie) reflects period sexism — paraphrase and contextualize; do not quote approvingly."
+  },
+  {
+    "slug": "rousseau-social-contract",
+    "thinker": "Jean-Jacques Rousseau",
+    "title": "The Social Contract",
+    "pubYear": 1762,
+    "translator": "G. D. H. Cole",
+    "translationYear": 1913,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/46333.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "james-talks-to-teachers",
+    "thinker": "William James",
+    "title": "Talks to Teachers on Psychology; and to Students on Some of Life's Ideals",
+    "pubYear": 1899,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/16287.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "education",
+      "parenting",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "dewey-democracy-and-education",
+    "thinker": "John Dewey",
+    "title": "Democracy and Education",
+    "pubYear": 1916,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/852.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "education"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "dewey-how-we-think",
+    "thinker": "John Dewey",
+    "title": "How We Think",
+    "pubYear": 1910,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/37423.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "education",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "mason-home-education",
+    "thinker": "Charlotte Mason",
+    "title": "Home Education",
+    "pubYear": 1886,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/71087.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "parenting",
+      "education"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "mason-parents-and-children",
+    "thinker": "Charlotte Mason",
+    "title": "Parents and Children",
+    "pubYear": 1897,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/72445.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "parenting",
+      "education"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "key-century-of-the-child",
+    "thinker": "Ellen Key",
+    "title": "The Century of the Child",
+    "pubYear": 1900,
+    "translator": "Frances Maro",
+    "translationYear": 1909,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/57283.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "parenting",
+      "education"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Contains period gender-essentialist and eugenics-adjacent framing common to turn-of-the-century reform writing — usable for historically grounded parenting ideas, quote with context."
+  },
+  {
+    "slug": "montessori-the-montessori-method",
+    "thinker": "Maria Montessori",
+    "title": "The Montessori Method",
+    "pubYear": 1909,
+    "translator": "Anne E. George",
+    "translationYear": 1912,
+    "sourceUrls": [
+      "https://archive.org/download/montessorimetho01montgoog/montessorimetho01montgoog_djvu.txt"
+    ],
+    "sourceFormat": "ia-txt",
+    "pillars": [
+      "parenting",
+      "education"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Moderate OCR noise (scattered character-level corruption) — spot-check any passage against the source before quoting verbatim."
+  },
+  {
+    "slug": "montessori-pedagogical-anthropology",
+    "thinker": "Maria Montessori",
+    "title": "Pedagogical Anthropology",
+    "pubYear": 1910,
+    "translator": "Frederic Taber Cooper",
+    "translationYear": 1913,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/46643.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "education"
+    ],
+    "quotability": "context-only",
+    "cautionNote": "Built on period craniometric/anthropometric measurement methodology now discredited as pseudoscience — useful for historical framing, never as standalone practical advice."
+  },
+  {
+    "slug": "adler-understanding-human-nature",
+    "thinker": "Alfred Adler",
+    "title": "Understanding Human Nature",
+    "pubYear": 1927,
+    "translator": "Walter Béran Wolfe",
+    "translationYear": 1927,
+    "sourceUrls": [
+      "https://dn790002.ca.archive.org/0/items/understandinghum0000adle_x0g4/understandinghum0000adle_x0g4_djvu.txt"
+    ],
+    "sourceFormat": "ia-txt",
+    "pillars": [
+      "self-development",
+      "parenting"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Early Adlerian psychology; some clinical/developmental claims have since been revised by modern psychology — treat as historically significant, not current clinical guidance."
+  },
+  {
+    "slug": "freud-general-introduction-to-psychoanalysis",
+    "thinker": "Sigmund Freud",
+    "title": "A General Introduction to Psychoanalysis",
+    "pubYear": 1920,
+    "translator": "G. Stanley Hall",
+    "translationYear": 1920,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/38219.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "self-development"
+    ],
+    "quotability": "context-only",
+    "cautionNote": "Represents Freud's historical theoretical position, much of which is not supported by current psychological science — cite as a historical position, never as current fact."
+  },
+  {
+    "slug": "isaacs-intellectual-growth-in-young-children",
+    "thinker": "Susan Isaacs",
+    "title": "Intellectual Growth in Young Children",
+    "pubYear": 1930,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://archive.org/download/dli.ernet.16893/16893-Intellectual%20Growth%20In%20Young%20Children_djvu.txt"
+    ],
+    "sourceFormat": "ia-txt",
+    "pillars": [
+      "parenting",
+      "education"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "james-varieties-of-religious-experience",
+    "thinker": "William James",
+    "title": "The Varieties of Religious Experience",
+    "pubYear": 1902,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/621.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "mind-training",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "allen-as-a-man-thinketh",
+    "thinker": "James Allen",
+    "title": "As a Man Thinketh",
+    "pubYear": 1903,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/4507.txt.utf-8",
+      "https://archive.org/download/in.ernet.dli.2015.503571/2015.503571.As-a_djvu.txt"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "mind-training",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "coue-self-mastery",
+    "thinker": "Émile Coué",
+    "title": "Self Mastery Through Conscious Autosuggestion",
+    "pubYear": 1922,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/27203.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "mind-training",
+      "self-development"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Autosuggestion healing claims exceed modern evidence — treat as a historical method, never medical guidance."
+  },
+  {
+    "slug": "wattles-science-of-getting-rich",
+    "thinker": "Wallace D. Wattles",
+    "title": "The Science of Getting Rich",
+    "pubYear": 1910,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/59844.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "mind-training",
+      "finance"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Asserts thought-causes-wealth as law — quote as the historical prosperity-mindset urtext, not financial advice."
+  },
+  {
+    "slug": "marden-pushing-to-the-front",
+    "thinker": "Orison Swett Marden",
+    "title": "Pushing to the Front",
+    "pubYear": 1911,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/21291.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "mind-training",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "trine-in-tune-with-the-infinite",
+    "thinker": "Ralph Waldo Trine",
+    "title": "In Tune with the Infinite",
+    "pubYear": 1897,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/23559.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "mind-training"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Spiritual-alignment health/prosperity causation claims — historical New Thought position, not guidance."
+  },
+  {
+    "slug": "troward-edinburgh-lectures",
+    "thinker": "Thomas Troward",
+    "title": "The Edinburgh Lectures on Mental Science",
+    "pubYear": 1904,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/10390.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "mind-training"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Presents \"mental science\" metaphysics as natural law — historically significant, not established science."
+  },
+  {
+    "slug": "shinn-game-of-life",
+    "thinker": "Florence Scovel Shinn",
+    "title": "The Game of Life and How to Play It",
+    "pubYear": 1925,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/74878.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "mind-training"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Spoken-word/affirmation prosperity and health claims — historical New Thought position, not guidance."
+  },
+  {
+    "slug": "plato-apology",
+    "thinker": "Plato",
+    "title": "The Apology of Socrates",
+    "pubYear": -399,
+    "translator": "Benjamin Jowett",
+    "translationYear": 1871,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/1656.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "plato-phaedo",
+    "thinker": "Plato",
+    "title": "Phaedo",
+    "pubYear": -380,
+    "translator": "Benjamin Jowett",
+    "translationYear": 1871,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/1658.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "boethius-consolation-of-philosophy",
+    "thinker": "Boethius",
+    "title": "The Consolation of Philosophy",
+    "pubYear": 524,
+    "translator": "H. R. James",
+    "translationYear": 1897,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/14328.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "seneca-minor-dialogues",
+    "thinker": "Seneca",
+    "title": "Minor Dialogues, incl. \"Of the Shortness of Life\"",
+    "pubYear": 60,
+    "translator": "Aubrey Stewart",
+    "translationYear": 1889,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/64576.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "cicero-de-officiis",
+    "thinker": "Cicero",
+    "title": "De Officiis / On Duties",
+    "pubYear": -44,
+    "translator": "Walter Miller",
+    "translationYear": 1913,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/47001.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "augustine-confessions",
+    "thinker": "Augustine of Hippo",
+    "title": "The Confessions",
+    "pubYear": 397,
+    "translator": "E. B. Pusey",
+    "translationYear": 1876,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/3296.txt.utf-8",
+      "https://archive.org/download/confessionsrevfr00auguuoft/confessionsrevfr00auguuoft_djvu.txt"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "wollstonecraft-vindication",
+    "thinker": "Mary Wollstonecraft",
+    "title": "A Vindication of the Rights of Woman",
+    "pubYear": 1792,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/3420.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "education",
+      "ethics"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "froebel-education-of-man",
+    "thinker": "Friedrich Fröbel",
+    "title": "The Education of Man",
+    "pubYear": 1826,
+    "translator": "W. N. Hailmann",
+    "translationYear": 1887,
+    "sourceUrls": [
+      "https://archive.org/download/educationofman00fruoft/educationofman00fruoft_djvu.txt"
+    ],
+    "sourceFormat": "ia-txt",
+    "pillars": [
+      "education",
+      "parenting"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "pestalozzi-leonard-and-gertrude",
+    "thinker": "Johann H. Pestalozzi",
+    "title": "Leonard and Gertrude",
+    "pubYear": 1781,
+    "translator": "Eva Channing",
+    "translationYear": 1885,
+    "sourceUrls": [
+      "https://archive.org/download/leonardgertrude00pestiala/leonardgertrude00pestiala_djvu.txt"
+    ],
+    "sourceFormat": "ia-txt",
+    "pillars": [
+      "education",
+      "parenting"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "martineau-household-education",
+    "thinker": "Harriet Martineau",
+    "title": "Household Education",
+    "pubYear": 1848,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/38179.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "parenting",
+      "education"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "tolstoy-a-confession",
+    "thinker": "Leo Tolstoy",
+    "title": "A Confession",
+    "pubYear": 1882,
+    "translator": "Aylmer Maude",
+    "translationYear": 1921,
+    "sourceUrls": [
+      "https://archive.org/download/in.ernet.dli.2015.24172/2015.24172.A-Confession-And-What-I-Believe_djvu.txt"
+    ],
+    "sourceFormat": "ia-txt",
+    "pillars": [
+      "ethics",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "fuller-woman-in-the-nineteenth-century",
+    "thinker": "Margaret Fuller",
+    "title": "Woman in the Nineteenth Century",
+    "pubYear": 1845,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/8642.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics",
+      "self-development"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "owen-new-view-of-society",
+    "thinker": "Robert Owen",
+    "title": "A New View of Society",
+    "pubYear": 1813,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://archive.org/download/owennewviewsocietyandotherwritings/Owen%20New%20View%20Society%20and%20Other%20Writings_djvu.txt"
+    ],
+    "sourceFormat": "ia-txt",
+    "pillars": [
+      "ethics",
+      "education"
+    ],
+    "quotability": "quote-ok",
+    "cautionNote": null
+  },
+  {
+    "slug": "gilman-women-and-economics",
+    "thinker": "Charlotte Perkins Gilman",
+    "title": "Women and Economics",
+    "pubYear": 1898,
+    "translator": null,
+    "translationYear": null,
+    "sourceUrls": [
+      "https://www.gutenberg.org/ebooks/57913.txt.utf-8"
+    ],
+    "sourceFormat": "gutenberg-txt",
+    "pillars": [
+      "ethics",
+      "education"
+    ],
+    "quotability": "paraphrase-caution",
+    "cautionNote": "Period evolutionary-sociology and gender-essentialist framing common to turn-of-the-century reform writing (the Ellen Key treatment) — quote with context."
+  }
+]
