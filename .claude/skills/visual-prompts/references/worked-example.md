@@ -46,6 +46,12 @@ WHOLE-SHORT SETUP
   Consistency:      none (product/process Short) — shared style vocabulary per prompt: photoreal, DSLR,
                     warm morning kitchen light, muted brown/cream palette
   Notes:            beat 6 reuses beat 1's still exactly (loop mirror) — no new generation
+
+COVER / THUMBNAIL
+  Cover = Hook beat still #1 + shorts-assembly's text overlay ("IT'S NOT THE BEANS"). The packaging
+  direction (flat coffee, one dominant emotion — disappointment) is already fully delivered by the
+  Hook still itself; nothing about it calls for a separately staged cover shot, so no dedicated cover
+  prompt is generated. (Per the workflow's step 7: this decision is stated explicitly, not skipped.)
 ```
 
 ## Step 3 — per-beat prompts
@@ -63,17 +69,49 @@ WHOLE-SHORT SETUP
 | Payoff | 2 | close-up of a hand lifting a clear glass mug of coffee toward camera, soft warm light, shallow depth of field, photoreal, DSLR. No Text. | `--ar 9:16 --style raw --s 150` |
 | Loop/CTA | — | reuse Hook still 1 exactly — no new prompt | — |
 
-## Step 4 — optional video note (only where motion earns its cost)
+## Step 4 — per-beat motion decision (still vs. `--motion low` vs. a real i2v clip)
 
-The Build beat's bloom sequence is a reasonable candidate for a single low-motion clip instead of 4
-stills, if the assembly stage wants continuous motion there: take Build still 2 (mid-bloom) as the
-start frame and prompt an image→video pass — `--motion low` (per the parameter table) — something like:
+Running the decision table from `references/image-to-video.md` (see `SKILL.md` workflow step 6)
+against each beat:
+
+- **Hook, Setup, Re-hook:** single stills, no motion needed — each is already at or near the ~3s
+  cadence limit (step 1).
+- **Payoff:** the pour-to-taste sequence is visual variety over ~10s, already covered by the 2-3
+  stills from step 1 — no motion needed.
+- **Build:** this is the one beat where a static image genuinely under-sells the process — the VO
+  ("bloom the grounds first...") describes **continuous transformation** (dry grounds → bubbling →
+  full dome), which is exactly tier 3 of the decision table: a real i2v clip, not just `--motion low`
+  on one still.
+
+Rather than 4 separate Build stills, replace stills 1-3 with a single animated clip and keep still 4
+(the settled wide shot) as a static cutaway:
 
 ```
-start with a close-up of coffee grounds blooming, bubbles breaking the surface;
-the bloom slowly rises and settles; slow, no cuts; no subtitles and no music.
+I2V PROMPT — Build beat
+
+Source still:        Build still 1 (dry coffee grounds in a ceramic dripper, hot water just touching
+                      the surface)
+Target tool:          Kling — start/end-frame keyframing suits this beat's single continuous
+                      transformation better than Seedance's multi-shot strength, which isn't needed here
+                      (per the model-landscape table in references/image-to-video.md)
+Start frame:          Build still 1 (as generated)
+End frame:            Build still 3's composition (fully bloomed dome, thick bubbles) — produced by
+                      editing Build still 1 in an external image editor for the later-stage look, per
+                      the start/end-frame keyframing section of references/image-to-video.md, rather
+                      than generating an unrelated second image
+I2V prompt text:      start with a close-up of dry coffee grounds just touching hot water; the grounds
+                      slowly bloom, small bubbles breaking the surface, building to a thick dome of
+                      foam; slow, continuous motion; in a single shot, no cuts; no subtitles and no
+                      music.
 ```
 
-This is a note for `shorts-assembly` to decide on, not a directive — MJ's video model is D-tier
-`[C] (Tao Prompts, uCsc0ORcJDo)`, so a still-only Build beat (per the "AI slideshow" format,
-`references/faceless-pacing-rules.md`) is an equally valid, often cheaper choice.
+Build still 2 (the mid-bloom stage) is dropped as a separate generation — its composition is now
+covered by the clip's midpoint — and Build still 4 (wide, settled) remains a static cutaway still, so
+this beat ends up as 2 stills + 1 clip instead of 4 stills.
+
+MJ's own `--motion low` path was considered and rejected here: it's meant for a hero shot breathing in
+place, not a multi-stage transformation, and MJ's video model is D-tier for anything beyond that
+`[C] (Tao Prompts, uCsc0ORcJDo)`. A still-only Build beat (per the "AI slideshow" format,
+`references/faceless-pacing-rules.md`) remains an equally valid, cheaper fallback if the animated clip
+isn't worth its cost for this particular Short — that's a call for whoever is producing the Short to
+make, but the prompt above is ready to use either way, not a placeholder.

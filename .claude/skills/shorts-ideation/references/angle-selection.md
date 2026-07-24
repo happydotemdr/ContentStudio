@@ -23,6 +23,9 @@ for title/thumbnail direction.
   "How to travel Bali" (Dan the creator, bTr-Izh9pkc).
 - **`[C]` Every video must deliver education, entertainment, or information — strongly-supported**
   (Dan the creator, 9JE8-wM8zKc).
+- **`[C]` The "edutainment wrap": wrap the lesson in a story/challenge so it teaches the same
+  thing with stakes** — "I ran a marathon with no experience" teaches the same lesson as a
+  plain how-to, but the stakes make it watchable (Dan the creator, 8sLWWv_EAR4).
 
 ## Niche down to one specific viewer avatar
 
@@ -102,6 +105,9 @@ for title/thumbnail direction.
   trust when it's both non-obvious *and* tactically implementable (Kallaway, 8cQidXgtGmU).
   Creativity is the collision of two things that don't usually go together — consume outside
   your niche for raw material (Kallaway, cuVyTmbOZjk).
+- **`[C]` Kallaway's "360 mapping": list every possible take on an idea and score each for
+  shock value, to surface the most differentiated angle before you commit** (Kallaway,
+  i7upRL4H1FM).
 - **`[C]` Compete with AI answer engines via personality and originality — strongly-supported.**
   Basic educational demand is being absorbed by ChatGPT/Gemini/Claude; YouTube's edge is the
   human element (Dan the creator, 4GAKrgNN8zQ). Find your "spark angle" — content only you
@@ -111,6 +117,12 @@ for title/thumbnail direction.
 
 ## Idea-shape levers & guardrails
 
+- **`[C]` The "Trojan horse": package niche/educational content inside a mass-appeal shell.**
+  Mark Rober's squirrel-obstacle-course video delivers an engineering lesson inside a mass-appeal
+  animal-antics shell; "how does Bitcoin actually work" does the same for a niche financial topic
+  (vidIQ, VLfzk9NlZyI). The same idea appears as an idea-vetting step — pick a mass-appeal shell
+  over the niche core before committing to the idea (docs/headless-shorts-production-playbook.md,
+  vidIQ, VLfzk9NlZyI).
 - **`[C]` Target unfilled, intersectional concept slots rather than saturated searches**
   ("10 goats to solve my thistle problem"); absurd ideas turn the audience into informants
   who share for you (Nate Black, acOx8xUNXyQ). Use the "audience bridge": reframe a narrow

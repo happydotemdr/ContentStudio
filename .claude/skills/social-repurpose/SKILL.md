@@ -3,7 +3,7 @@ name: social-repurpose
 description: Generate multi-surface post copy (YouTube title/description/hashtags plus cross-platform caption variants for TikTok/Instagram/X/Bluesky) from a finished faceless-YouTube-Short's script and packaging direction. This is the final stage of the ContentStudio six-skill pipeline — use it after a Short has been assembled (script + voiceover brief + visual prompts + edit plan from shorts-assembly) and you need publish-ready copy for YouTube and repurposed captions elsewhere. Trigger this whenever the user asks to write a YouTube title, description, or hashtags for a Short; asks to "repurpose," "cross-post," or write captions for TikTok/Instagram/X/Bluesky/Threads from a video; or wants the final post-copy package for a produced Short. Every normative line traces to the ContentStudio corpus (docs/headless-youtube-audit.md) with [C]/[I]/[T] provenance markers — do not invent generic social-media best practices.
 ---
 
-# social-repurpose
+# Social Repurpose
 
 Stage 6 of 6 — the final stage of the ContentStudio pipeline. Turns a **finished Short**
 into the **multi-surface post copy** that ships it. There is no downstream stage: this
@@ -17,8 +17,9 @@ design (that's `shorts-ideation`/`shorts-assembly` territory); it writes the **t
 accompanies the finished video.
 
 **Output contract:**
-1. A **YouTube package** — title, description, hashtags — sized correctly for a Short (not
-   the long-form AEO treatment; see `references/youtube-description-hashtags.md`).
+1. A **YouTube package** — title, description, hashtags, and a pinned-comment
+   suggestion — sized correctly for a Short (not the long-form AEO treatment; see
+   `references/youtube-description-hashtags.md`).
 2. **Cross-platform caption variants** for whichever other surfaces the user names
    (TikTok, Instagram Reels, X, Bluesky, Threads, etc.), each one marked per the honest
    corpus-coverage gap below.
@@ -79,10 +80,12 @@ Full detail and the per-platform breakdown: `references/cross-platform-captions.
    most likely to go wrong by over-applying long-form advice — the corpus's dense
    500+-word AEO description guidance is long-form-cited (94%+ of AI-cited videos were
    long-form). For a standalone Short, the corpus prescribes a *lighter* package: a
-   short SEO description and 1–6 niche hashtags. Read
+   short SEO description and 1–6 niche hashtags, plus a pinned-comment suggestion
+   (open-ended question, optionally linking a related money/pillar video). Read
    `references/youtube-description-hashtags.md` before writing this section — it also
-   holds the corpus's own preserved SEO-dead-vs-AEO-critical disagreement, and what to
-   do differently if this Short has a long-form companion piece.
+   holds the corpus's own preserved SEO-dead-vs-AEO-critical disagreement, the
+   pinned-comment rule, and what to do differently if this Short has a long-form
+   companion piece.
 
 4. **Write cross-platform caption variants**, per the honest-gap handling above and
    the full detail in `references/cross-platform-captions.md`. Every caption gets a
@@ -101,7 +104,8 @@ Full detail and the per-platform breakdown: `references/cross-platform-captions.
   revenue-title data, the Shorts-specific title constraint (one title, no A/B test).
 - `references/youtube-description-hashtags.md` — description sizing (Short vs
   long-form), hashtag count, AEO specifics, the preserved SEO-dead/AEO-critical
-  disagreement, transcript/chapter notes (chapters are N/A for a pure Short).
+  disagreement, transcript/chapter notes (chapters are N/A for a pure Short), and the
+  pinned-comment rule.
 - `references/cross-platform-captions.md` — the strategic cross-platform findings that
   *are* corpus-grounded, the `[C→I]` extrapolation method, and the explicit `[gap]`
   list of what the corpus doesn't cover.

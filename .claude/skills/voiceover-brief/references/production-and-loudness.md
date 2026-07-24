@@ -65,7 +65,12 @@ polish pass, not a required step of the voiceover brief itself.
 ## AI disclosure note (scope boundary)
 
 AI voiceover alone does not require YouTube's synthetic-content disclosure and is not
-disqualifying for monetization `[T]`. A cloned-own voice currently does not trigger the
-altered-content disclosure specifically `(Romayroh, OrPYWlXMQws)`. Full disclosure/rights
-compliance is out of scope for this skill — flag it in the brief as a pointer to the launch
-game plan's rights gate rather than re-deriving it here.
+disqualifying for monetization `[T]`. **This is not a blanket exemption for ElevenLabs
+specifically, though: ElevenLabs now embeds an unremovable SynthID watermark (since May
+2026) — disclose AI voiceover via YouTube's altered-content box, or risk demonetization/YPP
+rejection, for any library voice or any cloned voice that isn't your own**
+`[C] (Romayroh, G9LfE3k-IEI)`. **Cloning your OWN voice is the current exception that needs no
+disclosure** `(Romayroh, OrPYWlXMQws)` — see `voice-selection.md` for why an own-voice clone is
+already this skill's top pick on separate reach/uniqueness grounds. Full disclosure/rights
+compliance is otherwise out of scope for this skill — flag it in the brief as a pointer to the
+launch game plan's rights gate rather than re-deriving it here.

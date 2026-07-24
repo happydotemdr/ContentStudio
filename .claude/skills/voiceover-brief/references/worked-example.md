@@ -31,9 +31,12 @@ VO: Try it on your next task. Comment the feeling you found below.
 top-preference fix for the strongest signal in the topic: default/popular library voices risk
 reach or shadowban because they already blanket hundreds of thousands of videos
 `(One Person Business, 84bavOadYCI)` `(Make Money Matt, TvJhpOxFRsE)`. A cloned own-voice is
-100% unique and, per one creator, currently avoids the altered-content disclosure
-`(Romayroh, OrPYWlXMQws)`. Lock this voice channel-wide going forward — don't re-pick per video
-`[T]`.
+100% unique, and it also matters for disclosure: ElevenLabs' SynthID watermark means any
+library voice or non-own clone needs YouTube's altered-content disclosure, but cloning your
+OWN voice is the current exception that needs none `[C] (Romayroh, G9LfE3k-IEI;
+Romayroh, OrPYWlXMQws)` — see `production-and-loudness.md`'s AI disclosure note. This script
+uses an own-voice clone, so no disclosure is needed here. Lock this voice channel-wide going
+forward — don't re-pick per video `[T]`.
 
 *If a clone isn't set up yet:* fall back to a lesser-used library voice, never a default preset
 `(Make Money Matt, TvJhpOxFRsE)`.

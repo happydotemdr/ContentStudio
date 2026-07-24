@@ -74,6 +74,23 @@ dense, factual descriptions on long-form content. That's why the sizing rule abo
 splits Short (light) from long-form companion (dense) rather than applying one
 description strategy to both.
 
+## Pinned comment (posted alongside the upload)
+
+**[C]** Reply to early comments with an open-ended question, and pin a comment linking
+your money video — engineered early engagement in the first 1–2 hours after upload
+matters, not just raw volume (Make Money Matt, RsAKa_WN1sU; Dan the creator, To5Dyc7AbkI;
+Dan the creator, v562jH_TESg).
+
+For a Short's post-copy package, write a **pinned comment suggestion** alongside the
+description/hashtags:
+- An open-ended question tied to the Short's hook/angle, to seed replies (e.g. "What
+  would you have done in Jack Phillips's place?" for the worked-example Titanic angle).
+- If this Short has a related money/pillar video already in the channel (see the
+  long-form-companion case above, or an existing pillar video per the community-tab
+  note below), link it in the same pinned comment, per the corpus's "linking your money
+  video" framing (Make Money Matt, RsAKa_WN1sU). If no such video exists yet, include
+  the question only — don't invent a link target.
+
 ## Distribution note: the community tab
 
 **[C]** Community posts now surface directly into the Shorts feed and can outperform

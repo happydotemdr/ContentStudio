@@ -75,6 +75,9 @@ corpus-stated Shorts technique:
   `[C] (Kallaway, z8j3PupS5gc)`.
 - **One Person Business's four-part intro: click confirmation → common belief →
   contrarian take → proof/plan** `[C] (One Person Business, eVePkmCQV5c)`.
+- **Introduce any new claim relative to something the viewer already knows** —
+  e.g. "hotter than the surface of the sun," not "hotter than asphalt" `[C]
+  (Kallaway, i7upRL4H1FM)`.
 
 ## Jenny Hoyos structural techniques — medium confidence, flag when used
 

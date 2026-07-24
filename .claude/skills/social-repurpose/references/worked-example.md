@@ -60,6 +60,15 @@ stays inside the corpus's own logic rather than an invented topic.
 niche-hashtag guidance for Shorts, no irrelevant trending tags added) (Dan the creator,
 u_oNzUfC3lg; Romayroh, T4b3pU6ApPM).
 
+**Pinned comment:**
+> "What would you have done in Jack Phillips's place — keep transmitting, or abandon
+> the set?"
+
+- [C] Open-ended question, posted/pinned in the first 1–2 hours to engineer early
+  engagement (Make Money Matt, RsAKa_WN1sU; Dan the creator, To5Dyc7AbkI; Dan the
+  creator, v562jH_TESg). No related money/pillar video exists yet for this angle, so
+  the comment stays question-only rather than inventing a link target.
+
 ## Output: cross-platform caption variants
 
 **TikTok caption:**

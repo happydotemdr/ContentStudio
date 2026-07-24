@@ -1,6 +1,6 @@
 ---
 name: shorts-scripting
-description: Writes a shot-ready YouTube Shorts script — hook, setup, build/value, re-hook, payoff, and loop/CTA — with beat-by-beat timing in seconds, from a validated Shorts concept brief (angle, hook concept, packaging direction). Every structural and retention rule is traced to a specific finding in the ContentStudio corpus (1,100+ findings from a 420-video, 14-channel creator-education research base) with an explicit [C]/[I]/[T] provenance marker — this skill never falls back on generic scriptwriting advice, and says so explicitly when the corpus is thin on something. Use this skill whenever the user has a Shorts concept, angle, or hook direction (including output from the shorts-ideation skill) and wants the actual script written — e.g. "write the script for this Short," "turn this concept into a timed script," "script out this idea," "give me the hook-to-CTA beats for this Short," or "I need a shot-ready script before I brief voiceover/visuals." Also use it to punch up or restructure an existing rough Short script against the corpus's hook/retention/ending rules.
+description: Writes a shot-ready, beat-timed YouTube Shorts script (hook through loop/CTA) from a validated Shorts concept brief. Every rule traces to the ContentStudio corpus (1,100+ findings, 420 videos, 14 channels) with an explicit [C]/[I]/[T] marker — never generic scriptwriting advice; gaps are flagged, not filled. Use whenever the user has a Shorts concept, angle, or hook direction (including shorts-ideation output) and wants the script written — e.g. "write the script for this Short," "turn this concept into a timed script," "script out this idea," "give me the hook-to-CTA beats for this Short," or "I need a shot-ready script before I brief voiceover/visuals." Also use to punch up or restructure an existing rough Short script against the corpus's hook/retention/ending rules.
 ---
 
 # Shorts scripting
@@ -9,7 +9,7 @@ Turns a validated Shorts **concept brief** into a **shot-ready, beat-timed
 script**: Hook → Setup → Build/Value (with a re-hook) → Payoff → Loop/CTA, each
 beat carrying a VO line, a timestamp range, a word count, and a one-line visual
 note. Every normative choice in the script traces to a corpus finding with a
-`[C]`/`[I]`/`[T]` marker — see `C:\Projects\ContentStudio\CLAUDE.md` for the
+`[C]`/`[I]`/`[T]` marker — see the project's `CLAUDE.md` for the
 project-wide anti-generic guarantee this skill exists to enforce.
 
 ## Pipeline position
@@ -179,7 +179,8 @@ your first script if this is a new session.
 - `references/script-intelligence-and-delivery.md` — the 2026 net-information-
   gain and AI-humanizing rules, plus muted-autoplay/visual-carry delivery
   rules.
-- `references/beat-timing-model.md` — the full timing scaffold, the 20–30s
-  compressed band, and the re-hook-timing `[I]` caveat explained.
+- `references/beat-timing-model.md` — the standard-band table lives above in
+  this file; this reference adds only the word-rate `[I]`-reasoning, the
+  20–30s compressed band, and the re-hook-timing `[I]` caveat in full.
 - `references/worked-example.md` — a complete concept-brief-to-script run with
   inline citations.

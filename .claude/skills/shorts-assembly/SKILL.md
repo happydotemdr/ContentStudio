@@ -26,10 +26,11 @@ If any of the three is missing, ask for it rather than inventing shot content �
 3. Aspect ratio + safe-zone spec
 4. Loudness/mix target
 5. Concrete tool-stack steps, both a $0 and a paid variant
+6. The QA-gate + publish-gate checklist (run before scheduling)
 
 ## Provenance discipline (read before writing any line of the plan)
 
-Every normative sentence in the output carries `[C]` (corpus-cited, `(Channel, video_id)` preserved exactly), `[I]` (industry practice, no corpus citation exists), or `[T]` (tool/policy fact, dated 2026-07-23, flag for re-verification). A line with no marker is a bug — it means something was invented instead of sourced. If the corpus is silent on a specific question (e.g. current Shorts duration-eligibility limits), say so explicitly in the plan rather than filling the gap with generic editing advice. See `docs/README.md` for the full provenance key and `../../../CLAUDE.md`'s anti-generic guarantee.
+Every normative sentence in the output carries `[C]` (corpus-cited, `(Channel, video_id)` preserved exactly), `[I]` (industry practice, no corpus citation exists), or `[T]` (tool/policy fact, dated 2026-07-23, flag for re-verification). A line with no marker is a bug — it means something was invented instead of sourced. If the corpus is silent on a specific question (e.g. current Shorts duration-eligibility limits), say so explicitly in the plan rather than filling the gap with generic editing advice. See `docs/README.md` for the full provenance key and ContentStudio's `CLAUDE.md` for the anti-generic guarantee.
 
 ## How to build the plan
 
@@ -38,7 +39,7 @@ Work through these four reference files in order — each is a distilled, cited 
 1. **`references/pacing-and-editing.md`** — beat timing carried from the script, the ~3s change-visual cut cadence, the "don't over-edit" counter-rule, muted-viewer/authenticity rules, and where to spend AI-video budget. Use this to fill in the shot-by-shot table.
 2. **`references/caption-overlay-system.md`** — caption style, hook/re-hook card timing, safe-zone map, and the one place the corpus genuinely disagrees with itself (full-duration karaoke captions vs. front-loaded-only captions) — both sides are given; make an explicit call and say why.
 3. **`references/loudness-and-mix.md`** — the ducking chain (music ≈−22 dB under voice), the −14 LUFS target, voice-peak range, and the phone-speaker QA step.
-4. **`references/tool-stack.md`** — CapCut / Submagic / Descript / Premiere Pro, with a $0 stack and a paid stack, the asset-naming convention so the plan can reference the actual files from upstream, and the publish sequence (upload unlisted → let it process → add metadata → schedule public).
+4. **`references/tool-stack.md`** — CapCut / Submagic / Descript / Premiere Pro, with a $0 stack and a paid stack, the asset-naming convention so the plan can reference the actual files from upstream, the publish sequence (upload unlisted → let it process → add metadata → schedule public), and the QA-gate + publish-gate checklist that must pass before scheduling.
 
 Then produce the plan itself, structured the same way `references/worked-example.md` is (a full worked run using the corpus's own S042 "coffee trick" script) — copy that structure for the real script, don't reinvent the layout per request.
 
@@ -50,7 +51,8 @@ Then produce the plan itself, structured the same way `references/worked-example
 4. State the aspect ratio (1080×1920, 9:16) and flag the Shorts-length gap if the runtime is unusual.
 5. State the loudness targets and the ducking level.
 6. Write both the $0 and paid tool-stack execution steps, naming actual tools and actual actions ("import in CapCut, auto-caption, hand-correct against the script...") not abstractions, ending with the publish sequence (unlisted → processed → metadata added → scheduled public) — don't let the plan stop at export.
-7. Close by stating explicitly that this edit plan (plus the produced Short) feeds `social-repurpose` next.
+7. Before scheduling, run the QA-gate + publish-gate checklist from `tool-stack.md` (phone check, swipe-stop, safe zones, loudness, banned openers, AI disclosure, made-for-kids, restrictions, duplicate-content check) and include it in the delivered plan — don't let the plan skip straight from export to "scheduled."
+8. Close by stating explicitly that this edit plan (plus the produced Short) feeds `social-repurpose` next.
 
 ## Gaps to flag honestly
 

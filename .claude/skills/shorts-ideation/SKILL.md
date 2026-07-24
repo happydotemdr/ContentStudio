@@ -7,7 +7,7 @@ description: Turns a raw faceless-YouTube-Shorts idea or topic into a validated 
 
 Turn a raw idea/topic into a **validated concept brief**: a chosen angle/take, a hook
 concept, and a title/thumbnail packaging direction. Every normative rule this skill applies
-comes from `C:\Projects\ContentStudio\docs\headless-youtube-audit.md` (the corpus audit),
+comes from the ContentStudio corpus's `docs/headless-youtube-audit.md` (the corpus audit),
 never from generic content-creation instinct — that discipline is the whole point of
 ContentStudio (see the project's `CLAUDE.md`).
 
@@ -140,52 +140,22 @@ structure, and pacing — not this brief.
 
 ## Worked example
 
-**Raw idea:** "Something about people who quit their jobs to travel."
-
-**Step 2 — angle:** The travel/quit-your-job niche is saturated with generic "digital
-nomad" content. Niche-quilt it: import the "outlier hunting" technique — instead of the
-broad topic, narrow to a specific avatar and a contrarian take: people who quit high-paying
-corporate jobs and *regretted* the decision within a year. This is a combine move (two
-proven angles: "I quit my job to travel" content + "the truth nobody tells you" contrarian
-framing) and screens clean on demonetization (no medical/financial advice claims, no
-political content).
-
-**Step 3 — hook concept:**
-- Emotional trigger: fear (loss aversion) combined with curiosity.
-- Title frame: warning/"stop-don't-never" territory, per the 2026 lift data.
-- The promise: "I'm going to tell you the real reason people who quit to travel go back to
-  their old job within a year — and it's not the money."
-
-**Step 4 — packaging direction:**
-- Title candidates (40–60 chars, avatar-specific, front-loaded):
-  1. "Why I Regretted Quitting My Job to Travel"
-  2. "The Real Reason Digital Nomads Go Back to Their Job"
-  3. "Nobody Tells You This Before You Quit to Travel"
-- Thumbnail direction: one focal point (a single suitcase half-packed, or a plane ticket
-  torn in half), one dominant emotion (regret/anxiety, not excitement), no channel logo,
-  3–6 words max on-screen, complementing (not repeating) the title's specific claim.
-
-**Step 5 — validation:**
-- Net information gain: existing "quit your job to travel" videos are aspirational; this
-  angle is the contrarian regret framing — differentiated.
-- Home-feed click test: passes — the regret/warning framing is a pattern interrupt against
-  a saturated aspirational niche.
-- Packaging-compellingness: passes — title and thumbnail candidates are specific and
-  produce a clear emotional signal, not generic.
-- Demonetization/policy screen: clear — no political, medical, or financial-advice framing.
-
-This becomes the concept brief handed to `shorts-scripting`.
+See `references/worked-example.md` for a full worked run — a raw idea taken through all
+five workflow steps to the finished concept brief handed off to `shorts-scripting`.
 
 ## Citation index (what's grounded where)
 
 - `references/angle-selection.md` — audit §1 (Niche selection & validation), §3 (Ideation &
-  content strategy). 17 corpus-cited rules, all `[C]`.
+  content strategy), plus one cross-reference to the production playbook's idea-vetting step.
+  20 corpus-cited rules, all `[C]`.
 - `references/hook-concepts.md` — audit §7 (Packaging: titles), §3 (contrarian-take
   framing), Top-12 pitfalls #5. 7 corpus-cited rules, all `[C]`.
 - `references/packaging-direction.md` — audit §7 (Packaging: titles/thumbnails/CTR). 13
   corpus-cited rules, all `[C]`.
 - `references/validation-gate.md` — audit §7, §3 (home-feed click test), §1, §8 (net
   information gain), and the Top-12 pitfalls list. 4 corpus-cited rules, all `[C]`.
+- `references/worked-example.md` — a complete raw-idea-to-concept-brief run, illustrating
+  the rules above in use (not a separate source of new rules).
 
 No `[I]` or `[T]` markers appear in this skill — every normative rule traces to a specific
 corpus finding. If a future edit needs an industry-practice or tool/policy claim, mark it

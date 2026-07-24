@@ -4,9 +4,10 @@ Distilled from `docs/midjourney-prompting-guide.md` (384 findings, 4 dedicated M
 channels — Future Tech Pilot, Wade McMaster, Tao Prompts, Tokenized AI — plus web-verified features,
 snapshot dated 2026-07-23). Provenance markers carried through verbatim: `[C]` corpus-cited
 `(Channel, video_id)`, `[T]` tool/feature fact (re-verify before relying on it), `[I]` general practice.
-Read the full guide at `docs/midjourney-prompting-guide.md` for anything not covered here (video
-generation depth, upscaling, cross-tool pipelines) — this file only carries what a beat-to-prompt
-workflow needs.
+Read the full guide at `docs/midjourney-prompting-guide.md` for anything not covered here (upscaling,
+cross-tool pipelines). For image-to-video/motion prompting depth, see `references/image-to-video.md`
+(this skill's other reference file) rather than the raw guide — this file only carries what a
+beat-to-prompt still-image workflow needs.
 
 ## Prompt anatomy
 
@@ -46,6 +47,15 @@ workflow needs.
 
 Type parameters in-prompt (e.g. `--s 160`) rather than relying on account settings — it's explicit and
 per-job `[C]`.
+
+**Draft-mode economics, for cheap iteration before committing:** Draft Mode (`--draft`) renders 24
+low-res images at roughly **1/10 the cost and ~5x the speed** of a full-quality generation — for
+concept/direction-finding, not final output; any draft image can be pushed to full quality via "very
+subtle" once you've picked a keeper `[T] (docs/midjourney-prompting-guide.md §5, "Modes & editing")`.
+Pair it with `--sref random` to cheaply sample many style codes before locking one in — click a grid
+image to reveal its code, then "very subtle" the keeper into a real generation
+`[C] (docs/midjourney-prompting-guide.md §9, "Iterate efficiently")`. Use this while exploring
+`--sref`/mood-board variety in step 3, not for the final per-beat renders.
 
 ## Consistency decision (pick one per Short)
 
@@ -101,12 +111,14 @@ hook card the script beat specifies is **not** written into the MJ prompt — it
   this skill's own composition `[I]`, built from the cited permutation mechanic and the cited `--sw`
   behavior above, not a single corpus finding on its own.
 
-## Video note (kept deliberately light — this is an image-prompt skill)
+## Video note (see `references/image-to-video.md` for the full treatment)
 
 MJ's image model is best-in-class for aesthetics/photorealism, but its **video generator is D-tier —
 jittery camera, choppy motion, weak prompt-following** `[C] (Tao Prompts, uCsc0ORcJDo)`. When a beat
 genuinely needs simple motion from a still, prefer **`--motion low`** for coherence over high motion,
 which looks more cinematic but gets unpredictable `[C] (Future Tech Pilot, Dkj7Jqejfz0)`. Anything more
-demanding than a single hero-still breathing (multi-shot, dialogue, big camera moves) is out of scope
-here — that tool choice and prompt-craft belongs to `shorts-assembly`, which sees the full script and
-voiceover brief together.
+demanding than a single hero-still breathing (multi-shot, dialogue, big camera moves, a real i2v clip
+via Kling/Seedance/etc.) is **this skill's own job too, not a downstream one** — `references/image-to-
+video.md` covers the model landscape, start/end-frame keyframing, and motion-prompt techniques for
+writing that prompt. Only running the external tool and fitting the rendered clip into the edit belongs
+to `shorts-assembly`.
