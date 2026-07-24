@@ -40,6 +40,19 @@ itself.
 MD
 
 mkdir -p dist
-( cd "$PLUGIN_DIR" && zip -r "../dist/${PLUGIN_NAME}.plugin" . -x "*.DS_Store" >/dev/null )
+rm -f "dist/${PLUGIN_NAME}.plugin"
+
+if command -v zip >/dev/null 2>&1; then
+  ( cd "$PLUGIN_DIR" && zip -r "../dist/${PLUGIN_NAME}.plugin" . -x "*.DS_Store" >/dev/null )
+elif command -v powershell >/dev/null 2>&1 || command -v powershell.exe >/dev/null 2>&1; then
+  # No `zip` on this machine (common on plain Windows) — use PowerShell's
+  # Compress-Archive instead, then rename .zip -> .plugin.
+  PS="$(command -v powershell.exe || command -v powershell)"
+  "$PS" -NoProfile -Command "Compress-Archive -Path '$PLUGIN_DIR/*' -DestinationPath 'dist/${PLUGIN_NAME}.zip' -Force"
+  mv "dist/${PLUGIN_NAME}.zip" "dist/${PLUGIN_NAME}.plugin"
+else
+  echo "error: neither 'zip' nor PowerShell found — install one to package the plugin." >&2
+  exit 1
+fi
 
 echo "Built dist/${PLUGIN_NAME}.plugin from $(find "$PLUGIN_DIR/skills" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') skills."
