@@ -58,9 +58,13 @@ per-job `[C]`.
   preserving style `[T]`. Currently **V7-only**; an improved V8 version is "in training" `[T]` — flag
   for re-verification.
 - **No recurring character, but one consistent look across the Short → `--sref` or a mood board.**
-  `--sref <code|url>` ties an aesthetic to a shareable code; the same code renders differently by
-  subject and by what's up front in the prompt (e.g. adding "oil painting" shifts it), so re-test the
-  code against your actual subject rather than assuming it transfers `[C] (Future Tech Pilot, GAT5A6MqM-E)`.
+  `[I]` Bootstrap step this skill assumes but the corpus doesn't state explicitly: generate
+  the Short's first still without `--sref`, then either extract a style code from that
+  generation or pass its image URL as `--sref` — you need one rendered image before the code
+  exists to reuse it on the remaining beats. `--sref <code|url>` ties an aesthetic to a
+  shareable code; the same code renders differently by subject and by what's up front in the
+  prompt (e.g. adding "oil painting" shifts it), so re-test the code against your actual
+  subject rather than assuming it transfers `[C] (Future Tech Pilot, GAT5A6MqM-E)`.
   A **mood board** (`--p <code>`) gives the most control because you upload the exact images to emulate,
   and its influence is dialed with `--stylize` (not a separate weight) — ~50 is a sweet spot, 1000 is
   max `[C] (Wade McMaster, TtkenI4wt8I; Future Tech Pilot, Tv1dfGcOSnA)`.

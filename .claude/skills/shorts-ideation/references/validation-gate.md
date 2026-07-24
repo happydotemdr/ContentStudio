@@ -53,3 +53,9 @@ mechanics (hook execution, re-hook cadence) are downstream concerns — the firs
 post-publish metric, the second belongs to `shorts-scripting`. This gate only certifies that
 the *idea, angle, and packaging direction* are differentiated, clickable-in-concept, and
 policy-safe before a script gets written against them.
+
+Also out of scope here: the audit's Foundation-level niche-demand check (`[C]` validate
+demand by confirming top channels in the niche pull 50k+ views and there's a clear way to
+sell beyond ads — Make Money Matt, n7KG9AvdB-s) is a one-time, channel-level decision made
+before a channel exists, not a per-idea gate. If the user is validating a brand-new niche
+rather than a single Short's angle, point them to that check before running this gate.

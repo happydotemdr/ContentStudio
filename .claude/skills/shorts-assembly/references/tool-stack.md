@@ -17,6 +17,7 @@ All pricing/product facts below are `[T]`, web-verified **2026-07-23** — re-ve
 ## Scheduling & analytics (last steps after export)
 
 - **Native YouTube Studio scheduling** `[T]`. Don't upload and let a video "sit" a day expecting an algorithmic boost — that's a myth `[C] (Nick Nimmin, 0l2g3Bujy1Y)`.
+- **Publish sequence: upload unlisted first, let it fully process/index (transcription, frame analysis, guideline checks), add all metadata, then schedule public** — this earns trust before release rather than exposing an unprocessed video `[C] (Make Money Matt, RsAKa_WN1sU; Romayroh, Wox4Jt_2t6w — the latter also names unlisted upload as the default)`. If posting a batch, space the uploads out rather than dumping them all on one day, so the pacing doesn't read as spam-bot behavior `[C] (Make Money Matt, tqCMF3mI9Pg)`.
 - **YouTube Studio (Advanced mode) + vidIQ** `[T]` for the post-publish read: check the first 24–48h of CTR/AVD against the channel average, then double down on what beats it `[C] (vidIQ, ZKsldrcO_fU)`.
 
 ## $0 assembly stack

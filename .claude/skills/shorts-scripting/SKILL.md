@@ -80,8 +80,12 @@ script's notes rather than inventing generic advice to fill the gap.
    with a concrete detail, not a vague resolution
    (`references/endings-and-ctas.md`).
 8. **Write Loop/CTA (38–45s) + the comment-bait question.** Mirror the Hook's
-   phrasing so the ending feeds back into the opening (`references/endings-
-   and-ctas.md`).
+   phrasing so the ending feeds back into the opening. Separately — and not
+   satisfied by the loop alone — the audit's strongly-supported rule is to
+   *bridge to a specific next video* rather than end with "thanks for
+   watching": if there's a specific related Short/video to point to, name it
+   in the output contract's `Next-video bridge` field even though the VO line
+   itself stays on the mirrored hook (`references/endings-and-ctas.md`).
 9. **Run the humanize pass.** Vary sentence length, cut any AI-fingerprint
    phrase or buzzword, fact-check any specific claim
    (`references/script-intelligence-and-delivery.md`).
@@ -130,6 +134,9 @@ BUILD/VALUE (8–28s | N words): "<VO line(s)>"
 PAYOFF      (28–38s | N words): "<VO line>"
 LOOP/CTA    (38–45s | N words, mirrors hook): "<VO line>"
 Comment-bait question: "<specific question>"
+Next-video bridge: <name a specific related Short/video to point to (pinned
+  comment or on-screen card), or write "none available" — never leave this
+  silently blank; the corpus treats skipping it as a strongly-supported miss>
 Total word count: ~N words (150–170 wpm)
 
 Visual notes (for visual-prompts downstream):

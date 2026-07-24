@@ -38,7 +38,7 @@ Work through these four reference files in order — each is a distilled, cited 
 1. **`references/pacing-and-editing.md`** — beat timing carried from the script, the ~3s change-visual cut cadence, the "don't over-edit" counter-rule, muted-viewer/authenticity rules, and where to spend AI-video budget. Use this to fill in the shot-by-shot table.
 2. **`references/caption-overlay-system.md`** — caption style, hook/re-hook card timing, safe-zone map, and the one place the corpus genuinely disagrees with itself (full-duration karaoke captions vs. front-loaded-only captions) — both sides are given; make an explicit call and say why.
 3. **`references/loudness-and-mix.md`** — the ducking chain (music ≈−22 dB under voice), the −14 LUFS target, voice-peak range, and the phone-speaker QA step.
-4. **`references/tool-stack.md`** — CapCut / Submagic / Descript / Premiere Pro, with a $0 stack and a paid stack, plus the asset-naming convention so the plan can reference the actual files from upstream.
+4. **`references/tool-stack.md`** — CapCut / Submagic / Descript / Premiere Pro, with a $0 stack and a paid stack, the asset-naming convention so the plan can reference the actual files from upstream, and the publish sequence (upload unlisted → let it process → add metadata → schedule public).
 
 Then produce the plan itself, structured the same way `references/worked-example.md` is (a full worked run using the corpus's own S042 "coffee trick" script) — copy that structure for the real script, don't reinvent the layout per request.
 
@@ -49,7 +49,7 @@ Then produce the plan itself, structured the same way `references/worked-example
 3. Fill in the caption/overlay spec using the fill-in template in `caption-overlay-system.md` — don't leave placeholders in the delivered plan.
 4. State the aspect ratio (1080×1920, 9:16) and flag the Shorts-length gap if the runtime is unusual.
 5. State the loudness targets and the ducking level.
-6. Write both the $0 and paid tool-stack execution steps, naming actual tools and actual actions ("import in CapCut, auto-caption, hand-correct against the script...") not abstractions.
+6. Write both the $0 and paid tool-stack execution steps, naming actual tools and actual actions ("import in CapCut, auto-caption, hand-correct against the script...") not abstractions, ending with the publish sequence (unlisted → processed → metadata added → scheduled public) — don't let the plan stop at export.
 7. Close by stating explicitly that this edit plan (plus the produced Short) feeds `social-repurpose` next.
 
 ## Gaps to flag honestly
