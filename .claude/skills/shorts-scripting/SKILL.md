@@ -174,8 +174,10 @@ Visual notes (for visual-prompts downstream):
   Loop/CTA: <one line>
 
 Delivery notes: <muted-friendly check, medium-confidence flags used (if any),
-  humanize-pass confirmation, and — only if a companion grounding artifact supplied one — its
-  "constraints that survive to publish" line, copied verbatim>
+  humanize-pass confirmation, and — only if a companion grounding artifact was used — its
+  citation markers verbatim (e.g. [THINKER: ...], [RESEARCH: ...]) for each citation actually
+  used in the script, plus its "constraints that survive to publish" line,
+  copied verbatim>
 ```
 
 A full worked example (concept brief → finished script, with citations
