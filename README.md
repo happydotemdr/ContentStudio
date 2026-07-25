@@ -9,12 +9,13 @@ Every corpus is fetched fresh from its public source (or, for youth-sports,
 copied from a local checkout — see the note in that section). The downloaded
 texts land in a git-ignored `output/` folder and are never committed.
 
-**Scope note:** ContentStudio's six shorts-production skills (see the
+**Scope note:** ContentStudio's six generic shorts-production skills (see the
 top-level `CLAUDE.md`) are built entirely from the **Brand-intel / headless
 YouTube** row below — the `docs/` guides and `output/brand-intel/`. The
-**Thinkers** and **Youth sports** rows are inert leftover toolkit capability,
-carried over because this toolkit downloads three corpora as a unit; they are
-not read by any ContentStudio skill.
+**Thinkers** and **Youth sports** rows feed two RaisingGoodSports-only skills,
+`rgs-grounding` and `rgs-pairing-review` (see `.claude/skills/rgs-grounding/`
+and `.claude/skills/rgs-pairing-review/`) — carried over as a toolkit-wide
+download because all three corpora download as a unit, but no longer inert.
 
 ## What it collects
 
@@ -110,8 +111,9 @@ Edit that JSON to add/remove sources. For RSS, use the feed URL as the `handle`.
 
 `manifests/thinkers.json` was generated from a sibling app's source-of-truth
 manifest via `gen_thinkers_manifest.ts` — see that file's header. It is **not
-runnable standalone in this repo** (kept as documentation only; the thinkers
-corpus is out of scope for ContentStudio's skills — see the scope note above).
+runnable standalone in this repo** (kept as documentation only; the JSON output
+itself is what `rgs-grounding` and `rgs-pairing-review` read — see the scope
+note above).
 
 ## Notes & scope
 
