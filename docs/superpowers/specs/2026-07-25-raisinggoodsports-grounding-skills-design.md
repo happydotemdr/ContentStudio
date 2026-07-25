@@ -336,6 +336,10 @@ complete, each of the following becomes its own small follow-on change:
   composition, alongside `brand-definition.md`'s separate Visual Kit block (out of scope here —
   see "Non-goals").
 
+**Addressed:** see `docs/superpowers/specs/2026-07-25-rgs-pipeline-handoff-design.md` for the
+follow-on design covering all three, plus `shorts-assembly`/`social-repurpose` constraint
+pass-through and the beat-spine reconciliation this list didn't anticipate.
+
 ## Scope-note updates (in scope for this plan)
 
 - `CLAUDE.md`: revise the "Out of scope, kept for structural completeness" note — the thinkers
