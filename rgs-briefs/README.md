@@ -33,7 +33,8 @@ status: candidate
   with `status: candidate` or `status: produced` is safe to hand forward as a companion grounding
   artifact. A brief hand-edited to any other value, or whose `date` predates the most recent
   refresh of the research/thinker corpora it cites, should be flagged before use rather than
-  consumed silently — see each generic skill's "Optional input" section for the exact rule.
+  consumed silently — see `shorts-ideation`'s "Optional input" section (the pipeline's entry
+  point) for the exact staleness-check rule.
 
 ## Who reads this
 

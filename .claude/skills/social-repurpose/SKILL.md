@@ -14,7 +14,7 @@ direction (working title/angle decided at `shorts-ideation`), and the edit/assem
 You need the script text (for AEO specifics and hook language) and whatever title/thumbnail
 direction earlier stages already committed to — this skill does not re-derive thumbnail
 design (that's `shorts-ideation`/`shorts-assembly` territory); it writes the **text** that
-accompanies the finished video. **If the script or assembly plan carries a "constraints that survive to publish" line** (e.g. a mandatory safety-resource mention), honor it in the
+accompanies the finished video. **If the script or assembly plan carries a "constraints that survive to publish" line** `[I]` (e.g. a mandatory safety-resource mention), honor it in the
 post copy you write — this skill doesn't need to know what produced the constraint, only that it's
 flagged.
 

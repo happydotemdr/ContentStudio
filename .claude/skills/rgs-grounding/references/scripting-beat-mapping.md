@@ -15,15 +15,16 @@ mapping itself.
   judgment call — state it explicitly in the brief's Handoff section (see "Per-brief judgment"
   below), don't leave it to `shorts-scripting` to guess.
 - **Payoff → the Build's required proof beat, or Payoff itself.** `shorts-scripting` requires at
-  least one concrete proof beat inside Build/Value (its `[I]`-marked proof-beat rule,
-  `shorts-scripting/SKILL.md:40-47`). A Grounding Brief's Payoff content — a research finding,
+  least one concrete proof beat inside Build/Value (its `[I]`-marked proof-beat rule, called out
+  in `shorts-scripting/SKILL.md`'s Provenance discipline `[I]` enumeration). A Grounding Brief's Payoff content — a research finding,
   ideally the source file's own Content Hook — is frequently *exactly* that proof beat. Whether
   it lands in Build/Value as the proof beat or later in the script's own Payoff beat is a
   per-brief call, driven by whether the finding is best used to build the case (Build/Value) or
   resolve the Hook's question (Payoff) — state which one the brief intends.
 - **Reframe → split.** The brief's Reframe is a full argumentative move (typically 2–3
   sentences). It does not become the Loop/CTA beat wholesale — `shorts-scripting`'s Loop/CTA is
-  5–12 words and must mirror the Hook's phrasing (`shorts-scripting/SKILL.md:107`). Instead:
+  5–12 words and must mirror the Hook's phrasing (the beat-timing model table's Loop/CTA row in
+  `shorts-scripting/SKILL.md`). Instead:
   - The Reframe's argumentative body lands in the script's own **Payoff** beat (after or combined
     with the research finding, if the finding didn't already fill Payoff above).
   - Only the Reframe's **kicker line** — the one-sentence takeaway ("it was never about your
