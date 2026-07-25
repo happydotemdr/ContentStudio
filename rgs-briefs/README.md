@@ -29,6 +29,11 @@ status: candidate
 - `status` is `candidate` until the Short is actually produced, then hand-edit to `produced` or
   delete the file if the topic was abandoned. `rgs-grounding`'s recency rules apply to files
   regardless of `status` — even an abandoned candidate reflects a recent pairing choice.
+- **For downstream consumers** (`shorts-ideation`, `shorts-scripting`, `visual-prompts`): a brief
+  with `status: candidate` or `status: produced` is safe to hand forward as a companion grounding
+  artifact. A brief hand-edited to any other value, or whose `date` predates the most recent
+  refresh of the research/thinker corpora it cites, should be flagged before use rather than
+  consumed silently — see each generic skill's "Optional input" section for the exact rule.
 
 ## Who reads this
 
