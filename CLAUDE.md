@@ -42,11 +42,12 @@ sourced. If the corpus is thin on a topic, the skill says so explicitly rather t
 filling the gap with generic advice — that discipline is the entire point of this
 project (see "Anti-generic guarantee" below).
 
-**Out of scope, kept for structural completeness:** the toolkit also carries a
-`thinkers` (AnchorAndWave public-domain library) and `youth-sports` (RaisingGoodSports)
-corpus, and one general-interest roster entry (`@bigthink`/Adam Grant) inside
-`output/brand-intel/`. None of these feed any ContentStudio skill — see `README.md`'s
-scope note.
+**Partially in scope:** the toolkit also carries a `thinkers` (AnchorAndWave public-domain
+library) and `youth-sports` (RaisingGoodSports) corpus, plus one general-interest roster entry
+(`@bigthink`/Adam Grant) inside `output/brand-intel/`. Both corpora now feed the
+RaisingGoodSports-only `rgs-grounding` and `rgs-pairing-review` skills (see
+`.claude/skills/rgs-grounding/` and `.claude/skills/rgs-pairing-review/`) — the general-interest
+roster entry remains unused by any skill. See `README.md`'s scope note for the full picture.
 
 ### The six skills (`.claude/skills/`)
 
