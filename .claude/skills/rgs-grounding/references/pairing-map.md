@@ -17,7 +17,7 @@ and must be flagged "candidate for brand-book review" per
 `manifests/thinkers.json` (13 slugs across 12 thinkers) and (b) the brand's 7 signature
 thinkers from `output/raisinggoodsports-brand-definition.md`, since two of those seven — Veblen
 and Dewey — don't actually carry the `parenting` tag in the manifest (Veblen is tagged
-status/self-development; Dewey is tagged education only) despite being core to the brand's
+finance/self-development; Dewey is tagged education only) despite being core to the brand's
 signature format. That union is 16 slugs across 14 distinct thinkers, listed above — not all 53
 works in the manifest. `thinker-corpus-protocol.md`'s live-glob gap-fill path is narrower
 (parenting-pillar only, since it's an unreviewed fallback, not a curation pass) — that's a

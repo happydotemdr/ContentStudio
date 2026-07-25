@@ -40,12 +40,13 @@ source file; open it directly if a specific case isn't covered here):
 6. R11/R14 (eating disorders) and R12 (safeguarding) require special handling — see
    `references/safety-sensitive-handling.md`.
 7. Some sources are paywalled ("abstract only") — the abstract is enough to cite the finding
-   accurately.
+   accurately; if you want to read the full method, look for the PMC version or the author's
+   institutional copy first.
 8. Recency matters — the verify-policy file's own recency-check date and figures are as of
    `2026-07-18`; if a Grounding Brief is produced well after that date, note in the brief that
    the cited figures should be spot-checked against the current file before the Short ships,
-   since the research corpus itself gets refreshed periodically (see `README.md`'s refresh
-   workflow).
+   since the research corpus itself gets refreshed periodically (see
+   `output/youth-sports/raisinggoodsports/README.md`'s refresh workflow).
 
 ## What never happens
 

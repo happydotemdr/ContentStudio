@@ -56,12 +56,12 @@ what breaks its grip: you can opt out of the comparison without opting out of yo
 
 ## Verification record
 - Thinker source opened: `output/thinkers/anchorandwave/thorstein-veblen/veblen-theory-of-the-leisure-class.cleaned.md`,
-  lines 47 and 99 (Chapter Two, "Pecuniary Emulation") — confirmed present, text matches the
-  pairing-map row exactly: "the instinct of workmanship works out in an emulative or invidious
-  comparison of persons... visible success becomes an end sought for its own utility as a basis
-  of esteem" (para at line 47) and "the invidious comparison can never become so favourable to
-  the individual making it that he would not gladly rate himself still higher relatively to his
-  competitors" (line 99).
+  lines 47 and 99 — confirmed present, text matches the pairing-map row exactly: "the instinct
+  of workmanship works out in an emulative or invidious comparison of persons... visible success
+  becomes an end sought for its own utility as a basis of esteem" (line 47, Chapter One,
+  "Introductory") and "the invidious comparison can never become so favourable to the individual
+  making it that he would not gladly rate himself still higher relatively to his competitors"
+  (line 99, Chapter Two, "Pecuniary Emulation", which starts at line 67).
 - Research source opened: `output/youth-sports/raisinggoodsports/rgs-f4-sport-parent-burnout.md`
   in full — confirmed Source 1 (DeFreese & Dorsch 2018) finding and Content Hooks section;
   confirmed `edition: v2-2026-07-18` (matches `pairing-map.md`'s `research_codes_reviewed` entry

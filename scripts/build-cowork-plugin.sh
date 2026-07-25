@@ -5,6 +5,12 @@
 # cowork-plugin/skills/, writes a plugin.json manifest, and zips the result
 # to dist/content-studio.plugin. Both cowork-plugin/ and dist/ are git-ignored
 # build artifacts — never hand-edit cowork-plugin/skills/, re-run this script.
+#
+# The two RaisingGoodSports-only skills (rgs-grounding, rgs-pairing-review)
+# are deliberately excluded from the copied plugin tree below: they depend
+# on git-ignored local corpus data (output/thinkers/, output/youth-sports/,
+# manifests/thinkers.json, rgs-briefs/) that this plugin doesn't bundle, so
+# they can't function inside the packaged plugin.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,6 +23,7 @@ rm -rf "$PLUGIN_DIR"
 mkdir -p "$PLUGIN_DIR/.claude-plugin" "$PLUGIN_DIR/skills"
 
 cp -R .claude/skills/. "$PLUGIN_DIR/skills/"
+rm -rf "$PLUGIN_DIR/skills/rgs-grounding" "$PLUGIN_DIR/skills/rgs-pairing-review"
 
 cat > "$PLUGIN_DIR/.claude-plugin/plugin.json" <<'JSON'
 {
