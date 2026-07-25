@@ -9,7 +9,9 @@ description: Turn a shot-ready ContentStudio Short script into a Midjourney prom
 
 - **Upstream input:** the shot-ready, timed script from `shorts-scripting` — a beat-by-beat breakdown
   (Hook / Setup / Build / Re-hook / Payoff / Loop-CTA, or whatever beats that skill emits) with a
-  duration and VO line per beat.
+  duration and VO line per beat. **Optionally**, a companion grounding artifact may also be handed
+  to this skill directly (or reached via the script's own upstream chain) — see "Optional input"
+  below.
 - **This skill's job:** turn each beat into one or more Midjourney still-image prompts, **plus — for any
   beat that genuinely needs real animated motion, not just a still with `--motion low` — the
   image-to-video (i2v) prompt for the external tool that will render that clip** (Kling, Seedance,
@@ -39,6 +41,19 @@ visual-*pacing* rules (how often to change the image, what look to avoid) trace 
 corpus theme (27 findings)**, flagged as such rather than padded with invented "best practices." If you
 find yourself about to write a rule with no `[C]`/`[I]`/`[T]` marker, stop — that's the signal you're
 inventing instead of sourcing. Say the corpus doesn't cover it and move on.
+
+## Optional input: a companion grounding artifact `[I]`
+
+If a companion grounding artifact is handed to this skill, use its visual motif cue as a
+shot-composition input for the beat(s) carrying that citation — fold the cue into step 2's
+still-count decision and step 4's prompt anatomy for that beat, the same way any other visual
+note is used.
+
+This section does **not** add a quotability/quote-card gate — this skill never renders
+on-screen text (every prompt ends "No Text," step 4 below); on-screen text and caption
+decisions, including whether a citation is safe to render as a quote card, belong entirely to
+`shorts-scripting`'s Delivery notes and `shorts-assembly`'s caption treatment. If no companion
+artifact is provided, this section doesn't apply — build the prompt sheet normally.
 
 ## Workflow
 
