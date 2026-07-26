@@ -77,7 +77,7 @@ def test_approve_raises_when_no_artifact_exists(conn, tmp_path: Path):
 async def test_regenerating_an_approved_stage_marks_approved_dependent_stale(conn, tmp_path: Path, monkeypatch):
     """End-to-end: approve ideation -> approve scripting (built on ideation
     v1) -> regenerate ideation to v2 -> scripting must flip to stale, since
-    _propagate_staleness compares against ideation's CURRENT latest artifact,
+    propagate_staleness compares against ideation's CURRENT latest artifact,
     not the exact (immutable) v1 file scripting's frontmatter recorded."""
     project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
     db.create_stage_row(conn, project_id, "ideation", "ready")

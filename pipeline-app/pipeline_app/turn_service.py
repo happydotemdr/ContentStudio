@@ -45,13 +45,17 @@ def _current_upstream_hashes(run_dir: Path, upstream_defs: list[StageDef]) -> di
     return hashes
 
 
-def _propagate_staleness(
+def propagate_staleness(
     conn: sqlite3.Connection,
     run_dir: Path,
     all_stage_defs: list[StageDef],
     project_id: int,
     changed_stage_id: str,
 ) -> None:
+    """Flip approved downstream stages to stale when changed_stage_id's latest
+    artifact no longer matches the hash they recorded. Public because both
+    paths that mint a new artifact version call it: run_stage_turn (chat /
+    regenerate) and routes.stages.edit_stage_output_route (hand edit)."""
     dependents = [s for s in all_stage_defs if changed_stage_id in s.depends_on]
     for dep_stage in dependents:
         row = db_mod.get_stage(conn, project_id, dep_stage.id)
@@ -182,4 +186,4 @@ async def run_stage_turn(
     }
     artifacts.write_artifact(stage_dir, version, meta, body)
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.AWAITING_REVIEW.value)
-    _propagate_staleness(conn, run_dir, all_stage_defs, project_id, stage_def.id)
+    propagate_staleness(conn, run_dir, all_stage_defs, project_id, stage_def.id)

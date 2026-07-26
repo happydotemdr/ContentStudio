@@ -187,4 +187,13 @@ def edit_stage_output_route(request: Request, project_id: int, stage_id: str, bo
         "depends_on": prior_meta.get("depends_on", []),
     }
     artifacts.write_artifact(stage_dir, version, meta, body)
+
+    # Design spec §2: a hand edit mints artifact.v{N+1}.md exactly like a
+    # regenerate does, so it gets the same downstream treatment — approved
+    # dependents whose recorded hash no longer matches go stale, and this
+    # stage drops back to awaiting_review because a fresh unapproved draft
+    # now exists (even if the stage had already been approved).
+    turn_service.propagate_staleness(conn, run_dir, stage_defs, project_id, stage_id)
+    db_mod.update_stage_status(conn, stage_row["id"], "awaiting_review")
+
     return RedirectResponse(url=f"/projects/{project_id}/stages/{stage_id}", status_code=303)
