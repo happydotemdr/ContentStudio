@@ -5,8 +5,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from pipeline_app import db as db_mod
+from pipeline_app import preflight
 from pipeline_app.pipeline_config import load_topology
-from pipeline_app.routes import inspector, projects, skills, stages
+from pipeline_app.routes import doctor, inspector, projects, skills, stages
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -14,11 +15,13 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 def create_app(repo_root: Path, db_path: Path) -> FastAPI:
     app = FastAPI()
     app.state.repo_root = repo_root
+    app.state.db_path = db_path
     app.state.stage_defs = load_topology(repo_root / "pipeline.yaml")
 
     schema_path = PACKAGE_DIR / "schema.sql"
     db_mod.init_db(db_path, schema_path)
     app.state.conn = db_mod.get_connection(db_path)
+    app.state.orphaned_count = preflight.reconcile_orphaned_turns(app.state.conn)
 
     app.state.templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")
@@ -27,6 +30,7 @@ def create_app(repo_root: Path, db_path: Path) -> FastAPI:
     app.include_router(stages.router)
     app.include_router(skills.router)
     app.include_router(inspector.router)
+    app.include_router(doctor.router)
     return app
 
 
