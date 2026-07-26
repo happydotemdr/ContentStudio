@@ -20,6 +20,13 @@ Produces the **edit plan** for one Short: the fifth of six atomic ContentStudio 
 
 If any of the three is missing, ask for it rather than inventing shot content — this skill assembles what upstream produced, it doesn't re-derive the script or the visuals.
 
+**Optional: constraints that survive to publish.** `[I]` If the incoming script's Delivery notes field
+carries a "constraints that survive to publish" line (e.g. a quotability restriction on a
+citation, or a mandatory safety-resource line), honor it in the caption/overlay treatment below,
+and restate it verbatim in the delivered edit plan's own notes so it carries forward intact —
+this skill doesn't need to know what produced the constraint, only that it's flagged and must be
+respected.
+
 **Output:** a single edit plan covering five things, every one gated by a corpus rule, not convention:
 1. Shot-by-shot pacing/cut timing
 2. Caption/overlay treatment

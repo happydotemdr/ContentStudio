@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Skills</h1>
+<ul>
+  {% for name in skill_names %}
+  <li><a href="/skills/{{ name }}">{{ name }}</a></li>
+  {% endfor %}
+</ul>
+{% endblock %}

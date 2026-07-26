@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Doctor</h1>
+<ul>
+  <li>Repo root: {{ repo_root }}</li>
+  <li>DB path: {{ db_path }}</li>
+  <li>Claude CLI: {% if cli.available %}found at {{ cli.path }}{% else %}NOT FOUND — {{ cli.error }}{% endif %}</li>
+  <li>Skills discovered: {{ skill_names | join(", ") }}</li>
+  <li>Orphaned turns reconciled at startup: {{ orphaned_count }}</li>
+</ul>
+{% endblock %}

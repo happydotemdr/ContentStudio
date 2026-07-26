@@ -85,8 +85,18 @@ autonomy, low-stakes fun — that the structure has been quietly squeezing out s
 
 ## Handoff
 Feeds shorts-ideation next. Travels forward as a companion artifact to shorts-scripting
-(citation text per beat above) and visual-prompts (visual motif cue: a young child joyfully
-kicking a ball alone, cut against a teenager sitting on a bench, disengaged, during a drill).
+(citation text per beat above, mapped per
+`.claude/skills/rgs-grounding/references/scripting-beat-mapping.md`) and visual-prompts (visual
+motif cue: a young child joyfully kicking a ball alone, cut against a teenager sitting on a
+bench, disengaged, during a drill).
+
+**Per-brief mapping judgment:**
+- Turn content lands in: Setup, ~5s (short, direct naming of the mechanism).
+- Payoff content (research finding) serves as: the script's own Payoff beat — R8's Content Hook
+  directly resolves the Hook's implicit question ("why do kids quit").
+
+**Constraints that survive to publish:** paraphrase-caution (Ellen Key) — never render as an
+on-screen quote/direct-attribution card.
 
 ## Alternates considered
 1. **Alfred Adler × R8** — "the pampered child, unprepared for real difficulty" (a child who's

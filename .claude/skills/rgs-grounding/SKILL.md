@@ -17,7 +17,7 @@ the source, not recalled from what the model already knows about Veblen or Adler
 |---|---|
 | **Upstream** | None — a raw RGS topic, pain point, or a specific thinker/finding already in mind |
 | **This skill** | Topic → one verified Grounding Brief, saved to `rgs-briefs/` |
-| **Downstream** | Feeds `shorts-ideation` (angle/archetype pick); the same brief also feeds `shorts-scripting` (citation text per beat) and `visual-prompts` (motif cues) — hand it forward at each stage, don't regenerate it |
+| **Downstream** | Feeds `shorts-ideation` (angle/archetype pick, via the concept brief's Grounding reference line); the same brief also feeds `shorts-scripting` (citation text per beat, mapped per `references/scripting-beat-mapping.md`) and `visual-prompts` (motif cues) — hand it forward at each stage, don't regenerate it |
 
 ## Why matching is map-first, not live-glob-first
 
@@ -124,7 +124,17 @@ references/thinker-corpus-protocol.md Path 2 for the exact required heading/text
 
 ## Handoff
 Feeds shorts-ideation next. Travels forward as a companion artifact to shorts-scripting
-(citation text per beat above) and visual-prompts (visual motif cue: [from the map row]).
+(citation text per beat above, mapped per `references/scripting-beat-mapping.md`) and
+visual-prompts (visual motif cue: [from the map row]).
+
+**Per-brief mapping judgment** (see `references/scripting-beat-mapping.md` — state both, don't
+restate the fixed mapping itself):
+- Turn content lands in: [Setup / early-Build, ~[N]s]
+- Payoff content (research finding) serves as: [the Build's proof beat / the script's own Payoff beat]
+
+**Constraints that survive to publish** (omit this line entirely if none apply): [e.g.
+"paraphrase-caution — never render as an on-screen quote/direct-attribution card" / "R5 —
+mandatory 988 Suicide & Crisis Lifeline line required in final captions/copy"]
 
 ## Alternates considered
 [Non-interactive fallback only: the other slate rows not chosen, one line each]
@@ -155,4 +165,7 @@ schema). Confirm the file was written before ending the turn.
 - `references/research-corpus-protocol.md` — research-code resolution + verify-policy rules.
 - `references/safety-sensitive-handling.md` — R5/R11/R12/R14 protocol.
 - `references/brand-voice-and-tone.md` — voice, lexicon, archetypes, spine, quotability rule.
+- `references/scripting-beat-mapping.md` — the fixed Hook/Turn/Payoff/Reframe →
+  Hook/Setup/Build/Payoff/Loop-CTA mapping rule, stated once; every brief's Handoff states only
+  the per-brief judgment this mapping leaves open.
 - `references/worked-example.md` — one full topic-to-brief run.

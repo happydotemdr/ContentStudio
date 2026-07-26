@@ -115,9 +115,21 @@ comparison instinct steering the checkbook.
 
 ## Handoff
 Feeds shorts-ideation next. Travels forward as a companion artifact to shorts-scripting (citation
-text per beat above) and visual-prompts (visual motif cue: a stack of travel-team gear,
-showcase-tournament wristbands, and private-training receipts — the paper trail of "ambition" as
-a visual pile).
+text per beat above, mapped per
+`.claude/skills/rgs-grounding/references/scripting-beat-mapping.md`) and visual-prompts (visual
+motif cue: a stack of travel-team gear, showcase-tournament wristbands, and private-training
+receipts — the paper trail of "ambition" as a visual pile).
+
+**Per-brief mapping judgment:**
+- Turn content lands in: Setup + early-Build, ~4–10s (longer than a single naming line — two
+  moves: the "ambition"-as-cloak claim, then landing it on the club-soccer parent specifically).
+- Payoff content (research finding) serves as: the Build's required proof beat — S5's numbers
+  are supporting evidence for the premise the Hook already stated, not a fresh resolution. The
+  script's own Payoff beat instead carries the Reframe's argumentative body below ("it was never
+  dishonesty..."), with only its kicker line echoed in Loop/CTA.
+
+**Constraints that survive to publish:** paraphrase-caution (Adler) — never render as an
+on-screen quote/direct-attribution card.
 
 ## Alternates considered
 - Thorstein Veblen × F4 (invidious comparison / sport-parent burnout) — equally strong fit,

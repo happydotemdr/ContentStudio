@@ -15,12 +15,45 @@ ContentStudio (see the project's `CLAUDE.md`).
 
 | | |
 |---|---|
-| **Upstream** | None — the input is a raw human idea or topic, however rough |
+| **Upstream** | None by default — the input is a raw human idea or topic, however rough. Optionally, a companion grounding artifact from a brand-specific skill (see "Optional input" below) |
 | **This skill** | Idea → validated concept brief (angle, hook concept, packaging direction) |
 | **Downstream** | `shorts-scripting` — turns this concept brief into a shot-ready script with timing |
 
 Hand the finished concept brief to `shorts-scripting` next. Don't write the script yourself
 here — see "Scope boundary" below.
+
+## Optional input: a companion grounding artifact `[I]`
+
+Some brands run a brand-specific skill upstream of this one that produces a **companion
+grounding artifact** — a small, brand-neutral packet naming an archetype/angle hint (a
+plain-language label + one-line rationale), one or more citations, and (optionally) a
+"constraints that survive to publish" line. RaisingGoodSports's `rgs-grounding` is the first
+skill that produces one — see its `SKILL.md` — but this skill doesn't hardcode RGS by name; any
+brand-specific skill producing the same shape of artifact works the same way here. This is an
+interface convention, not a corpus claim — that's why it's marked `[I]`.
+
+When a companion artifact is provided:
+
+- **Prefer an angle consistent with its archetype/angle hint.** Don't invent an angle the
+  artifact's citations can't support.
+- **If no archetype-consistent angle passes this skill's own validation gate** (step 5 below —
+  net information gain, home-feed click test, packaging-compellingness, demonetization screen):
+  do not stretch a citation to force a fit. Instead, pick from the artifact's own "alternates
+  considered" list if it has one, or report back that the upstream brand skill needs to produce a
+  different pairing. Never ship a brief built on an unsupported angle.
+- **Demonetization screen and safety-sensitive citations:** step 2's screen (below) flags
+  "sensitive medical/financial framing." A companion artifact's safety-sensitive citation passes
+  this screen when it already carries a named source and non-sensational framing (the upstream
+  brand skill's own protocol should guarantee this) — the screen's intent is to catch content
+  presenting *as* a health/financial authority, and a properly-sourced citation is the opposite
+  of that failure mode. Only an unsourced or sensationalized safety-sensitive claim fails the
+  screen.
+- **Staleness check:** if the artifact's stated date predates the most recent refresh of
+  whatever corpus it cites, or its status field indicates it isn't in an active/consumable
+  state, flag this before use rather than proceeding silently.
+- **Carry it forward, don't re-derive it.** The concept brief's "Grounding" section (see the
+  template below) points at the artifact rather than re-typing its citation text — the artifact
+  remains the single source of truth for citation content.
 
 ## Scope boundary (read before drafting anything)
 
@@ -133,6 +166,12 @@ differentiated from existing coverage.]
 - Packaging-compellingness: [pass/fail + why]
 - Demonetization/policy screen: [clear / flagged — note]
 
+## Grounding (omit this section entirely if no companion artifact was provided)
+- Source: [companion artifact file path]
+- Archetype/angle hint honored: [archetype label]
+- Citations carried forward: [thinker/source names — full citation text lives in the artifact,
+  not repeated here]
+
 ## Handoff
 This brief feeds `shorts-scripting` next. Scripting owns the opening lines, retention loop
 structure, and pacing — not this brief.
@@ -157,6 +196,7 @@ five workflow steps to the finished concept brief handed off to `shorts-scriptin
 - `references/worked-example.md` — a complete raw-idea-to-concept-brief run, illustrating
   the rules above in use (not a separate source of new rules).
 
-No `[I]` or `[T]` markers appear in this skill — every normative rule traces to a specific
-corpus finding. If a future edit needs an industry-practice or tool/policy claim, mark it
-`[I]`/`[T]` explicitly rather than leaving it bare.
+This skill's content carries `[C]` markers exclusively, with one exception: the "Optional
+input: a companion grounding artifact" section above, marked `[I]` — an interface convention,
+not a corpus claim. If a future edit needs another industry-practice or tool/policy claim, mark
+it `[I]`/`[T]` explicitly rather than leaving it bare.

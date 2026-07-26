@@ -70,6 +70,21 @@ what breaks its grip: you can opt out of the comparison without opting out of yo
 
 ## Handoff
 Feeds shorts-ideation next. Travels forward as a companion artifact to shorts-scripting
-(citation text per beat above) and visual-prompts (visual motif cue: a sideline where parents'
-gear, setup, or effort visibly outcompetes their neighbors' — the comparison itself as the
-shot, not any one family singled out).
+(citation text per beat above, mapped per
+`.claude/skills/rgs-grounding/references/scripting-beat-mapping.md`) and visual-prompts (visual
+motif cue: a sideline where parents' gear, setup, or effort visibly outcompetes their neighbors'
+— the comparison itself as the shot, not any one family singled out).
+
+**Per-brief mapping judgment:**
+- Turn content lands in: Setup, ~5s (short, direct naming of the mechanism — no separate Build
+  placement needed).
+- Payoff content (research finding) serves as: the Build's required proof beat — F4's burnout
+  finding is supporting evidence that the comparison-driven overinvestment is real and harmful,
+  not a fresh resolution of the Hook's "why" question (the Turn's Veblen mechanism already
+  answers that). The script's own Payoff beat instead carries the Reframe's argumentative body
+  below ("the spending pressure is the system running a comparison game on you..."), with only
+  its kicker line ("it was never about your kid's talent — that's the good news") echoed in
+  Loop/CTA.
+
+**Constraints that survive to publish:** paraphrase-caution (Veblen) — never render as an
+on-screen quote/direct-attribution card.

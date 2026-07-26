@@ -1,0 +1,30 @@
+stages:
+  - id: grounding
+    skill: rgs-grounding
+    dir_prefix: "00"
+    depends_on: []
+    brand_scope: raisinggoodsports
+  - id: ideation
+    skill: shorts-ideation
+    dir_prefix: "01"
+    depends_on: []
+  - id: scripting
+    skill: shorts-scripting
+    dir_prefix: "02"
+    depends_on: [ideation]
+  - id: voiceover
+    skill: voiceover-brief
+    dir_prefix: "03"
+    depends_on: [scripting]
+  - id: visual
+    skill: visual-prompts
+    dir_prefix: "03"
+    depends_on: [scripting]
+  - id: assembly
+    skill: shorts-assembly
+    dir_prefix: "04"
+    depends_on: [voiceover, visual]
+  - id: repurpose
+    skill: social-repurpose
+    dir_prefix: "05"
+    depends_on: [assembly]

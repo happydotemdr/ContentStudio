@@ -17,7 +17,9 @@ project-wide anti-generic guarantee this skill exists to enforce.
 - **Upstream input:** the `shorts-ideation` skill's concept brief — angle, hook
   concept, packaging direction (title frame, cover text), target avatar. If you
   don't have this, ask for it rather than inventing a concept from scratch;
-  this skill scripts a concept, it doesn't originate one.
+  this skill scripts a concept, it doesn't originate one. **Optionally**, a companion grounding
+  artifact may also be handed to this skill directly, or reached via the concept brief's
+  "Grounding" section — see "Optional input" below.
 - **Downstream output feeds two separate skills:**
   - **`voiceover-brief`** — needs each beat's VO line, timestamp range, and
     word count to build the ElevenLabs production brief.
@@ -37,20 +39,44 @@ Every reference file in `references/` marks each rule:
   structural technique), carry that flag through into the script's delivery
   notes — don't quietly launder a medium-confidence pattern into a
   stated-with-certainty rule.
-- **`[I]`** industry practice — used for three things in this skill: the
+- **`[I]`** industry practice — used for four things in this skill: the
   150–170 wpm narration-pace assumption, the re-hook's specific ~15s
   placement (the underlying re-hook *cadence* is `[C]`; the exact timestamp is
-  this skill's own synthesis — see `references/beat-timing-model.md`), and
-  the requirement of at least one concrete proof beat inside Build/Value (the
+  this skill's own synthesis — see `references/beat-timing-model.md`), the
+  requirement of at least one concrete proof beat inside Build/Value (the
   corpus's proof-density cadence is stated for long-form; compressing it into
   a single Shorts-scale beat is this skill's adaptation — see
-  `references/retention-loops-and-structure.md`).
+  `references/retention-loops-and-structure.md`), and the "Optional input: a
+  companion grounding artifact" section below (an interface convention, not a
+  corpus claim).
 - **`[T]`** — not used by this skill; tool/policy facts belong to
   `voiceover-brief` and `visual-prompts`.
 
 If a concept brief needs something the corpus doesn't cover (e.g. genre-specific
 hook phrasing, a topic this corpus never touches), say so explicitly in the
 script's notes rather than inventing generic advice to fill the gap.
+
+## Optional input: a companion grounding artifact `[I]`
+
+If a companion grounding artifact is handed to this skill (directly, or via the concept brief's
+"Grounding" section), weave its per-beat citation content into this script's native beats rather
+than inventing your own framing for that material:
+
+- Follow the artifact's own stated per-brief mapping judgment (where its Turn-equivalent content
+  lands, whether its Payoff-equivalent content is the Build's proof beat or this script's own
+  Payoff beat) — the fixed translation rule behind that judgment, if you need the full reasoning,
+  is whatever reference file the artifact's producing skill documents (e.g. `rgs-grounding`'s
+  `references/scripting-beat-mapping.md`).
+- Preserve any citation markers in the artifact's text verbatim (e.g. `[THINKER: ...]`,
+  `[RESEARCH: ...]`) in this script's output — don't strip or paraphrase them away.
+- Restate any quotability constraint (e.g. quote-ok vs. paraphrase-caution) at every beat that
+  uses the citation, not just once.
+- If the artifact states a "constraints that survive to publish" line, copy it **verbatim** into
+  this script's own Delivery notes field (see the output contract below) so it reaches
+  `shorts-assembly` and, through it, `social-repurpose` — those skills honor a flagged
+  constraint without needing to know what produced it.
+
+If no companion artifact is provided, this section doesn't apply — script normally.
 
 ## Process
 
@@ -148,7 +174,10 @@ Visual notes (for visual-prompts downstream):
   Loop/CTA: <one line>
 
 Delivery notes: <muted-friendly check, medium-confidence flags used (if any),
-  humanize-pass confirmation>
+  humanize-pass confirmation, and — only if a companion grounding artifact was used — its
+  citation markers verbatim (e.g. [THINKER: ...], [RESEARCH: ...]) for each citation actually
+  used in the script, plus its "constraints that survive to publish" line,
+  copied verbatim>
 ```
 
 A full worked example (concept brief → finished script, with citations
