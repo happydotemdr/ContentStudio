@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>MD Inspector</h1>
+<form method="post" action="/inspector">
+  <input name="path" size="80" placeholder="Absolute or repo-relative path to a .md file" value="{{ path or '' }}">
+  <button type="submit">Inspect</button>
+</form>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if frontmatter %}
+<h2>Frontmatter</h2>
+<table>
+  {% for key, value in frontmatter.items() %}
+  <tr><th>{{ key }}</th><td>{{ value }}</td></tr>
+  {% endfor %}
+</table>
+<h2>Body</h2>
+<div>{{ body_html | safe }}</div>
+{% endif %}
+{% endblock %}
