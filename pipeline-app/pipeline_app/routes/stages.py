@@ -25,8 +25,15 @@ def _load_transcript(stage_dir):
     return messages
 
 
-@router.get("/projects/{project_id}/stages/{stage_id}", response_class=HTMLResponse)
-def stage_page(request: Request, project_id: int, stage_id: str):
+def _resolve_project_stage(request: Request, project_id: int, stage_id: str):
+    """Resolve (project, stage_def, stage_row) or raise the right 404.
+
+    stage_def comes from the full pipeline.yaml topology, but create_project
+    only materialises the stage ROWS whose brand_scope matches the project's
+    brand — so a `generic` project has no `grounding` row even though the
+    topology defines that stage. Without the stage_row check the grounding
+    routes would render a phantom page and blow up with a TypeError deeper in
+    turn_service."""
     conn = request.app.state.conn
     project = db_mod.get_project(conn, project_id)
     if project is None:
@@ -35,6 +42,16 @@ def stage_page(request: Request, project_id: int, stage_id: str):
     stage_def = next((s for s in stage_defs if s.id == stage_id), None)
     if stage_def is None:
         raise HTTPException(status_code=404, detail="Stage not found")
+    stage_row = db_mod.get_stage(conn, project_id, stage_id)
+    if stage_row is None:
+        raise HTTPException(status_code=404, detail="Stage not applicable to this project")
+    return project, stage_def, stage_row
+
+
+@router.get("/projects/{project_id}/stages/{stage_id}", response_class=HTMLResponse)
+def stage_page(request: Request, project_id: int, stage_id: str):
+    project, stage_def, _stage_row = _resolve_project_stage(request, project_id, stage_id)
+    stage_defs = request.app.state.stage_defs
     run_dir = request.app.state.repo_root / "runs" / project["run_id"]
     stage_dir = run_dir / stage_dir_name(stage_def)
 
@@ -65,15 +82,10 @@ def stage_page(request: Request, project_id: int, stage_id: str):
 
 @router.post("/projects/{project_id}/stages/{stage_id}/chat")
 async def stage_chat(request: Request, project_id: int, stage_id: str, message: str = Form(...)):
+    project, stage_def, _stage_row = _resolve_project_stage(request, project_id, stage_id)
     conn = request.app.state.conn
     repo_root = request.app.state.repo_root
     stage_defs = request.app.state.stage_defs
-    project = db_mod.get_project(conn, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    stage_def = next((s for s in stage_defs if s.id == stage_id), None)
-    if stage_def is None:
-        raise HTTPException(status_code=404, detail="Stage not found")
     run_dir = repo_root / "runs" / project["run_id"]
     templates_dir = repo_root / "pipeline-app" / "stage_templates"
 
@@ -135,15 +147,10 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
 
 @router.post("/projects/{project_id}/stages/{stage_id}/approve")
 def approve_stage_route(request: Request, project_id: int, stage_id: str):
+    project, _stage_def, _stage_row = _resolve_project_stage(request, project_id, stage_id)
     conn = request.app.state.conn
     repo_root = request.app.state.repo_root
     stage_defs = request.app.state.stage_defs
-    project = db_mod.get_project(conn, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    stage_def = next((s for s in stage_defs if s.id == stage_id), None)
-    if stage_def is None:
-        raise HTTPException(status_code=404, detail="Stage not found")
     run_dir = repo_root / "runs" / project["run_id"]
     approval_service.approve_stage(conn, repo_root, run_dir, project_id, stage_defs, stage_id)
     return RedirectResponse(url=f"/projects/{project_id}/stages/{stage_id}", status_code=303)
@@ -151,15 +158,10 @@ def approve_stage_route(request: Request, project_id: int, stage_id: str):
 
 @router.post("/projects/{project_id}/stages/{stage_id}/edit")
 def edit_stage_output_route(request: Request, project_id: int, stage_id: str, body: str = Form(...)):
+    project, stage_def, stage_row = _resolve_project_stage(request, project_id, stage_id)
     conn = request.app.state.conn
     repo_root = request.app.state.repo_root
     stage_defs = request.app.state.stage_defs
-    project = db_mod.get_project(conn, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    stage_def = next((s for s in stage_defs if s.id == stage_id), None)
-    if stage_def is None:
-        raise HTTPException(status_code=404, detail="Stage not found")
     run_dir = repo_root / "runs" / project["run_id"]
     stage_dir = run_dir / stage_dir_name(stage_def)
 

@@ -12,7 +12,10 @@ from pipeline_app.main import create_app
 def client(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "pipeline.yaml").write_text(
-        "stages:\n  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n",
+        "stages:\n"
+        "  - id: grounding\n    skill: rgs-grounding\n    dir_prefix: \"00\"\n"
+        "    depends_on: []\n    brand_scope: raisinggoodsports\n"
+        "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n",
         encoding="utf-8",
     )
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
@@ -60,3 +63,46 @@ def test_stage_page_unknown_stage_returns_404(client):
 
     page = test_client.get(f"/projects/{project_id}/stages/not-a-real-stage")
     assert page.status_code == 404
+
+
+def _generic_project_id(test_client) -> int:
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    return int(resp.headers["location"].rsplit("/", 1)[-1])
+
+
+def test_stage_page_for_stage_not_applicable_to_brand_returns_404(client):
+    """`grounding` is brand_scope: raisinggoodsports, so a generic project has
+    no grounding stage row — the page must 404, not render a phantom stage."""
+    test_client, _tmp_path, _app = client
+    project_id = _generic_project_id(test_client)
+
+    page = test_client.get(f"/projects/{project_id}/stages/grounding")
+    assert page.status_code == 404
+
+
+def test_stage_chat_for_stage_not_applicable_to_brand_returns_404(client):
+    test_client, _tmp_path, _app = client
+    project_id = _generic_project_id(test_client)
+
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/grounding/chat", data={"message": "go"}
+    )
+    assert resp.status_code == 404
+
+
+def test_approve_for_stage_not_applicable_to_brand_returns_404(client):
+    test_client, _tmp_path, _app = client
+    project_id = _generic_project_id(test_client)
+
+    resp = test_client.post(f"/projects/{project_id}/stages/grounding/approve")
+    assert resp.status_code == 404
+
+
+def test_edit_for_stage_not_applicable_to_brand_returns_404(client):
+    test_client, _tmp_path, _app = client
+    project_id = _generic_project_id(test_client)
+
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/grounding/edit", data={"body": "x"}
+    )
+    assert resp.status_code == 404
