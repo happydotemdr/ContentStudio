@@ -1,0 +1,9 @@
+body { font-family: system-ui, sans-serif; margin: 2rem; }
+.status { padding: 0.1rem 0.5rem; border-radius: 0.25rem; font-size: 0.85rem; }
+.status-locked { background: #ddd; }
+.status-ready { background: #cfe8ff; }
+.status-running { background: #fff3b0; }
+.status-awaiting_review { background: #ffd9a0; }
+.status-approved { background: #c6f0c2; }
+.status-stale { background: #ffb3b3; }
+.status-no_artifact { background: #ffb3b3; }

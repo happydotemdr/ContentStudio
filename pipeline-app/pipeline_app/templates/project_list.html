@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Projects</h1>
+{% if projects %}
+<ul>
+  {% for p in projects %}
+  <li><a href="/projects/{{ p.id }}">{{ p.run_id }}</a> ({{ p.brand }})</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>No projects yet.</p>
+{% endif %}
+<form method="post" action="/projects">
+  <input name="slug" placeholder="short-topic-slug" required>
+  <select name="brand">
+    <option value="generic">Generic</option>
+    <option value="raisinggoodsports">RaisingGoodSports</option>
+  </select>
+  <button type="submit">Create project</button>
+</form>
+{% endblock %}

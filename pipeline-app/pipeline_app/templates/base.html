@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}ContentStudio Pipeline{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@2.0.0"></script>
+</head>
+<body>
+  <header><a href="/">ContentStudio Pipeline</a></header>
+  {% block sidebar %}{% endblock %}
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>
