@@ -67,6 +67,25 @@ def test_chat_endpoint_returns_409_when_a_turn_is_already_running(client):
     assert resp.status_code == 409
 
 
+def test_chat_endpoint_returns_404_for_unknown_project(client):
+    test_client, app = client
+    resp = test_client.post(
+        "/projects/999999/stages/ideation/chat", data={"message": "hi"},
+    )
+    assert resp.status_code == 404
+
+
+def test_chat_endpoint_returns_404_for_unknown_stage(client):
+    test_client, app = client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/no-such-stage/chat", data={"message": "hi"},
+    )
+    assert resp.status_code == 404
+
+
 def test_grounding_chat_writes_to_rgs_briefs_and_pointer(client, monkeypatch, tmp_path):
     test_client, app = client
     (tmp_path / "rgs-briefs").mkdir()

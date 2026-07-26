@@ -68,7 +68,11 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
     repo_root = request.app.state.repo_root
     stage_defs = request.app.state.stage_defs
     project = db_mod.get_project(conn, project_id)
-    stage_def = next(s for s in stage_defs if s.id == stage_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    stage_def = next((s for s in stage_defs if s.id == stage_id), None)
+    if stage_def is None:
+        raise HTTPException(status_code=404, detail="Stage not found")
     run_dir = repo_root / "runs" / project["run_id"]
     templates_dir = repo_root / "pipeline-app" / "stage_templates"
 
