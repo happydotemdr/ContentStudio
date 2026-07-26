@@ -152,7 +152,11 @@ def approve_stage_route(request: Request, project_id: int, stage_id: str):
     repo_root = request.app.state.repo_root
     stage_defs = request.app.state.stage_defs
     run_dir = repo_root / "runs" / project["run_id"]
-    approval_service.approve_stage(conn, repo_root, run_dir, project_id, stage_defs, stage_id)
+    try:
+        approval_service.approve_stage(conn, repo_root, run_dir, project_id, stage_defs, stage_id)
+    except ValueError as exc:
+        # Nothing to approve yet — an explicit conflict state, never a 500.
+        return PlainTextResponse(str(exc), status_code=409)
     return RedirectResponse(url=f"/projects/{project_id}/stages/{stage_id}", status_code=303)
 
 
