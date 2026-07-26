@@ -1,9 +1,10 @@
+import datetime
 import json
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
-from pipeline_app import artifacts, db as db_mod, grounding_service, turn_service
+from pipeline_app import approval_service, artifacts, db as db_mod, grounding_service, turn_service
 from pipeline_app.pipeline_config import stage_dir_name
 
 router = APIRouter()
@@ -130,3 +131,54 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/projects/{project_id}/stages/{stage_id}/approve")
+def approve_stage_route(request: Request, project_id: int, stage_id: str):
+    conn = request.app.state.conn
+    repo_root = request.app.state.repo_root
+    stage_defs = request.app.state.stage_defs
+    project = db_mod.get_project(conn, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    stage_def = next((s for s in stage_defs if s.id == stage_id), None)
+    if stage_def is None:
+        raise HTTPException(status_code=404, detail="Stage not found")
+    run_dir = repo_root / "runs" / project["run_id"]
+    approval_service.approve_stage(conn, repo_root, run_dir, project_id, stage_defs, stage_id)
+    return RedirectResponse(url=f"/projects/{project_id}/stages/{stage_id}", status_code=303)
+
+
+@router.post("/projects/{project_id}/stages/{stage_id}/edit")
+def edit_stage_output_route(request: Request, project_id: int, stage_id: str, body: str = Form(...)):
+    conn = request.app.state.conn
+    repo_root = request.app.state.repo_root
+    stage_defs = request.app.state.stage_defs
+    project = db_mod.get_project(conn, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    stage_def = next((s for s in stage_defs if s.id == stage_id), None)
+    if stage_def is None:
+        raise HTTPException(status_code=404, detail="Stage not found")
+    run_dir = repo_root / "runs" / project["run_id"]
+    stage_dir = run_dir / stage_dir_name(stage_def)
+
+    latest = artifacts.latest_artifact_path(stage_dir)
+    prior_meta = {}
+    if latest is not None:
+        prior_meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+
+    version = artifacts.next_version_number(stage_dir)
+    meta = {
+        "schema_version": 1,
+        "run_id": project["run_id"],
+        "stage": stage_def.skill,
+        "version": version,
+        "status": "draft",
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "finalized_at": None,
+        "supersedes": f"artifact.v{version - 1}.md" if version > 1 else None,
+        "depends_on": prior_meta.get("depends_on", []),
+    }
+    artifacts.write_artifact(stage_dir, version, meta, body)
+    return RedirectResponse(url=f"/projects/{project_id}/stages/{stage_id}", status_code=303)
