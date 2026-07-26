@@ -41,3 +41,22 @@ def test_stage_page_shows_input_output_and_transcript(client):
     assert page.status_code == 200
     assert "concept brief text" in page.text
     assert "here is your concept brief" in page.text
+
+
+def test_stage_page_unknown_project_returns_404(client):
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    unknown_project_id = project_id + 1000
+
+    page = test_client.get(f"/projects/{unknown_project_id}/stages/ideation")
+    assert page.status_code == 404
+
+
+def test_stage_page_unknown_stage_returns_404(client):
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    page = test_client.get(f"/projects/{project_id}/stages/not-a-real-stage")
+    assert page.status_code == 404

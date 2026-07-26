@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from pipeline_app import artifacts, db as db_mod
@@ -28,8 +28,12 @@ def _load_transcript(stage_dir):
 def stage_page(request: Request, project_id: int, stage_id: str):
     conn = request.app.state.conn
     project = db_mod.get_project(conn, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
     stage_defs = request.app.state.stage_defs
-    stage_def = next(s for s in stage_defs if s.id == stage_id)
+    stage_def = next((s for s in stage_defs if s.id == stage_id), None)
+    if stage_def is None:
+        raise HTTPException(status_code=404, detail="Stage not found")
     run_dir = request.app.state.repo_root / "runs" / project["run_id"]
     stage_dir = run_dir / stage_dir_name(stage_def)
 
