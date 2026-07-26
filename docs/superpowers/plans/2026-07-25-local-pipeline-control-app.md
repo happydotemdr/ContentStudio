@@ -155,7 +155,7 @@ grounding stage). Reachable only from `127.0.0.1` — never deploy this.
 
 ## Run
 
-    uvicorn pipeline_app.main:app --host 127.0.0.1 --port 8420
+    uvicorn pipeline_app.main:create_default_app --factory --host 127.0.0.1 --port 8420
 
 ## Test
 
@@ -742,9 +742,19 @@ from pathlib import Path
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    # check_same_thread=False: FastAPI/Starlette runs sync `def` routes in a
+    # worker-thread pool while async `def` routes (the chat/SSE endpoint) run
+    # on the event-loop thread. A single shared connection is used across all
+    # of them (one local user, effectively serialized by the app's own global
+    # single-flight turn lock), so the default check_same_thread=True would
+    # raise "SQLite objects created in a thread can only be used in that same
+    # thread" the first time a sync route and the async route are hit from
+    # different threads. WAL mode keeps reads from blocking on the rare
+    # concurrent write.
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 
@@ -1084,6 +1094,34 @@ def test_extract_turn_result_marks_failure_on_is_error():
     events = [{"type": "result", "result": "oops", "is_error": True}]
     result = extract_turn_result(events)
     assert result.success is False
+
+
+def test_platform_argv_wraps_cmd_shim_on_windows(monkeypatch):
+    from pipeline_app.cli_runner import _platform_argv
+
+    monkeypatch.setattr("pipeline_app.cli_runner.os.name", "nt")
+    argv = _platform_argv([r"C:\Users\me\AppData\Roaming\npm\claude.CMD", "-p", "hi"])
+    assert argv == ["cmd", "/c", r"C:\Users\me\AppData\Roaming\npm\claude.CMD", "-p", "hi"]
+
+
+def test_platform_argv_passes_through_non_windows_or_non_shim(monkeypatch):
+    from pipeline_app.cli_runner import _platform_argv
+
+    monkeypatch.setattr("pipeline_app.cli_runner.os.name", "posix")
+    argv = _platform_argv(["/usr/local/bin/claude", "-p", "hi"])
+    assert argv == ["/usr/local/bin/claude", "-p", "hi"]
+
+
+def test_scoped_permissions_settings_scopes_write_edit_to_runs_and_rgs_briefs():
+    from pipeline_app.cli_runner import scoped_permissions_settings
+    import json as _json
+
+    data = _json.loads(scoped_permissions_settings())
+    allow = data["permissions"]["allow"]
+    assert "Write(runs/**)" in allow
+    assert "Edit(runs/**)" in allow
+    assert "Write(rgs-briefs/**)" in allow
+    assert "Edit(rgs-briefs/**)" in allow
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1152,6 +1190,26 @@ async def parse_stream_json_lines(lines: AsyncIterator[bytes]) -> AsyncIterator[
             continue
 
 
+def scoped_permissions_settings() -> str:
+    """Inline --settings JSON scoping Write/Edit to runs/** and rgs-briefs/**,
+    per the design spec's §5 permission-scoping requirement — a pipeline-stage
+    turn must never touch docs/, output/, or .claude/skills/. The Tool(pattern)
+    syntax mirrors --allowedTools "Bash(git diff *)" from Claude Code's own
+    headless-mode docs; re-verify the exact permission-rule syntax against
+    `claude --help` / the current settings reference when implementing this
+    task, since CLI flag/settings shapes can change between releases."""
+    return json.dumps({
+        "permissions": {
+            "allow": [
+                "Write(runs/**)",
+                "Edit(runs/**)",
+                "Write(rgs-briefs/**)",
+                "Edit(rgs-briefs/**)",
+            ],
+        }
+    })
+
+
 def extract_turn_result(events: list[dict]) -> TurnResult:
     session_id = None
     result_text = None
@@ -1167,6 +1225,16 @@ def extract_turn_result(events: list[dict]) -> TurnResult:
     return TurnResult(session_id=session_id, result_text=result_text, cost_usd=cost_usd, success=success)
 
 
+def _platform_argv(argv: list[str]) -> list[str]:
+    """On Windows, `claude` resolves via shutil.which to an npm .cmd/.bat shim,
+    which asyncio.create_subprocess_exec cannot exec directly (it is not a real
+    PE executable) — it must be run through the shell via `cmd /c`. Other
+    platforms and a plain .exe/extensionless binary pass through unchanged."""
+    if os.name == "nt" and argv[0].lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/c"] + argv
+    return argv
+
+
 async def stream_claude_turn(
     prompt: str,
     cwd: Path,
@@ -1174,26 +1242,37 @@ async def stream_claude_turn(
     allowed_tools: str = "Read,Glob,Grep,Write,Edit",
     settings_path: str | None = None,
 ) -> AsyncIterator[dict]:
-    argv = build_claude_argv(prompt, resume_session_id, allowed_tools, settings_path)
+    argv = _platform_argv(build_claude_argv(prompt, resume_session_id, allowed_tools, settings_path))
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     process = await asyncio.create_subprocess_exec(
         *argv,
         cwd=str(cwd),
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
         env=env,
+        limit=1024 * 1024 * 10,  # stream-json + --include-partial-messages lines
+                                  # can exceed the asyncio StreamReader default
+                                  # 64 KiB line limit; 10 MiB avoids LimitOverrunError.
     )
-    assert process.stdout is not None
-    async for event in parse_stream_json_lines(process.stdout):
-        yield event
-    await process.wait()
+    try:
+        assert process.stdout is not None
+        async for event in parse_stream_json_lines(process.stdout):
+            yield event
+        await process.wait()
+    finally:
+        # Guarantees the subprocess is not orphaned when this generator is
+        # closed early (client disconnect, exception in the caller) — see
+        # run_stage_turn's use of contextlib.aclosing in Task 8.
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd pipeline-app && python -m pytest tests/test_cli_runner.py -v`
-Expected: 8 passed.
+Expected: 11 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1294,9 +1373,27 @@ def test_grounding_template_has_no_input_file_reference():
         "user_message": "a Short about travel-sport burnout",
         "grounding_pointer": None,
         "input_file": None,
+        "input_files": [],
         "raw_output_path": None,
     })
     assert prompt.strip().startswith("/rgs-grounding")
+
+
+def test_assembly_template_lists_both_upstream_inputs_not_the_script():
+    prompt = render_kickoff_prompt(TEMPLATES_DIR, "assembly", {
+        "skill": "shorts-assembly",
+        "user_message": "",
+        "grounding_pointer": None,
+        "input_file": "runs/x/03-voiceover/artifact.v1.md",
+        "input_files": [
+            "runs/x/03-voiceover/artifact.v1.md",
+            "runs/x/03-visual/artifact.v1.md",
+        ],
+        "raw_output_path": "runs/x/04-assembly/raw_output.md",
+    })
+    assert "runs/x/03-voiceover/artifact.v1.md" in prompt
+    assert "runs/x/03-visual/artifact.v1.md" in prompt
+    assert "the script" not in prompt.lower()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1403,8 +1500,10 @@ produce a new draft).
 ```
 /{{ skill }}
 
-Read the script, voiceover brief, and visual prompt sheet at `{{ input_file }}` and produce the
-assembly/edit plan.
+Read the following upstream artifacts and produce the assembly/edit plan:
+{% for f in input_files %}
+- `{{ f }}`
+{% endfor %}
 
 {{ user_message }}
 
@@ -1429,7 +1528,7 @@ produce a new draft).
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd pipeline-app && python -m pytest tests/test_prompt_builder.py -v`
-Expected: 6 passed.
+Expected: 7 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -1559,57 +1658,6 @@ async def test_no_artifact_written_sets_no_artifact_status(conn, project, monkey
 
 
 @pytest.mark.asyncio
-async def test_second_turn_on_approved_stage_creates_v2_and_marks_dependent_stale(conn, project, monkeypatch, tmp_path):
-    # First turn on ideation -> v1
-    raw_output = project["run_dir"] / "01-ideation" / "raw_output.md"
-    events = [
-        {"type": "system", "subtype": "init", "session_id": "session-1"},
-        {"type": "result", "result": "done", "is_error": False},
-    ]
-    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _fake_stream(events, raw_output, "v1 body"))
-    stage_def = STAGES[0]
-    await _drain(turn_service.run_stage_turn(
-        conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
-        project["project_id"], "abc-20260725-120000", stage_def, STAGES, "idea",
-    ))
-
-    # Approve ideation
-    from pipeline_app import approval_service
-    approval_service.approve_stage(conn, tmp_path, project["run_dir"], project["project_id"], STAGES, "ideation")
-
-    # Create + approve scripting depending on ideation v1
-    scripting_row_id = db.create_stage_row(conn, project["project_id"], "scripting", "ready")
-    scripting_stage_dir = project["run_dir"] / "02-scripting"
-    scripting_stage_dir.mkdir(parents=True)
-    scripting_events = [
-        {"type": "system", "subtype": "init", "session_id": "session-2"},
-        {"type": "result", "result": "done", "is_error": False},
-    ]
-    scripting_raw = scripting_stage_dir / "raw_output.md"
-    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _fake_stream(scripting_events, scripting_raw, "script body"))
-    await _drain(turn_service.run_stage_turn(
-        conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
-        project["project_id"], "abc-20260725-120000", STAGES[1], STAGES, "",
-    ))
-    approval_service.approve_stage(conn, tmp_path, project["run_dir"], project["project_id"], STAGES, "scripting")
-
-    # Regenerate ideation -> v2
-    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _fake_stream(events, raw_output, "v2 body"))
-    await _drain(turn_service.run_stage_turn(
-        conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
-        project["project_id"], "abc-20260725-120000", stage_def, STAGES, "idea revised",
-    ))
-
-    ideation_dir = project["run_dir"] / "01-ideation"
-    assert (ideation_dir / "artifact.v2.md").exists()
-    meta_v2, _ = artifacts.parse_frontmatter((ideation_dir / "artifact.v2.md").read_text(encoding="utf-8"))
-    assert meta_v2["supersedes"] == "artifact.v1.md"
-
-    scripting_stage = db.get_stage(conn, project["project_id"], "scripting")
-    assert scripting_stage["status"] == StageStatus.STALE.value
-
-
-@pytest.mark.asyncio
 async def test_run_stage_turn_rejects_concurrent_turn(conn, project, monkeypatch, tmp_path):
     db.create_turn(conn, project["stage_row_id"], "running", "2026-07-25T12:00:00Z", "events/x.jsonl")
     stage_def = STAGES[0]
@@ -1618,6 +1666,37 @@ async def test_run_stage_turn_rejects_concurrent_turn(conn, project, monkeypatch
             conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
             project["project_id"], "abc-20260725-120000", stage_def, STAGES, "idea",
         ))
+
+
+@pytest.mark.asyncio
+async def test_disconnected_turn_is_marked_aborted_not_left_running(conn, project, monkeypatch, tmp_path):
+    """Simulates an SSE client disconnect: the caller stops draining the
+    generator (calls aclose()) instead of consuming it to completion. The
+    turn must end up 'aborted', not stuck 'running' forever — a stuck
+    'running' row would permanently wedge the app-wide single-flight lock."""
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "session-1"},
+        {"type": "assistant", "message": {}},
+        {"type": "result", "result": "done", "is_error": False},
+    ]
+
+    async def _slow_gen(prompt, cwd, resume_session_id, **kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _slow_gen)
+
+    stage_def = STAGES[0]
+    agen = turn_service.run_stage_turn(
+        conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
+        project["project_id"], "abc-20260725-120000", stage_def, STAGES, "idea",
+    )
+    await agen.__anext__()  # consume exactly one event, then simulate a dropped connection
+    await agen.aclose()
+
+    turns = db.list_turns(conn, project["stage_row_id"])
+    assert turns[-1]["status"] == "aborted"
+    assert turn_service.any_turn_running(conn) is False
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1629,6 +1708,7 @@ transitively, `pipeline_app.approval_service`, built in Task 9 — expected at t
 - [ ] **Step 3: Implement `turn_service.py`**
 
 ```python
+import contextlib
 import datetime
 import json
 import sqlite3
@@ -1653,6 +1733,28 @@ def _utcnow() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+def _relpath(path: Path, run_dir: Path) -> str:
+    return str(path.relative_to(run_dir)).replace("\\", "/")
+
+
+def _current_upstream_hashes(run_dir: Path, upstream_defs: list[StageDef]) -> dict[str, str]:
+    """Hashes keyed by the CURRENT latest artifact path per upstream stage —
+    not the exact path recorded in some dependent's frontmatter. Artifacts are
+    never mutated in place (regenerating writes artifact.v2.md, v1 is left
+    untouched), so re-hashing the recorded path would always match and
+    staleness would never fire. Comparing against the current latest path
+    instead means a regenerate changes which path is "current" for that
+    stage, so a stale dependent's recorded path stops matching anything here
+    (state_machine.is_stale treats a missing key as a mismatch)."""
+    hashes: dict[str, str] = {}
+    for up in upstream_defs:
+        up_dir = run_dir / stage_dir_name(up)
+        up_latest = artifacts.latest_artifact_path(up_dir)
+        if up_latest is not None:
+            hashes[_relpath(up_latest, run_dir)] = artifacts.compute_sha256(up_latest)
+    return hashes
+
+
 def _propagate_staleness(
     conn: sqlite3.Connection,
     run_dir: Path,
@@ -1671,11 +1773,8 @@ def _propagate_staleness(
             continue
         meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
         recorded = meta.get("depends_on") or []
-        current_hashes = {}
-        for dep in recorded:
-            dep_path = run_dir / dep["path"]
-            if dep_path.exists():
-                current_hashes[dep["path"]] = artifacts.compute_sha256(dep_path)
+        dep_upstream_defs = [s for s in all_stage_defs if s.id in dep_stage.depends_on]
+        current_hashes = _current_upstream_hashes(run_dir, dep_upstream_defs)
         if is_stale(recorded, current_hashes):
             db_mod.update_stage_status(conn, row["id"], StageStatus.STALE.value)
 
@@ -1707,21 +1806,22 @@ async def run_stage_turn(
 
     raw_output_path = stage_dir / "raw_output.md"
     upstream_stage_defs = [s for s in all_stage_defs if s.id in stage_def.depends_on]
-    upstream_paths = []
-    for up in upstream_stage_defs:
-        up_dir = run_dir / stage_dir_name(up)
-        up_latest = artifacts.latest_artifact_path(up_dir)
-        if up_latest is not None:
-            upstream_paths.append(up_latest)
+    upstream_paths = [
+        p for p in (
+            artifacts.latest_artifact_path(run_dir / stage_dir_name(up))
+            for up in upstream_stage_defs
+        ) if p is not None
+    ]
 
     is_first_turn = stage_row["claude_session_id"] is None
     if is_first_turn:
-        input_file = str(upstream_paths[0]) if upstream_paths else None
+        input_files = [str(p) for p in upstream_paths]
         prompt = prompt_builder.render_kickoff_prompt(templates_dir, stage_def.id, {
             "skill": stage_def.skill,
             "user_message": user_message,
             "grounding_pointer": grounding_pointer,
-            "input_file": input_file,
+            "input_file": input_files[0] if input_files else None,
+            "input_files": input_files,
             "raw_output_path": str(raw_output_path),
         })
         resume_id = None
@@ -1732,11 +1832,26 @@ async def run_stage_turn(
     before_mtime = raw_output_path.stat().st_mtime if raw_output_path.exists() else None
 
     collected: list[dict] = []
-    with events_path.open("a", encoding="utf-8") as f:
-        async for event in cli_runner.stream_claude_turn(prompt, repo_root, resume_id):
-            collected.append(event)
-            f.write(json.dumps(event) + "\n")
-            yield event
+    turn_stream = cli_runner.stream_claude_turn(
+        prompt, repo_root, resume_id,
+        settings_path=cli_runner.scoped_permissions_settings(),
+    )
+    try:
+        async with contextlib.aclosing(turn_stream):
+            with events_path.open("a", encoding="utf-8") as f:
+                async for event in turn_stream:
+                    collected.append(event)
+                    f.write(json.dumps(event) + "\n")
+                    yield event
+    except BaseException:
+        # Client disconnect (GeneratorExit) or any turn-time exception: the
+        # `aclosing` context still guarantees stream_claude_turn's own
+        # finally block runs and kills the subprocess. Record the turn as
+        # aborted rather than leaving it `running` forever (which would wedge
+        # the app's single-flight lock) and stop — no further DB/artifact
+        # work is attempted for a turn that didn't finish normally.
+        db_mod.update_turn(conn, turn_id, "aborted", _utcnow())
+        raise
 
     result = cli_runner.extract_turn_result(collected)
     db_mod.update_turn(
@@ -1760,7 +1875,7 @@ async def run_stage_turn(
 
     version = artifacts.next_version_number(stage_dir)
     depends_on = [
-        {"path": str(p.relative_to(run_dir)).replace("\\", "/"), "sha256": artifacts.compute_sha256(p)}
+        {"path": _relpath(p, run_dir), "sha256": artifacts.compute_sha256(p)}
         for p in upstream_paths
     ]
     body = raw_output_path.read_text(encoding="utf-8")
@@ -1780,13 +1895,23 @@ async def run_stage_turn(
     _propagate_staleness(conn, run_dir, all_stage_defs, project_id, stage_def.id)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+**Note on `contextlib.aclosing`:** this is required, not decorative. `async for` does **not**
+automatically close an async generator it's iterating when the *outer* generator (this function)
+is itself force-closed by its caller (e.g. `StreamingResponse` calling `.aclose()` on a dropped
+SSE connection) — without `aclosing`, `cli_runner.stream_claude_turn`'s generator, and the
+subprocess it owns, would be silently abandoned. `aclosing` guarantees `turn_stream.aclose()` runs
+on any exit path, which triggers `stream_claude_turn`'s own `finally` (Task 6) to kill the process.
 
-This test depends on `approval_service` (Task 9), so implement Task 9 (`approval_service.py`)
-before running this test. Once both are implemented, run:
+- [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd pipeline-app && python -m pytest tests/test_turn_service.py -v`
 Expected: 4 passed.
+
+(The regenerate-triggers-staleness scenario — which needs `approval_service.approve_stage` to
+mark stages approved before checking whether a regenerate flips a dependent stale — is exercised
+as an integration test in Task 9, once both modules exist. Keeping it there means each task's own
+test suite passes using only the modules that task and its predecessors define, rather than Task
+8 depending on code introduced later in Task 9.)
 
 - [ ] **Step 5: Commit**
 
@@ -1814,10 +1939,11 @@ Create `pipeline-app/tests/test_approval_service.py`:
 
 ```python
 from pathlib import Path
+from typing import AsyncIterator
 
 import pytest
 
-from pipeline_app import artifacts, db
+from pipeline_app import artifacts, db, turn_service
 from pipeline_app.approval_service import approve_stage
 from pipeline_app.pipeline_config import StageDef
 from pipeline_app.state_machine import StageStatus
@@ -1826,6 +1952,22 @@ STAGES = [
     StageDef(id="ideation", skill="shorts-ideation", dir_prefix="01", depends_on=[]),
     StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02", depends_on=["ideation"]),
 ]
+
+TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "stage_templates"
+
+
+def _fake_stream(events: list[dict], writes_file: Path | None = None, content: str = "generated body"):
+    async def _gen(prompt, cwd, resume_session_id, **kwargs):
+        if writes_file is not None:
+            writes_file.parent.mkdir(parents=True, exist_ok=True)
+            writes_file.write_text(content, encoding="utf-8")
+        for event in events:
+            yield event
+    return _gen
+
+
+async def _drain(agen: AsyncIterator[dict]) -> list[dict]:
+    return [e async for e in agen]
 
 
 @pytest.fixture
@@ -1869,12 +2011,60 @@ def test_approve_raises_when_no_artifact_exists(conn, tmp_path: Path):
     (run_dir / "01-ideation").mkdir(parents=True)
     with pytest.raises(ValueError):
         approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
+
+
+@pytest.mark.asyncio
+async def test_regenerating_an_approved_stage_marks_approved_dependent_stale(conn, tmp_path: Path, monkeypatch):
+    """End-to-end: approve ideation -> approve scripting (built on ideation
+    v1) -> regenerate ideation to v2 -> scripting must flip to stale, since
+    _propagate_staleness compares against ideation's CURRENT latest artifact,
+    not the exact (immutable) v1 file scripting's frontmatter recorded."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "ready")
+    db.create_stage_row(conn, project_id, "scripting", "locked")
+    run_dir = tmp_path / "runs" / "abc-1"
+    (run_dir / "01-ideation").mkdir(parents=True)
+    (run_dir / "02-scripting").mkdir(parents=True)
+
+    raw_output = run_dir / "01-ideation" / "raw_output.md"
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "session-1"},
+        {"type": "result", "result": "done", "is_error": False},
+    ]
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _fake_stream(events, raw_output, "v1 body"))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1", STAGES[0], STAGES, "idea",
+    ))
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
+
+    scripting_raw = run_dir / "02-scripting" / "raw_output.md"
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _fake_stream(events, scripting_raw, "script body"))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1", STAGES[1], STAGES, "",
+    ))
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+    # Regenerate ideation -> v2
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _fake_stream(events, raw_output, "v2 body"))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1", STAGES[0], STAGES, "idea revised",
+    ))
+
+    ideation_dir = run_dir / "01-ideation"
+    assert (ideation_dir / "artifact.v2.md").exists()
+    meta_v2, _ = artifacts.parse_frontmatter((ideation_dir / "artifact.v2.md").read_text(encoding="utf-8"))
+    assert meta_v2["supersedes"] == "artifact.v1.md"
+
+    scripting_stage = db.get_stage(conn, project_id, "scripting")
+    assert scripting_stage["status"] == StageStatus.STALE.value
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd pipeline-app && python -m pytest tests/test_approval_service.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'pipeline_app.approval_service'`.
+Expected: FAIL — the first two tests fail with `ModuleNotFoundError: No module named
+'pipeline_app.approval_service'`; the third (integration) test also fails once that import
+error is fixed, until Step 3's implementation exists.
 
 - [ ] **Step 3: Implement `approval_service.py`**
 
@@ -1922,8 +2112,8 @@ def approve_stage(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd pipeline-app && python -m pytest tests/test_approval_service.py tests/test_turn_service.py -v`
-Expected: 2 passed (approval service) + 4 passed (turn service, now unblocked) = 6 passed.
+Run: `cd pipeline-app && python -m pytest tests/test_approval_service.py -v`
+Expected: 3 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -2124,6 +2314,24 @@ def test_commit_skill_edit_creates_a_commit(repo: Path):
     ).stdout
     assert "shorts-ideation" in log
     assert "2026-07-25" in log
+
+
+def test_commit_skill_edit_is_a_no_op_when_content_is_unchanged(repo: Path):
+    """Re-saving byte-identical content from the editor (no textarea change,
+    just hitting Save again) must not crash — `git commit` with nothing
+    staged exits nonzero, and a naive check=True would raise CalledProcessError
+    and 500 the skill-editor route."""
+    skill_file = repo / ".claude" / "skills" / "shorts-ideation" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("same content", encoding="utf-8")
+    commit_skill_edit(repo, skill_file, "shorts-ideation", now="2026-07-25")
+
+    commit_skill_edit(repo, skill_file, "shorts-ideation", now="2026-07-25")  # no-op, must not raise
+
+    log = subprocess.run(
+        ["git", "log", "--oneline"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.splitlines()
+    assert len(log) == 1  # the second call created no new commit
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2144,13 +2352,22 @@ def commit_skill_edit(repo_root: Path, file_path: Path, skill_name: str, now: st
     rel_path = file_path.relative_to(repo_root)
     message = f"skill edit: {skill_name} via pipeline-app, {now}"
     subprocess.run(["git", "add", str(rel_path)], cwd=repo_root, check=True, capture_output=True)
+    # `git commit` exits nonzero when there's nothing staged (re-saving
+    # byte-identical content) — that must be a silent no-op, not a crash, so
+    # this checks for staged changes first rather than blindly using
+    # check=True on the commit itself.
+    diff = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"], cwd=repo_root, capture_output=True
+    )
+    if diff.returncode == 0:
+        return  # nothing staged — content was unchanged
     subprocess.run(["git", "commit", "-m", message], cwd=repo_root, check=True, capture_output=True)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd pipeline-app && python -m pytest tests/test_git_helper.py -v`
-Expected: 1 passed.
+Expected: 2 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -2408,9 +2625,18 @@ def create_app(repo_root: Path, db_path: Path) -> FastAPI:
     return app
 
 
-# Default app instance for `uvicorn pipeline_app.main:app`
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-app = create_app(repo_root=_REPO_ROOT, db_path=_REPO_ROOT / "pipeline-app" / "pipeline.db")
+def create_default_app() -> FastAPI:
+    """Factory for `uvicorn pipeline_app.main:create_default_app --factory`.
+
+    Deliberately NOT a module-level `app = create_app(...)` call — that would
+    run at import time, so every test importing anything from this module
+    (even `from pipeline_app.main import create_app`) would initialize the
+    real pipeline-app/pipeline.db, load the real repo-root pipeline.yaml, and
+    run startup reconciliation against production state before any test
+    fixture (tmp_path, a fresh in-memory DB) gets a chance to run. Only the
+    factory entry point touches real paths, and only when uvicorn calls it."""
+    repo_root = Path(__file__).resolve().parents[2]
+    return create_app(repo_root=repo_root, db_path=repo_root / "pipeline-app" / "pipeline.db")
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -2516,7 +2742,12 @@ Expected: FAIL — `404 Not Found` (route doesn't exist yet).
     <p><strong>{{ message.type }}:</strong> {{ message.text }}</p>
     {% endfor %}
   </div>
-  <form hx-post="/projects/{{ project.id }}/stages/{{ stage_id }}/chat" hx-target="#transcript" hx-swap="beforeend">
+  <!-- Not a plain htmx hx-post/hx-swap form: htmx's default swap fires once,
+       after the whole response completes, and would inject raw `data: {...}`
+       SSE lines as text rather than streaming them live. Task 14 adds a small
+       inline script (in base.html) that this data-sse-chat marker hooks into,
+       reading the response body incrementally via the Streams API instead. -->
+  <form data-sse-chat data-transcript-target="#transcript" method="post" action="/projects/{{ project.id }}/stages/{{ stage_id }}/chat">
     <textarea name="message"></textarea>
     <button type="submit">Send</button>
   </form>
@@ -2625,12 +2856,17 @@ git commit -m "feat(pipeline-app): add stage page with input/transcript/output p
 
 **Files:**
 - Modify: `pipeline-app/pipeline_app/routes/stages.py`
+- Modify: `pipeline-app/pipeline_app/templates/base.html`
 - Test: `pipeline-app/tests/test_routes_chat_sse.py`
 
 **Interfaces:**
-- Consumes: `turn_service.run_stage_turn` (Task 8).
+- Consumes: `turn_service.run_stage_turn` (Task 8), `turn_service.any_turn_running` (Task 8),
+  `grounding_service.snapshot_rgs_briefs`/`identify_new_brief`/`supersede_previous_brief`/
+  `write_pointer`/`read_pointer` (Task 10).
 - Produces: `POST /projects/{project_id}/stages/{stage_id}/chat` — `StreamingResponse` with
-  `media_type="text/event-stream"`.
+  `media_type="text/event-stream"` for the normal path, `PlainTextResponse` 409 when a turn is
+  already running; a stage-id-specific branch for `grounding` that finalizes into `rgs-briefs/`
+  instead of `runs/`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2677,6 +2913,72 @@ def test_chat_endpoint_streams_sse_events(client, monkeypatch):
 
     assert "concept brief drafted" in body
     assert "data:" in body
+
+
+def test_chat_endpoint_returns_409_when_a_turn_is_already_running(client):
+    test_client, app = client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    stage_row = app.state.conn.execute(
+        "SELECT * FROM stages WHERE project_id = ? AND stage_id = ?", (project_id, "ideation")
+    ).fetchone()
+    app.state.conn.execute(
+        "INSERT INTO turns (stage_row_id, status, created_at, events_path) VALUES (?, 'running', '2026-07-25T12:00:00Z', 'x')",
+        (stage_row["id"],),
+    )
+    app.state.conn.commit()
+
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/ideation/chat", data={"message": "hi"},
+    )
+    assert resp.status_code == 409
+
+
+def test_grounding_chat_writes_to_rgs_briefs_and_pointer(client, monkeypatch, tmp_path):
+    test_client, app = client
+    (tmp_path / "rgs-briefs").mkdir()
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "raisinggoodsports"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+
+    async def fake_run_stage_turn(*args, **kwargs):
+        assert kwargs.get("finalize_artifact") is False
+        (tmp_path / "rgs-briefs" / "2026-07-25-abc.md").write_text("brief content", encoding="utf-8")
+        yield {"type": "result", "result": "grounding done"}
+
+    from pipeline_app import turn_service
+    monkeypatch.setattr(turn_service, "run_stage_turn", fake_run_stage_turn)
+
+    with test_client.stream(
+        "POST", f"/projects/{project_id}/stages/grounding/chat", data={"message": "a topic"},
+    ) as response:
+        list(response.iter_text())
+
+    grounding_dir = tmp_path / "runs" / project["run_id"] / "00-grounding"
+    from pipeline_app.grounding_service import read_pointer
+    assert read_pointer(grounding_dir) == "rgs-briefs/2026-07-25-abc.md"
+    stage_row = app.state.conn.execute(
+        "SELECT * FROM stages WHERE project_id = ? AND stage_id = ?", (project_id, "grounding")
+    ).fetchone()
+    assert stage_row["status"] == "awaiting_review"
+```
+
+This test's `client` fixture needs a `pipeline.yaml` that includes the `grounding` stage. Update
+the fixture at the top of this test file to:
+
+```python
+@pytest.fixture
+def client(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: grounding\n    skill: rgs-grounding\n    dir_prefix: \"00\"\n    depends_on: []\n    brand_scope: raisinggoodsports\n"
+        "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    return TestClient(app), app
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2692,7 +2994,7 @@ Add to `pipeline-app/pipeline_app/routes/stages.py`:
 import json as _json  # (json is already imported above; reuse the existing import)
 
 from fastapi import Form
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from pipeline_app import grounding_service, turn_service
 ```
@@ -2708,10 +3010,50 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
     run_dir = repo_root / "runs" / project["run_id"]
     templates_dir = repo_root / "pipeline-app" / "stage_templates"
 
+    # Checked here, before any response is started: run_stage_turn also checks
+    # internally, but that check does not execute until the StreamingResponse
+    # body generator is first iterated — by then a 200 and SSE headers are
+    # already committed, so the client would see a broken stream instead of an
+    # explicit "already running" error. Checking here lets a concurrent
+    # request get a clean 409 with no response ever started.
+    if turn_service.any_turn_running(conn):
+        return PlainTextResponse("Another stage turn is already running.", status_code=409)
+
     grounding_pointer = None
     if project["brand"] == "raisinggoodsports" and stage_id != "grounding":
         grounding_dir = run_dir / "00-grounding"
         grounding_pointer = grounding_service.read_pointer(grounding_dir)
+
+    if stage_id == "grounding":
+        async def event_stream():
+            rgs_briefs_dir = repo_root / "rgs-briefs"
+            grounding_dir = run_dir / "00-grounding"
+            before = grounding_service.snapshot_rgs_briefs(rgs_briefs_dir)
+
+            async for event in turn_service.run_stage_turn(
+                conn, repo_root, run_dir, templates_dir,
+                project_id, project["run_id"], stage_def, stage_defs, message,
+                finalize_artifact=False,
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+
+            # The grounding skill's real artifact lands in rgs-briefs/, not
+            # runs/ — finalize_artifact=False above skips turn_service's
+            # normal artifact/status handling so this stage-specific path can
+            # take over: identify which file appeared, supersede whichever
+            # brief this project pointed at before (if regenerating), and
+            # point at the new one.
+            after = grounding_service.snapshot_rgs_briefs(rgs_briefs_dir)
+            new_brief = grounding_service.identify_new_brief(before, after)
+            stage_row = db_mod.get_stage(conn, project_id, "grounding")
+            if new_brief is not None:
+                grounding_service.supersede_previous_brief(repo_root, grounding_dir)
+                grounding_service.write_pointer(grounding_dir, f"rgs-briefs/{new_brief}")
+                db_mod.update_stage_status(conn, stage_row["id"], "awaiting_review")
+            else:
+                db_mod.update_stage_status(conn, stage_row["id"], "no_artifact")
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     async def event_stream():
         async for event in turn_service.run_stage_turn(
@@ -2724,10 +3066,67 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 ```
 
+**Client-side SSE consumption (closes the gap the review flagged — htmx's default form
+submission swaps the response once, after completion, and would inject raw `data: {...}` lines as
+text rather than streaming them).** Add this inline script to `base.html`, inside `<head>`, right
+after the htmx `<script>` tag:
+
+```html
+<script>
+  function attachSSEChat(formEl) {
+    formEl.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const textarea = formEl.querySelector("textarea[name=message]");
+      const message = textarea.value;
+      textarea.value = "";
+      const transcript = document.querySelector(formEl.dataset.transcriptTarget);
+      const userLine = document.createElement("p");
+      userLine.innerHTML = `<strong>you:</strong> ${message}`;
+      transcript.appendChild(userLine);
+
+      const response = await fetch(formEl.action, {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: `message=${encodeURIComponent(message)}`,
+      });
+      if (!response.ok) {
+        const line = document.createElement("p");
+        line.textContent = `Error: ${await response.text()}`;
+        transcript.appendChild(line);
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, {stream: true});
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop();
+        for (const part of parts) {
+          if (!part.startsWith("data: ")) continue;
+          const event = JSON.parse(part.slice(6));
+          if (event.type === "result" && event.result) {
+            const line = document.createElement("p");
+            line.innerHTML = `<strong>assistant:</strong> ${event.result}`;
+            transcript.appendChild(line);
+          }
+        }
+      }
+    });
+  }
+  document.querySelectorAll("form[data-sse-chat]").forEach(attachSSEChat);
+</script>
+```
+
+`stage.html` (Task 13) already carries the `data-sse-chat` marker this script attaches to — no
+further template change needed here.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd pipeline-app && python -m pytest tests/test_routes_chat_sse.py -v`
-Expected: 1 passed.
+Expected: 3 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -2968,6 +3367,15 @@ def test_save_kickoff_template_does_not_commit(client, monkeypatch):
     saved = (tmp_path / "pipeline-app" / "stage_templates" / "ideation.md").read_text(encoding="utf-8")
     assert saved == "/shorts-ideation new kickoff"
     assert calls == []
+
+
+def test_save_rejects_unknown_skill_name(client):
+    test_client, tmp_path = client
+    resp = test_client.post(
+        "/skills/..%2f..%2f..%2fetc/save",
+        data={"target": "SKILL.md", "content": "malicious"},
+    )
+    assert resp.status_code == 404
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -3018,7 +3426,7 @@ Expected: FAIL — `404 Not Found`.
 
 ```python
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 
 from pipeline_app import git_helper
 
@@ -3071,6 +3479,10 @@ def skill_detail(request: Request, skill_name: str):
 @router.post("/skills/{skill_name}/save")
 def save_skill(request: Request, skill_name: str, target: str = Form(...), content: str = Form(...)):
     repo_root = request.app.state.repo_root
+    skills_dir = repo_root / ".claude" / "skills"
+    discovered = {p.name for p in skills_dir.iterdir() if p.is_dir()}
+    if skill_name not in discovered:
+        return PlainTextResponse("Unknown skill.", status_code=404)
     if target == "SKILL.md":
         path = repo_root / ".claude" / "skills" / skill_name / "SKILL.md"
         path.write_text(content, encoding="utf-8")
@@ -3095,7 +3507,7 @@ from pipeline_app.routes import projects, skills, stages
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd pipeline-app && python -m pytest tests/test_routes_skills.py -v`
-Expected: 4 passed.
+Expected: 5 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -3567,19 +3979,85 @@ block a name renders in doesn't change that assertion).
 **2. Placeholder scan.** Searched every task for "TBD", "TODO", "similar to Task N", and
 "appropriate error handling" — none found. Every code step contains complete, runnable code.
 
-**3. Type/signature consistency.** Verified across tasks:
-- `StageDef` (Task 1) fields (`id`, `skill`, `dir_prefix`, `depends_on`, `brand_scope`) are used
-  identically in Tasks 3, 5, 8, 9, 13–16.
-- `stage_dir_name(stage: StageDef) -> str` (Task 1) is imported and used with the same signature
-  in Tasks 8, 9, 13, 15.
-- `StageStatus` enum values (Task 3) match the `.value` strings written to SQLite in Tasks 5, 8,
-  9, and read back in Task 13's status badges.
-- `run_stage_turn(...)` signature is defined once in Task 8 and called identically (same
-  positional order) in Tasks 8's own tests, Task 14's route, and Task 19's integration test.
-- `TurnResult` fields (`session_id`, `result_text`, `cost_usd`, `success`) are produced in Task 6
-  and consumed with the same names in Task 8.
-- `approve_stage(conn, repo_root, run_dir, project_id, stage_defs, stage_id)` signature (Task 9)
-  matches its call site in Task 8's test and Task 15's route.
+**3. Type/signature consistency.** Verified across tasks — `StageDef` fields, `stage_dir_name`,
+`StageStatus` values, `run_stage_turn`'s full parameter list, `TurnResult` fields, and
+`approve_stage`'s signature are each defined once and used identically at every call site.
+
+### Fable 5 review pass and fixes applied
+
+A Claude Fable 5 review of this plan (full text, tracing the embedded code rather than skimming
+prose) found several defects that the checks above did not catch, because they were about runtime
+*behavior* — thread safety, generator lifecycle, subprocess platform handling — not structural
+consistency. All of the following were fixed in place (the code shown above already reflects the
+fixes; this section is the record of what changed and why):
+
+- **Staleness detection never actually fired.** The original `_propagate_staleness` re-hashed the
+  exact file path recorded in a dependent's frontmatter — but artifacts are never mutated in
+  place, so that exact file's hash always still matched and `is_stale` always returned `False`.
+  Fixed by comparing against each upstream stage's *current latest* artifact path/hash instead —
+  Task 8, with the integration test moved to Task 9 (see next point).
+- **Task 8's own test suite could not pass without Task 9's code**, violating "each task carries
+  its own test cycle." The regenerate-triggers-staleness scenario (which needs
+  `approve_stage`) was moved out of Task 8 and into Task 9, where both modules already exist.
+- **An SSE client disconnect wedged the app.** `run_stage_turn` did all turn bookkeeping *after*
+  the event loop; on a dropped connection the generator is force-closed via `GeneratorExit` before
+  reaching that code, leaving the `turns` row `running` forever (permanently blocking the global
+  single-flight lock) and orphaning the `claude` subprocess. Fixed with `contextlib.aclosing` plus
+  an explicit `except BaseException` that marks the turn `aborted`, and a `finally` in
+  `stream_claude_turn` (Task 6) that kills the subprocess if it's still alive.
+- **The RGS grounding stage was entirely unreachable.** `finalize_artifact=False` and all of
+  Task 10's helpers (`snapshot_rgs_briefs`, `identify_new_brief`, `write_pointer`,
+  `supersede_previous_brief`) were fully implemented and unit-tested but never called from any
+  route — Task 14's chat route always used the default `finalize_artifact=True` regardless of
+  stage. Fixed by adding an explicit `stage_id == "grounding"` branch to the chat route that wires
+  Task 10's helpers together end-to-end, with a new test.
+- **Permission scoping from the design spec was never passed to the CLI.** `--settings` stayed
+  `None` on every call, so a stage turn had unrestricted Write/Edit across the whole repo instead
+  of being scoped to `runs/**`/`rgs-briefs/**`. Fixed by adding `cli_runner.scoped_permissions_settings()`
+  and threading it through `run_stage_turn`.
+- **Windows `.cmd` shim handling, which the design spec explicitly called for, was missing** from
+  `stream_claude_turn`'s actual implementation — the very first real turn on this project's stated
+  primary platform would have failed. Fixed with `_platform_argv`.
+- **The single-flight lock check fired after the response had already started** (an async
+  generator's body doesn't execute until first iterated, by which point `StreamingResponse` has
+  already sent a 200). Fixed by checking `any_turn_running` in the route before constructing the
+  response, returning a clean 409 instead.
+- **`git commit` with nothing staged (re-saving identical content) would raise and 500 the skill
+  editor.** Fixed by checking `git diff --cached --quiet` before committing.
+- **Two subprocess hazards:** the default asyncio `StreamReader` line limit (64 KiB) is too small
+  for `stream-json` + `--include-partial-messages` output, and an undrained `stderr` pipe can
+  deadlock the process. Fixed with an explicit `limit=` and `stderr=DEVNULL`.
+- **Assembly's kickoff template referenced "the script,"** which isn't actually one of
+  `assembly`'s declared upstream dependencies (only `voiceover` and `visual` are), and every
+  multi-upstream stage only ever received `upstream_paths[0]` as its input, silently dropping the
+  rest. Fixed by passing the full `input_files` list through the context and rewriting the
+  assembly template to list what it actually receives.
+- **A path-traversal gap** in the skill editor (`skill_name` was used to build a filesystem path
+  with no containment check) — fixed by validating against the discovered skill list before
+  writing anything.
+- **The htmx wiring as originally written could not stream** — `hx-swap="beforeend"` only fires
+  after the whole response completes, and would have injected raw `data: {...}` SSE lines as
+  literal text. Fixed with a small inline fetch-based script in `base.html` that reads the response
+  body incrementally.
+
+**Explicitly deferred (found by the same review, not fixed here — each is a real design-spec
+requirement, named rather than silently dropped):**
+
+- A Cancel action with process-tree kill on the currently-running turn — right now, killing a
+  wedged turn requires restarting the app (which Task 18's reconciliation then cleans up).
+- A UI-visible fallback when `--resume` fails because a session was pruned (design §5's fresh-
+  session-with-notice behavior) — currently just falls through to `extract_turn_result`'s default
+  `session_id: None` handling with no user-facing message.
+- `references/*.md` tabs in the skill editor (Task 16 only exposes `SKILL.md` and the kickoff
+  template).
+- `rgs-pairing-review` as a standalone "Tools" action, and the "01-ideation/input.txt" raw-idea
+  file, and the MD inspector's runs/-artifact cross-referencing (design §8's "used as input/output
+  by" feature) — all present in the design spec's UI section but not yet a route in this plan.
+- Persistent sidebar/breadcrumb chrome across pages (noted as a template-only gap in the Task 12
+  fix above, not yet reflected as literal template code in every task).
+
+These are candidates for a short follow-up plan once the core pipeline (Tasks 1–19) is working
+end-to-end, not blockers to starting implementation.
 
 ---
 
