@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Form, Request
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.responses import PlainTextResponse, RedirectResponse
 
 from pipeline_app import db as db_mod
 from pipeline_app.project_service import create_project
@@ -19,9 +19,14 @@ def list_projects(request: Request):
 @router.post("/projects")
 def create_project_route(request: Request, slug: str = Form(...), brand: str = Form(...)):
     conn = request.app.state.conn
-    result = create_project(
-        conn, request.app.state.repo_root, slug, brand, request.app.state.stage_defs
-    )
+    try:
+        result = create_project(
+            conn, request.app.state.repo_root, slug, brand, request.app.state.stage_defs
+        )
+    except ValueError as exc:
+        # Unusable slug (nothing left after sanitisation, or a path that would
+        # escape runs/) — an explicit client error, not a 500.
+        return PlainTextResponse(str(exc), status_code=400)
     return RedirectResponse(url=f"/projects/{result['project_id']}", status_code=303)
 
 
