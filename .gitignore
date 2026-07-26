@@ -13,6 +13,8 @@ dist/
 # Pipeline app (local control app for the six-skill pipeline)
 runs/
 pipeline-app/pipeline.db
+pipeline-app/pipeline.db-wal
+pipeline-app/pipeline.db-shm
 pipeline-app/.venv/
 pipeline-app/pipeline_app/__pycache__/
 pipeline-app/pipeline_app/**/__pycache__/
