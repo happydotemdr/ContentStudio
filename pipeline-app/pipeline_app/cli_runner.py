@@ -48,6 +48,12 @@ def build_claude_argv(
         binary, "-p",
         "--output-format", "stream-json",
         "--include-partial-messages",
+        # Required by the real claude CLI whenever --print is combined with
+        # --output-format stream-json; omitting it makes the CLI exit
+        # immediately with "Error: When using --print, --output-format=
+        # stream-json requires --verbose" (verified against a live run,
+        # 2026-07-26).
+        "--verbose",
         "--allowedTools", allowed_tools,
     ]
     if resume_session_id:

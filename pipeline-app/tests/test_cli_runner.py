@@ -39,6 +39,10 @@ def test_build_claude_argv_first_turn_has_no_resume():
     assert "--allowedTools" in argv
     idx = argv.index("--allowedTools")
     assert argv[idx + 1] == "Read,Glob,Grep,Write,Edit"
+    # --verbose is required by the real claude CLI whenever --print is combined
+    # with --output-format stream-json — without it the CLI exits immediately
+    # with "Error: When using --print, --output-format=stream-json requires --verbose".
+    assert "--verbose" in argv
 
 
 def test_build_claude_argv_resume_turn_includes_session_id():
@@ -51,6 +55,7 @@ def test_build_claude_argv_resume_turn_includes_session_id():
     )
     idx = argv.index("--resume")
     assert argv[idx + 1] == "session-abc"
+    assert "--verbose" in argv
 
 
 @pytest.mark.asyncio
