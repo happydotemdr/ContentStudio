@@ -1,9 +1,9 @@
 import json
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 
-from pipeline_app import artifacts, db as db_mod
+from pipeline_app import artifacts, db as db_mod, grounding_service, turn_service
 from pipeline_app.pipeline_config import stage_dir_name
 
 router = APIRouter()
@@ -60,3 +60,69 @@ def stage_page(request: Request, project_id: int, stage_id: str):
             "transcript": transcript,
         },
     )
+
+
+@router.post("/projects/{project_id}/stages/{stage_id}/chat")
+async def stage_chat(request: Request, project_id: int, stage_id: str, message: str = Form(...)):
+    conn = request.app.state.conn
+    repo_root = request.app.state.repo_root
+    stage_defs = request.app.state.stage_defs
+    project = db_mod.get_project(conn, project_id)
+    stage_def = next(s for s in stage_defs if s.id == stage_id)
+    run_dir = repo_root / "runs" / project["run_id"]
+    templates_dir = repo_root / "pipeline-app" / "stage_templates"
+
+    # Checked here, before any response is started: run_stage_turn also checks
+    # internally, but that check does not execute until the StreamingResponse
+    # body generator is first iterated — by then a 200 and SSE headers are
+    # already committed, so the client would see a broken stream instead of an
+    # explicit "already running" error. Checking here lets a concurrent
+    # request get a clean 409 with no response ever started.
+    if turn_service.any_turn_running(conn):
+        return PlainTextResponse("Another stage turn is already running.", status_code=409)
+
+    grounding_pointer = None
+    if project["brand"] == "raisinggoodsports" and stage_id != "grounding":
+        grounding_dir = run_dir / "00-grounding"
+        grounding_pointer = grounding_service.read_pointer(grounding_dir)
+
+    if stage_id == "grounding":
+        async def event_stream():
+            rgs_briefs_dir = repo_root / "rgs-briefs"
+            grounding_dir = run_dir / "00-grounding"
+            before = grounding_service.snapshot_rgs_briefs(rgs_briefs_dir)
+
+            async for event in turn_service.run_stage_turn(
+                conn, repo_root, run_dir, templates_dir,
+                project_id, project["run_id"], stage_def, stage_defs, message,
+                finalize_artifact=False,
+            ):
+                yield f"data: {json.dumps(event)}\n\n"
+
+            # The grounding skill's real artifact lands in rgs-briefs/, not
+            # runs/ — finalize_artifact=False above skips turn_service's
+            # normal artifact/status handling so this stage-specific path can
+            # take over: identify which file appeared, supersede whichever
+            # brief this project pointed at before (if regenerating), and
+            # point at the new one.
+            after = grounding_service.snapshot_rgs_briefs(rgs_briefs_dir)
+            new_brief = grounding_service.identify_new_brief(before, after)
+            stage_row = db_mod.get_stage(conn, project_id, "grounding")
+            if new_brief is not None:
+                grounding_service.supersede_previous_brief(repo_root, grounding_dir)
+                grounding_service.write_pointer(grounding_dir, f"rgs-briefs/{new_brief}")
+                db_mod.update_stage_status(conn, stage_row["id"], "awaiting_review")
+            else:
+                db_mod.update_stage_status(conn, stage_row["id"], "no_artifact")
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    async def event_stream():
+        async for event in turn_service.run_stage_turn(
+            conn, repo_root, run_dir, templates_dir,
+            project_id, project["run_id"], stage_def, stage_defs, message,
+            grounding_pointer=grounding_pointer,
+        ):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

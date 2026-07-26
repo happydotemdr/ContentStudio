@@ -5,6 +5,61 @@
   <title>{% block title %}ContentStudio Pipeline{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://unpkg.com/htmx.org@2.0.0"></script>
+  <script>
+    function attachSSEChat(formEl) {
+      formEl.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const textarea = formEl.querySelector("textarea[name=message]");
+        const message = textarea.value;
+        textarea.value = "";
+        const transcript = document.querySelector(formEl.dataset.transcriptTarget);
+        const userLine = document.createElement("p");
+        userLine.innerHTML = `<strong>you:</strong> ${message}`;
+        transcript.appendChild(userLine);
+
+        const response = await fetch(formEl.action, {
+          method: "POST",
+          headers: {"Content-Type": "application/x-www-form-urlencoded"},
+          body: `message=${encodeURIComponent(message)}`,
+        });
+        if (!response.ok) {
+          const line = document.createElement("p");
+          line.textContent = `Error: ${await response.text()}`;
+          transcript.appendChild(line);
+          return;
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const {done, value} = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, {stream: true});
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop();
+          for (const part of parts) {
+            if (!part.startsWith("data: ")) continue;
+            const event = JSON.parse(part.slice(6));
+            if (event.type === "result" && event.result) {
+              const line = document.createElement("p");
+              line.innerHTML = `<strong>assistant:</strong> ${event.result}`;
+              transcript.appendChild(line);
+            }
+          }
+        }
+      });
+    }
+    // This script is inline in <head>, which executes while the parser is
+    // still on <head> — before <body> (and the data-sse-chat form in it)
+    // exists in the DOM. Deferring the attach loop to DOMContentLoaded (not
+    // just `defer`, which inline scripts ignore) ensures the form exists
+    // by the time querySelectorAll runs; otherwise it silently binds to
+    // nothing and the form falls back to a native POST that renders the
+    // raw `data: {...}` SSE stream as page text.
+    document.addEventListener("DOMContentLoaded", () => {
+      document.querySelectorAll("form[data-sse-chat]").forEach(attachSSEChat);
+    });
+  </script>
 </head>
 <body>
   <header><a href="/">ContentStudio Pipeline</a></header>
