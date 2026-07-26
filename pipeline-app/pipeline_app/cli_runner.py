@@ -31,9 +31,21 @@ def build_claude_argv(
     settings_path: str | None,
     which_fn: Callable[[str], str | None] = shutil.which,
 ) -> list[str]:
+    """Build the claude argv WITHOUT the prompt.
+
+    The prompt is deliberately not placed on the command line. On Windows
+    `claude` resolves to an npm .cmd shim, which _platform_argv has to run
+    through `cmd /c`; cmd.exe does not honour subprocess's `\\"` escaping (a
+    backslash is literal and a quote just toggles quoting), so any `"` in a
+    user-supplied prompt would break out of quoting and let the rest of the
+    prompt run as shell commands — completely bypassing the --allowedTools
+    sandbox. `claude -p` with no positional prompt reads the prompt from stdin
+    (verified against `claude --help` and a live run, 2026-07-26), so
+    stream_claude_turn feeds it over a stdin pipe instead.
+    """
     binary = resolve_claude_binary(which_fn)
     argv = [
-        binary, "-p", prompt,
+        binary, "-p",
         "--output-format", "stream-json",
         "--include-partial-messages",
         "--allowedTools", allowed_tools,
@@ -101,6 +113,28 @@ def _platform_argv(argv: list[str]) -> list[str]:
     return argv
 
 
+async def _feed_prompt_stdin(process, prompt: str) -> None:
+    """Write the prompt to the child's stdin and close it.
+
+    Run as a background task so a prompt larger than the OS pipe buffer cannot
+    deadlock: the child may not drain stdin until it has written some stdout,
+    and stream_claude_turn is concurrently reading stdout."""
+    stdin = process.stdin
+    if stdin is None:
+        return
+    try:
+        stdin.write(prompt.encode("utf-8"))
+        await stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass  # child exited early; its stdout/exit code is the real signal
+    finally:
+        try:
+            stdin.close()
+            await stdin.wait_closed()
+        except (BrokenPipeError, ConnectionResetError, AttributeError):
+            pass
+
+
 async def stream_claude_turn(
     prompt: str,
     cwd: Path,
@@ -114,6 +148,7 @@ async def stream_claude_turn(
     process = await asyncio.create_subprocess_exec(
         *argv,
         cwd=str(cwd),
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         env=env,
@@ -121,12 +156,16 @@ async def stream_claude_turn(
                                   # can exceed the asyncio StreamReader default
                                   # 64 KiB line limit; 10 MiB avoids LimitOverrunError.
     )
+    stdin_task = asyncio.ensure_future(_feed_prompt_stdin(process, prompt))
     try:
         assert process.stdout is not None
         async for event in parse_stream_json_lines(process.stdout):
             yield event
+        await stdin_task
         await process.wait()
     finally:
+        if not stdin_task.done():
+            stdin_task.cancel()
         # Guarantees the subprocess is not orphaned when this generator is
         # closed early (client disconnect, exception in the caller) — see
         # run_stage_turn's use of contextlib.aclosing in Task 8.
