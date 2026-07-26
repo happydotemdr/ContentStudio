@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Callable
@@ -119,6 +120,37 @@ def _platform_argv(argv: list[str]) -> list[str]:
     return argv
 
 
+def _kill_process_tree(process) -> None:
+    """Terminate the child *and every process it spawned*.
+
+    On Windows `claude` resolves to an npm .cmd shim that _platform_argv has to
+    run through `cmd /c`, so `process` is cmd.exe and the real claude/node
+    process is a descendant. process.kill() sends the kill to cmd.exe only,
+    orphaning that descendant to run to completion — it would keep writing into
+    runs/ and rgs-briefs/ under a turn the app has already marked aborted and
+    released the single-flight lock for (verified empirically: the descendant's
+    completion marker still appeared after process.kill()). `taskkill /T` walks
+    the whole tree; /F forces it. Harmless on a leaf process with no children,
+    so it is applied unconditionally on nt rather than re-deriving whether the
+    cmd wrapper was used for this particular invocation.
+
+    Never raises: if the PID already exited (a race against the returncode
+    check) taskkill just exits nonzero, which is not checked, and a taskkill
+    that itself hangs is bounded by the timeout.
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                capture_output=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass  # cleanup is best-effort; process.wait() below is the real signal
+    else:
+        process.kill()
+
+
 async def _feed_prompt_stdin(process, prompt: str) -> None:
     """Write the prompt to the child's stdin and close it.
 
@@ -176,5 +208,5 @@ async def stream_claude_turn(
         # closed early (client disconnect, exception in the caller) — see
         # run_stage_turn's use of contextlib.aclosing in Task 8.
         if process.returncode is None:
-            process.kill()
+            _kill_process_tree(process)
             await process.wait()

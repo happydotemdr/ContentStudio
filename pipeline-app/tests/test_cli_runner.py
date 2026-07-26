@@ -1,4 +1,7 @@
+import asyncio
 import os
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -243,6 +246,109 @@ async def test_injection_shaped_prompt_does_not_execute_via_cmd_shim(monkeypatch
     assert not (tmp_path / "INJECTED.txt").exists()
     captured = (shim_dir / "stdin-capture.txt").read_text(encoding="utf-8")
     assert "benign" in captured
+
+
+CHILD_SLEEP_SECONDS = 2.0
+
+
+def _write_cmd_shim_that_spawns_a_slow_child(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Build a `.cmd` shim shaped like the npm `claude` shim: a batch file whose
+    real work happens in a *separate* child process (here, python). Returns the
+    shim plus the markers that child writes when it starts and if it completes."""
+    started = tmp_path / "child-started.txt"
+    completed = tmp_path / "child-completed.txt"
+    child_py = tmp_path / "slow_child.py"
+    child_py.write_text(
+        "import pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[1]).write_text('started')\n"
+        f"time.sleep({CHILD_SLEEP_SECONDS})\n"
+        "pathlib.Path(sys.argv[2]).write_text('completed')\n",
+        encoding="utf-8",
+    )
+    shim = tmp_path / "slow.cmd"
+    shim.write_text(
+        "@echo off\r\n"
+        f'"{sys.executable}" "{child_py}" "{started}" "{completed}"\r\n',
+        encoding="utf-8",
+    )
+    return shim, started, completed
+
+
+async def _await_marker(marker: Path, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if marker.exists():
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="cmd.exe shim process-tree kill is Windows-only")
+@pytest.mark.asyncio
+async def test_kill_process_tree_kills_the_child_behind_the_cmd_shim(tmp_path: Path):
+    """On Windows `claude` runs through `cmd /c` (see _platform_argv), so the
+    process object we hold is cmd.exe and the real work is a descendant.
+    process.kill() would terminate only cmd.exe and leave the descendant running
+    to completion; _kill_process_tree must take the whole tree down."""
+    from pipeline_app.cli_runner import _kill_process_tree
+
+    shim, started, completed = _write_cmd_shim_that_spawns_a_slow_child(tmp_path)
+    process = await asyncio.create_subprocess_exec(
+        "cmd", "/c", str(shim),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        # Only meaningful if the descendant genuinely got running first —
+        # otherwise killing cmd.exe alone would trivially prevent the marker.
+        assert await _await_marker(started, timeout=10.0), "slow child never started"
+
+        kill_started = time.monotonic()
+        _kill_process_tree(process)
+        await process.wait()
+        elapsed = time.monotonic() - kill_started
+
+        # Returning fast proves we did not simply wait out the descendant.
+        assert elapsed < CHILD_SLEEP_SECONDS / 2
+        # Wait past when the descendant would have finished naturally.
+        await asyncio.sleep(CHILD_SLEEP_SECONDS + 1.0)
+        assert not completed.exists(), "descendant survived the kill and ran to completion"
+    finally:
+        if process.returncode is None:
+            _kill_process_tree(process)
+            await process.wait()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="taskkill is Windows-only")
+def test_kill_process_tree_tolerates_an_already_exited_pid():
+    """Race: the process can exit between the returncode check and the kill.
+    taskkill then returns nonzero, which must not raise."""
+    from pipeline_app.cli_runner import _kill_process_tree
+
+    class _GoneProcess:
+        pid = 999999  # not a live PID
+
+        def kill(self) -> None:  # pragma: no cover - must not be reached on nt
+            raise AssertionError("should have gone through taskkill")
+
+    _kill_process_tree(_GoneProcess())
+
+
+def test_kill_process_tree_uses_plain_kill_off_windows(monkeypatch):
+    from pipeline_app import cli_runner
+
+    monkeypatch.setattr("pipeline_app.cli_runner.os.name", "posix")
+
+    class _Proc:
+        pid = 4242
+        killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    proc = _Proc()
+    cli_runner._kill_process_tree(proc)
+    assert proc.killed is True
 
 
 def test_scoped_permissions_settings_scopes_write_edit_to_runs_and_rgs_briefs():
