@@ -34,6 +34,8 @@ def create_project_route(request: Request, slug: str = Form(...), brand: str = F
 def project_home(request: Request, project_id: int):
     conn = request.app.state.conn
     project = db_mod.get_project(conn, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
     stages = db_mod.list_stages(conn, project_id)
     return request.app.state.templates.TemplateResponse(
         request, "project_home.html", {"project": project, "stages": stages}

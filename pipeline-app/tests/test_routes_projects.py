@@ -53,6 +53,11 @@ def test_create_project_with_traversal_slug_stays_inside_runs(client: TestClient
     assert ".." not in created[0].name
 
 
+def test_project_home_unknown_project_returns_404(client: TestClient):
+    response = client.get("/projects/9999")
+    assert response.status_code == 404
+
+
 def test_project_home_shows_stage_names(client: TestClient):
     client.post("/projects", data={"slug": "why-kids-quit", "brand": "generic"})
     listing = client.get("/")
