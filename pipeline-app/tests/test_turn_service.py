@@ -136,6 +136,7 @@ async def test_disconnected_turn_is_marked_aborted_not_left_running(conn, projec
 
     turns = db.list_turns(conn, project["stage_row_id"])
     assert turns[-1]["status"] == "aborted"
+    assert turn_service.any_turn_running(conn) is False
 
 
 CHAIN_STAGES = [
@@ -214,4 +215,3 @@ def test_propagate_staleness_cascade_stops_at_a_non_approved_stage(conn, tmp_pat
     assert db.get_stage(conn, project_id, "visual")["status"] == StageStatus.STALE.value
     assert db.get_stage(conn, project_id, "assembly")["status"] == StageStatus.AWAITING_REVIEW.value
     assert db.get_stage(conn, project_id, "repurpose")["status"] == StageStatus.APPROVED.value
-    assert turn_service.any_turn_running(conn) is False
