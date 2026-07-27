@@ -213,3 +213,29 @@ def test_stage_page_shows_grouped_parallel_pair_in_nav(tmp_path: Path, monkeypat
     assert page.text.count('class="pipeline-step"') == 2
     # voiceover is the current stage on this page
     assert 'class="pipeline-stage current"' in page.text
+
+
+def test_stage_page_shows_all_upstream_inputs_not_just_first(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: voiceover\n    skill: voiceover-brief\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "  - id: visual\n    skill: visual-prompts\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "  - id: assembly\n    skill: shorts-assembly\n    dir_prefix: \"04\"\n"
+        "    depends_on: [voiceover, visual]\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+
+    artifacts.write_artifact(run_dir / "03-voiceover", 1, {"stage": "voiceover-brief"}, "voiceover brief text")
+    artifacts.write_artifact(run_dir / "03-visual", 1, {"stage": "visual-prompts"}, "visual prompt sheet text")
+
+    page = test_client.get(f"/projects/{project_id}/stages/assembly")
+    assert page.status_code == 200
+    assert "voiceover brief text" in page.text
+    assert "visual prompt sheet text" in page.text

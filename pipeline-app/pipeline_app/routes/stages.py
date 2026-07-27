@@ -55,13 +55,15 @@ def stage_page(request: Request, project_id: int, stage_id: str):
     run_dir = request.app.state.repo_root / "runs" / project["run_id"]
     stage_dir = run_dir / stage_dir_name(stage_def)
 
-    input_body = None
-    if stage_def.depends_on:
-        up_def = next(s for s in stage_defs if s.id == stage_def.depends_on[0])
+    input_sections = []
+    for dep_id in stage_def.depends_on:
+        up_def = next(s for s in stage_defs if s.id == dep_id)
         up_dir = run_dir / stage_dir_name(up_def)
         up_latest = artifacts.latest_artifact_path(up_dir)
         if up_latest is not None:
-            _, input_body = artifacts.parse_frontmatter(up_latest.read_text(encoding="utf-8"))
+            _, dep_body = artifacts.parse_frontmatter(up_latest.read_text(encoding="utf-8"))
+            input_sections.append(f"## From {dep_id}\n\n{dep_body}")
+    input_body = "\n\n---\n\n".join(input_sections) if input_sections else None
 
     # Grounding is an optional RGS companion, not a formal `depends_on` --
     # the chat/turn_service path already hands it to the AI via
