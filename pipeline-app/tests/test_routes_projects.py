@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -62,7 +63,6 @@ def test_project_home_shows_stage_names(client: TestClient):
     client.post("/projects", data={"slug": "why-kids-quit", "brand": "generic"})
     listing = client.get("/")
     # extract the project id from the link the template renders
-    import re
     match = re.search(r'/projects/(\d+)', listing.text)
     assert match is not None
     project_id = match.group(1)
@@ -70,3 +70,44 @@ def test_project_home_shows_stage_names(client: TestClient):
     assert home.status_code == 200
     assert "ideation" in home.text
     assert "scripting" in home.text
+
+
+def test_project_home_groups_parallel_stages_and_shows_specialist(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n"
+        "  - id: voiceover\n    skill: voiceover-brief\n    specialist: elevenlabs-audio\n"
+        "    dir_prefix: \"03\"\n    depends_on: [scripting]\n"
+        "  - id: visual\n    skill: visual-prompts\n    specialist: midjourney-prompting\n"
+        "    dir_prefix: \"03\"\n    depends_on: [scripting]\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app)
+
+    test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    listing = test_client.get("/")
+    match = re.search(r'/projects/(\d+)', listing.text)
+    assert match is not None
+    project_id = match.group(1)
+
+    home = test_client.get(f"/projects/{project_id}")
+    assert home.status_code == 200
+    assert "elevenlabs-audio" in home.text
+    assert "midjourney-prompting" in home.text
+    # scripting is its own step; voiceover+visual share dir_prefix "03" and
+    # must render inside ONE grouped step, not two.
+    assert home.text.count('class="pipeline-step"') == 2
+
+
+def test_project_home_nav_has_no_current_highlight(client: TestClient):
+    client.post("/projects", data={"slug": "why-kids-quit", "brand": "generic"})
+    listing = client.get("/")
+    match = re.search(r'/projects/(\d+)', listing.text)
+    project_id = match.group(1)
+    home = client.get(f"/projects/{project_id}")
+    # project-home has no "current" stage, so no stage should render the
+    # current-highlight class — checked as the exact class token (not a bare
+    # "current" substring, which could false-positive on unrelated text).
+    assert 'class="pipeline-stage current"' not in home.text

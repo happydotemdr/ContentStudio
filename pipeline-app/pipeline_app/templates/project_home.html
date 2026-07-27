@@ -1,14 +1,4 @@
 {% extends "base.html" %}
-{% block sidebar %}
-<ul>
-  {% for stage in stages %}
-  <li>
-    <a href="/projects/{{ project.id }}/stages/{{ stage.stage_id }}">{{ stage.stage_id }}</a>
-    — <span class="status status-{{ stage.status }}">{{ stage.status }}</span>
-  </li>
-  {% endfor %}
-</ul>
-{% endblock %}
 {% block content %}
 <h1>{{ project.run_id }}</h1>
 {% endblock %}

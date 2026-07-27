@@ -2,6 +2,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse
 
 from pipeline_app import db as db_mod
+from pipeline_app.pipeline_config import build_stage_nav
 from pipeline_app.project_service import create_project
 
 router = APIRouter()
@@ -36,7 +37,8 @@ def project_home(request: Request, project_id: int):
     project = db_mod.get_project(conn, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    stages = db_mod.list_stages(conn, project_id)
+    stage_rows = db_mod.list_stages(conn, project_id)
+    nav = build_stage_nav(request.app.state.stage_defs, stage_rows)
     return request.app.state.templates.TemplateResponse(
-        request, "project_home.html", {"project": project, "stages": stages}
+        request, "project_home.html", {"project": project, "nav": nav}
     )

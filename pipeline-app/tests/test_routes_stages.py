@@ -106,3 +106,42 @@ def test_edit_for_stage_not_applicable_to_brand_returns_404(client):
         f"/projects/{project_id}/stages/grounding/edit", data={"body": "x"}
     )
     assert resp.status_code == 404
+
+
+def test_stage_page_shows_pipeline_nav_with_current_highlight(client):
+    test_client, _tmp_path, _app = client
+    project_id = _generic_project_id(test_client)
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert 'class="pipeline-stage current"' in page.text
+
+
+def test_stage_page_shows_grouped_parallel_pair_in_nav(tmp_path: Path, monkeypatch):
+    # The shared `client` fixture's pipeline.yaml has no parallel pair, so it
+    # can never exercise grouping through the stage route — this test uses
+    # its own pipeline.yaml specifically to cover that gap.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n"
+        "  - id: voiceover\n    skill: voiceover-brief\n    specialist: elevenlabs-audio\n"
+        "    dir_prefix: \"03\"\n    depends_on: [scripting]\n"
+        "  - id: visual\n    skill: visual-prompts\n    specialist: midjourney-prompting\n"
+        "    dir_prefix: \"03\"\n    depends_on: [scripting]\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    page = test_client.get(f"/projects/{project_id}/stages/voiceover")
+    assert page.status_code == 200
+    assert "elevenlabs-audio" in page.text
+    assert "midjourney-prompting" in page.text
+    # scripting is its own step; voiceover+visual share dir_prefix "03" and
+    # must render inside ONE grouped step, not two.
+    assert page.text.count('class="pipeline-step"') == 2
+    # voiceover is the current stage on this page
+    assert 'class="pipeline-stage current"' in page.text

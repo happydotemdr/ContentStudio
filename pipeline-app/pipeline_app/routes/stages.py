@@ -5,7 +5,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
 from pipeline_app import approval_service, artifacts, db as db_mod, grounding_service, turn_service
-from pipeline_app.pipeline_config import stage_dir_name
+from pipeline_app.pipeline_config import build_stage_nav, stage_dir_name
 
 router = APIRouter()
 
@@ -69,13 +69,15 @@ def stage_page(request: Request, project_id: int, stage_id: str):
         _, output_body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
 
     transcript = _load_transcript(stage_dir)
+    stage_rows = db_mod.list_stages(request.app.state.conn, project_id)
+    nav = build_stage_nav(stage_defs, stage_rows)
 
     return request.app.state.templates.TemplateResponse(
         request, "stage.html",
         {
             "project": project, "stage_id": stage_id,
             "input_body": input_body, "output_body": output_body,
-            "transcript": transcript,
+            "transcript": transcript, "nav": nav,
         },
     )
 

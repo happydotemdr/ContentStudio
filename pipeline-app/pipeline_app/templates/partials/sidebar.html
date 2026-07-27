@@ -1,0 +1,20 @@
+{% if nav %}
+<ol class="pipeline-nav">
+  {% for group in nav %}
+  <li class="pipeline-step">
+    <span class="step-number">{{ loop.index }}</span>
+    <div class="pipeline-step-group">
+      {% for stage in group %}
+      <div class="pipeline-stage{% if stage_id is defined and stage.id == stage_id %} current{% endif %}">
+        <a href="/projects/{{ project.id }}/stages/{{ stage.id }}">{{ stage.id }}</a>
+        <span class="status status-{{ stage.status }}">{{ stage.status }}</span>
+        {% if stage.specialist %}
+        <div class="specialist">&#8618; {{ stage.specialist }}</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </li>
+  {% endfor %}
+</ol>
+{% endif %}
