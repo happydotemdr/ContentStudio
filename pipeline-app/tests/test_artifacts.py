@@ -8,9 +8,11 @@ from pipeline_app.artifacts import (
     next_version_number,
     parse_frontmatter,
     render_frontmatter,
+    resolve_latest_artifact,
     stamp_final,
     write_artifact,
 )
+from pipeline_app.grounding_service import write_pointer
 
 
 def test_render_and_parse_frontmatter_roundtrip():
@@ -76,3 +78,37 @@ def test_stamp_final_sets_status_and_hash_reflects_stamped_content(tmp_path: Pat
     # The file's bytes changed because of the stamp, so the hash a downstream
     # stage would record must be taken AFTER stamping, never before.
     assert hash_before_stamp != hash_after_stamp
+
+
+def test_resolve_latest_artifact_delegates_for_non_grounding_stage(tmp_path: Path):
+    stage_dir = tmp_path / "01-ideation"
+    write_artifact(stage_dir, 1, {"stage": "shorts-ideation"}, "body")
+    resolved = resolve_latest_artifact(tmp_path, "ideation", stage_dir)
+    assert resolved == stage_dir / "artifact.v1.md"
+
+
+def test_resolve_latest_artifact_grounding_resolves_via_pointer(tmp_path: Path):
+    rgs_briefs = tmp_path / "rgs-briefs"
+    rgs_briefs.mkdir()
+    brief = rgs_briefs / "2026-07-27-x.md"
+    brief.write_text("---\nstatus: candidate\n---\n\nbody", encoding="utf-8")
+    stage_dir = tmp_path / "runs" / "r1" / "00-grounding"
+    write_pointer(stage_dir, "rgs-briefs/2026-07-27-x.md")
+
+    assert resolve_latest_artifact(tmp_path, "grounding", stage_dir) == brief
+
+
+def test_resolve_latest_artifact_grounding_no_pointer_returns_none(tmp_path: Path):
+    stage_dir = tmp_path / "runs" / "r1" / "00-grounding"
+    stage_dir.mkdir(parents=True)
+    assert resolve_latest_artifact(tmp_path, "grounding", stage_dir) is None
+
+
+def test_resolve_latest_artifact_grounding_pointer_target_missing_returns_none(tmp_path: Path):
+    """The pointer file exists but the brief it names was deleted or never
+    written -- must return None, not raise. This is the exact case the old
+    inline branches in approval_service.py and routes/stages.py got wrong in
+    two of three copies (they skipped the .exists() check)."""
+    stage_dir = tmp_path / "runs" / "r1" / "00-grounding"
+    write_pointer(stage_dir, "rgs-briefs/does-not-exist.md")
+    assert resolve_latest_artifact(tmp_path, "grounding", stage_dir) is None

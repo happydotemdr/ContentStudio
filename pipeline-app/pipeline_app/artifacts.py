@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from pipeline_app import grounding_service
+
 _DELIM = "---"
 _VERSION_RE = re.compile(r"artifact\.v(\d+)\.md$")
 
@@ -49,6 +51,22 @@ def latest_artifact_path(stage_dir: Path) -> Path | None:
     if not versions:
         return None
     return max(versions, key=lambda t: t[0])[1]
+
+
+def resolve_latest_artifact(repo_root: Path, stage_id: str, stage_dir: Path) -> Path | None:
+    """A stage's current artifact, accounting for grounding's pointer-based
+    storage. Every stage except grounding writes artifact.v{N}.md into its
+    own stage_dir, resolved via latest_artifact_path. Grounding's real
+    output lands in rgs-briefs/ at the repo root instead, referenced by a
+    pointer.yaml file the turn route writes into stage_dir -- so this is
+    the one place that split has to be reconciled back into a single Path."""
+    if stage_id == "grounding":
+        pointer = grounding_service.read_pointer(stage_dir)
+        if not pointer:
+            return None
+        path = repo_root / pointer
+        return path if path.exists() else None
+    return latest_artifact_path(stage_dir)
 
 
 def write_artifact(stage_dir: Path, version: int, meta: dict, body: str) -> Path:
