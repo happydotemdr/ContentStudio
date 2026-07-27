@@ -1,4 +1,4 @@
-body { font-family: system-ui, sans-serif; margin: 2rem; }
+body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.5; }
 .status { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 0.25rem; font-size: 0.85rem; }
 .status-locked { background: #ddd; }
 .status-ready { background: #cfe8ff; }
@@ -49,3 +49,10 @@ textarea {
   box-sizing: border-box;
   min-height: 5rem;
 }
+
+header { margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ddd; }
+button { padding: 0.35rem 0.75rem; cursor: pointer; }
+table { border-collapse: collapse; }
+th, td { text-align: left; padding: 0.25rem 0.75rem 0.25rem 0; vertical-align: top; }
+.error { color: #a00; }
+.input-panel, .chat-panel, .output-panel { margin-bottom: 1.5rem; }
