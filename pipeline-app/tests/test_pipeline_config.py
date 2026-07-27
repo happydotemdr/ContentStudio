@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pipeline_app.pipeline_config import load_topology, stage_dir_name
+from pipeline_app.pipeline_config import StageDef, build_stage_nav, load_topology, stage_dir_name
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -71,3 +71,56 @@ def test_ideation_has_no_specialist():
     stages = load_topology(REPO_ROOT / "pipeline.yaml")
     ideation = next(s for s in stages if s.id == "ideation")
     assert ideation.specialist is None
+
+
+def _stage_def(id, dir_prefix, specialist=None, depends_on=None):
+    return StageDef(
+        id=id, skill=f"skill-{id}", dir_prefix=dir_prefix,
+        depends_on=depends_on or [], specialist=specialist,
+    )
+
+
+def test_build_stage_nav_groups_stages_sharing_dir_prefix():
+    stage_defs = [
+        _stage_def("ideation", "01"),
+        _stage_def("scripting", "02"),
+        _stage_def("voiceover", "03", specialist="elevenlabs-audio"),
+        _stage_def("visual", "03", specialist="midjourney-prompting"),
+        _stage_def("assembly", "04"),
+    ]
+    stage_rows = [
+        {"stage_id": "ideation", "status": "approved"},
+        {"stage_id": "scripting", "status": "approved"},
+        {"stage_id": "voiceover", "status": "ready"},
+        {"stage_id": "visual", "status": "ready"},
+        {"stage_id": "assembly", "status": "locked"},
+    ]
+    nav = build_stage_nav(stage_defs, stage_rows)
+    assert [len(group) for group in nav] == [1, 1, 2, 1]
+    voiceover_visual_group = nav[2]
+    assert {s["id"] for s in voiceover_visual_group} == {"voiceover", "visual"}
+
+
+def test_build_stage_nav_carries_status_and_specialist():
+    stage_defs = [_stage_def("visual", "03", specialist="midjourney-prompting")]
+    stage_rows = [{"stage_id": "visual", "status": "awaiting_review"}]
+    nav = build_stage_nav(stage_defs, stage_rows)
+    assert nav == [[{"id": "visual", "status": "awaiting_review", "specialist": "midjourney-prompting"}]]
+
+
+def test_build_stage_nav_omits_stages_with_no_matching_row():
+    stage_defs = [_stage_def("grounding", "00"), _stage_def("ideation", "01")]
+    stage_rows = [{"stage_id": "ideation", "status": "ready"}]
+    nav = build_stage_nav(stage_defs, stage_rows)
+    assert len(nav) == 1
+    assert nav[0][0]["id"] == "ideation"
+
+
+def test_build_stage_nav_preserves_stage_defs_order_not_dir_prefix_sort():
+    stage_defs = [_stage_def("scripting", "02"), _stage_def("ideation", "01")]
+    stage_rows = [
+        {"stage_id": "scripting", "status": "ready"},
+        {"stage_id": "ideation", "status": "approved"},
+    ]
+    nav = build_stage_nav(stage_defs, stage_rows)
+    assert [group[0]["id"] for group in nav] == ["scripting", "ideation"]
