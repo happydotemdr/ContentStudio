@@ -138,6 +138,12 @@ async def test_disconnected_turn_is_marked_aborted_not_left_running(conn, projec
     assert turns[-1]["status"] == "aborted"
     assert turn_service.any_turn_running(conn) is False
 
+    # No artifact was ever written for this stage, so the recovery rule
+    # (same as preflight._unwedge_stage) must reset it to READY, not leave
+    # it wedged at RUNNING forever.
+    updated_stage = db.get_stage(conn, project["project_id"], "ideation")
+    assert updated_stage["status"] == StageStatus.READY.value
+
 
 CHAIN_STAGES = [
     StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02", depends_on=[]),

@@ -167,6 +167,19 @@ async def run_stage_turn(
         # aborted rather than leaving it `running` forever (which would wedge
         # the app's single-flight lock) and stop — no further DB/artifact
         # work is attempted for a turn that didn't finish normally.
+        #
+        # The stage row also has to come back out of RUNNING here, not just
+        # the turn: an aborted turn is invisible to preflight's startup
+        # sweep (it only looks for turns still `running`), so without this
+        # the stage would stay wedged at RUNNING permanently -- even across
+        # a restart -- since chat/approve/edit all reject a running stage.
+        # Same recovery rule as preflight._unwedge_stage: AWAITING_REVIEW if
+        # a resolvable artifact already exists, else READY.
+        latest = artifacts.resolve_latest_artifact(repo_root, stage_def.id, stage_dir)
+        new_status = (
+            StageStatus.AWAITING_REVIEW.value if latest is not None else StageStatus.READY.value
+        )
+        db_mod.update_stage_status(conn, stage_row["id"], new_status)
         db_mod.update_turn(conn, turn_id, "aborted", _utcnow())
         raise
 
