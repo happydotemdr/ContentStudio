@@ -61,6 +61,10 @@ def get_stage(conn: sqlite3.Connection, project_id: int, stage_id: str) -> sqlit
     ).fetchone()
 
 
+def get_stage_by_row_id(conn: sqlite3.Connection, stage_row_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM stages WHERE id = ?", (stage_row_id,)).fetchone()
+
+
 def list_stages(conn: sqlite3.Connection, project_id: int) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM stages WHERE project_id = ?", (project_id,)).fetchall()
 

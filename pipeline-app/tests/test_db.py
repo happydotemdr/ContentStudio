@@ -80,3 +80,14 @@ def test_list_running_turns(conn):
     db.create_turn(conn, stage_row_id, "running", "2026-07-25T12:05:00Z", "events/1.jsonl")
     running = db.list_running_turns(conn)
     assert len(running) == 1
+
+
+def test_get_stage_by_row_id_returns_the_row(conn):
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    row = db.get_stage_by_row_id(conn, stage_row_id)
+    assert row["stage_id"] == "ideation"
+
+
+def test_get_stage_by_row_id_returns_none_when_missing(conn):
+    assert db.get_stage_by_row_id(conn, 999) is None
