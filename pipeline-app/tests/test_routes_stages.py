@@ -96,6 +96,22 @@ def test_stage_page_shows_grounding_companion_as_input_for_downstream_stage(clie
     assert "Grounding companion body text" in page.text
 
 
+def test_stage_page_grounding_output_pointer_target_missing_shows_no_output(client):
+    """Mirrors Task 2's approval_service fix: a dangling pointer.yaml must
+    render as no output, never crash the page."""
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "rgs", "brand": "raisinggoodsports"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    grounding_dir = run_dir / "00-grounding"
+    write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md")
+
+    page = test_client.get(f"/projects/{project_id}/stages/grounding")
+    assert page.status_code == 200
+    assert "No output yet." in page.text
+
+
 def test_stage_page_unknown_project_returns_404(client):
     test_client, tmp_path, app = client
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})

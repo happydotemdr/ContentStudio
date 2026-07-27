@@ -70,23 +70,16 @@ def stage_page(request: Request, project_id: int, stage_id: str):
     grounding_input_body = None
     if project["brand"] == "raisinggoodsports" and stage_id != "grounding":
         grounding_dir = run_dir / "00-grounding"
-        pointer = grounding_service.read_pointer(grounding_dir)
-        if pointer:
-            grounding_path = request.app.state.repo_root / pointer
-            if grounding_path.exists():
-                _, grounding_input_body = artifacts.parse_frontmatter(
-                    grounding_path.read_text(encoding="utf-8")
-                )
+        grounding_path = artifacts.resolve_latest_artifact(
+            request.app.state.repo_root, "grounding", grounding_dir
+        )
+        if grounding_path is not None:
+            _, grounding_input_body = artifacts.parse_frontmatter(
+                grounding_path.read_text(encoding="utf-8")
+            )
 
     output_body = None
-    if stage_id == "grounding":
-        # Grounding's real output lands in rgs-briefs/, referenced by a
-        # pointer.yaml the turn route writes into stage_dir -- not the
-        # artifact.v{N}.md convention every other stage uses.
-        pointer = grounding_service.read_pointer(stage_dir)
-        latest = (request.app.state.repo_root / pointer) if pointer else None
-    else:
-        latest = artifacts.latest_artifact_path(stage_dir)
+    latest = artifacts.resolve_latest_artifact(request.app.state.repo_root, stage_id, stage_dir)
     if latest is not None:
         _, output_body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
 
