@@ -53,11 +53,13 @@ def propagate_staleness(
     changed_stage_id: str,
 ) -> None:
     """Flip approved downstream stages to stale when changed_stage_id's latest
-    artifact no longer matches the hash they recorded. Public because both
-    paths that mint a new artifact version call it: run_stage_turn (chat /
-    regenerate) and routes.stages.edit_stage_output_route (hand edit)."""
-    dependents = [s for s in all_stage_defs if changed_stage_id in s.depends_on]
-    for dep_stage in dependents:
+    artifact no longer matches the hash they recorded, then cascade: anything
+    approved that was built on a stage this call just made stale is stale too.
+    Public because both paths that mint a new artifact version call it:
+    run_stage_turn (chat / regenerate) and
+    routes.stages.edit_stage_output_route (hand edit)."""
+    newly_stale: list[str] = []
+    for dep_stage in _dependents_of(all_stage_defs, changed_stage_id):
         row = db_mod.get_stage(conn, project_id, dep_stage.id)
         if row is None or row["status"] != StageStatus.APPROVED.value:
             continue
@@ -71,6 +73,27 @@ def propagate_staleness(
         current_hashes = _current_upstream_hashes(run_dir, dep_upstream_defs)
         if is_stale(recorded, current_hashes):
             db_mod.update_stage_status(conn, row["id"], StageStatus.STALE.value)
+            newly_stale.append(dep_stage.id)
+
+    # Second level and beyond is status-driven, not hash-driven: a stale
+    # stage's own artifact file is never rewritten (only its DB row changes),
+    # so its dependents' recorded hashes still match and is_stale would say
+    # False. Being built on a stage that is itself stale is what makes them
+    # stale. Terminates regardless of topology because a stage is enqueued
+    # only at the moment it leaves `approved`, so at most once.
+    queue = list(newly_stale)
+    while queue:
+        stale_stage_id = queue.pop()
+        for dep_stage in _dependents_of(all_stage_defs, stale_stage_id):
+            row = db_mod.get_stage(conn, project_id, dep_stage.id)
+            if row is None or row["status"] != StageStatus.APPROVED.value:
+                continue
+            db_mod.update_stage_status(conn, row["id"], StageStatus.STALE.value)
+            queue.append(dep_stage.id)
+
+
+def _dependents_of(all_stage_defs: list[StageDef], stage_id: str) -> list[StageDef]:
+    return [s for s in all_stage_defs if stage_id in s.depends_on]
 
 
 async def run_stage_turn(

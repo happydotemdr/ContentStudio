@@ -136,4 +136,82 @@ async def test_disconnected_turn_is_marked_aborted_not_left_running(conn, projec
 
     turns = db.list_turns(conn, project["stage_row_id"])
     assert turns[-1]["status"] == "aborted"
+
+
+CHAIN_STAGES = [
+    StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02", depends_on=[]),
+    StageDef(id="voiceover", skill="voiceover-brief", dir_prefix="03", depends_on=["scripting"]),
+    StageDef(id="visual", skill="visual-prompts", dir_prefix="03", depends_on=["scripting"]),
+    StageDef(id="assembly", skill="shorts-assembly", dir_prefix="04", depends_on=["voiceover", "visual"]),
+    StageDef(id="repurpose", skill="social-repurpose", dir_prefix="05", depends_on=["assembly"]),
+]
+
+
+def _dep(run_dir: Path, relpath: str) -> dict:
+    path = run_dir / relpath
+    return {"path": relpath, "sha256": artifacts.compute_sha256(path)}
+
+
+def _build_approved_chain(conn, tmp_path: Path, downstream_statuses: dict[str, str] | None = None):
+    """Full scripting -> {voiceover, visual} -> assembly -> repurpose chain,
+    every stage approved and every artifact's frontmatter recording the real
+    hashes of the upstream artifacts it was built on. downstream_statuses
+    overrides individual stage statuses."""
+    statuses = {s.id: StageStatus.APPROVED.value for s in CHAIN_STAGES}
+    statuses.update(downstream_statuses or {})
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    for stage in CHAIN_STAGES:
+        db.create_stage_row(conn, project_id, stage.id, statuses[stage.id])
+
+    run_dir = tmp_path / "runs" / "abc-1"
+    artifacts.write_artifact(run_dir / "02-scripting", 1, {"stage": "shorts-scripting"}, "script v1")
+    script_dep = [_dep(run_dir, "02-scripting/artifact.v1.md")]
+    artifacts.write_artifact(run_dir / "03-voiceover", 1, {"stage": "voiceover-brief", "depends_on": script_dep}, "vo v1")
+    artifacts.write_artifact(run_dir / "03-visual", 1, {"stage": "visual-prompts", "depends_on": script_dep}, "vis v1")
+    assembly_dep = [
+        _dep(run_dir, "03-voiceover/artifact.v1.md"),
+        _dep(run_dir, "03-visual/artifact.v1.md"),
+    ]
+    artifacts.write_artifact(run_dir / "04-assembly", 1, {"stage": "shorts-assembly", "depends_on": assembly_dep}, "asm v1")
+    artifacts.write_artifact(
+        run_dir / "05-repurpose", 1,
+        {"stage": "social-repurpose", "depends_on": [_dep(run_dir, "04-assembly/artifact.v1.md")]},
+        "rep v1",
+    )
+    return project_id, run_dir
+
+
+def test_propagate_staleness_cascades_past_direct_dependents(conn, tmp_path: Path):
+    """Regenerating scripting must not stop at voiceover/visual: assembly and
+    repurpose were built on those now-stale briefs, so leaving them approved
+    reports a green final stage on a broken chain. The cascade cannot be a
+    repeat of the hash check -- voiceover's own artifact file is untouched
+    when it goes stale, so assembly's recorded hash for it still matches."""
+    project_id, run_dir = _build_approved_chain(conn, tmp_path)
+
+    # Regenerate scripting -> v2 becomes the current latest, so every
+    # dependent's recorded 02-scripting/artifact.v1.md path stops matching.
+    artifacts.write_artifact(run_dir / "02-scripting", 2, {"stage": "shorts-scripting"}, "script v2")
+
+    turn_service.propagate_staleness(conn, run_dir, CHAIN_STAGES, project_id, "scripting")
+
+    for stage_id in ("voiceover", "visual", "assembly", "repurpose"):
+        assert db.get_stage(conn, project_id, stage_id)["status"] == StageStatus.STALE.value, stage_id
+
+
+def test_propagate_staleness_cascade_stops_at_a_non_approved_stage(conn, tmp_path: Path):
+    """The cascade only invalidates APPROVED work. assembly sitting at
+    awaiting_review has nothing approved to invalidate, and repurpose is
+    still built on assembly's unchanged v1 -- so repurpose stays approved."""
+    project_id, run_dir = _build_approved_chain(
+        conn, tmp_path, downstream_statuses={"assembly": StageStatus.AWAITING_REVIEW.value}
+    )
+    artifacts.write_artifact(run_dir / "02-scripting", 2, {"stage": "shorts-scripting"}, "script v2")
+
+    turn_service.propagate_staleness(conn, run_dir, CHAIN_STAGES, project_id, "scripting")
+
+    assert db.get_stage(conn, project_id, "voiceover")["status"] == StageStatus.STALE.value
+    assert db.get_stage(conn, project_id, "visual")["status"] == StageStatus.STALE.value
+    assert db.get_stage(conn, project_id, "assembly")["status"] == StageStatus.AWAITING_REVIEW.value
+    assert db.get_stage(conn, project_id, "repurpose")["status"] == StageStatus.APPROVED.value
     assert turn_service.any_turn_running(conn) is False
