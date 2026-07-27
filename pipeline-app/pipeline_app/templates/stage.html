@@ -4,7 +4,11 @@
 
 <section class="input-panel">
   <h2>Input</h2>
-  {% if input_body %}<pre>{{ input_body }}</pre>{% else %}<p>No upstream input.</p>{% endif %}
+  {% if grounding_input_body %}
+  <h3>Grounding companion</h3>
+  <pre>{{ grounding_input_body }}</pre>
+  {% endif %}
+  {% if input_body %}<pre>{{ input_body }}</pre>{% elif not grounding_input_body %}<p>No upstream input.</p>{% endif %}
 </section>
 
 <section class="chat-panel">

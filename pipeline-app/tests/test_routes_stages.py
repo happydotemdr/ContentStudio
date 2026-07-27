@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pipeline_app import artifacts
+from pipeline_app.grounding_service import write_pointer
 from pipeline_app.main import create_app
 
 
@@ -44,6 +45,55 @@ def test_stage_page_shows_input_output_and_transcript(client):
     assert page.status_code == 200
     assert "concept brief text" in page.text
     assert "here is your concept brief" in page.text
+
+
+def test_stage_page_shows_grounding_output_via_pointer(client):
+    """Grounding writes its real output to rgs-briefs/, referenced by a
+    pointer.yaml -- not artifact.v{N}.md like every other stage. The stage
+    page's output panel must resolve through the pointer, same as approve."""
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "rgs", "brand": "raisinggoodsports"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    grounding_dir = run_dir / "00-grounding"
+    rgs_briefs_dir = tmp_path / "rgs-briefs"
+    rgs_briefs_dir.mkdir(parents=True)
+    (rgs_briefs_dir / "2026-07-27-example-brief.md").write_text(
+        "---\nstatus: candidate\n---\n\nBrief body text", encoding="utf-8"
+    )
+    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md")
+
+    page = test_client.get(f"/projects/{project_id}/stages/grounding")
+    assert page.status_code == 200
+    assert "Brief body text" in page.text
+
+
+def test_stage_page_shows_grounding_companion_as_input_for_downstream_stage(client):
+    """Ideation has no formal `depends_on` (grounding is an optional RGS
+    companion, not a hard pipeline dependency -- see pipeline.yaml), but the
+    chat/turn_service path already hands grounding's brief to the AI via
+    grounding_pointer (routes/stages.py's stage_chat, turn_service.py:116).
+    The Input panel must show the same companion brief, or the page looks
+    like grounding produced nothing usable even after being approved."""
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "rgs", "brand": "raisinggoodsports"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    grounding_dir = run_dir / "00-grounding"
+    rgs_briefs_dir = tmp_path / "rgs-briefs"
+    rgs_briefs_dir.mkdir(parents=True)
+    (rgs_briefs_dir / "2026-07-27-example-brief.md").write_text(
+        "---\nstatus: candidate\n---\n\nGrounding companion body text", encoding="utf-8"
+    )
+    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md")
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert "Grounding companion body text" in page.text
 
 
 def test_stage_page_unknown_project_returns_404(client):

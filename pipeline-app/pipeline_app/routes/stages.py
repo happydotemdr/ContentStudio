@@ -63,8 +63,30 @@ def stage_page(request: Request, project_id: int, stage_id: str):
         if up_latest is not None:
             _, input_body = artifacts.parse_frontmatter(up_latest.read_text(encoding="utf-8"))
 
+    # Grounding is an optional RGS companion, not a formal `depends_on` --
+    # the chat/turn_service path already hands it to the AI via
+    # grounding_pointer (see stage_chat below), so the Input panel must show
+    # it too or the page looks like grounding produced nothing usable.
+    grounding_input_body = None
+    if project["brand"] == "raisinggoodsports" and stage_id != "grounding":
+        grounding_dir = run_dir / "00-grounding"
+        pointer = grounding_service.read_pointer(grounding_dir)
+        if pointer:
+            grounding_path = request.app.state.repo_root / pointer
+            if grounding_path.exists():
+                _, grounding_input_body = artifacts.parse_frontmatter(
+                    grounding_path.read_text(encoding="utf-8")
+                )
+
     output_body = None
-    latest = artifacts.latest_artifact_path(stage_dir)
+    if stage_id == "grounding":
+        # Grounding's real output lands in rgs-briefs/, referenced by a
+        # pointer.yaml the turn route writes into stage_dir -- not the
+        # artifact.v{N}.md convention every other stage uses.
+        pointer = grounding_service.read_pointer(stage_dir)
+        latest = (request.app.state.repo_root / pointer) if pointer else None
+    else:
+        latest = artifacts.latest_artifact_path(stage_dir)
     if latest is not None:
         _, output_body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
 
@@ -76,7 +98,8 @@ def stage_page(request: Request, project_id: int, stage_id: str):
         request, "stage.html",
         {
             "project": project, "stage_id": stage_id,
-            "input_body": input_body, "output_body": output_body,
+            "input_body": input_body, "grounding_input_body": grounding_input_body,
+            "output_body": output_body,
             "transcript": transcript, "nav": nav,
         },
     )

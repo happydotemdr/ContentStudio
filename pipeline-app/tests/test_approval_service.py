@@ -5,12 +5,17 @@ import pytest
 
 from pipeline_app import artifacts, db, turn_service
 from pipeline_app.approval_service import approve_stage
+from pipeline_app.grounding_service import write_pointer
 from pipeline_app.pipeline_config import StageDef
 from pipeline_app.state_machine import StageStatus
 
 STAGES = [
     StageDef(id="ideation", skill="shorts-ideation", dir_prefix="01", depends_on=[]),
     StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02", depends_on=["ideation"]),
+]
+
+GROUNDING_STAGES = [
+    StageDef(id="grounding", skill="rgs-grounding", dir_prefix="00", depends_on=[], brand_scope="raisinggoodsports"),
 ]
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "stage_templates"
@@ -62,6 +67,33 @@ def test_approve_stamps_artifact_and_unlocks_dependent(conn, tmp_path: Path):
 
     scripting_row = db.get_stage(conn, project_id, "scripting")
     assert scripting_row["status"] == StageStatus.READY.value
+
+
+def test_approve_stage_grounding_resolves_artifact_via_pointer(conn, tmp_path: Path):
+    """Grounding's real output lands in rgs-briefs/<file>.md, referenced by a
+    pointer.yaml the turn route writes into the stage dir (see
+    grounding_service.write_pointer) -- not the artifact.v{N}.md convention
+    every other stage uses. approve_stage must resolve through the pointer
+    instead of glob-searching stage_dir directly."""
+    project_id = db.create_project(conn, "rgs-1", "rgs", "raisinggoodsports", "2026-07-25T12:00:00Z")
+    db.create_stage_row(conn, project_id, "grounding", "awaiting_review")
+
+    run_dir = tmp_path / "runs" / "rgs-1"
+    grounding_dir = run_dir / "00-grounding"
+    rgs_briefs_dir = tmp_path / "rgs-briefs"
+    rgs_briefs_dir.mkdir(parents=True)
+    brief_path = rgs_briefs_dir / "2026-07-27-example-brief.md"
+    brief_path.write_text("---\nstatus: candidate\n---\n\nBrief body", encoding="utf-8")
+    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md")
+
+    approve_stage(conn, tmp_path, run_dir, project_id, GROUNDING_STAGES, "grounding")
+
+    meta, _ = artifacts.parse_frontmatter(brief_path.read_text(encoding="utf-8"))
+    assert meta["status"] == "final"
+    assert meta["finalized_at"] is not None
+
+    grounding_row = db.get_stage(conn, project_id, "grounding")
+    assert grounding_row["status"] == StageStatus.APPROVED.value
 
 
 def test_approve_raises_when_no_artifact_exists(conn, tmp_path: Path):
