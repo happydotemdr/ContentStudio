@@ -2,7 +2,7 @@ import datetime
 import sqlite3
 from pathlib import Path
 
-from pipeline_app import artifacts, db as db_mod, grounding_service
+from pipeline_app import artifacts, db as db_mod
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
 from pipeline_app.state_machine import StageStatus, stages_to_unlock
 
@@ -19,14 +19,7 @@ def approve_stage(
     stage_def = next(s for s in stage_defs if s.id == stage_id)
     stage_dir = run_dir / stage_dir_name(stage_def)
 
-    if stage_id == "grounding":
-        # Grounding's real output lands in rgs-briefs/, referenced by a
-        # pointer.yaml the turn route writes into stage_dir -- not the
-        # artifact.v{N}.md convention every other stage uses.
-        pointer = grounding_service.read_pointer(stage_dir)
-        latest = (repo_root / pointer) if pointer else None
-    else:
-        latest = artifacts.latest_artifact_path(stage_dir)
+    latest = artifacts.resolve_latest_artifact(repo_root, stage_id, stage_dir)
     if latest is None:
         raise ValueError(f"No artifact to approve for stage '{stage_id}'.")
 

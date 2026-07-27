@@ -105,6 +105,17 @@ def test_approve_raises_when_no_artifact_exists(conn, tmp_path: Path):
         approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
 
 
+def test_approve_stage_grounding_pointer_target_missing_returns_valueerror_not_crash(conn, tmp_path: Path):
+    project_id = db.create_project(conn, "rgs-1", "rgs", "raisinggoodsports", "2026-07-25T12:00:00Z")
+    db.create_stage_row(conn, project_id, "grounding", "awaiting_review")
+    run_dir = tmp_path / "runs" / "rgs-1"
+    grounding_dir = run_dir / "00-grounding"
+    write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md")
+
+    with pytest.raises(ValueError, match="No artifact to approve"):
+        approve_stage(conn, tmp_path, run_dir, project_id, GROUNDING_STAGES, "grounding")
+
+
 @pytest.mark.asyncio
 async def test_regenerating_an_approved_stage_marks_approved_dependent_stale(conn, tmp_path: Path, monkeypatch):
     """End-to-end: approve ideation -> approve scripting (built on ideation
