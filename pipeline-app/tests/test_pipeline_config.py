@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from pipeline_app.pipeline_config import StageDef, build_stage_nav, load_topology, stage_dir_name
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -124,3 +126,54 @@ def test_build_stage_nav_preserves_stage_defs_order_not_dir_prefix_sort():
     ]
     nav = build_stage_nav(stage_defs, stage_rows)
     assert [group[0]["id"] for group in nav] == ["scripting", "ideation"]
+
+
+def _write_topology(tmp_path: Path, yaml_text: str) -> Path:
+    path = tmp_path / "pipeline.yaml"
+    path.write_text(yaml_text, encoding="utf-8")
+    return path
+
+
+def test_load_topology_rejects_duplicate_stage_id(tmp_path: Path):
+    path = _write_topology(
+        tmp_path,
+        "stages:\n"
+        "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n"
+        "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01b\"\n    depends_on: []\n",
+    )
+    with pytest.raises(ValueError, match="duplicate stage id 'ideation'"):
+        load_topology(path)
+
+
+def test_load_topology_rejects_unknown_depends_on(tmp_path: Path):
+    path = _write_topology(
+        tmp_path,
+        "stages:\n"
+        "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n"
+        "    depends_on: [ideaton]\n",
+    )
+    with pytest.raises(ValueError, match="unknown stage 'ideaton'"):
+        load_topology(path)
+
+
+def test_load_topology_rejects_dependency_cycle(tmp_path: Path):
+    path = _write_topology(
+        tmp_path,
+        "stages:\n"
+        "  - id: a\n    skill: x\n    dir_prefix: \"01\"\n    depends_on: [b]\n"
+        "  - id: b\n    skill: x\n    dir_prefix: \"02\"\n    depends_on: [a]\n",
+    )
+    with pytest.raises(ValueError, match="dependency cycle"):
+        load_topology(path)
+
+
+def test_load_topology_accepts_valid_graph(tmp_path: Path):
+    path = _write_topology(
+        tmp_path,
+        "stages:\n"
+        "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n"
+        "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n"
+        "    depends_on: [ideation]\n",
+    )
+    stages = load_topology(path)
+    assert [s.id for s in stages] == ["ideation", "scripting"]

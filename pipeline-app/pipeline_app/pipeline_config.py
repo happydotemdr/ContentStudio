@@ -16,7 +16,7 @@ class StageDef:
 
 def load_topology(path: Path) -> list[StageDef]:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return [
+    stages = [
         StageDef(
             id=s["id"],
             skill=s["skill"],
@@ -27,6 +27,43 @@ def load_topology(path: Path) -> list[StageDef]:
         )
         for s in data["stages"]
     ]
+    _validate_topology(stages)
+    return stages
+
+
+def _validate_topology(stages: list[StageDef]) -> None:
+    seen: set[str] = set()
+    for stage in stages:
+        if stage.id in seen:
+            raise ValueError(f"pipeline.yaml: duplicate stage id '{stage.id}'")
+        seen.add(stage.id)
+    for stage in stages:
+        for dep in stage.depends_on:
+            if dep not in seen:
+                raise ValueError(
+                    f"pipeline.yaml: stage '{stage.id}' depends_on unknown stage '{dep}'"
+                )
+    _check_no_cycles(stages)
+
+
+def _check_no_cycles(stages: list[StageDef]) -> None:
+    by_id = {s.id: s for s in stages}
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {s.id: WHITE for s in stages}
+
+    def visit(stage_id: str, path: list[str]) -> None:
+        color[stage_id] = GRAY
+        for dep in by_id[stage_id].depends_on:
+            if color[dep] == GRAY:
+                cycle = " -> ".join(path + [dep])
+                raise ValueError(f"pipeline.yaml: dependency cycle detected: {cycle}")
+            if color[dep] == WHITE:
+                visit(dep, path + [dep])
+        color[stage_id] = BLACK
+
+    for stage in stages:
+        if color[stage.id] == WHITE:
+            visit(stage.id, [stage.id])
 
 
 def stage_dir_name(stage: StageDef) -> str:
