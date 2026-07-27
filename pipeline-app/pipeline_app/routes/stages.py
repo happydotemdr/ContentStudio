@@ -194,6 +194,11 @@ def approve_stage_route(request: Request, project_id: int, stage_id: str):
 @router.post("/projects/{project_id}/stages/{stage_id}/edit")
 def edit_stage_output_route(request: Request, project_id: int, stage_id: str, body: str = Form(...)):
     project, stage_def, stage_row = _resolve_project_stage(request, project_id, stage_id)
+    if stage_id == "grounding":
+        return PlainTextResponse(
+            "Grounding's output lives in rgs-briefs/ -- edit that file directly, not through this app.",
+            status_code=409,
+        )
     if stage_row["status"] in (StageStatus.LOCKED.value, StageStatus.RUNNING.value):
         return PlainTextResponse(
             f"Stage '{stage_id}' is {stage_row['status']} and cannot be edited yet.",

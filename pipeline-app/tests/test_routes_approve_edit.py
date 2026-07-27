@@ -188,3 +188,23 @@ def test_edit_route_blocks_locked_stage(two_stage_client):
     )
     assert resp.status_code == 409
     assert "locked" in resp.text
+
+
+def test_edit_route_blocks_grounding(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: grounding\n    skill: rgs-grounding\n    dir_prefix: \"00\"\n"
+        "    depends_on: []\n    brand_scope: raisinggoodsports\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "rgs", "brand": "raisinggoodsports"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/grounding/edit", data={"body": "hand-edited text"}
+    )
+    assert resp.status_code == 409
+    assert "rgs-briefs" in resp.text
