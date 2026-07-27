@@ -14,10 +14,12 @@ stages:
     depends_on: [ideation]
   - id: voiceover
     skill: voiceover-brief
+    specialist: elevenlabs-audio
     dir_prefix: "03"
     depends_on: [scripting]
   - id: visual
     skill: visual-prompts
+    specialist: midjourney-prompting
     dir_prefix: "03"
     depends_on: [scripting]
   - id: assembly

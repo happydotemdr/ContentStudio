@@ -11,6 +11,7 @@ class StageDef:
     dir_prefix: str
     depends_on: list[str] = field(default_factory=list)
     brand_scope: str | None = None
+    specialist: str | None = None
 
 
 def load_topology(path: Path) -> list[StageDef]:
@@ -22,6 +23,7 @@ def load_topology(path: Path) -> list[StageDef]:
             dir_prefix=s["dir_prefix"],
             depends_on=list(s.get("depends_on", [])),
             brand_scope=s.get("brand_scope"),
+            specialist=s.get("specialist"),
         )
         for s in data["stages"]
     ]

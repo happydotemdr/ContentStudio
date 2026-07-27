@@ -53,3 +53,21 @@ def test_stage_dir_name_formats_prefix_and_id():
     stages = load_topology(REPO_ROOT / "pipeline.yaml")
     scripting = next(s for s in stages if s.id == "scripting")
     assert stage_dir_name(scripting) == "02-scripting"
+
+
+def test_visual_stage_has_specialist_midjourney_prompting():
+    stages = load_topology(REPO_ROOT / "pipeline.yaml")
+    visual = next(s for s in stages if s.id == "visual")
+    assert visual.specialist == "midjourney-prompting"
+
+
+def test_voiceover_stage_has_specialist_elevenlabs_audio():
+    stages = load_topology(REPO_ROOT / "pipeline.yaml")
+    voiceover = next(s for s in stages if s.id == "voiceover")
+    assert voiceover.specialist == "elevenlabs-audio"
+
+
+def test_ideation_has_no_specialist():
+    stages = load_topology(REPO_ROOT / "pipeline.yaml")
+    ideation = next(s for s in stages if s.id == "ideation")
+    assert ideation.specialist is None
