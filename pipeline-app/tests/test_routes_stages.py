@@ -115,6 +115,8 @@ def test_stage_page_shows_pipeline_nav_with_current_highlight(client):
     page = test_client.get(f"/projects/{project_id}/stages/ideation")
     assert page.status_code == 200
     assert 'class="pipeline-stage current"' in page.text
+    assert "grounding" not in page.text
+    assert page.text.count('class="pipeline-step"') == 1
 
 
 def test_stage_page_shows_grouped_parallel_pair_in_nav(tmp_path: Path, monkeypatch):
