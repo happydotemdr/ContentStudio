@@ -1,5 +1,5 @@
 body { font-family: system-ui, sans-serif; margin: 2rem; }
-.status { padding: 0.1rem 0.5rem; border-radius: 0.25rem; font-size: 0.85rem; }
+.status { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 0.25rem; font-size: 0.85rem; }
 .status-locked { background: #ddd; }
 .status-ready { background: #cfe8ff; }
 .status-running { background: #fff3b0; }
