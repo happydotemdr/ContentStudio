@@ -30,3 +30,13 @@ body { font-family: system-ui, sans-serif; margin: 2rem; }
   border-radius: 0.25rem;
 }
 .specialist { font-size: 0.75rem; color: #777; margin: 0.15rem 0 0; }
+
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 70ch;
+  line-height: 1.5;
+  background: #f6f6f6;
+  padding: 0.75rem;
+  border-radius: 0.25rem;
+}
