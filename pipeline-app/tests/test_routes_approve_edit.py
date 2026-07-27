@@ -172,3 +172,19 @@ def test_approve_route_blocks_locked_stage(two_stage_client):
     resp = test_client.post(f"/projects/{project_id}/stages/scripting/approve")
     assert resp.status_code == 409
     assert "locked" in resp.text
+
+
+def test_edit_route_blocks_locked_stage(two_stage_client):
+    test_client, tmp_path, app = two_stage_client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    # scripting depends_on: [ideation], which hasn't been approved, so it's
+    # still locked -- hand-editing it must be rejected the same way chat and
+    # approve already are, or a locked stage can be pushed to
+    # awaiting_review/approved by editing around the gate entirely.
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/edit", data={"body": "sneaky edit"}
+    )
+    assert resp.status_code == 409
+    assert "locked" in resp.text
