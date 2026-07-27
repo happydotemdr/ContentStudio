@@ -23,11 +23,14 @@ body { font-family: system-ui, sans-serif; margin: 2rem; }
   margin-right: 0.35rem;
 }
 .pipeline-step-group { display: flex; gap: 1rem; flex-wrap: wrap; }
-.pipeline-stage.current {
-  border-left: 3px solid #2b6fd1;
-  background: #eef4fd;
+.pipeline-stage {
+  border-left: 3px solid transparent;
   padding: 0.25rem 0.5rem;
   border-radius: 0.25rem;
+}
+.pipeline-stage.current {
+  border-left-color: #2b6fd1;
+  background: #eef4fd;
 }
 .specialist { font-size: 0.75rem; color: #777; margin: 0.15rem 0 0; }
 
