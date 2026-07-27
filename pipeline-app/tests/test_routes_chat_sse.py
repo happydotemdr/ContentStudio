@@ -113,3 +113,24 @@ def test_grounding_chat_writes_to_rgs_briefs_and_pointer(client, monkeypatch, tm
         "SELECT * FROM stages WHERE project_id = ? AND stage_id = ?", (project_id, "grounding")
     ).fetchone()
     assert stage_row["status"] == "awaiting_review"
+
+
+def test_chat_endpoint_returns_409_for_locked_stage(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n"
+        "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n"
+        "    depends_on: [ideation]\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/chat", data={"message": "hi"},
+    )
+    assert resp.status_code == 409
+    assert "locked" in resp.text

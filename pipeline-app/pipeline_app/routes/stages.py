@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 
 from pipeline_app import approval_service, artifacts, db as db_mod, grounding_service, turn_service
 from pipeline_app.pipeline_config import build_stage_nav, stage_dir_name
+from pipeline_app.state_machine import StageStatus
 
 router = APIRouter()
 
@@ -102,7 +103,12 @@ def stage_page(request: Request, project_id: int, stage_id: str):
 
 @router.post("/projects/{project_id}/stages/{stage_id}/chat")
 async def stage_chat(request: Request, project_id: int, stage_id: str, message: str = Form(...)):
-    project, stage_def, _stage_row = _resolve_project_stage(request, project_id, stage_id)
+    project, stage_def, stage_row = _resolve_project_stage(request, project_id, stage_id)
+    if stage_row["status"] in (StageStatus.LOCKED.value, StageStatus.RUNNING.value):
+        return PlainTextResponse(
+            f"Stage '{stage_id}' is {stage_row['status']} and cannot accept chat messages yet.",
+            status_code=409,
+        )
     conn = request.app.state.conn
     repo_root = request.app.state.repo_root
     stage_defs = request.app.state.stage_defs
@@ -167,7 +173,12 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
 
 @router.post("/projects/{project_id}/stages/{stage_id}/approve")
 def approve_stage_route(request: Request, project_id: int, stage_id: str):
-    project, _stage_def, _stage_row = _resolve_project_stage(request, project_id, stage_id)
+    project, _stage_def, stage_row = _resolve_project_stage(request, project_id, stage_id)
+    if stage_row["status"] in (StageStatus.LOCKED.value, StageStatus.RUNNING.value):
+        return PlainTextResponse(
+            f"Stage '{stage_id}' is {stage_row['status']} and cannot be approved yet.",
+            status_code=409,
+        )
     conn = request.app.state.conn
     repo_root = request.app.state.repo_root
     stage_defs = request.app.state.stage_defs

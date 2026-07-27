@@ -159,3 +159,16 @@ def test_edit_route_unknown_stage_404s(client):
         f"/projects/{project_id}/stages/does-not-exist/edit", data={"body": "hand-edited body"}
     )
     assert unknown_resp.status_code == 404
+
+
+def test_approve_route_blocks_locked_stage(two_stage_client):
+    test_client, tmp_path, app = two_stage_client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    # scripting depends_on: [ideation], which hasn't been approved, so it's
+    # still locked -- even though its directory has no artifact either, the
+    # gate must reject it for the right reason (locked, not "no artifact").
+    resp = test_client.post(f"/projects/{project_id}/stages/scripting/approve")
+    assert resp.status_code == 409
+    assert "locked" in resp.text
