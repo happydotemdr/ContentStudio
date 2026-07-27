@@ -6,7 +6,7 @@ body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.5; }
 .status-awaiting_review { background: #ffd9a0; }
 .status-approved { background: #c6f0c2; }
 .status-stale { background: #ffb3b3; }
-.status-no_artifact { background: #ffb3b3; }
+.status-no_artifact { background: #eee; border: 1px dashed #999; }
 
 .pipeline-nav { list-style: none; margin: 0; padding: 0; }
 .pipeline-step {
