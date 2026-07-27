@@ -24,7 +24,8 @@ def approve_stage(
         raise ValueError(f"No artifact to approve for stage '{stage_id}'.")
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    artifacts.stamp_final(latest, now)
+    if stage_id != "grounding":
+        artifacts.stamp_final(latest, now)
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.APPROVED.value, approved_at=now)
 
     all_rows = db_mod.list_stages(conn, project_id)

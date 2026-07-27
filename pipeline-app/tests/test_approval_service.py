@@ -88,12 +88,31 @@ def test_approve_stage_grounding_resolves_artifact_via_pointer(conn, tmp_path: P
 
     approve_stage(conn, tmp_path, run_dir, project_id, GROUNDING_STAGES, "grounding")
 
-    meta, _ = artifacts.parse_frontmatter(brief_path.read_text(encoding="utf-8"))
-    assert meta["status"] == "final"
-    assert meta["finalized_at"] is not None
-
     grounding_row = db.get_stage(conn, project_id, "grounding")
     assert grounding_row["status"] == StageStatus.APPROVED.value
+
+
+def test_approve_stage_grounding_does_not_mutate_brief_content(conn, tmp_path: Path):
+    """approval_service must never rewrite rgs-briefs/*.md -- that file's
+    frontmatter belongs to the rgs-grounding/rgs-pairing-review skills, and
+    approval state already lives in the stages DB row."""
+    project_id = db.create_project(conn, "rgs-1", "rgs", "raisinggoodsports", "2026-07-25T12:00:00Z")
+    db.create_stage_row(conn, project_id, "grounding", "awaiting_review")
+    run_dir = tmp_path / "runs" / "rgs-1"
+    grounding_dir = run_dir / "00-grounding"
+    rgs_briefs_dir = tmp_path / "rgs-briefs"
+    rgs_briefs_dir.mkdir(parents=True)
+    brief_path = rgs_briefs_dir / "2026-07-27-example-brief.md"
+    original_text = "---\nstatus: candidate\nresearch_codes: [R3]\n---\n\nBrief body"
+    brief_path.write_text(original_text, encoding="utf-8")
+    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md")
+
+    approve_stage(conn, tmp_path, run_dir, project_id, GROUNDING_STAGES, "grounding")
+
+    assert brief_path.read_text(encoding="utf-8") == original_text
+    grounding_row = db.get_stage(conn, project_id, "grounding")
+    assert grounding_row["status"] == StageStatus.APPROVED.value
+    assert grounding_row["approved_at"] is not None
 
 
 def test_approve_raises_when_no_artifact_exists(conn, tmp_path: Path):
