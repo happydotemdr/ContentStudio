@@ -154,19 +154,21 @@ Before writing a single prompt string, lay out the whole shot sequence as a tabl
 columns `# | Beat | Register | Shot class | Scale | Camera height | What changes vs. previous` — per
 `references/visual-arc.md` §3 `[I]`. This is not cosmetic: fixing a repetitive arc later means editing a
 table row, not rewriting prompt strings that were written under the wrong plan, and it happens before
-any GPU minute is spent `[I]`. Rotate scale (at least 3 distinct values), camera height (at least 2
-distinct values), shot class, and register across the table per `references/visual-arc.md` §4–§6; review
-it by eye for repetition before writing a single prompt.
+any GPU minute is spent `[I]`.
 
-Once the arc table is built, run Gate C against it **before writing any prompt**:
+**Check the table by eye against the sequence/balance rules now — this is a manual pre-check, not a tool
+run.** Rotate scale (at least 3 distinct values), camera height (at least 2 distinct values), shot class,
+and register across the table, and make sure no run of more than 2 consecutive shots shares the same
+register, per `references/visual-arc.md` §4–§7. This is the primary instruction for this step: read down
+the table and confirm it, row by row, before a single prompt string is written. There is no tool to run
+against a plain arc table at this stage — `scripts/lint_prompt_sheet.py` parses the `### Shot N — ...`
+heading-plus-fenced-prompt format that only exists once prompts have been written (step 7), so it cannot
+be run here; catch repetition and imbalance by eye against the rules above instead.
 
-```bash
-python scripts/lint_prompt_sheet.py <path>
-```
-
-This is the same Gate C run required again at emission (step 7) — running it here, on the table alone,
-catches a repetitive or unbalanced arc while it's still a one-cell edit, rather than after prompts exist
-`[I]` (`references/visual-arc.md` §1–§2, §9).
+The **mechanical, mandatory** Gate C run — the actual `scripts/lint_prompt_sheet.py` command, which
+blocks emission on failure — happens once at step 7, after the sheet has real shot headings and prompts
+to parse. This step's eyeball check exists to make that later run pass on the first try, not to replace
+it.
 
 ### 4. Delegate each still prompt to `midjourney-prompting`
 
@@ -193,10 +195,13 @@ Two things you still own at this step:
   `[C] (Tokenized AI, qFYJb0zYztY)`, so a beat's hook card or caption copy passes through to
   `shorts-assembly` as overlay copy. Flag it in the handoff so `midjourney-prompting` appends `No Text.`
 - **Sheet-level coherence is Gate C's job, not a judgment call.** Whether the sheet reads as one Short
-  with real shot-to-shot variety is now a mechanical question — run `scripts/lint_prompt_sheet.py`
-  (step 3b, and again mandatory at step 7) rather than eyeballing whether two adjacent beats "look
-  related" `[I]`. If Gate C fails, the fix is almost always the arc table (step 3b), not individual
-  prompt wording.
+  with real shot-to-shot variety is a mechanical question at emission — `scripts/lint_prompt_sheet.py`
+  runs mandatorily at step 7 against the finished sheet, rather than eyeballing whether two adjacent
+  beats "look related" `[I]`. Step 3b's by-eye check of the arc table exists to catch the same
+  repetition/imbalance earlier, while it's still a one-cell table edit, but it is a manual check, not a
+  tool run — the CLI itself only becomes runnable once the sheet has real shot headings and prompts
+  (step 7). If Gate C fails at step 7, the fix is almost always the arc table's sequencing (revisit
+  step 3b's rules), not individual prompt wording.
 - **Do not achieve consistency by repeating a shared style-vocabulary string across prompts.** Cloning a
   style phrase (or an entire prompt body with a noun swapped) into every prompt is exactly what produced
   six near-identical stills in a real production run — see `references/visual-arc.md` §1. Consistency
