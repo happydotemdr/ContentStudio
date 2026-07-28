@@ -159,14 +159,14 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
             # The grounding skill's real artifact lands in rgs-briefs/, not
             # runs/ — finalize_artifact=False above skips turn_service's
             # normal artifact/status handling so this stage-specific path can
-            # take over: identify which file appeared, supersede whichever
-            # brief this project pointed at before (if regenerating), and
-            # point at the new one.
+            # take over: identify which file appeared and point at it. The
+            # grounding skill always writes a new versioned filename (see
+            # rgs-grounding's SKILL.md), so there is nothing to archive —
+            # the previous version is simply no longer the pointer target.
             after = grounding_service.snapshot_rgs_briefs(rgs_briefs_dir)
             new_brief = grounding_service.identify_new_brief(before, after)
             stage_row = db_mod.get_stage(conn, project_id, "grounding")
             if new_brief is not None:
-                grounding_service.supersede_previous_brief(repo_root, grounding_dir)
                 grounding_service.write_pointer(grounding_dir, f"rgs-briefs/{new_brief}")
                 db_mod.update_stage_status(conn, stage_row["id"], "awaiting_review")
             else:

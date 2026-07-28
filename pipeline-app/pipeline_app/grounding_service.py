@@ -37,15 +37,3 @@ def read_pointer(stage_dir: Path) -> str | None:
         return None
     data = yaml.safe_load(pointer_path.read_text(encoding="utf-8")) or {}
     return data.get("rgs_brief_path")
-
-
-def supersede_previous_brief(repo_root: Path, stage_dir: Path) -> None:
-    previous = read_pointer(stage_dir)
-    if not previous:
-        return
-    previous_path = repo_root / previous
-    if not previous_path.exists():
-        return
-    archive_dir = previous_path.parent / ".superseded"
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    previous_path.rename(archive_dir / previous_path.name)
