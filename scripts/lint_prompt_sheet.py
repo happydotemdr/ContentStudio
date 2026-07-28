@@ -219,3 +219,75 @@ def check_register_balance(shots: list[Shot]) -> list[Finding]:
         )
 
     return findings
+
+
+BANNED_REGISTER_A_STRINGS = ("empty gym", "empty youth gym")
+BANNED_REGISTER_B_STRINGS = ("dslr", "shot on 35mm film", "documentary")
+BANNED_REGISTER_B_PATTERNS = (
+    re.compile(r"\d+\s*mm"),
+    re.compile(r"\bf/\d"),
+)
+
+
+def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
+    """C8-C10: the world lock and the register vocabulary separation."""
+    findings: list[Finding] = []
+    sport = world.get("register_a_sport", "").strip().lower()
+    objects = [o.lower() for o in signature_objects(world)]
+
+    for shot in shots:
+        body = prompt_body(shot).lower()
+
+        if shot.register == "A":
+            if not sport:
+                findings.append(
+                    Finding("C8", shot.index, "world lock declares no register_a_sport")
+                )
+            elif sport not in body:
+                findings.append(
+                    Finding("C8", shot.index, f"Register A prompt does not name the sport {sport!r}")
+                )
+            if not any(obj in body for obj in objects):
+                findings.append(
+                    Finding(
+                        "C8",
+                        shot.index,
+                        "Register A prompt contains none of the signature objects "
+                        f"{objects!r}; the sport will not read",
+                    )
+                )
+            for banned in BANNED_REGISTER_A_STRINGS:
+                if banned in body:
+                    findings.append(
+                        Finding(
+                            "C9",
+                            shot.index,
+                            f"banned generic-venue string {banned!r}; name the venue and its "
+                            "signature objects instead",
+                        )
+                    )
+
+        if shot.register == "B":
+            for banned in BANNED_REGISTER_B_STRINGS:
+                if banned in body:
+                    findings.append(
+                        Finding(
+                            "C10",
+                            shot.index,
+                            f"photographic vocabulary {banned!r} in Register B collapses the "
+                            "two registers into one look",
+                        )
+                    )
+            for pattern in BANNED_REGISTER_B_PATTERNS:
+                match = pattern.search(body)
+                if match:
+                    findings.append(
+                        Finding(
+                            "C10",
+                            shot.index,
+                            f"camera optics {match.group(0)!r} in Register B; use painterly "
+                            "vocabulary (ground, glaze, brushwork, light quality)",
+                        )
+                    )
+
+    return findings

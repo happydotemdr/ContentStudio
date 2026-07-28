@@ -14,6 +14,7 @@ from lint_prompt_sheet import (  # noqa: E402
     signature_objects,
     check_sequence,
     check_register_balance,
+    check_world_lock,
 )
 
 SHEET = """\
@@ -238,3 +239,62 @@ def test_c7_passes_when_registers_alternate_twice():
 
 def test_varied_sheet_passes_register_balance():
     assert check_register_balance(VARIED) == []
+
+
+WORLD = {
+    "register_a_sport": "club soccer",
+    "register_a_signature_objects": "goal net, corner flag, painted touchline",
+    "register_b_thinker": "Plutarch",
+}
+
+
+def test_c8_flags_register_a_without_the_sport():
+    shot = make_shot(1, "A", prompt="a child in a room, near a goal net, No Text. --ar 9:16")
+    assert "C8" in codes(check_world_lock([shot], WORLD))
+
+
+def test_c8_flags_register_a_without_a_signature_object():
+    shot = make_shot(1, "A", prompt="a club soccer player standing, in a room, No Text. --ar 9:16")
+    assert "C8" in codes(check_world_lock([shot], WORLD))
+
+
+def test_c8_passes_with_sport_and_signature_object():
+    shot = make_shot(
+        1, "A", prompt="a club soccer pitch, goal net behind, No Text. --ar 9:16"
+    )
+    assert "C8" not in codes(check_world_lock([shot], WORLD))
+
+
+def test_c9_flags_banned_generic_venue():
+    shot = make_shot(
+        1, "A", prompt="a club soccer bag in an empty gym, goal net behind, No Text. --ar 9:16"
+    )
+    assert "C9" in codes(check_world_lock([shot], WORLD))
+
+
+def test_c10_flags_optics_vocabulary_in_register_b():
+    shot = make_shot(
+        1, "B", prompt="oil painting of a colonnade, 85mm lens, DSLR, No Text. --ar 9:16"
+    )
+    assert "C10" in codes(check_world_lock([shot], WORLD))
+
+
+def test_c10_flags_f_stop_in_register_b():
+    shot = make_shot(1, "B", prompt="oil painting of a terrace, f/2.8, No Text. --ar 9:16")
+    assert "C10" in codes(check_world_lock([shot], WORLD))
+
+
+def test_c10_passes_for_painterly_register_b():
+    shot = make_shot(
+        1,
+        "B",
+        prompt="luminous oil painting on aged linen, a colonnade at dawn, No Text. --ar 9:16",
+    )
+    assert check_world_lock([shot], WORLD) == []
+
+
+def test_plate_shots_are_exempt_from_world_lock():
+    shot = make_shot(
+        1, "PLATE", "PLATE", prompt="a dark gradient plate in an empty gym, No Text. --ar 9:16"
+    )
+    assert check_world_lock([shot], WORLD) == []
