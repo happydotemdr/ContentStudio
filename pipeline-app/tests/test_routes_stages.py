@@ -37,10 +37,13 @@ def test_stage_page_shows_input_output_and_transcript(client):
 
     events_dir = stage_dir / "events"
     events_dir.mkdir()
-    (events_dir / "1.jsonl").write_text(
-        json.dumps({"type": "result", "result": "here is your concept brief"}) + "\n",
-        encoding="utf-8",
-    )
+    lines = [
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "here is your concept brief"},
+        ]}}),
+        json.dumps({"type": "result", "result": "here is your concept brief"}),
+    ]
+    (events_dir / "1.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     page = test_client.get(f"/projects/{project_id}/stages/ideation")
     assert page.status_code == 200
@@ -79,6 +82,36 @@ def test_stage_page_transcript_shows_intermediate_assistant_and_tool_use_events(
     # tool_use branch were never implemented. "↪ Read" is what only the
     # tool_use branch produces.
     assert "↪ Read" in page.text
+
+
+def test_stage_page_transcript_does_not_duplicate_final_assistant_text(client):
+    """Task 4 added rendering of assistant-type events' text blocks but the
+    pre-existing `result` event was still being appended as a separate
+    transcript entry too -- and the final assistant event's text is
+    byte-identical to the result event's `result` string on a real recorded
+    turn, so the final answer rendered twice. The assistant text block(s)
+    already cover the result event's content; _load_transcript must not
+    append a second entry for it."""
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    stage_dir = run_dir / "01-ideation"
+    events_dir = stage_dir / "events"
+    events_dir.mkdir(parents=True)
+    lines = [
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "here is your concept brief"},
+        ]}}),
+        json.dumps({"type": "result", "result": "here is your concept brief"}),
+    ]
+    (events_dir / "1.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert page.text.count("here is your concept brief") == 1
 
 
 def test_stage_page_shows_grounding_output_via_pointer(client):

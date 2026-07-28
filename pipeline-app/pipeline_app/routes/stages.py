@@ -27,8 +27,11 @@ def _load_transcript(stage_dir):
                         messages.append({"type": "assistant", "text": block["text"]})
                     elif block.get("type") == "tool_use":
                         messages.append({"type": "assistant", "text": f"↪ {block.get('name')}"})
-            elif event.get("type") == "result":
-                messages.append({"type": "assistant", "text": event.get("result", "")})
+            # The final `result` event's `result` string is byte-identical to
+            # the last assistant text block on a real recorded turn (verified
+            # empirically) -- the assistant-text branch above already
+            # rendered it, so appending it again here would show the turn's
+            # final answer twice. No separate entry for `result` events.
     return messages
 
 
