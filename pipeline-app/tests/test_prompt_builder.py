@@ -61,6 +61,18 @@ def test_visual_template_includes_grounding_block_when_present():
     assert "rgs-briefs/2026-07-25-idea.md" in prompt
 
 
+def test_visual_template_deliverable_names_i2v_and_cover_not_just_stills():
+    prompt = render_kickoff_prompt(TEMPLATES_DIR, "visual", {
+        "skill": "visual-prompts",
+        "user_message": "",
+        "grounding_pointer": None,
+        "input_file": "runs/x/02-scripting/artifact.v1.md",
+        "raw_output_path": "runs/x/03-visual/raw_output.md",
+    })
+    assert "i2v" in prompt.lower()
+    assert "cover" in prompt.lower()
+
+
 def test_grounding_template_has_no_input_file_reference():
     prompt = render_kickoff_prompt(TEMPLATES_DIR, "grounding", {
         "skill": "rgs-grounding",
