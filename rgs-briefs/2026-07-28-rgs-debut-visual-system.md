@@ -75,15 +75,30 @@ substitute, so it is a brand judgment call, not a sourced rule, per the brand do
 
 ### Midjourney consistency mechanism — locked
 
-**`--sref` strategy:** one fixed style code, established once via a **Style Creator** session
-run before Short A's first real prompt batch, seeded with the palette/mood description above
-(teal ground, amber accent, anonymous-presence framing, muted-clay reserved). Style Creator
-sessions are web-only and preview renders consume GPU time, so run previews in `--draft` to keep
-the session cheap `[T]`. The resulting code — call it `SREF-RGS-01` in the pool manifest — is
-applied via `--sref <code>` to **every** still in both Shorts' pools, Short A and Short B alike.
-No second code is created; if a Style Creator session is re-entered later, a new code *stacks*
-rather than replacing the first, so once `SREF-RGS-01` is locked, do not re-enter the session
-`[T]`.
+**`--sref` strategy: two codes, one per register.** Superseded 2026-07-28 — this section
+originally locked a single code for both Shorts. The `visual-prompts` skill's dual-register
+system requires each register to share **no** palette family and **no** parameter band with the
+other (`visual-prompts/references/visual-registers.md` §2), and one style code across both would
+collapse exactly the cue the two registers exist to create. Gate C's C6/C7/C10/C14 enforce that
+separation mechanically, so a single-code pool cannot pass. Two codes, with different lifetimes:
+
+- **`SREF-RGS-A-<short>` — Register A (present day), harvested per Short.** Established via a
+  **Style Creator** session seeded with the palette/mood description above (teal ground, amber
+  accent, anonymous-presence framing, muted-clay reserved). Applied to every Register A still in
+  that Short. Short A's code is `SREF-RGS-A-01`; Short B harvests its own `[I]`.
+- **`SREF-RGS-B-01` — Register B (source era), harvested once, channel-wide.** Established in a
+  separate Style Creator session seeded with the *painterly* source-era description, never the
+  photographic palette above. Reused unchanged on every subsequent Short, so the channel's
+  historical register reads as one continuous world across the whole catalogue `[I]`.
+
+Style Creator sessions are web-only and preview renders consume GPU time, so run previews in
+`--draft` to keep each session cheap `[T]`. Re-entering a session *stacks* a new code rather than
+replacing the old one, so once a code is locked, do not re-enter its session `[T]` — this is why
+the two registers need two separate sessions rather than one session extended.
+
+**Manifest consequence:** a still's `sref` field records whichever of the two codes its register
+uses — it is no longer a fixed literal. A Register A entry reads `sref: SREF-RGS-A-<short>`; a
+Register B entry reads `sref: SREF-RGS-B-01`.
 
 **Why not `--oref` (Omni Reference):** rejected for the shared system. Omni Reference forces the
 job into V7 regardless of the requested version ("adding an Omni Reference will automatically
@@ -102,7 +117,8 @@ same prop/subject (a different angle on the same cleats-on-a-bench idea, a push-
 the edit) reuses that seed. A new prop/subject gets a new seed. Fixed seeds hold **99% identical**
 output on V8.1/8.2 `[T]`, which is what makes a prop's "look" portable across a still and its
 edit-plan variants without a second render. Every still's manifest entry (see Still-pool
-protocol) records `sref: SREF-RGS-01` and its own `seed: <value>`.
+protocol) records its register's `sref` code (see the two-code protocol above) and its own
+`seed: <value>`.
 
 ### Caption/overlay treatment
 
@@ -180,28 +196,49 @@ produces is numbered `A-01`, `A-02`, `A-03`, … in script-beat order, zero-padd
 Each id is permanent once assigned — a still is never renumbered even if a later still is
 dropped, so an id always identifies the same physical asset across the whole pipeline.
 
-**Manifest fields per still (machine-checkable):** `id`, `sref` (must read `SREF-RGS-01` for
-every entry), `seed`, `motif_family` (`A` or `B`), `beat` (the script beat it serves), and
+**Manifest fields per still (machine-checkable):** `id`, `register` (`A` or `B`, per the
+`visual-prompts` register system), `sref` (the code that register uses — `SREF-RGS-A-<short>` or
+`SREF-RGS-B-01`), `seed`, `motif_family` (`A` or `B`), `beat` (the script beat it serves), and
 `prompt` (the locked Midjourney prompt text). This manifest is what Task 12 produces and Task 18
 reads.
+
+**Note:** `register` and `motif_family` are different axes that unfortunately share letter names.
+`register` is the present/source-era world split enforced by Gate C; `motif_family` is this
+document's own escalation-ladder-vs-gear grouping. A still can be `register: A` and
+`motif_family: B`.
 
 **Reuse marking.** Short B's prompt sheet (Task 18) marks **every** shot as exactly one of:
 - `REUSE <A-NN>` — points at an existing Short A still id verbatim; no new prompt is written for
   it.
 - `NEW <B-NN>` — a Short-B-only still, numbered `B-01`, `B-02`, … in its own beat order, carrying
-  its own manifest entry (same `sref: SREF-RGS-01`; a fresh or reused `seed` per the seed
+  its own manifest entry (the `sref` code for its register; a fresh or reused `seed` per the seed
   discipline above).
 
 No third state exists — a shot with neither marking is a spec defect Task 18 must reject before
 handoff, which is what makes the protocol machine-checkable (grep the sheet for any shot line
 lacking a `REUSE` or `NEW` token).
 
-**Target ratio.** Combined asset count across both Shorts ≈**1.5×** a single Short's count, not
-2×. Concretely: if Short A's pool has *N* stills, Short B's prompt sheet should mark **at least
-N/2 of its shots `REUSE`** and add **no more than ~N/2 new (`B-NN`) stills**, landing the
-combined pool near 1.5N. A Short B sheet where `REUSE` count is less than `NEW` count has missed
-the target and should be reworked before Task 18 hands off. `[I]` (arithmetic reading of the
-brief's stated target, not a sourced ratio)
+**Target ratio — suspended for this run, 2026-07-28.** The original target was a combined asset
+count ≈**1.5×** a single Short's, enforced as `REUSE` count ≥ `NEW` count on Short B's sheet. That
+floor is **not in force for Short B** and no sheet should be reworked to satisfy it. Two reasons,
+both verified rather than assumed:
+
+- Short A's pool `A-01`…`A-11` is **entirely Register A**. Gate C requires ≥2 Register B shots and
+  ≥2 register alternations per sheet (C6/C7), so a Short B sheet built mostly from Short A stills
+  fails mechanically — no amount of rewording fixes it.
+- Short A's own sheet predates the register system: it names **three sports** (soccer, swimming,
+  baseball) against the one-sport world lock, repeats `35mm` in every prompt, and does not parse
+  under `scripts/lint_prompt_sheet.py` at all (exit 2, format error). Its stills are not a
+  compliant pool to draw from.
+
+**Replacement rule for Short B `[I]`:** build the sheet to Gate C first and let the asset count
+fall where it falls. Still mark every shot `REUSE <A-NN>` or `NEW <B-NN>` — the marking itself
+stays mandatory and machine-checkable — but a `NEW`-heavy sheet is the expected outcome, not a
+defect. `REUSE` is only legitimate where a Short A still is genuinely Register-A-compliant for
+Short B's own locked sport.
+
+The economy target returns once Short A is retrofitted: its Register B shots will reuse
+`SREF-RGS-B-01` harvested during Short B, which is the channel-wide code's whole purpose.
 
 ---
 
