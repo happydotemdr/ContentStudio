@@ -146,7 +146,7 @@ documentary sports photography, a lone child sitting on a metal bench at the edg
 ```
 
 ### Shot 6 — Build (18–22s) · Register A · ACTION-ADJACENT · MID-WIDE · EYE
-Changes vs. previous: shot class, scale and height all change; stillness shifts to just-before motion.
+Changes vs. previous: shot class, scale and height all change; the moment shifts from stillness to just-before motion.
 
 ```text
 documentary sports photography, a club soccer coach crouching beside a line of cones handing a water bottle to a waiting player, a corner flag catching a gust just behind them, cleats and shin guards scattered on the painted touchline nearby, a stack of folded practice bibs set on the grass to one side, eye-level three-quarter view from pitch side, 50mm lens at f4, moderate depth holding both figures and the cones legible, a thin shaft of morning sun breaking through low cloud, palette warming from cold slate toward pale gold, No Text. --ar 9:16 --raw --s 105
@@ -160,7 +160,7 @@ luminous oil painting on aged linen, an unnamed tutor in a plain wool himation s
 ```
 
 ### Shot 8 — Build (26–30s) · Register B · WORLD · XWIDE · HIGH
-Changes vs. previous: shot class, scale and height all change; widest frame on the sheet.
+Changes vs. previous: shot class, scale and height all change; widest frame of the whole sheet.
 
 ```text
 luminous oil painting on aged linen, a sweeping view down over the olive-terraced hillside toward a distant stone courtyard and the colonnaded terrace beyond, rows of silvered olive trees stepping down the slope in soft ranks, a thin footpath cutting between the terraces, a hawk suspended small and distant over the valley, a low stone wall marking the nearest terrace edge, elevated view looking down from above the topmost terrace, warm hazy midday light flattening the distance, sage green and dusty gold and pale stone palette, loose confident brushwork in the foreground foliage, No Text. --ar 9:16 --s 610
@@ -170,14 +170,14 @@ luminous oil painting on aged linen, a sweeping view down over the olive-terrace
 Changes vs. previous: register switch back to the present; shot class and scale both change.
 
 ```text
-documentary sports photography, a wide elevated view across a single club soccer pitch mid-morning, a goal net and corner flag anchoring the nearest end, a scattered line of kit bags along the painted touchline, a knot of children jogging a slow warm-up lap near the centre circle, high angle from the top of a low spectator bank, 24mm wide lens at f8, even focus holding the whole pitch sharp, flat bright overcast light with almost no shadow, cool green and grey palette under a pale sky, No Text. --ar 9:16 --raw --s 100
+documentary sports photography, a wide elevated view across a single club soccer pitch at first light, a goal net and corner flag anchoring the nearest end, a scattered line of kit bags along the painted touchline, a knot of children jogging a slow warm-up lap near the centre circle, high angle from the top of a low spectator bank, 24mm wide lens at f8, even focus holding the whole pitch sharp, cold flat winter-dawn light with long low shadows, cool green and grey palette under a pale sky, No Text. --ar 9:16 --raw --s 100
 ```
 
 ### Shot 10 — Payoff (34–40s) · Register A · DETAIL · MACRO · LOW
 Changes vs. previous: shot class, scale and height all change; the motif returns in its present-day form.
 
 ```text
-documentary sports photography, extreme close-up of a small plastic watering can tipped against a row of potted marigolds beside a club soccer clubhouse doorway, water beading on a stack of folded team bibs just behind it, a corner flag leaning against the wall further back and slightly out of focus, low angle from just above the concrete step, 100mm macro lens at f2.8, razor focus on the spout and the falling water, soft flat midday light through a thin cloud layer, muted plastic-blue and marigold-orange palette, fine visible grain, No Text. --ar 9:16 --raw --s 95
+documentary sports photography, extreme close-up of a small plastic watering can tipped against a row of potted marigolds beside a club soccer clubhouse doorway, water beading on a stack of folded team bibs just behind it, a corner flag leaning against the wall further back and slightly out of focus, low angle from just above the concrete step, 100mm macro lens at f2.8, razor focus on the spout and the falling water, cold flat winter-dawn light with a faint blue cast, muted plastic-blue and marigold-orange palette, fine visible grain, No Text. --ar 9:16 --raw --s 95
 ```
 
 ### Shot 11 — Payoff/Loop (40–45s) · Register B · ARTIFACT · CLOSE · OVERHEAD
@@ -253,3 +253,34 @@ case was adding one more concrete renderable detail to the prompt body — never
 table, since the sequencing itself (register rhythm, scale/height spread, shot-class rotation) was
 correct from the table stage in §5 onward. That is the process working as designed
 (`references/visual-arc.md` §2): the table stayed fixed, only prompt density needed a second pass.
+
+## 10. The handoff — literal sheet skeleton
+
+`prompt-sheet-format.md` §7 requires every emitted sheet to carry a `WHOLE-SHORT SETUP` block,
+a cover decision (already called in §8 above), an i2v block where applicable (already shown in
+§7 above), an overlay-copy handoff, and a validation line — in the literal shape below, not as
+narrative prose. This is what the sheet handed to `shorts-assembly` actually looks like:
+
+```
+WHOLE-SHORT SETUP
+  --ar 9:16
+  Register A --sref 2481950736   (harvested for this Short — present-day club-soccer look)
+  Register B --sref 9057261843   (channel-fixed painterly signature, reused unchanged every Short)
+  Phase ladder: Hook → Setup → Build → Re-hook → Payoff/Loop
+
+OVERLAY COPY HANDOFF
+  No on-screen text for this Short — the VO carries the full hook, claim, and CTA, and no
+  hook-card, lower-third, or caption copy was held out of any prompt for `shorts-assembly`
+  to composite.
+
+VALIDATION
+  Gate A: pass — every flag block carries --ar 9:16, the correct register-band --s value,
+          --raw present only on Register A shots, no stray punctuation in the parameter block.
+  Gate B: n/a — no upstream visual-quality check applies to this Short.
+  Gate C: pass, 11 shots, 0 findings — `python scripts/lint_prompt_sheet.py
+          tests/fixtures/worked_example_sheet.md`
+```
+
+The `--sref` values above are illustrative placeholders in the style Midjourney actually uses
+(numeric codes), not real harvested codes — this is a worked example, not a production run, so
+no real style reference exists to cite.

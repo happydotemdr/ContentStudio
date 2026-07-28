@@ -75,14 +75,14 @@ luminous oil painting on aged linen, a sweeping view down over the olive-terrace
 Changes vs. previous: register switch back to the present; shot class and scale both change.
 
 ```text
-documentary sports photography, a wide elevated view across a single club soccer pitch mid-morning, a goal net and corner flag anchoring the nearest end, a scattered line of kit bags along the painted touchline, a knot of children jogging a slow warm-up lap near the centre circle, high angle from the top of a low spectator bank, 24mm wide lens at f8, even focus holding the whole pitch sharp, flat bright overcast light with almost no shadow, cool green and grey palette under a pale sky, No Text. --ar 9:16 --raw --s 100
+documentary sports photography, a wide elevated view across a single club soccer pitch at first light, a goal net and corner flag anchoring the nearest end, a scattered line of kit bags along the painted touchline, a knot of children jogging a slow warm-up lap near the centre circle, high angle from the top of a low spectator bank, 24mm wide lens at f8, even focus holding the whole pitch sharp, cold flat winter-dawn light with long low shadows, cool green and grey palette under a pale sky, No Text. --ar 9:16 --raw --s 100
 ```
 
 ### Shot 10 — Payoff (34–40s) · Register A · DETAIL · MACRO · LOW
 Changes vs. previous: shot class, scale and height all change; the motif returns in its present-day form.
 
 ```text
-documentary sports photography, extreme close-up of a small plastic watering can tipped against a row of potted marigolds beside a club soccer clubhouse doorway, water beading on a stack of folded team bibs just behind it, a corner flag leaning against the wall further back and slightly out of focus, low angle from just above the concrete step, 100mm macro lens at f2.8, razor focus on the spout and the falling water, soft flat midday light through a thin cloud layer, muted plastic-blue and marigold-orange palette, fine visible grain, No Text. --ar 9:16 --raw --s 95
+documentary sports photography, extreme close-up of a small plastic watering can tipped against a row of potted marigolds beside a club soccer clubhouse doorway, water beading on a stack of folded team bibs just behind it, a corner flag leaning against the wall further back and slightly out of focus, low angle from just above the concrete step, 100mm macro lens at f2.8, razor focus on the spout and the falling water, cold flat winter-dawn light with a faint blue cast, muted plastic-blue and marigold-orange palette, fine visible grain, No Text. --ar 9:16 --raw --s 95
 ```
 
 ### Shot 11 — Payoff/Loop (40–45s) · Register B · ARTIFACT · CLOSE · OVERHEAD
