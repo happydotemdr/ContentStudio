@@ -29,6 +29,12 @@ real files (`visual_system`, `motif_family`, `total_runtime_seconds`), and
 version resolution is now a tested script rather than something the model
 computes by eyeballing a glob.
 
+**Second pass** (Opus review of the resulting implementation plan): fixed
+`--stage` → `--kind` terminology to match what the plan actually implements
+(§4, above) — the resolver's CLI flag was never meant to take the
+frontmatter `stage:` code, only the filename-suffix `kind` value; the two
+are distinct fields and the original wording conflated them.
+
 ## Problem
 
 The six generic pipeline skills (`shorts-ideation`, `shorts-scripting`,
@@ -185,11 +191,14 @@ Each of the six `SKILL.md` files gains:
   and the steps below apply.
 - **A "resolve upstream input" step** (replaces "the user pastes the
   previous output"): run `scripts/resolve_brief_version.py --slug <slug>
-  --stage <upstream-stage>` to get the latest file, read it, and follow its
+  --kind <upstream-kind>` to get the latest file, read it, and follow its
   own pointer fields to resolve anything further upstream it references.
+  (`--kind` takes the filename-suffix value from §1's table — `concept-brief`,
+  `script`, etc. — not the frontmatter `stage:` code like `01-ideation`; the
+  two are deliberately different fields, see §1.)
   **Staleness check:** for each resolved pointer field (e.g. a script's
   `concept_brief:` value), re-run the resolver for that file's own
-  `<slug>-<stage>` — if a newer version exists than the one named in the
+  `<slug>`/`<kind>` — if a newer version exists than the one named in the
   pointer, flag it to the user ("your concept brief has a newer version
   than the one this script was built from — rebuild against v2, or confirm
   you want to keep this script pinned to v1") rather than silently using
@@ -198,7 +207,7 @@ Each of the six `SKILL.md` files gains:
   file).
 - **A "write the output file" step** at the end: construct frontmatter per
   the table in §1, run `scripts/resolve_brief_version.py --slug <slug>
-  --stage <this-stage> --next` to get the exact next filename/version, write
+  --kind <this-kind> --next` to get the exact next filename/version, write
   via the `Write` tool.
 - **An explicit statement of the file path(s) read and written**, included
   in the skill's final chat output, so the human handoff to the next skill

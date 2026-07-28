@@ -46,6 +46,21 @@ Claude Code `PreToolUse` hooks, Markdown-formatted Claude Code skills.
   directory (repo root for `scripts/`/`tests/`, `pipeline-app/` for
   `pipeline_app/`/`pipeline-app/tests/` — they are two separate test suites
   with separate `requirements.txt`).
+- **Every existing file this plan edits is CRLF-terminated (`\r\n`), and this
+  plan's code fences are LF.** For every task below that modifies an
+  existing file via the `Edit` tool: `Read` the live file immediately before
+  editing and build the `old_string` from what `Read` actually returns, not
+  by retyping the markdown shown in a task's steps. Two tasks (3 and 9) call
+  this out explicitly because a prior draft of this plan quoted those two
+  files' content incorrectly (wrong dash character; wrong tail anchor) — the
+  same discipline applies to every other file-modifying task even where it
+  isn't repeated inline.
+- **`scripts/resolve_brief_version.py` without `--next` exits 1 and prints
+  `NONE\t0` when nothing matches.** Every "resolve the upstream input" step in
+  Tasks 8-13's `SKILL.md` edits treats that as the expected "no file yet, fall
+  back to chat-pasted input" case (per the design spec §4), not an error the
+  skill should surface as a failure — a `Bash` tool call returning exit 1
+  here is normal, not a bug to fix.
 - Reference spec: `docs/superpowers/specs/2026-07-28-skill-markdown-file-contract-design.md`.
 
 ---
@@ -361,7 +376,9 @@ git commit -m "feat: add rgs-briefs version resolution script"
 - Consumes: nothing from Task 1.
 - Produces: `decide(tool_name: str, resolved_path: Path, project_root: Path) -> str | None`
   — returns a deny-reason string, or `None` to allow. Pure function, no I/O
-  beyond `Path.exists()`.
+  beyond `Path.exists()`. `rgs-briefs/README.md` is explicitly exempt — it's
+  directory documentation, not a versioned artifact, and Task 5 needs to be
+  able to edit it normally.
 - Produces: `main() -> int` — reads the hook JSON from stdin, resolves
   `tool_input.file_path` against `$CLAUDE_PROJECT_DIR`, calls `decide()`,
   prints the reason to stderr and returns `2` on deny, else returns `0`.
@@ -420,6 +437,12 @@ def test_path_outside_project_root_is_allowed(tmp_path: Path):
     root.mkdir()
     outside = tmp_path / "elsewhere" / "2026-07-28-my-short-script.md"
     assert decide("Edit", outside, root) is None
+
+
+def test_edit_of_rgs_briefs_readme_is_allowed(tmp_path: Path):
+    root = tmp_path
+    target = root / "rgs-briefs" / "README.md"
+    assert decide("Edit", target, root) is None
 ```
 
 Note the import: `from claude_hooks.protect_briefs import decide`. This
@@ -487,6 +510,8 @@ def decide(tool_name: str, resolved_path: Path, project_root: Path) -> str | Non
         return None  # outside the project entirely -- not this hook's concern
     if rel.parts[:1] != ("rgs-briefs",):
         return None
+    if rel.name == "README.md":
+        return None  # directory documentation, not a versioned artifact
     if tool_name == "Edit":
         return (
             f"rgs-briefs/ files are immutable -- write a new version instead "
@@ -646,11 +671,17 @@ def supersede_previous_brief(repo_root: Path, stage_dir: Path) -> None:
 
 - [ ] **Step 5: Remove its call site in `routes/stages.py`**
 
-Current code (lines 158-171):
+**Before editing, `Read` this file's actual current lines 141-174 and
+diff them against the block quoted below.** The comment in the live file uses
+an em dash (`—`), not a double-hyphen (`--`) — build your `old_string` from
+what `Read` returns, not by retyping the plan's markdown (this file, like
+every other file this plan touches, is CRLF-terminated).
+
+Current code (verify against the live file — approximately lines 159-173):
 
 ```python
             # The grounding skill's real artifact lands in rgs-briefs/, not
-            # runs/ -- finalize_artifact=False above skips turn_service's
+            # runs/ — finalize_artifact=False above skips turn_service's
             # normal artifact/status handling so this stage-specific path can
             # take over: identify which file appeared, supersede whichever
             # brief this project pointed at before (if regenerating), and
@@ -666,15 +697,16 @@ Current code (lines 158-171):
                 db_mod.update_stage_status(conn, stage_row["id"], "no_artifact")
 ```
 
-Replace with:
+Replace with (keep the file's existing em-dash convention in the comment,
+don't introduce `--`):
 
 ```python
             # The grounding skill's real artifact lands in rgs-briefs/, not
-            # runs/ -- finalize_artifact=False above skips turn_service's
+            # runs/ — finalize_artifact=False above skips turn_service's
             # normal artifact/status handling so this stage-specific path can
             # take over: identify which file appeared and point at it. The
             # grounding skill always writes a new versioned filename (see
-            # rgs-grounding's SKILL.md), so there is nothing to archive --
+            # rgs-grounding's SKILL.md), so there is nothing to archive —
             # the previous version is simply no longer the pointer target.
             after = grounding_service.snapshot_rgs_briefs(rgs_briefs_dir)
             new_brief = grounding_service.identify_new_brief(before, after)
@@ -971,10 +1003,13 @@ status: complete
 - `scripts/resolve_brief_version.py` is the canonical way to find the latest
   version of a given slug/kind, or to compute the next version's filename —
   consumers should use it rather than re-implementing glob-and-sort logic.
-- `status` is `candidate` until the Short is actually produced, then
-  hand-edit to `produced` — **hand-editing `status` on an existing file is
-  the one exception to immutability**, since it's a metadata-only flag, not
-  a content revision. Everything else about a file is fixed once written.
+- `status` is `candidate` until the Short is actually produced. Marking a
+  Short produced is a new version write like any other change — write a
+  `-v2` with `status: produced` and a `supersedes:` pointer back at the
+  `candidate` version, rather than hand-editing the existing file. There is
+  no exception to immutability here or anywhere else in this directory
+  (`rgs-briefs/README.md` itself is the one file in this directory that
+  isn't a versioned artifact and can be edited normally).
 ```
 
 - [ ] **Step 2: Update the naming section**
@@ -1053,7 +1088,7 @@ concept: "[concept]"
 research_codes: [[code]]
 archetype: [A1/A2/A3]
 version: [from `resolve_brief_version.py --next`, below]
-supersedes: [rgs-briefs/<previous file> -- omit this line entirely if version is 1]
+supersedes: [previous version's path, from resolve_brief_version.py's plain (non-"--next") call, below -- omit this line entirely if version is 1]
 status: candidate
 ---
 ```
@@ -1096,15 +1131,20 @@ schema). Confirm the file was written before ending the turn.
 Replace with:
 
 ```markdown
-Run `python scripts/resolve_brief_version.py --slug <topic-slug> --next --date <YYYY-MM-DD>`
-from the repo root to get the exact filename and version number to write (first-ever brief for
-this topic-slug: version 1, no `-v` suffix; a regrounding of an existing topic: the next
-version). Set the template's `version:` field to that number, and — only when the version is
-greater than 1 — add `supersedes: rgs-briefs/<the file resolve_brief_version.py --slug
-<topic-slug> reported as current before this write>`. Write the brief to
-`rgs-briefs/<that filename>` (see `rgs-briefs/README.md` for the schema). Never edit an existing
-file in this directory — a `PreToolUse` hook blocks it. Confirm the file was written before
-ending the turn.
+First, run `python scripts/resolve_brief_version.py --slug <topic-slug>` (no `--kind` — grounding
+briefs don't have one) from the repo root. If it prints a path (not `NONE`), that's the current
+version being superseded — remember its printed path verbatim for the `supersedes:` field below;
+it's already `rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
+
+Then run `python scripts/resolve_brief_version.py --slug <topic-slug> --next --date <YYYY-MM-DD>`
+to get the exact filename and version number to write (first-ever brief for this topic-slug:
+version 1, no `-v` suffix; a regrounding of an existing topic: the next version — this prints a
+bare filename, not a path, so `rgs-briefs/<that filename>` below is correct as written). Set the
+template's `version:` field to the printed version number, and — only when it's greater than 1 —
+add `supersedes: <the path the first resolve_brief_version.py call above printed>`. Write the
+brief to `rgs-briefs/<that filename>` (see `rgs-briefs/README.md` for the schema). Never edit an
+existing file in this directory — a `PreToolUse` hook blocks it. Confirm the file was written
+before ending the turn.
 ```
 
 - [ ] **Step 4: Commit**
@@ -1206,7 +1246,7 @@ mode; that stays `pipeline-app`'s job.
    slug: <slug>
    stage: 01-ideation
    version: <version from the resolver>
-   supersedes: rgs-briefs/<previous file, only if version > 1>
+   supersedes: <previous version's path, exactly as the resolver printed it in step 1 — only if version > 1>
    grounding: <path to the companion grounding artifact, only if one was used>
    status: complete
    ---
@@ -1240,15 +1280,23 @@ git commit -m "feat(shorts-ideation): write versioned concept-brief files to rgs
 
 - [ ] **Step 1: Append the File I/O contract section**
 
-The file currently ends with (the last two lines of `## Reference files`):
+The file is 215 lines. It currently ends with (the last two lines of
+`## Reference files`):
 
 ```markdown
-- `references/beat-timing-model.md` — the standard-band table lives above in
-  this file; this reference adds only the word-rate `[I]`-reasoning, the
-  20–30s compressed band, and the re-hook-timing `[I]` caveat in full.
+- `references/worked-example.md` — a complete concept-brief-to-script run with
+  inline citations.
 ```
 
-Append immediately after:
+**Before editing, re-read the live file and confirm this is still its exact
+tail** — an earlier draft of this plan anchored on the wrong bullet
+(`beat-timing-model.md` instead of `worked-example.md`); don't repeat that
+mistake by trusting this plan's quoted text over the file itself. Also note
+every `SKILL.md` in this repo is CRLF-terminated (`\r\n`), not LF — construct
+the `old_string` for your `Edit` call from what `Read` actually returns, not
+by retyping the markdown shown in this plan.
+
+Append immediately after the confirmed tail:
 
 ```markdown
 
@@ -1266,15 +1314,18 @@ to `rgs-briefs/` in this mode.
 1. Resolve the upstream concept brief: run
    `python scripts/resolve_brief_version.py --slug <slug> --kind concept-brief` from the repo
    root (you need the `slug` the concept brief's author stated — ask for it if you don't have
-   it). Read the file it reports. If it points at a `grounding:` field, treat that as the
-   companion grounding artifact per "Optional input" above.
+   it). This prints `<path>\t<version>` where `<path>` is already `rgs-briefs/`-relative (or, if
+   nothing is found yet, prints `NONE\t0` and exits 1 — that's the expected "no file yet, fall
+   back to chat-pasted input" case, not an error). Read the file it reports. If it points at a
+   `grounding:` field, treat that as the companion grounding artifact per "Optional input" above.
    **Staleness check:** re-run `resolve_brief_version.py --slug <slug> --kind concept-brief`
    again right before you finish — if a newer version now exists than the one you read, tell the
    user before proceeding rather than silently scripting against a stale concept.
 2. After writing the script, run
    `python scripts/resolve_brief_version.py --slug <slug> --kind script --next --date <YYYY-MM-DD>`.
-   Write the file at `rgs-briefs/<filename>` via the `Write` tool with this frontmatter (in
-   addition to the script body's own output contract above):
+   It prints `<filename>\t<version>` — a bare filename this time (no directory prefix). Write the
+   file at `rgs-briefs/<filename>` via the `Write` tool with this frontmatter (in addition to the
+   script body's own output contract above):
 
    ```yaml
    ---
@@ -1283,9 +1334,10 @@ to `rgs-briefs/` in this mode.
    slug: <slug>
    stage: 02-scripting
    version: <version from the resolver>
-   supersedes: rgs-briefs/<previous file, only if version > 1>
-   concept_brief: rgs-briefs/<the concept-brief file you resolved>
+   supersedes: <previous file's path, exactly as the resolver printed it in step 1 — only if version > 1>
+   concept_brief: <the concept-brief file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
    grounding: <carried through from the concept brief, if present>
+   total_runtime_seconds: <the script's total runtime, if the concept brief or your own timing states one>
    status: complete
    ---
    ```
@@ -1355,10 +1407,11 @@ to `rgs-briefs/` in this mode.
    slug: <slug>
    stage: 03-voiceover
    version: <version from the resolver>
-   supersedes: rgs-briefs/<previous file, only if version > 1>
-   script: rgs-briefs/<the script file you resolved>
+   supersedes: <previous version's path, exactly as the resolver printed it in step 1 — only if version > 1>
+   script: <the script file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
    concept_brief: <carried through from the script, if present>
    grounding: <carried through from the script, if present>
+   total_runtime_seconds: <carried through from the script, if present>
    status: complete
    ---
    ```
@@ -1428,9 +1481,11 @@ to `rgs-briefs/` in this mode.
    slug: <slug>
    stage: 03-visual
    version: <version from the resolver>
-   supersedes: rgs-briefs/<previous file, only if version > 1>
-   script: rgs-briefs/<the script file you resolved>
+   supersedes: <previous version's path, exactly as the resolver printed it in step 1 — only if version > 1>
+   script: <the script file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
    concept_brief: <carried through from the script, if present>
+   visual_system: <path to a run-level visual-system document, if one was provided>
+   motif_family: <the visual motif family this Short uses, if you named one while building the sheet>
    status: complete
    ---
    ```
@@ -1499,10 +1554,11 @@ to `rgs-briefs/` in this mode.
    slug: <slug>
    stage: 04-assembly
    version: <version from the resolver>
-   supersedes: rgs-briefs/<previous file, only if version > 1>
-   script: rgs-briefs/<the script file you resolved>
-   voiceover_brief: rgs-briefs/<the voiceover-brief file you resolved>
-   visual_prompts: rgs-briefs/<the visual-prompts file you resolved>
+   supersedes: <previous version's path, exactly as the resolver printed it in step 1 — only if version > 1>
+   script: <the script file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
+   voiceover_brief: <the voiceover-brief file's path, exactly as the resolver printed it — already rgs-briefs/-relative>
+   visual_prompts: <the visual-prompts file's path, exactly as the resolver printed it — already rgs-briefs/-relative>
+   visual_system: <carried through from the visual-prompts file, if present>
    status: complete
    ---
    ```
@@ -1573,9 +1629,9 @@ to `rgs-briefs/` in this mode.
    slug: <slug>
    stage: 05-repurpose
    version: <version from the resolver>
-   supersedes: rgs-briefs/<previous file, only if version > 1>
-   script: rgs-briefs/<the script file you resolved>
-   assembly: rgs-briefs/<the assembly file you resolved>
+   supersedes: <previous version's path, exactly as the resolver printed it in step 1 — only if version > 1>
+   script: <the script file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
+   assembly: <the assembly file's path, exactly as the resolver printed it — already rgs-briefs/-relative>
    concept_brief: <carried through from the script, if present>
    grounding: <carried through from the script, if present>
    status: complete
@@ -1605,7 +1661,12 @@ git commit -m "feat(social-repurpose): write versioned social-repurpose files to
 - [ ] Run `python -m pytest -v` from `pipeline-app/` — all pass (existing
   suite plus the new stage-page rendering test, minus the two removed
   supersede tests).
-- [ ] Grep all eight edited `SKILL.md` files for `## File I/O contract` (six)
-  and the "Save it"/"grep" edits (rgs-grounding, rgs-pairing-review) to
-  confirm every task actually landed:
-  `grep -rl "File I/O contract" .claude/skills/`
+- [ ] Confirm all six generic skills landed their File I/O contract section:
+  `grep -rl "File I/O contract" .claude/skills/` should list exactly six
+  files (`shorts-ideation`, `shorts-scripting`, `voiceover-brief`,
+  `visual-prompts`, `shorts-assembly`, `social-repurpose`).
+- [ ] Confirm the two RGS-specific skills landed their edits (these don't
+  contain the "File I/O contract" heading, so the check above won't catch a
+  missed Task 6 or 7):
+  `grep -l "resolve_brief_version" .claude/skills/rgs-grounding/SKILL.md .claude/skills/rgs-pairing-review/SKILL.md`
+  should list both files.
