@@ -219,3 +219,41 @@ def test_load_topology_rejects_specialist_with_no_skill_dir(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="ghost-specialist"):
         load_topology(path)
+
+
+def test_load_topology_rejects_specialist_with_no_specialist_mode(tmp_path: Path):
+    """sidebar.html renders specialist_mode == "manual" as "(manual hand-off)"
+    and anything else (including None) as "(auto-delegated)" -- the stronger,
+    wrong claim. A stage that declares a specialist but no specialist_mode
+    must fail loudly at load time instead of silently rendering the wrong
+    claim."""
+    (tmp_path / ".claude" / "skills" / "some-specialist").mkdir(parents=True)
+    (tmp_path / ".claude" / "skills" / "some-specialist" / "SKILL.md").write_text(
+        "---\nname: some-specialist\n---\n", encoding="utf-8",
+    )
+    path = _write_topology(
+        tmp_path,
+        "stages:\n"
+        "  - id: visual\n    skill: visual-prompts\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "    specialist: some-specialist\n",
+    )
+    with pytest.raises(ValueError, match="visual"):
+        load_topology(path)
+
+
+def test_load_topology_rejects_invalid_specialist_mode_value(tmp_path: Path):
+    """A typo like "Manual" (wrong case) must not silently fall through to
+    sidebar.html's else-branch ("(auto-delegated)") -- it must fail loudly at
+    load time instead."""
+    (tmp_path / ".claude" / "skills" / "some-specialist").mkdir(parents=True)
+    (tmp_path / ".claude" / "skills" / "some-specialist" / "SKILL.md").write_text(
+        "---\nname: some-specialist\n---\n", encoding="utf-8",
+    )
+    path = _write_topology(
+        tmp_path,
+        "stages:\n"
+        "  - id: visual\n    skill: visual-prompts\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "    specialist: some-specialist\n    specialist_mode: Manual\n",
+    )
+    with pytest.raises(ValueError, match="Manual"):
+        load_topology(path)

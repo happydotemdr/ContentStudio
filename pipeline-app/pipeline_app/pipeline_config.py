@@ -54,6 +54,16 @@ def _validate_topology(stages: list[StageDef], repo_root: Path) -> None:
                     f"pipeline.yaml: stage '{stage.id}' specialist '{stage.specialist}' has no "
                     f"skill at {skill_md}"
                 )
+            # sidebar.html renders specialist_mode == "manual" as "(manual
+            # hand-off)" and treats anything else -- including a missing
+            # value or a typo like "Manual" -- as "(auto-delegated)", the
+            # stronger/wrong claim. A stage with a specialist must declare an
+            # unambiguous mode rather than silently defaulting to that claim.
+            if stage.specialist_mode not in ("auto", "manual"):
+                raise ValueError(
+                    f"pipeline.yaml: stage '{stage.id}' specialist_mode must be 'auto' or "
+                    f"'manual', got {stage.specialist_mode!r}"
+                )
 
 
 def _check_no_cycles(stages: list[StageDef]) -> None:
