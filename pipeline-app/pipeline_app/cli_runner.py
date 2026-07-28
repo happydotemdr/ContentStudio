@@ -29,11 +29,19 @@ class TurnResult:
 # mid-turn. Denying Task would silently degrade that documented quality gate
 # with no error surfaced to the user -- a real scope-vs-capability trade-off,
 # not an oversight.
+#
+# PowerShell and Bash are both denied: this app is Windows-targeted (see
+# _platform_argv's cmd-shim handling below), and a real recorded turn's
+# system/init event shows PowerShell present and usable in the tool list --
+# denying Bash alone does not stop a pipeline turn from shelling out on
+# Windows. NotebookEdit is denied alongside Write/Edit as another unscoped
+# write path not covered by the docs/**|output/**|.claude/skills/** patterns.
 PIPELINE_DISALLOWED_TOOLS = (
-    "Bash,WebFetch,WebSearch,"
+    "Bash,PowerShell,WebFetch,WebSearch,"
     "Write(docs/**),Edit(docs/**),"
     "Write(output/**),Edit(output/**),"
-    "Write(.claude/skills/**),Edit(.claude/skills/**)"
+    "Write(.claude/skills/**),Edit(.claude/skills/**),"
+    "NotebookEdit"
 )
 
 
@@ -77,6 +85,18 @@ def build_claude_argv(
         # stream-json requires --verbose" (verified against a live run,
         # 2026-07-26).
         "--verbose",
+        # A pipeline turn must not inherit whatever MCP servers happen to be
+        # configured on the machine running it -- a real recorded init event
+        # showed 13 unscoped MCP servers attached to a pipeline turn,
+        # including family-brain's brain_* tools, which CLAUDE.md firewalls
+        # off absolutely. --disallowedTools' path-scoped Write/Edit denials
+        # don't touch MCP tool names (e.g. mcp__filesystem__write_file), so
+        # this is the only thing that actually closes that gap. No
+        # --mcp-config flag is passed below, so --strict-mcp-config alone
+        # means zero MCP servers load (verified against `claude --help`,
+        # 2026-07-27). Unconditional: pipeline turns never legitimately need
+        # any MCP server.
+        "--strict-mcp-config",
         "--allowedTools", allowed_tools,
     ]
     if disallowed_tools:
