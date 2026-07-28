@@ -13,9 +13,19 @@
         const message = textarea.value;
         textarea.value = "";
         const transcript = document.querySelector(formEl.dataset.transcriptTarget);
-        const userLine = document.createElement("p");
-        userLine.innerHTML = `<strong>you:</strong> ${message}`;
-        transcript.appendChild(userLine);
+        // Build lines via textContent, not innerHTML -- the payload here (the
+        // user's own typed message) is still untrusted-enough text to keep
+        // consistent with the assistant lines below, and it keeps this path
+        // matching the Jinja-rendered replay path, which autoescapes.
+        const appendLine = (label, text) => {
+          const line = document.createElement("p");
+          const strong = document.createElement("strong");
+          strong.textContent = `${label}:`;
+          line.appendChild(strong);
+          line.appendChild(document.createTextNode(` ${text}`));
+          return line;
+        };
+        transcript.appendChild(appendLine("you", message));
 
         // Kept visible (and updated in place) for the whole turn -- previously
         // the panel showed nothing at all until the final `result` event,
@@ -41,40 +51,46 @@
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        while (true) {
-          const {done, value} = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, {stream: true});
-          const parts = buffer.split("\n\n");
-          buffer = parts.pop();
-          for (const part of parts) {
-            if (!part.startsWith("data: ")) continue;
-            const event = JSON.parse(part.slice(6));
-            if (event.type === "assistant" && event.message && event.message.content) {
-              for (const block of event.message.content) {
-                if (block.type === "text" && block.text && block.text.trim()) {
-                  const line = document.createElement("p");
-                  line.innerHTML = `<strong>assistant:</strong> ${block.text}`;
-                  transcript.insertBefore(line, statusLine);
-                } else if (block.type === "tool_use") {
-                  const line = document.createElement("p");
-                  line.innerHTML = `<strong>assistant:</strong> ↪ ${block.name}`;
-                  transcript.insertBefore(line, statusLine);
+        // try/finally so a stream that throws (server restart mid-turn, etc.)
+        // instead of ending cleanly still runs the "Turn ended without
+        // finishing" fallback below -- without this, an uncaught exception
+        // here would leave the status line stuck at "running…" forever.
+        try {
+          while (true) {
+            const {done, value} = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, {stream: true});
+            const parts = buffer.split("\n\n");
+            buffer = parts.pop();
+            for (const part of parts) {
+              if (!part.startsWith("data: ")) continue;
+              const event = JSON.parse(part.slice(6));
+              if (event.type === "assistant" && event.message && event.message.content) {
+                for (const block of event.message.content) {
+                  if (block.type === "text" && block.text && block.text.trim()) {
+                    transcript.insertBefore(appendLine("assistant", block.text), statusLine);
+                  } else if (block.type === "tool_use") {
+                    transcript.insertBefore(appendLine("assistant", `↪ ${block.name}`), statusLine);
+                  }
                 }
+              } else if (event.type === "result" && event.result) {
+                // The final assistant text block above is byte-identical to
+                // event.result on a real recorded turn -- rendering it again
+                // here would show the turn's final answer twice. Only clear
+                // the "running…" status; the assistant-text branch already
+                // rendered the content.
+                statusLine.remove();
               }
-            } else if (event.type === "result" && event.result) {
-              statusLine.remove();
-              const line = document.createElement("p");
-              line.innerHTML = `<strong>assistant:</strong> ${event.result}`;
-              transcript.appendChild(line);
             }
           }
-        }
-        // Stream ended without a `result` event -- the turn was aborted
-        // (client disconnect, server restart, etc.). Say so instead of
-        // silently leaving "running…" up or silently removing it.
-        if (statusLine.isConnected) {
-          statusLine.textContent = "Turn ended without finishing — reload the page to check status.";
+        } finally {
+          // Stream ended without a `result` event -- the turn was aborted
+          // (client disconnect, server restart, an exception in the loop
+          // above, etc.). Say so instead of silently leaving "running…" up
+          // or silently removing it.
+          if (statusLine.isConnected) {
+            statusLine.textContent = "Turn ended without finishing — reload the page to check status.";
+          }
         }
       });
     }
