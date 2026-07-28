@@ -16,6 +16,7 @@ from lint_prompt_sheet import (  # noqa: E402
     check_register_balance,
     check_world_lock,
     check_prompt_quality,
+    check_format,
 )
 
 SHEET = """\
@@ -341,3 +342,56 @@ def test_c12_passes_a_dense_prompt():
     body = ", ".join(f"clause {n} with several extra descriptive words here" for n in range(12))
     shot = make_shot(1, "A", prompt=body + ", No Text. --ar 9:16")
     assert "C12" not in codes(check_prompt_quality([shot]))
+
+
+DENSE_A = ", ".join(f"clause {n} with several extra descriptive words here" for n in range(12))
+
+
+def test_c13_flags_multiline_prompt():
+    shot = Shot(1, "Hook", "A", "DETAIL", "MACRO", "LOW",
+                DENSE_A + ", No Text. --ar 9:16 --raw --s 95", 2)
+    assert "C13" in codes(check_format([shot]))
+
+
+def test_c13_flags_missing_no_text():
+    shot = make_shot(1, "A", prompt=DENSE_A + " --ar 9:16 --raw --s 95")
+    assert "C13" in codes(check_format([shot]))
+
+
+def test_c13_flags_missing_aspect_ratio():
+    shot = make_shot(1, "A", prompt=DENSE_A + ", No Text. --raw --s 95")
+    assert "C13" in codes(check_format([shot]))
+
+
+def test_c13_flags_punctuation_in_flag_block():
+    shot = make_shot(1, "A", prompt=DENSE_A + ", No Text. --ar 9:16, --raw --s 95")
+    assert "C13" in codes(check_format([shot]))
+
+
+def test_c14_flags_register_a_without_raw():
+    shot = make_shot(1, "A", prompt=DENSE_A + ", No Text. --ar 9:16 --s 95")
+    assert "C14" in codes(check_format([shot]))
+
+
+def test_c14_flags_register_a_stylize_out_of_band():
+    shot = make_shot(1, "A", prompt=DENSE_A + ", No Text. --ar 9:16 --raw --s 400")
+    assert "C14" in codes(check_format([shot]))
+
+
+def test_c14_flags_register_b_with_raw():
+    shot = make_shot(1, "B", "WORLD", "XWIDE", "EYE",
+                     DENSE_A + ", No Text. --ar 9:16 --raw --s 520")
+    assert "C14" in codes(check_format([shot]))
+
+
+def test_c14_flags_register_b_stylize_out_of_band():
+    shot = make_shot(1, "B", "WORLD", "XWIDE", "EYE",
+                     DENSE_A + ", No Text. --ar 9:16 --s 95")
+    assert "C14" in codes(check_format([shot]))
+
+
+def test_c14_passes_correct_bands():
+    a = make_shot(1, "A", prompt=DENSE_A + ", No Text. --ar 9:16 --raw --s 95")
+    b = make_shot(2, "B", "WORLD", "XWIDE", "EYE",
+                  DENSE_A + ", No Text. --ar 9:16 --s 520")
+    assert check_format([a, b]) == []

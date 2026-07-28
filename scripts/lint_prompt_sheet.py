@@ -339,3 +339,67 @@ def _pairs(shots: list[Shot]):
     for i, left in enumerate(shots):
         for right in shots[i + 1 :]:
             yield left, right
+
+
+STYLIZE_RE = re.compile(r"--(?:s|stylize)\s+(\d+)")
+REGISTER_BANDS = {"A": (80, 120, True), "B": (400, 700, False)}
+
+
+def check_format(shots: list[Shot]) -> list[Finding]:
+    """C13-C14: copy-paste format and the register parameter bands."""
+    findings: list[Finding] = []
+
+    for shot in shots:
+        flags = prompt_flags(shot)
+        body = prompt_body(shot)
+
+        if shot.prompt_line_count != 1:
+            findings.append(
+                Finding(
+                    "C13",
+                    shot.index,
+                    f"prompt spans {shot.prompt_line_count} lines; it must be one contiguous "
+                    "line so it can be copied in a single action",
+                )
+            )
+        if NO_TEXT_MARKER not in shot.prompt:
+            findings.append(Finding("C13", shot.index, f"missing {NO_TEXT_MARKER!r} before the flags"))
+        elif not body.endswith(NO_TEXT_MARKER):
+            findings.append(
+                Finding("C13", shot.index, f"{NO_TEXT_MARKER!r} must be the last thing before the flags")
+            )
+        if not flags:
+            findings.append(Finding("C13", shot.index, "no parameter block"))
+            continue
+        if "--ar" not in flags:
+            findings.append(Finding("C13", shot.index, "no --ar in the parameter block"))
+        for punctuation in (",", ";", "."):
+            if punctuation in flags:
+                findings.append(
+                    Finding("C13", shot.index, f"punctuation {punctuation!r} inside the parameter block")
+                )
+
+        band = REGISTER_BANDS.get(shot.register)
+        if band is None:
+            continue
+        low, high, needs_raw = band
+        has_raw = "--raw" in flags
+        if needs_raw and not has_raw:
+            findings.append(Finding("C14", shot.index, "Register A requires --raw"))
+        if not needs_raw and has_raw:
+            findings.append(
+                Finding("C14", shot.index, "Register B must not carry --raw; it is not a photograph")
+            )
+        match = STYLIZE_RE.search(flags)
+        if not match:
+            findings.append(Finding("C14", shot.index, "no --s in the parameter block"))
+        elif not low <= int(match.group(1)) <= high:
+            findings.append(
+                Finding(
+                    "C14",
+                    shot.index,
+                    f"--s {match.group(1)} outside Register {shot.register}'s band {low}-{high}",
+                )
+            )
+
+    return findings
