@@ -65,3 +65,48 @@ Then produce the plan itself, structured the same way `references/worked-example
 
 - No corpus finding on current Shorts duration-eligibility limits (whether Shorts can exceed ~60s/3min) — this is a live policy question outside the corpus and outside the 2026-07-23 `[T]` sweep; tell the user to verify independently before locking an unusual runtime.
 - The caption-density tension (full captions vs. front-loaded-only) is a genuine corpus split, not resolved by more research — always present it as a judgment call per `caption-overlay-system.md`, don't silently pick one side without saying why.
+
+## File I/O contract
+
+This skill participates in ContentStudio's file-based pipeline handoff (see
+`docs/superpowers/specs/2026-07-28-skill-markdown-file-contract-design.md`). Two modes:
+
+**App-driven** (a `pipeline-app` turn already told you an output path): follow that instruction
+exactly — write only to the named path, overwrite it each turn as instructed. Do not also write
+to `rgs-briefs/` in this mode.
+
+**Standalone** (no output path was given):
+
+1. Resolve the three upstream inputs: run `python scripts/resolve_brief_version.py --slug <slug>
+   --kind script`, `... --kind voiceover-brief`, and `... --kind visual-prompts` from the repo
+   root. Read each file the resolver reports.
+   **Staleness check:** re-run all three resolver calls again right before you finish — if a
+   newer version now exists for any of them than the one you read, tell the user before
+   proceeding.
+2. Before writing the assembly file, run
+   `python scripts/resolve_brief_version.py --slug <slug> --kind assembly` from the repo
+   root (no `--next`). If it prints a path (not `NONE`), that's the current version being
+   superseded — remember its printed path verbatim for the `supersedes:` field below; it's already
+   `rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
+3. After writing the plan, run
+   `python scripts/resolve_brief_version.py --slug <slug> --kind assembly --next --date <YYYY-MM-DD>`.
+   Write the file at `rgs-briefs/<filename>` via the `Write` tool with this frontmatter:
+
+   ```yaml
+   ---
+   date: <YYYY-MM-DD>
+   kind: assembly
+   slug: <slug>
+   stage: 04-assembly
+   version: <version from the resolver>
+   supersedes: <path from step 2 above — only if version > 1>
+   script: <the script file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
+   voiceover_brief: <the voiceover-brief file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative>
+   visual_prompts: <the visual-prompts file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative>
+   visual_system: <carried through from the visual-prompts file, if present>
+   status: complete
+   ---
+   ```
+4. State the exact file path you wrote in your final chat response.
+
+Never edit an existing `rgs-briefs/*.md` file — a `PreToolUse` hook enforces this.
