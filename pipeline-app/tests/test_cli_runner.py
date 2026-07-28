@@ -61,6 +61,31 @@ def test_build_claude_argv_resume_turn_includes_session_id():
     assert "--verbose" in argv
 
 
+def test_build_claude_argv_appends_disallowed_tools_when_provided():
+    argv = build_claude_argv(
+        "prompt text",
+        resume_session_id=None,
+        allowed_tools="Read,Glob,Grep,Write,Edit",
+        settings_path=None,
+        disallowed_tools="Bash,WebFetch",
+        which_fn=lambda name: "claude",
+    )
+    assert "--disallowedTools" in argv
+    idx = argv.index("--disallowedTools")
+    assert argv[idx + 1] == "Bash,WebFetch"
+
+
+def test_build_claude_argv_omits_disallowed_tools_when_not_provided():
+    argv = build_claude_argv(
+        "prompt text",
+        resume_session_id=None,
+        allowed_tools="Read,Glob,Grep,Write,Edit",
+        settings_path=None,
+        which_fn=lambda name: "claude",
+    )
+    assert "--disallowedTools" not in argv
+
+
 @pytest.mark.asyncio
 async def test_parse_stream_json_lines_yields_parsed_dicts():
     async def fake_lines():
@@ -195,6 +220,39 @@ async def test_prompt_is_passed_via_stdin_not_argv(monkeypatch, tmp_path: Path):
     assert not any("pwned" in part for part in captured["argv"])
     assert captured["proc"].stdin.written == INJECTION_PROMPT.encode("utf-8")
     assert captured["proc"].stdin.closed is True
+
+
+@pytest.mark.asyncio
+async def test_stream_claude_turn_denies_bash_and_web_tools_by_default(monkeypatch, tmp_path: Path):
+    """A pipeline-stage turn must never shell out, reach the live web, or
+    write outside runs/**/rgs-briefs/** -- see CLAUDE.md's permission-scoping
+    requirement. --allowedTools alone doesn't enforce this (it's an additive
+    allow-list); --disallowedTools is the subtractive rule that's documented
+    (`claude --help`) to actually block a tool regardless of permission mode.
+    This test only proves the flag is constructed correctly -- it does not
+    prove runtime enforcement, which the real `claude` CLI would have to
+    verify (see this task's Step 5 manual smoke check)."""
+    from pipeline_app import cli_runner
+
+    monkeypatch.setattr(cli_runner, "resolve_claude_binary", lambda *a, **k: "claude")
+
+    captured: dict = {}
+
+    async def fake_exec(*argv, **kwargs):
+        captured["argv"] = list(argv)
+        return _FakeProcess([b'{"type": "result", "result": "ok"}\n'])
+
+    monkeypatch.setattr(cli_runner.asyncio, "create_subprocess_exec", fake_exec)
+
+    async for _ in cli_runner.stream_claude_turn("prompt", tmp_path, None):
+        pass
+
+    argv = captured["argv"]
+    assert "--disallowedTools" in argv
+    idx = argv.index("--disallowedTools")
+    disallowed = argv[idx + 1].split(",")
+    for tool in ("Bash", "WebFetch", "WebSearch", "Write(docs/**)", "Write(.claude/skills/**)"):
+        assert tool in disallowed, tool
 
 
 def test_injection_shaped_prompt_never_reaches_cmd_shim_command_line(monkeypatch):

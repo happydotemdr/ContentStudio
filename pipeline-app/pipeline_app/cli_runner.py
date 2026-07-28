@@ -16,6 +16,27 @@ class TurnResult:
     success: bool
 
 
+# A pipeline-stage turn must never shell out, reach the live web, or write to
+# docs/, output/, or .claude/skills/ -- see CLAUDE.md's permission-scoping
+# requirement. --allowedTools is additive/auto-approve only; this subtractive
+# list is what actually blocks a tool. Verified against `claude --help`,
+# 2026-07-27: --disallowedTools takes the same comma-separated Tool(pattern)
+# syntax as --allowedTools.
+#
+# Task is deliberately NOT denied here: midjourney-prompting's SKILL.md (its
+# Gate B, "production"-stage only) dispatches one fresh agent for adversarial
+# art-direction review, and visual-prompts auto-invokes midjourney-prompting
+# mid-turn. Denying Task would silently degrade that documented quality gate
+# with no error surfaced to the user -- a real scope-vs-capability trade-off,
+# not an oversight.
+PIPELINE_DISALLOWED_TOOLS = (
+    "Bash,WebFetch,WebSearch,"
+    "Write(docs/**),Edit(docs/**),"
+    "Write(output/**),Edit(output/**),"
+    "Write(.claude/skills/**),Edit(.claude/skills/**)"
+)
+
+
 def resolve_claude_binary(which_fn: Callable[[str], str | None] = shutil.which) -> str:
     path = which_fn("claude")
     if path is None:
@@ -30,6 +51,7 @@ def build_claude_argv(
     resume_session_id: str | None,
     allowed_tools: str,
     settings_path: str | None,
+    disallowed_tools: str | None = None,
     which_fn: Callable[[str], str | None] = shutil.which,
 ) -> list[str]:
     """Build the claude argv WITHOUT the prompt.
@@ -57,6 +79,8 @@ def build_claude_argv(
         "--verbose",
         "--allowedTools", allowed_tools,
     ]
+    if disallowed_tools:
+        argv += ["--disallowedTools", disallowed_tools]
     if resume_session_id:
         argv += ["--resume", resume_session_id]
     if settings_path:
@@ -177,10 +201,13 @@ async def stream_claude_turn(
     prompt: str,
     cwd: Path,
     resume_session_id: str | None,
-    allowed_tools: str = "Read,Glob,Grep,Write,Edit",
+    allowed_tools: str = "Read,Glob,Grep,Write,Edit,Skill",
+    disallowed_tools: str = PIPELINE_DISALLOWED_TOOLS,
     settings_path: str | None = None,
 ) -> AsyncIterator[dict]:
-    argv = _platform_argv(build_claude_argv(prompt, resume_session_id, allowed_tools, settings_path))
+    argv = _platform_argv(build_claude_argv(
+        prompt, resume_session_id, allowed_tools, settings_path, disallowed_tools,
+    ))
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     process = await asyncio.create_subprocess_exec(
