@@ -37,7 +37,7 @@ This is the entire mechanism the system runs on:
 
 This rule is enforced mechanically, not just by convention: it is what Gate C's **C10** check exists to
 catch (register-crossing vocabulary), on top of the register-balance and world-lock checks the linter also
-runs.
+runs `[I]`.
 
 ## 3. Register A — PRESENT
 
@@ -60,7 +60,7 @@ Full contract for every Register B prompt:
 
 - **Medium.** One fixed painterly signature, held channel-wide, varied only in *content* (era, place, figure) from Short to Short — never in medium, never in technique `[I]`.
 - **Parameters.** No `--raw`, `--s 400–700` — the documented fine-art/illustrative band, at the opposite end of the stylize range from Register A, chosen for maximum interpretive freedom rather than literalism `[T] (verified 2026-07-26)`.
-- **Consistency.** One `--sref` code harvested **once**, stored as a repo-level channel asset, and reused on every Short thereafter — never re-harvested per Short `[I]`. Record the **resolved style code**, never a moodboard `mID`: a moodboard's code changes whenever images are added to or removed from the board, so pinning the moodboard ID instead of the resolved code would silently drift the channel's painterly signature over time `[T] (verified 2026-07-26)`.
+- **Consistency.** One `--sref` code harvested **once** via Style Creator's pick-the-grid session, stored as a repo-level channel asset, and reused on every Short thereafter — never re-harvested per Short `[I]`. Record the resolved `--sref` code itself (Style Creator's output); only run Style Creator again if the channel's painterly signature is deliberately changing `[I]`.
 - **Banned vocabulary**, verbatim: `DSLR`, `shot on 35mm film`, `documentary`, any `<n>mm` token, any `f/<n>` token — exactly the optics/photography markers that would collapse register B back into register A's visual language (see §2) `[I]`.
 - **Figure treatment.** Archetype only — unnamed, face averted or lost in shadow, dressed and posed to the role, never an attempt at a specific likeness `[I]`.
 - **The `--oref` consequence.** Because no likeness is being locked, Omni Reference is unnecessary for register B figures — and that matters beyond style: adding an Omni Reference to a prompt automatically routes the whole job through V7 instead of V8.2, at **2× GPU cost**, so staying archetype-only keeps every Register B render in V8.2 at standard cost `[T] (verified 2026-07-26)`.
@@ -89,9 +89,9 @@ cut.
 ## 7. The world-lock block
 
 Emit this block once per Short, verbatim in the format Gate C's parser reads (`register_a_*` /
-`register_b_*` / `motif` keys, one `key: value` pair per line under a `WORLD LOCK` heading). Every
+`register_b_*` / `motif` keys, one `key: value` pair per line under a `WORLD LOCK` heading) `[I]`. Every
 downstream prompt in the sheet inherits from this block — it is written once, before any per-shot prompt
-exists.
+exists `[I]`.
 
 ```
 WORLD LOCK
