@@ -101,3 +101,49 @@ it as a corpus or tool fact.
   text itself.
 - `references/production-and-loudness.md` — LUFS target, music ducking, consistency, re-rolls.
 - `references/worked-example.md` — a full script excerpt run through to a finished brief.
+
+## File I/O contract
+
+This skill participates in ContentStudio's file-based pipeline handoff (see
+`docs/superpowers/specs/2026-07-28-skill-markdown-file-contract-design.md`). Two modes:
+
+**App-driven** (a `pipeline-app` turn already told you an output path): follow that instruction
+exactly — write only to the named path, overwrite it each turn as instructed. Do not also write
+to `rgs-briefs/` in this mode.
+
+**Standalone** (no output path was given):
+
+1. Resolve the upstream script: run
+   `python scripts/resolve_brief_version.py --slug <slug> --kind script` from the repo root. Read
+   the file it reports, and follow its `concept_brief:`/`grounding:` pointer fields to resolve
+   anything further upstream.
+   **Staleness check:** re-run the resolver for `--kind script` again right before you finish —
+   if a newer version now exists than the one you read, tell the user before proceeding.
+2. Before writing the brief, run
+   `python scripts/resolve_brief_version.py --slug <slug> --kind voiceover-brief` from the repo
+   root (no `--next`). If it prints a path (not `NONE`), that's the current version being
+   superseded — remember its printed path verbatim for the `supersedes:` field below; it's already
+   `rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
+3. After writing the brief, run
+   `python scripts/resolve_brief_version.py --slug <slug> --kind voiceover-brief --next --date <YYYY-MM-DD>`.
+   Write the file at `rgs-briefs/<filename>` via the `Write` tool with this frontmatter (in
+   addition to the brief body template above):
+
+   ```yaml
+   ---
+   date: <YYYY-MM-DD>
+   kind: voiceover-brief
+   slug: <slug>
+   stage: 03-voiceover
+   version: <version from the resolver>
+   supersedes: <path from step 2 above — only if version > 1>
+   script: <the script file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
+   concept_brief: <carried through from the script, if present>
+   grounding: <carried through from the script, if present>
+   total_runtime_seconds: <carried through from the script, if present>
+   status: complete
+   ---
+   ```
+4. State the exact file path you wrote in your final chat response.
+
+Never edit an existing `rgs-briefs/*.md` file — a `PreToolUse` hook enforces this.
