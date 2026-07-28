@@ -104,6 +104,7 @@ to `rgs-briefs/` in this mode.
    voiceover_brief: <the voiceover-brief file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative>
    visual_prompts: <the visual-prompts file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative>
    visual_system: <carried through from the visual-prompts file, if present>
+   archetype: <carried through from the script / concept brief, if present>
    status: complete
    ---
    ```

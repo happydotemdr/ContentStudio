@@ -140,6 +140,7 @@ to `rgs-briefs/` in this mode.
    script: <the script file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
    concept_brief: <carried through from the script, if present>
    grounding: <carried through from the script, if present>
+   archetype: <carried through from the script / concept brief, if present>
    total_runtime_seconds: <carried through from the script, if present>
    status: complete
    ---

@@ -392,6 +392,7 @@ to `rgs-briefs/` in this mode.
    supersedes: <path from step 2 above — only if version > 1>
    script: <the script file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
    concept_brief: <carried through from the script, if present>
+   archetype: <carried through from the script / concept brief, if present>
    visual_system: <path to a run-level visual-system document, if one was provided>
    motif_family: <the visual motif family this Short uses, if you named one while building the sheet>
    status: complete

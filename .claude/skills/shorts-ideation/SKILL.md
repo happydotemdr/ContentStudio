@@ -238,6 +238,7 @@ mode; that stays `pipeline-app`'s job.
    version: <version from the resolver>
    supersedes: <path from step 3 above — only if version > 1>
    grounding: <path to the companion grounding artifact, only if one was used>
+   archetype: <carried through from the companion grounding artifact, if present>
    status: complete
    ---
    ```

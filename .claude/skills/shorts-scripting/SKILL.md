@@ -256,6 +256,8 @@ to `rgs-briefs/` in this mode.
    supersedes: <path from step 2 above — only if version > 1>
    concept_brief: <the concept-brief file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
    grounding: <carried through from the concept brief, if present>
+   archetype: <carried through from the concept brief / grounding artifact, if present>
+   visual_system: <carried through from the concept brief or a run-level document, if one was provided>
    total_runtime_seconds: <the script's total runtime, if the concept brief or your own timing states one>
    status: complete
    ---

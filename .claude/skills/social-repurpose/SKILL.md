@@ -152,6 +152,7 @@ to `rgs-briefs/` in this mode.
    assembly: <the assembly file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative>
    concept_brief: <carried through from the script, if present>
    grounding: <carried through from the script, if present>
+   archetype: <carried through from the script / concept brief, if present>
    status: complete
    ---
    ```
