@@ -54,6 +54,8 @@ worthless on a 0.4-minute draft grid where the whole purpose is to be wrong chea
       `--s` 400-700 (Gate C's C14)
 - [ ] `register: B` contains **no** `DSLR`, `shot on 35mm film`, `documentary`, focal length or
       f-stop (Gate C's C10)
+- [ ] Shot class, scale, and camera height are each a member of their closed vocabulary — not a
+      typo or a free-text stand-in (Gate C's **C15**) `[I]`
 
 This section is an `[I]` adaptation for pipeline mode and does **not** apply to standalone jobs,
 where "Short usually beats long" `[C] (Tokenized AI, vezJXJGQMoY)` still governs.

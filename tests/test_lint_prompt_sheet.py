@@ -17,6 +17,7 @@ from lint_prompt_sheet import (  # noqa: E402
     check_world_lock,
     check_prompt_quality,
     check_format,
+    check_vocabulary,
     lint,
     main,
 )
@@ -370,6 +371,16 @@ def test_c13_flags_punctuation_in_flag_block():
     assert "C13" in codes(check_format([shot]))
 
 
+def test_c13_allows_url_and_version_periods_in_flag_block():
+    shot = make_shot(
+        1,
+        "A",
+        prompt=DENSE_A + ", No Text. --ar 9:16 --raw --s 95 --v 8.2 "
+        "--oref https://cdn.midjourney.com/a1b2.png --ow 100",
+    )
+    assert "C13" not in codes(check_format([shot]))
+
+
 def test_c14_flags_register_a_without_raw():
     shot = make_shot(1, "A", prompt=DENSE_A + ", No Text. --ar 9:16 --s 95")
     assert "C14" in codes(check_format([shot]))
@@ -397,6 +408,41 @@ def test_c14_passes_correct_bands():
     b = make_shot(2, "B", "WORLD", "XWIDE", "EYE",
                   DENSE_A + ", No Text. --ar 9:16 --s 520")
     assert check_format([a, b]) == []
+
+
+def test_c15_flags_register_a_shot_class_typo():
+    # "MIDWIDE" for "MID-WIDE" would otherwise dodge C2 and inflate C4's scale count.
+    shot = make_shot(1, "A", "DETAIL", "MIDWIDE", "LOW")
+    assert "C15" in codes(check_vocabulary([shot]))
+
+
+def test_c15_flags_shot_class_outside_register_a_closed_set():
+    shot = make_shot(1, "A", "WORLD", "MID", "LOW")  # WORLD is a Register B class
+    assert "C15" in codes(check_vocabulary([shot]))
+
+
+def test_c15_flags_shot_class_outside_register_b_closed_set():
+    shot = make_shot(1, "B", "DETAIL", "MID", "LOW")  # DETAIL is a Register A class
+    assert "C15" in codes(check_vocabulary([shot]))
+
+
+def test_c15_flags_plate_shot_class_not_literally_plate():
+    shot = make_shot(1, "PLATE", "GRADIENT", "MID", "EYE")
+    assert "C15" in codes(check_vocabulary([shot]))
+
+
+def test_c15_flags_invalid_camera_height():
+    shot = make_shot(1, "A", "DETAIL", "MID", "LOWISH")
+    assert "C15" in codes(check_vocabulary([shot]))
+
+
+def test_c15_passes_valid_vocabulary():
+    shots = [
+        make_shot(1, "A", "DETAIL", "MACRO", "LOW"),
+        make_shot(2, "B", "WORLD", "XWIDE", "EYE"),
+        make_shot(3, "PLATE", "PLATE", "MID", "HIGH"),
+    ]
+    assert check_vocabulary(shots) == []
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"

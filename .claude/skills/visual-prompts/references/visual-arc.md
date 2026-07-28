@@ -166,6 +166,7 @@ tooling, not extracted from the corpus.
 | **C12** | Every prompt body has at least 10 clauses and at least 60 words — density enough that all layers carry concrete renderable content. |
 | **C13** | Copy-paste format: prompt is one contiguous line, `No Text.` appears immediately before the flags, a parameter block exists, `--ar` is present, and no stray punctuation (`,` `;` `.`) sits inside the parameter block. |
 | **C14** | Register parameter bands: Register A requires `--raw` and `--s` in 80–120; Register B must not carry `--raw` and requires `--s` in 400–700. |
+| **C15** | Shot class, scale, and camera height are each members of their closed vocabulary: Register A shot class ∈ `{ESTABLISHING, ACTION-ADJACENT, DETAIL, HUMAN-COST}`, Register B shot class ∈ `{FIGURE, WORLD, ARTIFACT}`, PLATE shot class must be literally `PLATE`; scale ∈ `{XWIDE, WIDE, MID-WIDE, MID, CLOSE, MACRO}`; camera height ∈ `{LOW, EYE, HIGH, OVERHEAD}`. Catches typos (`MIDWIDE` for `MID-WIDE`) that would otherwise dodge C2 and inflate C4's distinct-scale count `[I]`. |
 
 ## 9. How to run Gate C `[I]`
 

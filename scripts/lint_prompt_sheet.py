@@ -224,6 +224,69 @@ def check_register_balance(shots: list[Shot]) -> list[Finding]:
     return findings
 
 
+REGISTER_A_SHOT_CLASSES = {"ESTABLISHING", "ACTION-ADJACENT", "DETAIL", "HUMAN-COST"}
+REGISTER_B_SHOT_CLASSES = {"FIGURE", "WORLD", "ARTIFACT"}
+VALID_SCALES = {"XWIDE", "WIDE", "MID-WIDE", "MID", "CLOSE", "MACRO"}
+VALID_CAMERA_HEIGHTS = {"LOW", "EYE", "HIGH", "OVERHEAD"}
+
+
+def check_vocabulary(shots: list[Shot]) -> list[Finding]:
+    """C15: shot class, scale and camera height are members of their closed sets.
+
+    A typo (`MIDWIDE` for `MID-WIDE`) doesn't just go unreported here -- left
+    unchecked it would silently dodge C2's adjacent-scale-repeat check and inflate
+    C4's distinct-scale count, making a monotonous sheet *more* likely to pass.
+    """
+    findings: list[Finding] = []
+
+    for shot in shots:
+        if shot.register == "PLATE":
+            if shot.shot_class != "PLATE":
+                findings.append(
+                    Finding("C15", shot.index, f"PLATE shot class must be 'PLATE', got {shot.shot_class!r}")
+                )
+        elif shot.register == "A":
+            if shot.shot_class not in REGISTER_A_SHOT_CLASSES:
+                findings.append(
+                    Finding(
+                        "C15",
+                        shot.index,
+                        f"shot class {shot.shot_class!r} is not one of Register A's closed set "
+                        f"{sorted(REGISTER_A_SHOT_CLASSES)!r}",
+                    )
+                )
+        elif shot.register == "B":
+            if shot.shot_class not in REGISTER_B_SHOT_CLASSES:
+                findings.append(
+                    Finding(
+                        "C15",
+                        shot.index,
+                        f"shot class {shot.shot_class!r} is not one of Register B's closed set "
+                        f"{sorted(REGISTER_B_SHOT_CLASSES)!r}",
+                    )
+                )
+
+        if shot.scale not in VALID_SCALES:
+            findings.append(
+                Finding(
+                    "C15",
+                    shot.index,
+                    f"scale {shot.scale!r} is not one of the closed set {sorted(VALID_SCALES)!r}",
+                )
+            )
+        if shot.camera_height not in VALID_CAMERA_HEIGHTS:
+            findings.append(
+                Finding(
+                    "C15",
+                    shot.index,
+                    f"camera height {shot.camera_height!r} is not one of the closed set "
+                    f"{sorted(VALID_CAMERA_HEIGHTS)!r}",
+                )
+            )
+
+    return findings
+
+
 BANNED_REGISTER_A_STRINGS = ("empty gym", "empty youth gym")
 BANNED_REGISTER_B_STRINGS = ("dslr", "shot on 35mm film", "documentary")
 BANNED_REGISTER_B_PATTERNS = (
@@ -346,6 +409,8 @@ def _pairs(shots: list[Shot]):
 
 STYLIZE_RE = re.compile(r"--(?:s|stylize)\s+(\d+)")
 REGISTER_BANDS = {"A": (80, 120, True), "B": (400, 700, False)}
+# A bare version number like "8.2" -- the only non-URL shape allowed to carry a period.
+URL_OR_VERSION_TOKEN_RE = re.compile(r"^\d+\.\d+$")
 
 
 def check_format(shots: list[Shot]) -> list[Finding]:
@@ -377,10 +442,19 @@ def check_format(shots: list[Shot]) -> list[Finding]:
         if "--ar" not in flags:
             findings.append(Finding("C13", shot.index, "no --ar in the parameter block"))
         for punctuation in (",", ";", "."):
-            if punctuation in flags:
-                findings.append(
-                    Finding("C13", shot.index, f"punctuation {punctuation!r} inside the parameter block")
-                )
+            if punctuation not in flags:
+                continue
+            # A period is legal inside a URL value (--oref https://.../a1b2.png) or a
+            # version number (--v 8.2); only flag periods outside those two shapes.
+            if punctuation == "." and all(
+                token.lower().startswith("http") or URL_OR_VERSION_TOKEN_RE.fullmatch(token)
+                for token in flags.split()
+                if punctuation in token
+            ):
+                continue
+            findings.append(
+                Finding("C13", shot.index, f"punctuation {punctuation!r} inside the parameter block")
+            )
 
         band = REGISTER_BANDS.get(shot.register)
         if band is None:
@@ -416,6 +490,7 @@ def lint(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
         *check_world_lock(shots, world),
         *check_prompt_quality(shots),
         *check_format(shots),
+        *check_vocabulary(shots),
     ]
 
 

@@ -143,7 +143,7 @@ a description of it:
 Changes vs. previous: opening frame.
 
 ```text
-documentary sports photography, extreme close-up of a child's small hands pulling a nylon shin-guard strap tight over a club soccer sock, knuckles whitening against the webbing, a scuffed cleat and a mud-flecked ball resting behind on cropped winter turf, a goal net dissolving into unfocused background, low three-quarter angle from knee height, 100mm macro lens at f/2.8, razor-thin focal plane on the buckle, flat blue-grey dawn light from an overcast sky, desaturated palette of turf green and cold slate, fine grain, DSLR, No Text. --ar 9:16 --raw --s 95
+documentary sports photography, extreme close-up of a child's small hands pulling a nylon shin-guard strap tight over a club soccer sock, knuckles whitening against the webbing, a scuffed cleat and a mud-flecked ball resting behind on cropped winter turf, a goal net dissolving into unfocused background, low three-quarter angle from knee height, 100mm macro lens at f/2.8, razor-thin focal plane on the buckle, flat blue-grey dawn light from an overcast sky, desaturated palette of turf green and cold slate, fine grain, DSLR, No Text. --ar 9:16 --raw --s 95 --sref 1122334455
 ```
 ```
 
