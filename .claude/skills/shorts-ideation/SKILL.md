@@ -220,10 +220,14 @@ mode; that stays `pipeline-app`'s job.
    (e.g. "Decline the Next Level" → `decline-the-next-level`). This slug is used by every
    downstream stage — state it explicitly in your final output so the human can carry it forward.
 3. After assembling the concept brief, run
-   `python scripts/resolve_brief_version.py --slug <slug> --kind concept-brief --next --date <YYYY-MM-DD>`
-   from the repo root. This prints `<filename>\t<version>`. Write the file at
-   `rgs-briefs/<filename>` via the `Write` tool with this frontmatter (in addition to the
-   concept-brief body template above):
+   `python scripts/resolve_brief_version.py --slug <slug> --kind concept-brief`
+   from the repo root (no `--next`). If it prints a path (not `NONE`), that's the current version
+   being superseded — remember its printed path verbatim for the `supersedes:` field below; it's
+   already `rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
+4. Then run `python scripts/resolve_brief_version.py --slug <slug> --kind concept-brief --next --date <YYYY-MM-DD>`
+   to get the exact filename and version number to write. This prints `<filename>\t<version>`. Write
+   the file at `rgs-briefs/<filename>` via the `Write` tool with this frontmatter (in addition to
+   the concept-brief body template above):
 
    ```yaml
    ---
@@ -232,12 +236,12 @@ mode; that stays `pipeline-app`'s job.
    slug: <slug>
    stage: 01-ideation
    version: <version from the resolver>
-   supersedes: <previous version's path, exactly as the resolver printed it in step 1 — only if version > 1>
+   supersedes: <path from step 3 above — only if version > 1>
    grounding: <path to the companion grounding artifact, only if one was used>
    status: complete
    ---
    ```
-4. State the exact file path you wrote in your final chat response, and the `slug` you chose, so
+5. State the exact file path you wrote in your final chat response, and the `slug` you chose, so
    `shorts-scripting` can be pointed at it directly.
 
 Never edit an existing `rgs-briefs/*.md` file — a `PreToolUse` hook enforces this. A revision
