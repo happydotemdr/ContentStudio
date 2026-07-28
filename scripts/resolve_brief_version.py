@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     if path is None:
         print("NONE\t0")
         return 1
-    print(f"{path}\t{version}")
+    print(f"{path.as_posix()}\t{version}")
     return 0
 
 

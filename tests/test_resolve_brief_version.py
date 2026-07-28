@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -76,3 +78,32 @@ def test_next_filename_grounding_brief_has_no_kind_suffix(tmp_path: Path):
     filename, version = next_filename(tmp_path, "my-topic", None, "2026-07-28")
     assert filename == "2026-07-28-my-topic.md"
     assert version == 1
+
+
+def test_cli_prints_forward_slash_path(tmp_path: Path):
+    """The CLI must print a forward-slash path even on Windows, since every skill
+    copies this value verbatim into frontmatter pointer fields (script:,
+    concept_brief:, supersedes:, ...), which are documented and stored as
+    forward-slash paths throughout rgs-briefs/."""
+    _write(tmp_path, "2026-07-28-my-short-script.md", 1)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.resolve_brief_version",
+            "--dir",
+            str(tmp_path),
+            "--slug",
+            "my-short",
+            "--kind",
+            "script",
+        ],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "\\" not in result.stdout
+    printed_path, printed_version = result.stdout.strip().split("\t")
+    assert printed_path.endswith("2026-07-28-my-short-script.md")
+    assert printed_version == "1"
