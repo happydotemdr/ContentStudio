@@ -143,11 +143,12 @@ not license to cut for its own sake — cut because the VO content changed, and 
 arc table's variety do the work of keeping each cut visually distinct once a cut is
 already warranted.
 
-## 8. The Gate C table
+## 8. The Gate C table `[I]`
 
 Run `scripts/lint_prompt_sheet.py` against an emitted sheet and it reports findings
 tagged with these check IDs. This table lets you map a finding straight back to the rule
-it enforces.
+it enforces. `[I]` — this lint gate and its check IDs are this skill's own operational
+tooling, not extracted from the corpus.
 
 | Check | What it enforces |
 |-------|-------------------|
@@ -166,12 +167,12 @@ it enforces.
 | **C13** | Copy-paste format: prompt is one contiguous line, `No Text.` appears immediately before the flags, a parameter block exists, `--ar` is present, and no stray punctuation (`,` `;` `.`) sits inside the parameter block. |
 | **C14** | Register parameter bands: Register A requires `--raw` and `--s` in 80–120; Register B must not carry `--raw` and requires `--s` in 400–700. |
 
-## 9. How to run Gate C
+## 9. How to run Gate C `[I]`
 
 ```bash
 python scripts/lint_prompt_sheet.py <path-to-sheet.md>
 ```
 
 Exit 0 clean · exit 1 findings · exit 2 nothing parsed (usually a format error — see
-`prompt-sheet-format.md`). A failing gate **blocks emission**. Never report Gate C as
-passed without running it.
+`prompt-sheet-format.md`). `[I]` — this skill's own operational rule: a failing gate
+**blocks emission**. Never report Gate C as passed without running it.
