@@ -198,7 +198,12 @@ async def run_stage_turn(
             StageStatus.AWAITING_REVIEW.value if latest is not None else StageStatus.READY.value
         )
         db_mod.update_stage_status(conn, stage_row["id"], new_status)
-        db_mod.update_turn(conn, turn_id, "aborted", _utcnow())
+        # extract_turn_result is safe to call on a partial `collected` -- it
+        # simply returns None fields for whatever never arrived. Covers the
+        # rare case where a `result` event (and its cost) was captured just
+        # before the disconnect, instead of always discarding it.
+        partial = cli_runner.extract_turn_result(collected)
+        db_mod.update_turn(conn, turn_id, "aborted", _utcnow(), partial.cost_usd)
         raise
 
     result = cli_runner.extract_turn_result(collected)
