@@ -4,9 +4,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from pipeline_app import artifacts
+from pipeline_app import artifacts, db as db_mod
 from pipeline_app.grounding_service import write_pointer
 from pipeline_app.main import create_app
+from pipeline_app.state_machine import StageStatus
 
 
 @pytest.fixture
@@ -172,6 +173,30 @@ def test_edit_for_stage_not_applicable_to_brand_returns_404(client):
         f"/projects/{project_id}/stages/grounding/edit", data={"body": "x"}
     )
     assert resp.status_code == 404
+
+
+def test_stage_page_shows_stale_override_cue_near_approve_button(client):
+    """A stale stage can still be approved directly (accepted, sound
+    behavior -- see progress ledger), but nothing in the UI previously
+    signalled that doing so overrides the staleness cascade rather than
+    being a fresh approval. Text cue only, no confirm step."""
+    test_client, tmp_path, app = client
+    project_id = _generic_project_id(test_client)
+    stage_row = db_mod.get_stage(app.state.conn, project_id, "ideation")
+    db_mod.update_stage_status(app.state.conn, stage_row["id"], StageStatus.STALE.value)
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert "override" in page.text.lower()
+
+
+def test_stage_page_hides_stale_override_cue_for_non_stale_stage(client):
+    test_client, tmp_path, app = client
+    project_id = _generic_project_id(test_client)
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert "override" not in page.text.lower()
 
 
 def test_stage_page_shows_pipeline_nav_with_current_highlight(client):

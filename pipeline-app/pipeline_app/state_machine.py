@@ -17,6 +17,10 @@ def compute_initial_status(depends_on: list[str]) -> StageStatus:
     return StageStatus.READY if not depends_on else StageStatus.LOCKED
 
 
+def is_locked_or_running(status: str) -> bool:
+    return status in (StageStatus.LOCKED.value, StageStatus.RUNNING.value)
+
+
 def stages_to_unlock(all_stage_defs: list[StageDef], approved_stage_ids: set[str]) -> list[str]:
     unlocked = []
     for stage in all_stage_defs:

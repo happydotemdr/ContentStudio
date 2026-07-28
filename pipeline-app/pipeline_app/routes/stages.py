@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 
 from pipeline_app import approval_service, artifacts, db as db_mod, grounding_service, turn_service
 from pipeline_app.pipeline_config import build_stage_nav, stage_dir_name
-from pipeline_app.state_machine import StageStatus
+from pipeline_app.state_machine import is_locked_or_running
 
 router = APIRouter()
 
@@ -51,7 +51,7 @@ def _resolve_project_stage(request: Request, project_id: int, stage_id: str):
 
 @router.get("/projects/{project_id}/stages/{stage_id}", response_class=HTMLResponse)
 def stage_page(request: Request, project_id: int, stage_id: str):
-    project, stage_def, _stage_row = _resolve_project_stage(request, project_id, stage_id)
+    project, stage_def, stage_row = _resolve_project_stage(request, project_id, stage_id)
     stage_defs = request.app.state.stage_defs
     run_dir = request.app.state.repo_root / "runs" / project["run_id"]
     stage_dir = run_dir / stage_dir_name(stage_def)
@@ -93,7 +93,7 @@ def stage_page(request: Request, project_id: int, stage_id: str):
     return request.app.state.templates.TemplateResponse(
         request, "stage.html",
         {
-            "project": project, "stage_id": stage_id,
+            "project": project, "stage_id": stage_id, "stage_status": stage_row["status"],
             "input_body": input_body, "grounding_input_body": grounding_input_body,
             "output_body": output_body,
             "transcript": transcript, "nav": nav,
@@ -104,7 +104,12 @@ def stage_page(request: Request, project_id: int, stage_id: str):
 @router.post("/projects/{project_id}/stages/{stage_id}/chat")
 async def stage_chat(request: Request, project_id: int, stage_id: str, message: str = Form(...)):
     project, stage_def, stage_row = _resolve_project_stage(request, project_id, stage_id)
-    if stage_row["status"] in (StageStatus.LOCKED.value, StageStatus.RUNNING.value):
+    # Pre-check for a clean 409, same rationale as the any_turn_running check
+    # below: turn_service.run_stage_turn enforces this invariant itself too
+    # (StageNotRunnableError), but that check does not execute until the
+    # StreamingResponse body generator is first iterated, by which point a
+    # 200 and SSE headers are already committed.
+    if is_locked_or_running(stage_row["status"]):
         return PlainTextResponse(
             f"Stage '{stage_id}' is {stage_row['status']} and cannot accept chat messages yet.",
             status_code=409,
@@ -173,12 +178,7 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
 
 @router.post("/projects/{project_id}/stages/{stage_id}/approve")
 def approve_stage_route(request: Request, project_id: int, stage_id: str):
-    project, _stage_def, stage_row = _resolve_project_stage(request, project_id, stage_id)
-    if stage_row["status"] in (StageStatus.LOCKED.value, StageStatus.RUNNING.value):
-        return PlainTextResponse(
-            f"Stage '{stage_id}' is {stage_row['status']} and cannot be approved yet.",
-            status_code=409,
-        )
+    project, _stage_def, _stage_row = _resolve_project_stage(request, project_id, stage_id)
     conn = request.app.state.conn
     repo_root = request.app.state.repo_root
     stage_defs = request.app.state.stage_defs
@@ -186,7 +186,9 @@ def approve_stage_route(request: Request, project_id: int, stage_id: str):
     try:
         approval_service.approve_stage(conn, repo_root, run_dir, project_id, stage_defs, stage_id)
     except ValueError as exc:
-        # Nothing to approve yet — an explicit conflict state, never a 500.
+        # Nothing to approve yet, or the locked/running invariant --
+        # approval_service raises for both; an explicit conflict state,
+        # never a 500.
         return PlainTextResponse(str(exc), status_code=409)
     return RedirectResponse(url=f"/projects/{project_id}/stages/{stage_id}", status_code=303)
 
@@ -199,7 +201,7 @@ def edit_stage_output_route(request: Request, project_id: int, stage_id: str, bo
             "Grounding's output lives in rgs-briefs/ -- edit that file directly, not through this app.",
             status_code=409,
         )
-    if stage_row["status"] in (StageStatus.LOCKED.value, StageStatus.RUNNING.value):
+    if is_locked_or_running(stage_row["status"]):
         return PlainTextResponse(
             f"Stage '{stage_id}' is {stage_row['status']} and cannot be edited yet.",
             status_code=409,

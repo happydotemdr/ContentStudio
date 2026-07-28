@@ -109,6 +109,31 @@ async def test_run_stage_turn_rejects_concurrent_turn(conn, project, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_run_stage_turn_rejects_locked_stage(conn, project, monkeypatch, tmp_path):
+    """The locked/running invariant must be enforced by the service itself,
+    not only by callers -- a route added without the check must still be
+    protected."""
+    db.update_stage_status(conn, project["stage_row_id"], StageStatus.LOCKED.value)
+    stage_def = STAGES[0]
+    with pytest.raises(turn_service.StageNotRunnableError):
+        await _drain(turn_service.run_stage_turn(
+            conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
+            project["project_id"], "abc-20260725-120000", stage_def, STAGES, "idea",
+        ))
+
+
+@pytest.mark.asyncio
+async def test_run_stage_turn_rejects_running_stage(conn, project, monkeypatch, tmp_path):
+    db.update_stage_status(conn, project["stage_row_id"], StageStatus.RUNNING.value)
+    stage_def = STAGES[0]
+    with pytest.raises(turn_service.StageNotRunnableError):
+        await _drain(turn_service.run_stage_turn(
+            conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
+            project["project_id"], "abc-20260725-120000", stage_def, STAGES, "idea",
+        ))
+
+
+@pytest.mark.asyncio
 async def test_disconnected_turn_is_marked_aborted_not_left_running(conn, project, monkeypatch, tmp_path):
     """Simulates an SSE client disconnect: the caller stops draining the
     generator (calls aclose()) instead of consuming it to completion. The

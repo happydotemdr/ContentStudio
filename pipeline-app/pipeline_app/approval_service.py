@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pipeline_app import artifacts, db as db_mod
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
-from pipeline_app.state_machine import StageStatus, stages_to_unlock
+from pipeline_app.state_machine import StageStatus, is_locked_or_running, stages_to_unlock
 
 
 def approve_stage(
@@ -16,6 +16,10 @@ def approve_stage(
     stage_id: str,
 ) -> list[str]:
     stage_row = db_mod.get_stage(conn, project_id, stage_id)
+    if is_locked_or_running(stage_row["status"]):
+        raise ValueError(
+            f"Stage '{stage_id}' is {stage_row['status']} and cannot be approved yet."
+        )
     stage_def = next(s for s in stage_defs if s.id == stage_id)
     stage_dir = run_dir / stage_dir_name(stage_def)
 
@@ -24,7 +28,19 @@ def approve_stage(
         raise ValueError(f"No artifact to approve for stage '{stage_id}'.")
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    if stage_id != "grounding":
+    # Re-approving a stage whose artifact is already stamped final must not
+    # rewrite it: stamp_final changes finalized_at (and therefore the file's
+    # sha256) every time it runs, and propagate_staleness's hash check would
+    # treat that churn as a real change, spuriously flipping approved
+    # dependents stale even though nothing substantive happened. Gated on
+    # the artifact's own status, not the stage's DB row status -- a stale
+    # stage (approved, then flipped stale by the cascade) still has an
+    # already-final artifact on disk, and stage.html's override note makes
+    # approving it directly (without regenerating) an encouraged path, not
+    # an edge case.
+    latest_meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+    already_final = latest_meta.get("status") == "final"
+    if stage_id != "grounding" and not already_final:
         artifacts.stamp_final(latest, now)
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.APPROVED.value, approved_at=now)
 

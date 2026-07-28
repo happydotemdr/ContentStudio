@@ -1,4 +1,26 @@
 body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.5; }
+
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 70ch;
+  background: #f6f6f6;
+  padding: 0.75rem;
+  border-radius: 0.25rem;
+  box-sizing: border-box;
+}
+
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 5rem;
+}
+
+header { margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ddd; }
+button { padding: 0.35rem 0.75rem; cursor: pointer; }
+table { border-collapse: collapse; }
+th, td { text-align: left; padding: 0.25rem 0.75rem 0.25rem 0; vertical-align: top; }
+
 .status { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 0.25rem; font-size: 0.85rem; }
 .status-locked { background: #ddd; }
 .status-ready { background: #cfe8ff; }
@@ -6,7 +28,7 @@ body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.5; }
 .status-awaiting_review { background: #ffd9a0; }
 .status-approved { background: #c6f0c2; }
 .status-stale { background: #ffb3b3; }
-.status-no_artifact { background: #eee; border: 1px dashed #999; }
+.status-no_artifact { background: #fff; border: 1px dashed #999; }
 
 .pipeline-nav { list-style: none; margin: 0; padding: 0; }
 .pipeline-step {
@@ -34,25 +56,6 @@ body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.5; }
 }
 .specialist { font-size: 0.75rem; color: #777; margin: 0.15rem 0 0; }
 
-pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-width: 70ch;
-  line-height: 1.5;
-  background: #f6f6f6;
-  padding: 0.75rem;
-  border-radius: 0.25rem;
-}
-
-textarea {
-  width: 100%;
-  box-sizing: border-box;
-  min-height: 5rem;
-}
-
-header { margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #ddd; }
-button { padding: 0.35rem 0.75rem; cursor: pointer; }
-table { border-collapse: collapse; }
-th, td { text-align: left; padding: 0.25rem 0.75rem 0.25rem 0; vertical-align: top; }
 .error { color: #a00; }
 .input-panel, .chat-panel, .output-panel { margin-bottom: 1.5rem; }
+.stale-override-note { color: #a05a00; font-size: 0.9rem; }

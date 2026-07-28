@@ -124,6 +124,25 @@ def test_approve_raises_when_no_artifact_exists(conn, tmp_path: Path):
         approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
 
 
+def test_approve_raises_when_stage_is_locked(conn, tmp_path: Path):
+    """The locked/running invariant must be enforced by the service itself,
+    not only by the route -- a caller that skips the route must still be
+    protected."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", StageStatus.LOCKED.value)
+    run_dir = tmp_path / "runs" / "abc-1"
+    with pytest.raises(ValueError, match="locked"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
+
+
+def test_approve_raises_when_stage_is_running(conn, tmp_path: Path):
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", StageStatus.RUNNING.value)
+    run_dir = tmp_path / "runs" / "abc-1"
+    with pytest.raises(ValueError, match="running"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
+
+
 def test_approve_stage_grounding_pointer_target_missing_returns_valueerror_not_crash(conn, tmp_path: Path):
     project_id = db.create_project(conn, "rgs-1", "rgs", "raisinggoodsports", "2026-07-25T12:00:00Z")
     db.create_stage_row(conn, project_id, "grounding", "awaiting_review")
@@ -133,6 +152,72 @@ def test_approve_stage_grounding_pointer_target_missing_returns_valueerror_not_c
 
     with pytest.raises(ValueError, match="No artifact to approve"):
         approve_stage(conn, tmp_path, run_dir, project_id, GROUNDING_STAGES, "grounding")
+
+
+def test_reapproving_an_approved_stage_does_not_churn_hash_or_cascade_staleness(conn, tmp_path: Path):
+    """Re-approving an already-approved stage must be a no-op on disk:
+    stamp_final rewriting finalized_at every time changes the artifact's
+    sha256 even when nothing substantive changed, which would spuriously
+    flip an approved dependent stale the next time propagate_staleness runs
+    a hash check that includes this stage."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "awaiting_review")
+    db.create_stage_row(conn, project_id, "scripting", "locked")
+
+    run_dir = tmp_path / "runs" / "abc-1"
+    ideation_dir = run_dir / "01-ideation"
+    artifacts.write_artifact(ideation_dir, 1, {"status": "draft", "stage": "shorts-ideation"}, "body")
+
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
+    ideation_v1 = ideation_dir / "artifact.v1.md"
+    hash_after_first_approval = artifacts.compute_sha256(ideation_v1)
+
+    scripting_dir = run_dir / "02-scripting"
+    artifacts.write_artifact(
+        scripting_dir, 1,
+        {
+            "stage": "shorts-scripting",
+            "depends_on": [
+                {"path": "01-ideation/artifact.v1.md", "sha256": hash_after_first_approval}
+            ],
+        },
+        "script body",
+    )
+    scripting_row_id = db.get_stage(conn, project_id, "scripting")["id"]
+    db.update_stage_status(conn, scripting_row_id, StageStatus.APPROVED.value)
+
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")  # re-approve; nothing changed
+
+    assert artifacts.compute_sha256(ideation_v1) == hash_after_first_approval
+
+    turn_service.propagate_staleness(conn, run_dir, STAGES, project_id, "ideation")
+    scripting_row = db.get_stage(conn, project_id, "scripting")
+    assert scripting_row["status"] == StageStatus.APPROVED.value
+
+
+def test_reapproving_a_stale_stage_does_not_churn_hash(conn, tmp_path: Path):
+    """A stale stage (approved, then flipped stale by the cascade) can be
+    re-approved directly to override the cascade -- stage.html's new note
+    (Item 4) makes this the encouraged path for a stale stage, not an edge
+    case. That artifact is already stamped final; re-approving it must be
+    just as much a no-op on disk as re-approving a still-approved stage."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "awaiting_review")
+
+    run_dir = tmp_path / "runs" / "abc-1"
+    ideation_dir = run_dir / "01-ideation"
+    artifacts.write_artifact(ideation_dir, 1, {"status": "draft", "stage": "shorts-ideation"}, "body")
+
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
+    ideation_v1 = ideation_dir / "artifact.v1.md"
+    hash_after_first_approval = artifacts.compute_sha256(ideation_v1)
+
+    stage_row_id = db.get_stage(conn, project_id, "ideation")["id"]
+    db.update_stage_status(conn, stage_row_id, StageStatus.STALE.value)
+
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
+
+    assert artifacts.compute_sha256(ideation_v1) == hash_after_first_approval
 
 
 @pytest.mark.asyncio

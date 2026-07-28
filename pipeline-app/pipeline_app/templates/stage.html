@@ -32,6 +32,9 @@
 <section class="output-panel">
   <h2>Output</h2>
   {% if output_body %}<pre>{{ output_body }}</pre>{% else %}<p>No output yet.</p>{% endif %}
+  {% if stage_status == "stale" %}
+  <p class="stale-override-note">This stage is stale (built on a since-changed upstream input). Approving now will override the staleness cascade instead of regenerating.</p>
+  {% endif %}
   <form method="post" action="/projects/{{ project.id }}/stages/{{ stage_id }}/approve">
     <button type="submit">Mark Approved</button>
   </form>

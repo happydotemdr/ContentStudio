@@ -5,14 +5,14 @@
 <h2>SKILL.md</h2>
 <form method="post" action="/skills/{{ skill_name }}/save">
   <input type="hidden" name="target" value="SKILL.md">
-  <textarea name="content" rows="20" cols="100">{{ skill_md_content }}</textarea>
+  <textarea name="content" rows="20">{{ skill_md_content }}</textarea>
   <button type="submit">Save SKILL.md</button>
 </form>
 
 <h2>Kickoff template</h2>
 <form method="post" action="/skills/{{ skill_name }}/save">
   <input type="hidden" name="target" value="kickoff_template">
-  <textarea name="content" rows="10" cols="100">{{ kickoff_template_content }}</textarea>
+  <textarea name="content" rows="10">{{ kickoff_template_content }}</textarea>
   <button type="submit">Save kickoff template</button>
 </form>
 {% endblock %}

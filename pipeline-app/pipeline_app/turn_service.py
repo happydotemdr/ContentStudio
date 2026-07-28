@@ -8,10 +8,14 @@ from typing import AsyncIterator
 
 from pipeline_app import artifacts, cli_runner, db as db_mod, prompt_builder
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
-from pipeline_app.state_machine import StageStatus, is_stale
+from pipeline_app.state_machine import StageStatus, is_locked_or_running, is_stale
 
 
 class TurnAlreadyRunningError(Exception):
+    pass
+
+
+class StageNotRunnableError(Exception):
     pass
 
 
@@ -113,6 +117,10 @@ async def run_stage_turn(
         raise TurnAlreadyRunningError("Another stage turn is already running.")
 
     stage_row = db_mod.get_stage(conn, project_id, stage_def.id)
+    if is_locked_or_running(stage_row["status"]):
+        raise StageNotRunnableError(
+            f"Stage '{stage_def.id}' is {stage_row['status']} and cannot accept chat messages yet."
+        )
     stage_dir = run_dir / stage_dir_name(stage_def)
     events_dir = stage_dir / "events"
     events_dir.mkdir(parents=True, exist_ok=True)
