@@ -17,8 +17,9 @@ Step 0.
 
 **Pipeline (ContentStudio Shorts).** `visual-prompts` (skill #4 of the pipeline) owns the **beat
 mapping** — how many stills a beat needs, what each one shows, and which beats need real motion. It
-hands down a beat's visual note plus a forced stage; you convert that into a prompt. **Accept its
-shot-count and visual-intent calls and do not re-litigate them.**
+hands down a beat's visual note plus a forced stage, `register`, and `shot_class`; you convert that
+into a prompt. **Accept its shot-count, visual-intent, register, and shot-class calls and do not
+re-litigate them.**
 
 The boundary, stated once so neither skill drifts into the other:
 
@@ -59,7 +60,7 @@ plausible-sounding Midjourney "facts" from memory with the same suspicion.
 
 ## The control surface — the only inputs you need
 
-Eight inputs, all defaulted. A bare subject is a valid request. **Infer what you can from the request,
+Nine inputs, all defaulted. A bare subject is a valid request. **Infer what you can from the request,
 then state every default you assumed** — never choose silently, and never interrogate the user with a
 form before doing any work.
 
@@ -73,6 +74,7 @@ form before doing any work.
 | `literalism` | `obey my words` ↔ `use your taste` | balanced | `--s` value |
 | `variance` | `tight` · `some` · `wild` | `some` | `--c` |
 | `budget` | `cheap` · `normal` · `no limit` | `normal` | `--q`, `--hd`/`--sd`, relax vs fast |
+| `register` | `A` (present/photographic) · `B` (source-era/painterly) · `PLATE` · `n/a` | `n/a` | Overrides `look`; forces the parameter band |
 
 Deterministic mappings — same inputs, same prompt, so a user can re-run and reproduce:
 
@@ -81,6 +83,8 @@ Deterministic mappings — same inputs, same prompt, so a user can re-run and re
 | `look: photographic` | `--raw`, `--s 80–120` |
 | `look: stylized` | no `--raw`, `--s 250–400` |
 | `look: illustrative` | no `--raw`, `--s 400–700` |
+| `register: A` | `--raw`, `--s 80–120` — same as `look: photographic` |
+| `register: B` | no `--raw`, `--s 400–700` — same as `look: illustrative`; **never** emit `DSLR`, `shot on 35mm film`, `documentary`, a focal length, or an f-stop |
 | `literalism: obey my words` | `--s` toward the bottom of the band; add `--raw` |
 | `literalism: use your taste` | `--s` toward the top of the band |
 | `variance: tight` | `--c 0` |
@@ -107,8 +111,11 @@ composition/angle → optics/lens/depth-of-field → lighting mechanics → colo
 
 - **Front-load what matters** — Midjourney weights earlier words more heavily and words far back often
   fail to appear `[C] (Future Tech Pilot, ioJ6istzwHw)`.
-- **Short beats long** — length dilutes which words get weighted `[C] (Tokenized AI, vezJXJGQMoY)`.
-  Nine layers is not nine mandatory clauses; drop a layer that adds nothing.
+- **Short beats long, standalone** — length dilutes which words get weighted `[C] (Tokenized AI,
+  vezJXJGQMoY)`. Nine layers is not nine mandatory clauses; drop a layer that adds nothing. **In
+  pipeline mode this changes**: all nine layers are mandatory with concrete content, minimum 10
+  clauses and 60 words, enforced by Gate C's C12 (`references/prompt-architecture.md`, "Density, not
+  length — the pipeline exception `[I]`").
 - **No quality buzzwords** — `photorealistic`, `8k`, `masterpiece`, `ultra-detailed`, `trending on
   ArtStation`. Replace each with the concrete physical detail it was standing in for. *(That these
   actively degrade V8.2 is `[T-unverified]` — the ban stands on craft grounds, not model behavior.)*
@@ -170,6 +177,9 @@ Full checklists and the verbatim dispatch prompt are in `references/validation-g
 |---|---|---|---|
 | **A — syntax & compatibility** | **every prompt, always** | free, inline | flags last / spacing / no punctuation; every value in range; `--oref` ✗ Draft·Fast·`--q 4`; moodboard ✗ `--sv`·`--sw`; `--ar` ≤ 4:1 under `--hd`; no buzzwords; **stage discipline** — no `--hd`/`--q 2`+/`--oref` in an exploratory stage; every line marked |
 | **B — adversarial art direction** | **`production` only** | one fresh agent | weakest of the 9 layers; where literal reading bites; what's buried too late to render; flag stack vs stated intent; one concrete rewrite |
+
+In pipeline mode, `visual-prompts` runs a third gate, **Gate C**, over the assembled prompt sheet
+(`scripts/lint_prompt_sheet.py`) — this skill does not run it; it only produces prompts that satisfy it.
 
 Gate B dispatches a **fresh `general-purpose` agent** that has **not** seen your authoring rationale —
 it judges the artifact, not the reasoning — and is instructed to *find the failure*, not approve.

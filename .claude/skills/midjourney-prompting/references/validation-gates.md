@@ -44,6 +44,20 @@ worthless on a 0.4-minute draft grid where the whole purpose is to be wrong chea
 - [ ] Prompt stands alone — Midjourney carries **no context between jobs** `[T]`
 - [ ] `No Text.` present if the brief involves on-screen copy
 
+### A4b. Pipeline density `[I]` — pipeline mode only
+
+- [ ] **All nine layers present** with concrete renderable content — medium, subject, action/state,
+      environment, composition/angle, optics *(Register A only)*, lighting, color/atmosphere, parameters
+- [ ] Body is **>= 10 comma-separated clauses and >= 60 words** (Gate C's C12)
+- [ ] Prompt is a **single contiguous line**, `No Text.` last before the flags (Gate C's C13)
+- [ ] `register: A` carries `--raw` with `--s` 80-120; `register: B` carries no `--raw` with
+      `--s` 400-700 (Gate C's C14)
+- [ ] `register: B` contains **no** `DSLR`, `shot on 35mm film`, `documentary`, focal length or
+      f-stop (Gate C's C10)
+
+This section is an `[I]` adaptation for pipeline mode and does **not** apply to standalone jobs,
+where "Short usually beats long" `[C] (Tokenized AI, vezJXJGQMoY)` still governs.
+
 ### A5. Stage discipline — the token-waste guard
 
 - [ ] Flags match the declared stage (`render-economics.md`)

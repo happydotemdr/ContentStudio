@@ -41,6 +41,21 @@ prompt casually as long as you fully describe the picture's content
 misses `[C] (Wade McMaster, SjB_-GeI3FQ)`, but default to short. **Nine layers does not mean nine
 clauses** — a layer that adds nothing for this image should be dropped, not padded.
 
+### Density, not length — the pipeline exception `[I]`
+
+This subsection does not supersede or delete the "Short usually beats long" line above, per this
+skill's own conflict rule: never silently delete a cited corpus line. Both stay visible, with the
+reason.
+
+- The `[C]` finding concerns **padding and abstract quality claims** diluting which words get
+  weighted — not the number of distinct visual attributes specified.
+- A prompt that names its lens, its light direction, its palette, and its background separation is
+  **denser**, not more diluted. A prompt that says `beautiful, striking, cinematic` is padding, and
+  remains banned.
+- **In pipeline mode all nine layers are mandatory** with concrete renderable content in each;
+  minimum 10 clauses and 60 words, enforced by Gate C's C12 (`scripts/lint_prompt_sheet.py`).
+- Standalone mode is unchanged — the `[C]` default above still governs there.
+
 The corpus's **six V8 visual anchors** do most of the heavy lifting and map cleanly onto the stack:
 **style, distance, camera, behavior, material, mood** `[C] (Future Tech Pilot, ioJ6istzwHw)`. If a
 prompt feels flat, check that all six are present before adding length.
