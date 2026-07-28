@@ -213,3 +213,53 @@ your first script if this is a new session.
   20–30s compressed band, and the re-hook-timing `[I]` caveat in full.
 - `references/worked-example.md` — a complete concept-brief-to-script run with
   inline citations.
+
+## File I/O contract
+
+This skill participates in ContentStudio's file-based pipeline handoff (see
+`docs/superpowers/specs/2026-07-28-skill-markdown-file-contract-design.md`). Two modes:
+
+**App-driven** (a `pipeline-app` turn already told you an output path): follow that instruction
+exactly — write only to the named path, overwrite it each turn as instructed. Do not also write
+to `rgs-briefs/` in this mode.
+
+**Standalone** (no output path was given):
+
+1. Resolve the upstream concept brief: run
+   `python scripts/resolve_brief_version.py --slug <slug> --kind concept-brief` from the repo
+   root (you need the `slug` the concept brief's author stated — ask for it if you don't have
+   it). This prints `<path>\t<version>` where `<path>` is already `rgs-briefs/`-relative (or, if
+   nothing is found yet, prints `NONE\t0` and exits 1 — that's the expected "no file yet, fall
+   back to chat-pasted input" case, not an error). Read the file it reports. If it points at a
+   `grounding:` field, treat that as the companion grounding artifact per "Optional input" above.
+   **Staleness check:** re-run `resolve_brief_version.py --slug <slug> --kind concept-brief`
+   again right before you finish — if a newer version now exists than the one you read, tell the
+   user before proceeding rather than silently scripting against a stale concept.
+2. Before writing the script, run
+   `python scripts/resolve_brief_version.py --slug <slug> --kind script` from the repo root
+   (no `--next`). If it prints a path (not `NONE`), that's the current version being superseded
+   — remember its printed path verbatim for the `supersedes:` field below; it's already
+   `rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
+3. After writing the script, run
+   `python scripts/resolve_brief_version.py --slug <slug> --kind script --next --date <YYYY-MM-DD>`.
+   It prints `<filename>\t<version>` — a bare filename this time (no directory prefix). Write the
+   file at `rgs-briefs/<filename>` via the `Write` tool with this frontmatter (in addition to the
+   script body's own output contract above):
+
+   ```yaml
+   ---
+   date: <YYYY-MM-DD>
+   kind: script
+   slug: <slug>
+   stage: 02-scripting
+   version: <version from the resolver>
+   supersedes: <path from step 2 above — only if version > 1>
+   concept_brief: <the concept-brief file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
+   grounding: <carried through from the concept brief, if present>
+   total_runtime_seconds: <the script's total runtime, if the concept brief or your own timing states one>
+   status: complete
+   ---
+   ```
+4. State the exact file path you wrote in your final chat response.
+
+Never edit an existing `rgs-briefs/*.md` file — a `PreToolUse` hook enforces this.
