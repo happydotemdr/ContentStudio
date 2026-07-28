@@ -60,7 +60,7 @@ Each skill's `SKILL.md` states its own upstream input and downstream next stage.
 | `shorts-ideation` | Idea → concept | a raw topic/idea | validated concept brief (angle, hook, packaging direction) |
 | `shorts-scripting` | Concept → script | the concept brief | shot-ready script with timing |
 | `voiceover-brief` | Script → voice spec | the script | ElevenLabs voiceover production brief |
-| `visual-prompts` | Script → visual prompts | the script | Midjourney prompt sheet keyed to script beats |
+| `visual-prompts` | Script → visual prompts | the script | prompt sheet keyed to script beats (still prompts delegated to `midjourney-prompting`; i2v prompts written here) |
 | `shorts-assembly` | Script + assets → edit plan | script + voiceover brief + prompt sheet | assembly/edit plan |
 | `social-repurpose` | Finished Short → post copy | the finished Short + its script/packaging | multi-surface post copy (YouTube + cross-platform) |
 
@@ -68,13 +68,55 @@ Each skill's `references/` holds the distilled corpus rules for that stage, with
 markers and citations intact. `SKILL.md` bodies stay lean (progressive disclosure);
 detail lives in `references/`.
 
+### Tool-specialist skills (not corpus-derived — read this before editing them)
+
+Two skills sit **beside** the six-stage pipeline rather than inside it. Each is
+usable standalone for any job in its tool, and each is also the downstream
+specialist for one pipeline stage. Neither is built from the corpus:
+
+| Skill | Tool | Standalone use | Pipeline role |
+|---|---|---|---|
+| `elevenlabs-audio` | ElevenLabs | Any audio job — audiobook, agent, ad, dialogue | `voiceover-brief` hands down the creative call; this skill emits the executable configuration |
+| `midjourney-prompting` | Midjourney | Any image job | `visual-prompts` owns beat mapping; this skill writes the prompts |
+
+The boundary is the same in both cases: **the pipeline skill owns the creative
+call, the specialist owns the executable output.** The specialist accepts the
+creative call and does not re-litigate it.
+
+Their source of truth is web-verified vendor documentation, not the 420-video
+corpus — for `elevenlabs-audio`, `docs/elevenlabs-production-runbook.md`
+(verified 2026-07-26); for `midjourney-prompting`,
+`.claude/skills/midjourney-prompting/references/v82-model-delta.md` (verified
+2026-07-26 against `docs.midjourney.com`), which layers over the corpus's own
+`docs/midjourney-prompting-guide.md` §1a and is the tie-breaker where the two
+disagree. Because vendor facts go stale and vendor-adjacent
+"runbooks" are often wrong, these skills add one marker to the standard three:
+
+- **`[T-unverified]`** — asserted by a supplied source but **not** confirmed
+  against live vendor docs. Usable as a starting hypothesis, never stated as
+  fact. Say so out loud when you use one.
+
+The enterprise runbook that seeded `elevenlabs-audio` was **wrong in eight
+places** — see `docs/elevenlabs-production-runbook.md` §10 for the full
+verification log. The V8.2 runbook that seeded `midjourney-prompting` was
+**wrong in six** — see that skill's `references/v82-model-delta.md`. Treat
+plausible-sounding vendor facts with the same suspicion, and re-verify before
+extending these skills.
+
 ## Anti-generic guarantee (read before editing any skill)
 
-The corpus is the **only** knowledge source for these skills. Do not fall back on
-general "content creation best practices" — if the corpus doesn't cover something,
-the skill must say so and flag it, not silently substitute generic advice. When
-editing or extending a skill: every new normative line needs a `[C]`/`[I]`/`[T]`
-marker that traces to real corpus text (or is honestly flagged as a gap).
+The corpus is the **only** knowledge source for the six pipeline skills. Do not
+fall back on general "content creation best practices" — if the corpus doesn't
+cover something, the skill must say so and flag it, not silently substitute
+generic advice. When editing or extending a skill: every new normative line needs
+a `[C]`/`[I]`/`[T]` marker that traces to real corpus text (or is honestly
+flagged as a gap).
+
+The same discipline applies to the tool-specialist skills, with vendor
+documentation in place of the corpus: every normative line needs a marker
+tracing to verified vendor docs (`[T]`), general practice (`[I]`), or an
+honestly-flagged unverified assertion (`[T-unverified]`). An unmarked normative
+line is a bug in either case.
 
 ## FamilyBrain firewall (absolute, read before touching git remotes or `output/`)
 

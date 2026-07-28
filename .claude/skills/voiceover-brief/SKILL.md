@@ -12,6 +12,17 @@ target for the mix. This is skill #3 of ContentStudio's six-skill pipeline.
 - **Upstream input:** the shot-ready, timed script from `shorts-scripting`.
 - **Downstream:** feeds `shorts-assembly` (skill #5), alongside `visual-prompts`'s prompt sheet.
   This skill does not touch visuals — that's `visual-prompts`'s job, run in parallel.
+- **Downstream specialist:** `elevenlabs-audio`. This skill produces the *creative* brief — which
+  voice and why, the tone per beat, the content type, and the −14 LUFS mix target. It stops at the
+  brief. When the user needs the **executable ElevenLabs configuration** — model routing, the
+  settings floats or v3 stability mode, tag syntax that actually renders, a PLS pronunciation
+  dictionary, the JSON request payload, chunking/stitching, or a credit estimate — hand this brief
+  to `elevenlabs-audio` and let it own that layer. It accepts the voice and tone decided here
+  without re-litigating them, and it is grounded in web-verified vendor docs
+  (`docs/elevenlabs-production-runbook.md`) rather than this corpus.
+
+  **Loudness, ducking, and the music mix stay here** — `elevenlabs-audio` explicitly defers to
+  `references/production-and-loudness.md` and must not duplicate or contradict it.
 
 ## Corpus grounding — read before writing any rule
 

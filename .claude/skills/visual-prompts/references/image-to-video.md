@@ -43,7 +43,7 @@ corpus claim on its own:
 | Need | Choice |
 |---|---|
 | Beat just needs visual variety over ~3s spans | Additional stills (cheapest, matches the cited "AI slideshow" cadence — see `faceless-pacing-rules.md`) |
-| A hero/product still should breathe slightly (subtle push-in, gentle steam/water motion) | MJ's own `--motion low` image→video, per `midjourney-craft.md`'s parameter table |
+| A hero/product still should breathe slightly (subtle push-in, gentle steam/water motion) | MJ's own `--motion low` image→video, per `.claude/skills/midjourney-prompting/references/parameters.md` |
 | The beat's VO explicitly describes continuous action, a camera move, or a transformation that a static image can't sell (a reveal, an orbit, a bloom-in-motion) | A real i2v clip via an external tool (Kling/Seedance/etc.), prompted per this file |
 
 MJ's own i2v is usable for the middle row only — it's D-tier `[C]` and expensive: **~5s clips**,

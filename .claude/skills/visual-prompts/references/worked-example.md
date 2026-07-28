@@ -42,7 +42,7 @@ recurring-character or heavily-branded series, this section would instead specif
 ```
 WHOLE-SHORT SETUP
   Aspect ratio:     --ar 9:16
-  Style/params:     --style raw --s 150
+  Style/params:     --raw --s 150
   Consistency:      none (product/process Short) — shared style vocabulary per prompt: photoreal, DSLR,
                     warm morning kitchen light, muted brown/cream palette
   Notes:            beat 6 reuses beat 1's still exactly (loop mirror) — no new generation
@@ -58,15 +58,15 @@ COVER / THUMBNAIL
 
 | Beat | Still # | Midjourney prompt | Params |
 |---|---|---|---|
-| Hook | 1 | extreme close-up of a black cup of drip coffee, flat dull surface, faint steam rising, kitchen counter softly blurred behind, warm morning window light from the left, moody and a little disappointing, photoreal, warm brown and cream palette, shot on 35mm film. No Text. | `--ar 9:16 --style raw --s 150` |
-| Setup | 1 | photo of a cafe counter, espresso portafilter mid-tamp, brushed steel surface, warm ambient light, shallow depth of field, photoreal, DSLR, warm brown and cream palette. No Text. | `--ar 9:16 --style raw --s 150` |
-| Build | 1 | close-up of dry coffee grounds in a ceramic dripper, hot water just beginning to touch the surface, tiny cracks forming, overhead kitchen light, photoreal macro, DSLR. No Text. | `--ar 9:16 --style raw --s 150` |
-| Build | 2 | close-up of coffee grounds blooming, small bubbles breaking the surface, gentle steam, overhead kitchen light, photoreal macro, DSLR. No Text. | `--ar 9:16 --style raw --s 150` |
-| Build | 3 | close-up of a fully bloomed coffee bed, dome of foam rising, bubbles thickening, overhead kitchen light, photoreal macro, DSLR. No Text. | `--ar 9:16 --style raw --s 150` |
-| Build | 4 | wide shot of a ceramic dripper on a wood counter, bloom settling, gentle wisps of steam catching the window light, photoreal, DSLR, warm brown and cream palette. No Text. | `--ar 9:16 --style raw --s 150` |
-| Re-hook | 1 | close-up of a kettle spout, thin stream of steam, dark blurred kitchen background, dramatic side lighting, photoreal, DSLR. No Text. | `--ar 9:16 --style raw --s 150` |
-| Payoff | 1 | coffee pouring from a dripper into a clear glass mug, warm brown liquid catching the light, steam rising, shallow depth of field, photoreal, DSLR, warm brown and cream palette. No Text. | `--ar 9:16 --style raw --s 150` |
-| Payoff | 2 | close-up of a hand lifting a clear glass mug of coffee toward camera, soft warm light, shallow depth of field, photoreal, DSLR. No Text. | `--ar 9:16 --style raw --s 150` |
+| Hook | 1 | extreme close-up of a black cup of drip coffee, flat dull surface, faint steam rising, kitchen counter softly blurred behind, warm morning window light from the left, moody and a little disappointing, photoreal, warm brown and cream palette, shot on 35mm film. No Text. | `--ar 9:16 --raw --s 150` |
+| Setup | 1 | photo of a cafe counter, espresso portafilter mid-tamp, brushed steel surface, warm ambient light, shallow depth of field, photoreal, DSLR, warm brown and cream palette. No Text. | `--ar 9:16 --raw --s 150` |
+| Build | 1 | close-up of dry coffee grounds in a ceramic dripper, hot water just beginning to touch the surface, tiny cracks forming, overhead kitchen light, photoreal macro, DSLR. No Text. | `--ar 9:16 --raw --s 150` |
+| Build | 2 | close-up of coffee grounds blooming, small bubbles breaking the surface, gentle steam, overhead kitchen light, photoreal macro, DSLR. No Text. | `--ar 9:16 --raw --s 150` |
+| Build | 3 | close-up of a fully bloomed coffee bed, dome of foam rising, bubbles thickening, overhead kitchen light, photoreal macro, DSLR. No Text. | `--ar 9:16 --raw --s 150` |
+| Build | 4 | wide shot of a ceramic dripper on a wood counter, bloom settling, gentle wisps of steam catching the window light, photoreal, DSLR, warm brown and cream palette. No Text. | `--ar 9:16 --raw --s 150` |
+| Re-hook | 1 | close-up of a kettle spout, thin stream of steam, dark blurred kitchen background, dramatic side lighting, photoreal, DSLR. No Text. | `--ar 9:16 --raw --s 150` |
+| Payoff | 1 | coffee pouring from a dripper into a clear glass mug, warm brown liquid catching the light, steam rising, shallow depth of field, photoreal, DSLR, warm brown and cream palette. No Text. | `--ar 9:16 --raw --s 150` |
+| Payoff | 2 | close-up of a hand lifting a clear glass mug of coffee toward camera, soft warm light, shallow depth of field, photoreal, DSLR. No Text. | `--ar 9:16 --raw --s 150` |
 | Loop/CTA | — | reuse Hook still 1 exactly — no new prompt | — |
 
 ## Step 4 — per-beat motion decision (still vs. `--motion low` vs. a real i2v clip)

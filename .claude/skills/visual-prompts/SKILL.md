@@ -1,6 +1,6 @@
 ---
 name: visual-prompts
-description: Turn a shot-ready ContentStudio Short script into a Midjourney prompt sheet — one or more image prompts per script beat, the whole-Short consistency and parameter setup (Omni Reference, --sref, mood boards, --ar/--stylize/--chaos), a dedicated cover/thumbnail image prompt when the packaging direction calls for one, and — for any beat that needs real animated motion, not just a still — the image-to-video (i2v) prompt for the external tool (Kling, Seedance, etc.) that will render it. Use this whenever the user has a scripted/timed Short (from shorts-scripting) and needs "Midjourney prompts," "visual prompts," "image prompts for this script," "consistency setup," an "i2v prompt," a "Kling/Seedance prompt," help deciding whether a beat needs an animated clip, a cover/thumbnail image prompt, or asks how to visualize/storyboard/animate a faceless Short. Always trigger before the user hand-writes MJ or video-gen prompts from scratch — the corpus-grounded prompt anatomy, parameter defaults, no-text rule, and image-to-video rules in this skill materially change what a good prompt looks like.
+description: Storyboards a shot-ready ContentStudio Short script into a visual prompt sheet — mapping each script beat to a shot count at the corpus's ~3-second visual cadence, deciding which beats need real animated motion versus a still, writing the image-to-video (i2v) prompt for any beat that does (Kling, Seedance, Veo, etc.), calling the cover/thumbnail decision, and assembling the whole sheet for handoff. Use this whenever the user has a scripted/timed Short (from shorts-scripting) and asks to "storyboard this script," "build the prompt sheet," "how many shots does this beat need," "which beats need motion/animation," "write the i2v prompt," "give me a Kling/Seedance prompt," or asks how to visualize a faceless Short beat by beat. The actual Midjourney prompt wording and parameter stack is NOT this skill's job — it delegates every still prompt to the `midjourney-prompting` skill, which owns V8.2 prompt craft, the flag stack, and consistency mechanics. Use that skill directly for a one-off image prompt with no Short script behind it.
 ---
 
 # Visual Prompts (script beats → Midjourney prompt sheet)
@@ -12,28 +12,31 @@ description: Turn a shot-ready ContentStudio Short script into a Midjourney prom
   duration and VO line per beat. **Optionally**, a companion grounding artifact may also be handed
   to this skill directly (or reached via the script's own upstream chain) — see "Optional input"
   below.
-- **This skill's job:** turn each beat into one or more Midjourney still-image prompts, **plus — for any
-  beat that genuinely needs real animated motion, not just a still with `--motion low` — the
-  image-to-video (i2v) prompt for the external tool that will render that clip** (Kling, Seedance,
-  etc.), built from `references/image-to-video.md`. Stills-and-clips are the same prompt-authoring job
-  continued one step further, so this skill owns both. It also owns a single whole-Short setup block
-  covering aspect ratio, stylize/chaos defaults, and the consistency mechanism (character sheet + Omni
-  Reference, `--sref`/mood board, or fixed seed), and, when the packaging direction calls for it, a
-  dedicated cover/thumbnail image prompt (workflow step 7).
+- **This skill's job:** decide how each beat becomes pictures — the shot count per beat at the corpus's
+  ~3-second cadence, which beats need real animated motion rather than a still, and whether the cover
+  needs its own image — then assemble the sheet. **For any beat that genuinely needs motion, this skill
+  writes the image-to-video (i2v) prompt itself** (Kling, Seedance, etc.), built from
+  `references/image-to-video.md`. It also decides *which* whole-Short consistency mechanism applies.
+- **Delegated to `midjourney-prompting`:** the wording of every still prompt and the parameter stack
+  behind it. That skill owns the 9-layer prompt body, V8.2 flags, `--sref`/`--p`/`--oref` mechanics, the
+  syntax lint, and GPU-cost discipline. Hand it each beat's visual note plus the stage; take back the
+  prompt string. **Do not write Midjourney prompts or pick parameters here** — one copy of that truth,
+  and it lives there.
 - **Downstream:** the resulting prompt sheet — stills, i2v prompts, and cover prompt — feeds
   `shorts-assembly` **alongside** `voiceover-brief`'s output — assembly is the first skill that sees
   both the visuals and the voice spec together. `shorts-assembly` operates the tools, renders the
   clips/composites, and owns the edit, captions, and the audio side.
-- **Not this skill's job:** actually operating an external i2v tool, rendering the video file, editing,
-  captions, or the audio side — those belong to `shorts-assembly` and `voiceover-brief` respectively.
-  This skill decides *whether* a beat needs a real clip and writes *the prompt* for it; it does not run
-  the render.
+- **Not this skill's job:** Midjourney prompt anatomy, parameter selection, V8.2 model mechanics, or the
+  consistency *implementation* — all `midjourney-prompting`. Nor actually operating an external i2v
+  tool, rendering the video file, editing, captions, or the audio side — those belong to
+  `shorts-assembly` and `voiceover-brief` respectively. This skill decides *whether* a beat needs a real
+  clip and writes *the i2v prompt* for it; it does not run the render.
 
 ## Why this is grounded, not generic
 
-Every prompt-construction rule below traces to `references/midjourney-craft.md`, itself distilled from
-`docs/midjourney-prompting-guide.md` (384 findings, 4 dedicated Midjourney channels + web-verified
-features, dated 2026-07-23). The image-to-video rules (`references/image-to-video.md`) trace to the
+Every prompt-construction rule now lives in the `midjourney-prompting` skill, itself grounded in
+`docs/midjourney-prompting-guide.md` (384 findings, 4 dedicated Midjourney channels, dated 2026-07-23)
+layered with a V8.2 delta web-verified 2026-07-26. The image-to-video rules (`references/image-to-video.md`) trace to the
 same guide's §8 "Video generation & motion (image→video)" — its **largest single theme (79 findings)**,
 so animating a beat properly is at least as well-supported as writing the still prompt for it. The
 visual-*pacing* rules (how often to change the image, what look to avoid) trace to
@@ -73,44 +76,51 @@ said sentence-by-sentence, or the mismatch reads as confusing `[C]`, same refere
 beyond what the VO content actually supports — the rule is "don't let a frame go stale," not "cut for
 its own sake" (see the over-editing caution in the same reference file).
 
-### 3. Pick the whole-Short consistency mechanism, once, before writing per-beat prompts
+### 3. Decide the whole-Short consistency *situation*, once
 
-Read `references/midjourney-craft.md` §"Consistency decision" for the full reasoning. Short version:
+You decide **which situation the Short is in**; `midjourney-prompting` decides how to implement it and
+what it costs.
 
-| Situation | Mechanism |
+| Situation | Hand down as |
 |---|---|
-| A recurring character/host appears across beats | Build a 4-angle character reference sheet once, then drive every later beat with **Omni Reference** (`--oref <url> --ow <0-1000>`) `[C][T]` |
-| No recurring character, but the whole Short should read as one consistent look/brand | A style code (`--sref <code>`) or an uploaded **mood board** (`--p <code>`) applied to every prompt `[C][T]` |
-| Cheap/low-stakes, perfection not required | A single fixed `--seed` reused across prompts `[C] (Tokenized AI, MfK-WkKUnKQ)` |
-| Subject-free b-roll/background plates (no character, no continuity need) | No consistency mechanism needed beyond the shared `--ar`/style — build a subject-free base per §4 |
+| A recurring character/host appears across beats | `consistency: subject-lock` |
+| No recurring character, but the Short should read as one look/brand | `consistency: style-lock` |
+| Cheap/low-stakes, perfection not required | `consistency: style-lock`, `budget: cheap` |
+| Subject-free b-roll/background plates | `consistency: none` |
 
-Only one mechanism is normally active per Short — stacking Omni Reference *and* a mood board *and* a
-seed is possible but adds cost/complexity for little gain. This "pick one" framing is this skill's own
-operational guidance `[I]`, not a distinct corpus claim — the guide documents each mechanism
-independently and doesn't itself rank them against each other.
+Only one mechanism is normally active per Short. This "pick one" framing is this skill's own
+operational guidance `[I]`, not a distinct corpus claim.
 
-### 4. Build each prompt with the anatomy in `references/midjourney-craft.md`
+**Expect a pushback on `subject-lock`.** Attaching Omni Reference makes Midjourney run the whole job in
+V7 at 2× GPU cost `[T] (verified 2026-07-26)` — so a character-driven Short cannot also have V8.2's
+look. `midjourney-prompting` will surface that trade; carry it to the user rather than deciding for
+them, because it may change whether the Short wants a recurring character at all.
 
-Order: **medium → subject + action/pose → environment/context → composition (camera/lens/angle) →
-lighting → style → color/mood → parameters** `[C][T] (Tokenized AI, 4DrNl5lNapo)`. Keep it short —
-long prompts dilute which words MJ actually weights `[C] (Tokenized AI, vezJXJGQMoY)` — and put whatever
-matters most at the front, since MJ weights earlier words more heavily and can drop late ones entirely
-`[C] (Tokenized AI, 4DrNl5lNapo)`.
+### 4. Delegate each still prompt to `midjourney-prompting`
 
-**Every prompt in this skill ends with "No Text."** Midjourney cannot reliably render on-screen text/
-captions — the corpus and the playbook both route text-bearing composites to a text-capable tool or a
-post-MJ compositing pass, never to MJ itself `[C] (Tokenized AI, qFYJb0zYztY)`. If the beat's script
-has on-screen text or a hook card, that text is **not**
-part of the MJ prompt — pass it through to `shorts-assembly` as caption/overlay copy, not baked into
-the image.
+For each beat and still, hand down:
 
-### 5. Set the per-Short parameter defaults
+```
+subject:      [the beat's visual note — what this still shows]
+stage:        draft   (or refine / production, per where the Short is)
+look:         [photographic | stylized | illustrative — from the packaging direction]
+format:       9:16
+consistency:  [from step 3, plus the locked --sref/--p code or --oref URL once it exists]
+literalism / variance / budget: [defaults unless the beat needs otherwise]
+```
 
-Default for every prompt in the sheet unless the beat needs something different: `--ar 9:16` (Shorts
-destination) `[C][T]`, `--style raw` (favors realism, especially people) `[C] (Future Tech Pilot, Tv1dfGcOSnA)`,
-`--s 140–185` (sweet-spot stylize range) `[C] (Future Tech Pilot, Tv1dfGcOSnA / ioJ6istzwHw; Tokenized AI, 1GnipTgvLI0)`,
-`--c 3–9` if you want gentle grid variety while drafting `[C] (Future Tech Pilot, Tv1dfGcOSnA / fMEvMqvzUbc)`.
-Full parameter reference (seed, `--iw`, `--sw`, `--no`, `--hd`, etc.) is in `references/midjourney-craft.md`.
+Take back the prompt string and its parameters, and drop them into the sheet's row. **Do not rewrite
+what comes back** — that skill's Gate A has already linted the syntax, ranges, and flag compatibility,
+and re-editing the string here silently breaks that guarantee.
+
+Two things you still own at this step:
+
+- **On-screen text never enters the prompt.** Midjourney cannot reliably render legible text
+  `[C] (Tokenized AI, qFYJb0zYztY)`, so a beat's hook card or caption copy passes through to
+  `shorts-assembly` as overlay copy. Flag it in the handoff so `midjourney-prompting` appends `No Text.`
+- **Beat-to-beat coherence.** Each prompt must stand alone — Midjourney carries no context between
+  jobs `[T]` — but the *sheet* should read as one Short. If two adjacent beats come back looking
+  unrelated, that's a step-3 problem (wrong consistency situation), not a prompt-wording problem.
 
 ### 6. Decide, per beat, whether a still suffices or the beat needs a real animated clip — and if so, write its i2v prompt
 
@@ -149,16 +159,16 @@ it shows). Two outcomes, and this skill must state which one applies rather than
 decision:
 
 - **The packaging direction wants something distinct from the Hook beat's still** (a different angle,
-  a composed/staged shot built specifically to be a thumbnail rather than a video frame) → generate a
-  dedicated cover-image MJ prompt. Use the guide's photoreal-thumbnail recipe (§13 recipe A) as a
-  **structural template** `[I]` — close-up portrait of the subject + defining feature, one
-  expression/emotion, environment, dramatic rim lighting, shallow depth of field — ending
-  "Photorealistic, DSLR, muted colors, shot on 35mm film. No Text.," the same DSLR realism cue used
-  throughout this skill `[C] (Tao Prompts, 2psBexPkw3I)`. That recipe defaults to `--ar 16:9` for a
-  traditional thumbnail slot; **adapt the aspect ratio to wherever the cover actually renders** (9:16
-  if it's a Shorts-feed thumbnail, 16:9 if it's a separate widescreen upload slot) — this adaptation is
-  this skill's own judgment `[I]`, not a corpus claim, since the guide's recipe was written for
-  long-form 16:9 thumbnails, not Shorts specifically.
+  a composed/staged shot built specifically to be a thumbnail rather than a video frame) → delegate a
+  dedicated cover prompt to `midjourney-prompting`, handing down the guide's photoreal-thumbnail recipe
+  (§13 recipe A) as the **subject/composition brief** `[I]` — close-up of the subject + defining
+  feature, one expression/emotion, environment, dramatic rim lighting, shallow depth of field — with
+  `look: photographic` and `stage: production` (a cover is a hero image, not a b-roll plate). The
+  corpus's realism cue is **DSLR** `[C] (Tao Prompts, 2psBexPkw3I)`; `midjourney-prompting` will render
+  that as concrete optics and drop the abstract "Photorealistic" per its buzzword rule. **Set `format`
+  to wherever the cover actually renders** (9:16 for a Shorts-feed thumbnail, 16:9 for a separate
+  widescreen slot) — this adaptation is this skill's own judgment `[I]`, not a corpus claim, since the
+  guide's recipe was written for long-form 16:9 thumbnails, not Shorts.
 - **The packaging direction is satisfied by the Hook beat's own still** → state this explicitly in the
   prompt sheet: "Cover = Hook still + `shorts-assembly`'s text overlay, no separate generation." Don't
   leave the decision implicit — an unstated cover is indistinguishable from a forgotten one.
@@ -172,19 +182,20 @@ Use this shape (see `references/worked-example.md` for a full run of a real beat
 
 WHOLE-SHORT SETUP
   Aspect ratio:     --ar 9:16
-  Style/params:     --style raw --s [value] --c [value]
-  Consistency:      [Omni Reference w/ char sheet | --sref CODE --sw N | mood board --p CODE | fixed --seed N | none — subject-free plates]
+  Style/params:     [as returned by midjourney-prompting — e.g. --raw --s 95 --c 0]
+  Consistency:      [subject-lock via --oref (NOTE: renders in V7) | style-lock via --sref CODE --sw N
+                     | mood board --p CODE | fixed --seed N | none — subject-free plates]
   Notes:            [anything beat-specific that overrides the default]
 
 COVER / THUMBNAIL
-  [Dedicated MJ prompt (recipe A shape, aspect ratio adapted to the render slot) — see step 7]
+  [Dedicated prompt from midjourney-prompting — see step 7]
   — or —
   Cover = Hook beat still #1 + shorts-assembly's text overlay. No separate generation.
 
 PER-BEAT PROMPTS
 | Beat | Dur | Still # | Midjourney prompt | Params | Motion |
 |---|---|---|---|---|---|
-| Hook | 0-3s | 1 | [medium] of [subject+action], [environment], [composition], [lighting], [style], [mood]. No Text. | --ar 9:16 --style raw --s 160 [--oref/--sref] | still |
+| Hook | 0-3s | 1 | [prompt string as returned by midjourney-prompting, ending "No Text."] | [flags as returned] | still |
 | ... | ... | ... | ... | ... | still / --motion low / see I2V block below |
 
 I2V PROMPTS (only for beats marked "see I2V block" above — omit this section if none)
@@ -200,11 +211,9 @@ names its source still as the start frame, per `references/image-to-video.md`.
 
 ## Corpus coverage note (state this to the user if asked how solid these rules are)
 
-The prompt-anatomy/parameter/consistency rules (`references/midjourney-craft.md`) rest on a substantial
-384-finding corpus across 4 dedicated Midjourney channels — reasonably durable for the `[C]`/`[I]`
-fundamentals, though every `[T]` version/pricing/resolution fact is a 2026-07-23 snapshot that **should
-be re-verified** at `docs.midjourney.com` before being treated as current (see the flagged list below).
-The visual-*pacing* rules (`references/faceless-pacing-rules.md`) are a genuinely **thin corpus theme
+The prompt-anatomy/parameter/consistency rules now live in the `midjourney-prompting` skill, which
+carries its own coverage note and its own `[T]` staleness list — point the user there for how solid the
+prompt craft is. The visual-*pacing* rules (`references/faceless-pacing-rules.md`) are a genuinely **thin corpus theme
 (27 findings)** — say so rather than presenting them as heavily validated, and don't extend them into
 specifics the corpus doesn't state (e.g. it doesn't give a precise "ideal" cut count, only "~3 seconds").
 The image-to-video rules (`references/image-to-video.md`) rest on the guide's **single largest theme
@@ -213,8 +222,8 @@ table (which tool is strong at what) is the part of this skill most likely to go
 external video-gen tools ship new versions far more often than Midjourney itself.
 
 **`[T]` facts most likely to need re-verification before you rely on them:**
-- V8.1 as the default model, native 2K HD, and the `--hd`/`--raw` split (features move fast).
-- Omni Reference being V7-only (an improved V8 version was "in training" as of the snapshot).
+- Midjourney model/parameter facts — see `midjourney-prompting`'s own staleness list, which is current
+  to 2026-07-26 rather than the corpus's 2026-07-23 snapshot.
 - Plan pricing/tiers (Basic/Standard/Pro/Mega) and relax-mode/stealth-mode availability.
 - MJ's video generator being capped at ~21s and topping out at 720p HD.
 - The i2v model-landscape table in `references/image-to-video.md` (Kling/Veo/Seedance/Sora/Omni/Runway

@@ -1,6 +1,6 @@
 # Midjourney Prompting & Asset-Creation Guide (Image + Video)
 
-**For a faceless content creator. Current as of 2026-07-23.**
+**For a faceless content creator. `[C]` findings as of 2026-07-23; `[T]` facts updated 2026-07-26 (see §1a).**
 
 This guide covers best-in-class Midjourney (MJ) prompting, every major parameter and feature, reference/consistency workflows, and image→video asset creation — synthesized from four working MJ YouTube channels (`[C]` findings) plus a web-verified feature snapshot (`[T]` facts). General craft not tied to a specific source is marked `[I]`.
 
@@ -13,6 +13,10 @@ This guide covers best-in-class Midjourney (MJ) prompting, every major parameter
 ---
 
 ## 1. Current state — V8.1 snapshot `[T]`
+
+> **⚠️ Superseded in part — read §1a first.** V8.2 became the default model on **2026-07-24**, one day
+> after this snapshot. The table below is retained as the V8.1 record; §1a carries the verified V8.2
+> delta and flags which rows here are now wrong.
 
 | Item | Status (as of 2026-07-23) |
 |---|---|
@@ -27,6 +31,43 @@ This guide covers best-in-class Midjourney (MJ) prompting, every major parameter
 **Plan notes from creators `[C]`:** The **$30 Standard plan** is repeatedly called the best-value mid-tier — "never ran out of video credits on the $30 plan" (Tao Prompts, `uCsc0ORcJDo`, `elCv87a4iK4`). **Relax mode** is unlimited on Standard/Pro; route non-urgent jobs there to conserve fast GPU hours, and generate off-peak for shorter queues (Tokenized AI, `o9F_9xKfMNs`). **Stealth mode** (Pro+) keeps generations private — by default all MJ images, prompts, params, and seeds are public and reproducible by anyone (Tokenized AI, `Od11XU98kfE`).
 
 **Reality check on MJ's scope:** MJ's image model is best-in-class for aesthetics/photorealism `[C]` (Tao Prompts, `Dk_duA28W5k`), but its **video generator ranks poorly (D-tier)** — jittery camera, choppy motion, weak prompt-following (Tao Prompts, `uCsc0ORcJDo`). Treat MJ as your **image engine** and animate elsewhere (see §9).
+
+---
+
+## 1a. V8.2 delta `[T]` (verified 2026-07-26)
+
+Read directly off `docs.midjourney.com` on **2026-07-26**. The full delta — including the
+`[T-unverified]` quarantine and per-page sources — lives in
+`.claude/skills/midjourney-prompting/references/v82-model-delta.md`, which is the maintained source of
+record. This section carries what corrects the guide itself.
+
+| Item | Status (verified 2026-07-26) |
+|---|---|
+| **Default image model** | **V8.2**, released as default **2026-07-24**. Focused on aesthetics, image quality, and Personalization; images described as "more creative, bold, sophisticated, and edgy." |
+| **V8.1** | Default 2026-06-10 → 2026-07-23. Still selectable. |
+| **`--preview`** | Was the pre-promotion route to V8.2. **No longer how you reach it** — §11's `--preview` note is stale. |
+| **GPU costs** | Draft **0.4 min** (24 images, 512px, web-only) · SD **0.8 min** (1024px) · HD **1.3 min** (2048px). `--q 2`/`--q 4` multiply 2×/4×. |
+| **Omni Reference** | Works in V8.1/V8.2 — but **"adding an Omni Reference will automatically run the prompt in V7."** Charted as "(Uses V7)". 2× GPU. Incompatible with Draft, Conversational, **Fast Mode**, and **`--q 4`**. |
+| **Personalization** | Global **V7** profile works in V8.1/V8.2; additional V8 profiles can be created; **no Global V8 Profile** exists. Training is **grid selection**, not pairwise rating. |
+| **Aspect ratio** | Up to 14:1 — but **4:1 maximum when `--hd` is on**. |
+| **Seed** | V8 holds **99% identical** on a fixed seed. |
+| **Style Creator** | Builds custom `--sref` codes; web-only; **renders in V7**; previews consume GPU time; codes **stack rather than merge**. |
+
+**Rows in §1 that are now wrong:**
+- "Default image model: V8.1" → **V8.2**.
+- "Omni Reference: currently V7-only; an improved V8 version is in training" → it is **usable** in
+  V8.2, but by silently falling back to V7. The practical effect is close to the old claim, and the
+  consequence is sharper: **you cannot have V8.2's aesthetic and subject-identity lock in one job.**
+
+**Claims elsewhere in this guide that verification refuted:**
+- §3's `--no` line — the guide states `--no` was **removed in V8**. It is **supported** in V8.1/V8.2.
+- §5's Draft Mode economics — the guide says "~1/10 the cost, ~5× the speed." Draft is **0.4 GPU min
+  against SD's 0.8 — exactly half**, returning 24 images instead of 4.
+- §3's `--sv` line ("1–4, not in v8") — Midjourney documents `--sv` for **V7 and V6 only** (V7: six
+  versions, `--sv 6` default, `--sv 4` the pre-2025-06-16 model). There is **no documented V8 `--sv`
+  behavior**, so the parameter is best omitted from V8.2 prompts rather than assumed either way.
+- `--style raw` → the flag is **`--raw`**; `--style raw` is legacy V5/V6 syntax.
+- `--q` values → **1, 2, 4** only. `0.25`/`0.5` are V6-era.
 
 ---
 

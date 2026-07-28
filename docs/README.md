@@ -33,6 +33,20 @@ asset-workflow (§6) and voice-overlay (§5) sections.
 | **[midjourney-prompting-guide.md](midjourney-prompting-guide.md)** | **Midjourney (image + video).** Current V8.1 feature snapshot, prompt anatomy, a full parameter reference, references/consistency (Omni Reference, `--sref`, moodboards), modes/editing, image→video, faceless-channel asset use-cases, and fill-in **prompt recipes**. Built from 384 findings across 4 dedicated MJ channels + web-verified features. | ~6,300 words |
 | **[elevenlabs-voiceover-guide.md](elevenlabs-voiceover-guide.md)** | **ElevenLabs (text-to-voice).** Models (v3/v2/Flash), voice choice & cloning, the full **settings guide** (stability/similarity/style/speed with content-type presets), scripting for TTS, −14 LUFS production, pricing, and a cheat-sheet. Web-verified `[T]` + the corpus's real voiceover findings `[C]`. | ~1,900 words |
 
+### Vendor runbooks (not corpus-derived)
+
+One further guide sits outside the corpus. It is built from vendor documentation rather than the
+420-video corpus, so it is listed separately and carries an extra provenance marker.
+
+| Runbook | What it is | Size |
+|-------|-----------|------|
+| **[elevenlabs-production-runbook.md](elevenlabs-production-runbook.md)** | **ElevenLabs platform truth** — engine topology and the feature-compatibility matrix, the full API parameter surface, v3's three stability modes, the verified audio-tag catalog, PLS pronunciation dictionaries, chunking and request stitching, credit discipline, and zero-retention. Verified against live ElevenLabs docs **2026-07-26**; §10 is a claim-by-claim verification log recording **eight places the supplied source runbook was wrong**. Backs the `elevenlabs-audio` skill. | ~4,600 words |
+
+This runbook adds **`[T-unverified]`** to the marker key below: *asserted by a supplied source but
+**not** confirmed against live vendor docs.* Treat it as a starting hypothesis, never as fact. The
+two documents are complementary and deliberately separate — the guide above tells you what working
+creators do; the runbook tells you what the platform actually supports.
+
 ---
 
 ## Provenance key
