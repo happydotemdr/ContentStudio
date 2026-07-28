@@ -75,10 +75,22 @@ def test_ideation_has_no_specialist():
     assert ideation.specialist is None
 
 
-def _stage_def(id, dir_prefix, specialist=None, depends_on=None):
+def test_voiceover_stage_specialist_mode_is_manual():
+    stages = load_topology(REPO_ROOT / "pipeline.yaml")
+    voiceover = next(s for s in stages if s.id == "voiceover")
+    assert voiceover.specialist_mode == "manual"
+
+
+def test_visual_stage_specialist_mode_is_auto():
+    stages = load_topology(REPO_ROOT / "pipeline.yaml")
+    visual = next(s for s in stages if s.id == "visual")
+    assert visual.specialist_mode == "auto"
+
+
+def _stage_def(id, dir_prefix, specialist=None, specialist_mode=None, depends_on=None):
     return StageDef(
         id=id, skill=f"skill-{id}", dir_prefix=dir_prefix,
-        depends_on=depends_on or [], specialist=specialist,
+        depends_on=depends_on or [], specialist=specialist, specialist_mode=specialist_mode,
     )
 
 
@@ -104,10 +116,13 @@ def test_build_stage_nav_groups_stages_sharing_dir_prefix():
 
 
 def test_build_stage_nav_carries_status_and_specialist():
-    stage_defs = [_stage_def("visual", "03", specialist="midjourney-prompting")]
+    stage_defs = [_stage_def("visual", "03", specialist="midjourney-prompting", specialist_mode="auto")]
     stage_rows = [{"stage_id": "visual", "status": "awaiting_review"}]
     nav = build_stage_nav(stage_defs, stage_rows)
-    assert nav == [[{"id": "visual", "status": "awaiting_review", "specialist": "midjourney-prompting"}]]
+    assert nav == [[{
+        "id": "visual", "status": "awaiting_review",
+        "specialist": "midjourney-prompting", "specialist_mode": "auto",
+    }]]
 
 
 def test_build_stage_nav_omits_stages_with_no_matching_row():
@@ -177,3 +192,30 @@ def test_load_topology_accepts_valid_graph(tmp_path: Path):
     )
     stages = load_topology(path)
     assert [s.id for s in stages] == ["ideation", "scripting"]
+
+
+def test_load_topology_accepts_specialist_that_has_a_skill_dir(tmp_path: Path):
+    (tmp_path / ".claude" / "skills" / "some-specialist").mkdir(parents=True)
+    (tmp_path / ".claude" / "skills" / "some-specialist" / "SKILL.md").write_text(
+        "---\nname: some-specialist\n---\n", encoding="utf-8",
+    )
+    path = _write_topology(
+        tmp_path,
+        "stages:\n"
+        "  - id: visual\n    skill: visual-prompts\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "    specialist: some-specialist\n    specialist_mode: auto\n",
+    )
+    stages = load_topology(path)
+    assert stages[0].specialist == "some-specialist"
+    assert stages[0].specialist_mode == "auto"
+
+
+def test_load_topology_rejects_specialist_with_no_skill_dir(tmp_path: Path):
+    path = _write_topology(
+        tmp_path,
+        "stages:\n"
+        "  - id: visual\n    skill: visual-prompts\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "    specialist: ghost-specialist\n",
+    )
+    with pytest.raises(ValueError, match="ghost-specialist"):
+        load_topology(path)

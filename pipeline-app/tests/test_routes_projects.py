@@ -74,6 +74,14 @@ def test_project_home_shows_stage_names(client: TestClient):
 
 def test_project_home_groups_parallel_stages_and_shows_specialist(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    (tmp_path / ".claude" / "skills" / "elevenlabs-audio").mkdir(parents=True)
+    (tmp_path / ".claude" / "skills" / "elevenlabs-audio" / "SKILL.md").write_text(
+        "---\nname: elevenlabs-audio\n---\n", encoding="utf-8",
+    )
+    (tmp_path / ".claude" / "skills" / "midjourney-prompting").mkdir(parents=True)
+    (tmp_path / ".claude" / "skills" / "midjourney-prompting" / "SKILL.md").write_text(
+        "---\nname: midjourney-prompting\n---\n", encoding="utf-8",
+    )
     (tmp_path / "pipeline.yaml").write_text(
         "stages:\n"
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n"

@@ -9,7 +9,13 @@
         <a href="/projects/{{ project.id }}/stages/{{ stage.id }}">{{ stage.id }}</a>
         <span class="status status-{{ stage.status }}">{{ stage.status }}</span>
         {% if stage.specialist %}
-        <div class="specialist">&#8618; {{ stage.specialist }}</div>
+        <div class="specialist">
+          {% if stage.specialist_mode == "manual" %}
+          &#8618; {{ stage.specialist }} (manual hand-off)
+          {% else %}
+          &#8618; {{ stage.specialist }} (auto-delegated)
+          {% endif %}
+        </div>
         {% endif %}
       </div>
       {% endfor %}

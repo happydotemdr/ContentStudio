@@ -248,13 +248,21 @@ def test_stage_page_shows_grouped_parallel_pair_in_nav(tmp_path: Path, monkeypat
     # can never exercise grouping through the stage route — this test uses
     # its own pipeline.yaml specifically to cover that gap.
     monkeypatch.chdir(tmp_path)
+    (tmp_path / ".claude" / "skills" / "elevenlabs-audio").mkdir(parents=True)
+    (tmp_path / ".claude" / "skills" / "elevenlabs-audio" / "SKILL.md").write_text(
+        "---\nname: elevenlabs-audio\n---\n", encoding="utf-8",
+    )
+    (tmp_path / ".claude" / "skills" / "midjourney-prompting").mkdir(parents=True)
+    (tmp_path / ".claude" / "skills" / "midjourney-prompting" / "SKILL.md").write_text(
+        "---\nname: midjourney-prompting\n---\n", encoding="utf-8",
+    )
     (tmp_path / "pipeline.yaml").write_text(
         "stages:\n"
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n"
         "  - id: voiceover\n    skill: voiceover-brief\n    specialist: elevenlabs-audio\n"
-        "    dir_prefix: \"03\"\n    depends_on: [scripting]\n"
+        "    specialist_mode: manual\n    dir_prefix: \"03\"\n    depends_on: [scripting]\n"
         "  - id: visual\n    skill: visual-prompts\n    specialist: midjourney-prompting\n"
-        "    dir_prefix: \"03\"\n    depends_on: [scripting]\n",
+        "    specialist_mode: auto\n    dir_prefix: \"03\"\n    depends_on: [scripting]\n",
         encoding="utf-8",
     )
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
@@ -266,6 +274,8 @@ def test_stage_page_shows_grouped_parallel_pair_in_nav(tmp_path: Path, monkeypat
     assert page.status_code == 200
     assert "elevenlabs-audio" in page.text
     assert "midjourney-prompting" in page.text
+    assert "manual hand-off" in page.text
+    assert "auto-delegated" in page.text
     # scripting is its own step; voiceover+visual share dir_prefix "03" and
     # must render inside ONE grouped step, not two.
     assert page.text.count('class="pipeline-step"') == 2

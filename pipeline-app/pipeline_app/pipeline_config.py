@@ -12,6 +12,7 @@ class StageDef:
     depends_on: list[str] = field(default_factory=list)
     brand_scope: str | None = None
     specialist: str | None = None
+    specialist_mode: str | None = None
 
 
 def load_topology(path: Path) -> list[StageDef]:
@@ -24,14 +25,15 @@ def load_topology(path: Path) -> list[StageDef]:
             depends_on=list(s.get("depends_on", [])),
             brand_scope=s.get("brand_scope"),
             specialist=s.get("specialist"),
+            specialist_mode=s.get("specialist_mode"),
         )
         for s in data["stages"]
     ]
-    _validate_topology(stages)
+    _validate_topology(stages, path.parent)
     return stages
 
 
-def _validate_topology(stages: list[StageDef]) -> None:
+def _validate_topology(stages: list[StageDef], repo_root: Path) -> None:
     seen: set[str] = set()
     for stage in stages:
         if stage.id in seen:
@@ -44,6 +46,14 @@ def _validate_topology(stages: list[StageDef]) -> None:
                     f"pipeline.yaml: stage '{stage.id}' depends_on unknown stage '{dep}'"
                 )
     _check_no_cycles(stages)
+    for stage in stages:
+        if stage.specialist is not None:
+            skill_md = repo_root / ".claude" / "skills" / stage.specialist / "SKILL.md"
+            if not skill_md.exists():
+                raise ValueError(
+                    f"pipeline.yaml: stage '{stage.id}' specialist '{stage.specialist}' has no "
+                    f"skill at {skill_md}"
+                )
 
 
 def _check_no_cycles(stages: list[StageDef]) -> None:
@@ -84,7 +94,10 @@ def build_stage_nav(stage_defs: list[StageDef], stage_rows) -> list[list[dict]]:
         row = rows_by_id.get(stage_def.id)
         if row is None:
             continue
-        entry = {"id": stage_def.id, "status": row["status"], "specialist": stage_def.specialist}
+        entry = {
+            "id": stage_def.id, "status": row["status"],
+            "specialist": stage_def.specialist, "specialist_mode": stage_def.specialist_mode,
+        }
         if stage_def.dir_prefix not in groups:
             groups[stage_def.dir_prefix] = []
             order.append(stage_def.dir_prefix)
