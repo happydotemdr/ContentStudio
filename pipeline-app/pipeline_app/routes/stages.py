@@ -1,6 +1,7 @@
 import datetime
 import json
 
+import markdown
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
@@ -74,6 +75,7 @@ def stage_page(request: Request, project_id: int, stage_id: str):
             _, dep_body = artifacts.parse_frontmatter(up_latest.read_text(encoding="utf-8"))
             input_sections.append(f"## From {dep_id}\n\n{dep_body}")
     input_body = "\n\n---\n\n".join(input_sections) if input_sections else None
+    input_html = markdown.markdown(input_body) if input_body else None
 
     # Grounding is an optional RGS companion, not a formal `depends_on` --
     # the chat/turn_service path already hands it to the AI via
@@ -89,11 +91,13 @@ def stage_page(request: Request, project_id: int, stage_id: str):
             _, grounding_input_body = artifacts.parse_frontmatter(
                 grounding_path.read_text(encoding="utf-8")
             )
+    grounding_input_html = markdown.markdown(grounding_input_body) if grounding_input_body else None
 
     output_body = None
     latest = artifacts.resolve_latest_artifact(request.app.state.repo_root, stage_id, stage_dir)
     if latest is not None:
         _, output_body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+    output_html = markdown.markdown(output_body) if output_body else None
 
     transcript = _load_transcript(stage_dir)
     stage_rows = db_mod.list_stages(request.app.state.conn, project_id)
@@ -103,8 +107,9 @@ def stage_page(request: Request, project_id: int, stage_id: str):
         request, "stage.html",
         {
             "project": project, "stage_id": stage_id, "stage_status": stage_row["status"],
-            "input_body": input_body, "grounding_input_body": grounding_input_body,
-            "output_body": output_body,
+            "input_body": input_body, "input_html": input_html,
+            "grounding_input_body": grounding_input_body, "grounding_input_html": grounding_input_html,
+            "output_body": output_body, "output_html": output_html,
             "transcript": transcript, "nav": nav,
         },
     )
@@ -159,14 +164,14 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
             # The grounding skill's real artifact lands in rgs-briefs/, not
             # runs/ — finalize_artifact=False above skips turn_service's
             # normal artifact/status handling so this stage-specific path can
-            # take over: identify which file appeared, supersede whichever
-            # brief this project pointed at before (if regenerating), and
-            # point at the new one.
+            # take over: identify which file appeared and point at it. The
+            # grounding skill always writes a new versioned filename (see
+            # rgs-grounding's SKILL.md), so there is nothing to archive —
+            # the previous version is simply no longer the pointer target.
             after = grounding_service.snapshot_rgs_briefs(rgs_briefs_dir)
             new_brief = grounding_service.identify_new_brief(before, after)
             stage_row = db_mod.get_stage(conn, project_id, "grounding")
             if new_brief is not None:
-                grounding_service.supersede_previous_brief(repo_root, grounding_dir)
                 grounding_service.write_pointer(grounding_dir, f"rgs-briefs/{new_brief}")
                 db_mod.update_stage_status(conn, stage_row["id"], "awaiting_review")
             else:

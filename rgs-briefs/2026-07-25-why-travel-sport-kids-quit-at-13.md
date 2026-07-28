@@ -1,4 +1,5 @@
 ---
+version: 1
 date: 2026-07-25
 topic: "why so many travel-sport kids quit around age 13"
 thinker: "Ellen Key"

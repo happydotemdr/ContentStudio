@@ -1,4 +1,5 @@
 ---
+version: 1
 date: 2026-07-28
 kind: visual-prompts
 run: rgs-debut-20260728-055448

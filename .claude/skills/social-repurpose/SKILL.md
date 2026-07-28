@@ -113,3 +113,51 @@ Full detail and the per-platform breakdown: `references/cross-platform-captions.
   list of what the corpus doesn't cover.
 - `references/worked-example.md` — a full run: a finished Short's script/packaging
   through to a complete multi-surface post-copy package, with markers intact.
+
+## File I/O contract
+
+This skill participates in ContentStudio's file-based pipeline handoff (see
+`docs/superpowers/specs/2026-07-28-skill-markdown-file-contract-design.md`). Two modes:
+
+**App-driven** (a `pipeline-app` turn already told you an output path): follow that instruction
+exactly — write only to the named path, overwrite it each turn as instructed. Do not also write
+to `rgs-briefs/` in this mode.
+
+**Standalone** (no output path was given):
+
+1. Resolve the two upstream inputs: run `python scripts/resolve_brief_version.py --slug <slug>
+   --kind script` and `... --kind assembly` from the repo root. Read each file the resolver
+   reports, and follow the script's `concept_brief:`/`grounding:` pointer fields if you need
+   packaging direction or citation constraints to carry forward.
+   **Staleness check:** re-run both resolver calls again right before you finish — if a newer
+   version now exists for either than the one you read, tell the user before proceeding.
+2. Before writing the social-repurpose file, run
+   `python scripts/resolve_brief_version.py --slug <slug> --kind social-repurpose` from the repo
+   root (no `--next`). If it prints a path (not `NONE`), that's the current version being
+   superseded — remember its printed path verbatim for the `supersedes:` field below; it's already
+   `rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
+3. After assembling the post-copy package, run
+   `python scripts/resolve_brief_version.py --slug <slug> --kind social-repurpose --next --date <YYYY-MM-DD>`.
+   Write the file at `rgs-briefs/<filename>` via the `Write` tool with this frontmatter:
+
+   ```yaml
+   ---
+   date: <YYYY-MM-DD>
+   kind: social-repurpose
+   slug: <slug>
+   stage: 05-repurpose
+   version: <version from the resolver>
+   supersedes: <path from step 2 above — only if version > 1>
+   script: <the script file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
+   assembly: <the assembly file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative>
+   concept_brief: <carried through from the script, if present>
+   grounding: <carried through from the script, if present>
+   archetype: <carried through from the script / concept brief, if present>
+   status: complete
+   ---
+   ```
+4. State the exact file path you wrote in your final chat response. This is the pipeline's final
+   stage — no downstream skill to point at, but this file remains the durable record of what
+   copy was produced for this Short.
+
+Never edit an existing `rgs-briefs/*.md` file — a `PreToolUse` hook enforces this.

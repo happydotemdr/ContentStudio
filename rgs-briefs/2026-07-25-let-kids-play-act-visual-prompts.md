@@ -1,3 +1,6 @@
+---
+version: 1
+---
 === VISUAL PROMPT SHEET — Aristotle Named This 2,300 Years Before Private Equity ===
 
 WHOLE-SHORT SETUP

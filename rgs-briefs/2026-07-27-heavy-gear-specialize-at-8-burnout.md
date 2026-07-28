@@ -1,4 +1,5 @@
 ---
+version: 1
 date: 2026-07-27
 topic: "silent 'reverse-gearing' routine \u2014 a young athlete straps on gear labeled\
   \ with the invisible weight of early specialization ('Family Investment $5,000/yr,'\

@@ -4,11 +4,11 @@
 
 <section class="input-panel">
   <h2>Input</h2>
-  {% if grounding_input_body %}
+  {% if grounding_input_html %}
   <h3>Grounding companion</h3>
-  <pre>{{ grounding_input_body }}</pre>
+  <div class="rendered-markdown">{{ grounding_input_html | safe }}</div>
   {% endif %}
-  {% if input_body %}<pre>{{ input_body }}</pre>{% elif not grounding_input_body %}<p>No upstream input.</p>{% endif %}
+  {% if input_html %}<div class="rendered-markdown">{{ input_html | safe }}</div>{% elif not grounding_input_html %}<p>No upstream input.</p>{% endif %}
 </section>
 
 <section class="chat-panel">
@@ -31,7 +31,7 @@
 
 <section class="output-panel">
   <h2>Output</h2>
-  {% if output_body %}<pre>{{ output_body }}</pre>{% else %}<p>No output yet.</p>{% endif %}
+  {% if output_html %}<div class="rendered-markdown">{{ output_html | safe }}</div>{% else %}<p>No output yet.</p>{% endif %}
   {% if stage_status == "stale" %}
   <p class="stale-override-note">This stage is stale (built on a since-changed upstream input). Approving now will override the staleness cascade instead of regenerating.</p>
   {% endif %}

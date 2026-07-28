@@ -340,3 +340,24 @@ def test_stage_page_shows_all_upstream_inputs_not_just_first(tmp_path: Path, mon
     assert page.status_code == 200
     assert "voiceover brief text" in page.text
     assert "visual prompt sheet text" in page.text
+
+
+def test_stage_page_renders_markdown_as_html_not_raw_text(client):
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    stage_dir = run_dir / "01-ideation"
+
+    artifacts.write_artifact(
+        stage_dir, 1, {"stage": "shorts-ideation", "status": "draft"},
+        "## Concept Brief\n\n- angle: contrarian\n- avatar: youth coach\n",
+    )
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert "<h2>Concept Brief</h2>" in page.text
+    assert "<li>angle: contrarian</li>" in page.text
+    assert "## Concept Brief" not in page.text

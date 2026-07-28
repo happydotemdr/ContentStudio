@@ -1,4 +1,5 @@
 ---
+version: 1
 date: 2026-07-25
 topic: "the club-soccer parent who spends $8,000 a year and can't say why"
 thinker: "Alfred Adler"

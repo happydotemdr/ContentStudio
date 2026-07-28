@@ -1,3 +1,6 @@
+---
+version: 1
+---
 # Concept Brief: The Ancient Name for What's Buying Up Youth Sports
 
 ## Angle / take

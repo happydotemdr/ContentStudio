@@ -1,4 +1,5 @@
 ---
+version: 1
 date: 2026-07-25
 topic: "why parents overspend on travel teams"
 thinker: "Thorstein Veblen"
