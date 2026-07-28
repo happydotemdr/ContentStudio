@@ -106,6 +106,30 @@ status: complete
   no exception to immutability here or anywhere else in this directory
   (`rgs-briefs/README.md` itself is the one file in this directory that
   isn't a versioned artifact and can be edited normally).
+- **The `status` vocabulary differs by file kind — the two are not
+  interchangeable.** Grounding briefs use `status: candidate` → `status:
+  produced` (the latter written as a new, higher `version`, per the bullet
+  above). Stage artifacts (concept-brief, script, voiceover-brief,
+  visual-prompts, assembly, social-repurpose) use `status: complete` or
+  `status: draft` instead — `complete` for a finished handoff-ready artifact,
+  `draft` for a version written mid-revision that isn't yet ready to hand to
+  the next stage. Neither vocabulary applies to the other file kind.
+- `rgs-grounding`'s recency rules apply to a grounding brief regardless of
+  its `status` — even a `candidate` that never advances to `produced` still
+  reflects a recent pairing choice and counts toward the recency/variety
+  window. Only the **latest version** of a given topic slug counts for this
+  purpose (via `scripts/resolve_brief_version.py`); a superseded `v1` must
+  never be double-counted alongside its `v2`.
+- **For downstream consumers** (`shorts-ideation`, `shorts-scripting`,
+  `visual-prompts`): resolve the grounding brief for a topic via
+  `scripts/resolve_brief_version.py` (never a raw glob) so you always land on
+  its latest version. A brief whose latest version has `status: candidate` or
+  `status: produced` is safe to hand forward as a companion grounding
+  artifact. A brief hand-edited to any other value, or whose `date` predates
+  the most recent refresh of the research/thinker corpora it cites, should be
+  flagged before use rather than consumed silently — see `shorts-ideation`'s
+  "Optional input" section (the pipeline's entry point) for the exact
+  staleness-check rule.
 
 ## History
 
