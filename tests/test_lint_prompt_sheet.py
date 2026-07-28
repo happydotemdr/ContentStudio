@@ -15,6 +15,7 @@ from lint_prompt_sheet import (  # noqa: E402
     check_sequence,
     check_register_balance,
     check_world_lock,
+    check_prompt_quality,
 )
 
 SHEET = """\
@@ -298,3 +299,45 @@ def test_plate_shots_are_exempt_from_world_lock():
         1, "PLATE", "PLATE", prompt="a dark gradient plate in an empty gym, No Text. --ar 9:16"
     )
     assert check_world_lock([shot], WORLD) == []
+
+
+def build_prompt(unique_head, shared_count=12, filler_word="alpha"):
+    """Build a body with `shared_count` shared clauses plus a unique head clause."""
+    shared = [f"shared clause {n} {filler_word} beta gamma delta epsilon" for n in range(shared_count)]
+    return ", ".join([unique_head, *shared]) + ", No Text. --ar 9:16 --raw --s 95"
+
+
+def test_c11_flags_two_prompts_sharing_six_clauses():
+    shots = [
+        make_shot(1, "A", "DETAIL", "MACRO", "LOW", build_prompt("first head")),
+        make_shot(2, "A", "HUMAN-COST", "MID", "EYE", build_prompt("second head")),
+    ]
+    assert "C11" in codes(check_prompt_quality(shots))
+
+
+def test_c11_passes_when_prompts_are_genuinely_different():
+    a = ", ".join(f"alpha clause {n} beta gamma delta epsilon" for n in range(12))
+    b = ", ".join(f"zeta clause {n} eta theta iota kappa" for n in range(12))
+    shots = [
+        make_shot(1, "A", "DETAIL", "MACRO", "LOW", a + ", No Text. --ar 9:16"),
+        make_shot(2, "A", "HUMAN-COST", "MID", "EYE", b + ", No Text. --ar 9:16"),
+    ]
+    assert "C11" not in codes(check_prompt_quality(shots))
+
+
+def test_c12_flags_too_few_clauses():
+    body = ", ".join(f"clause {n} with several extra words here now" for n in range(4))
+    shot = make_shot(1, "A", prompt=body + ", No Text. --ar 9:16")
+    assert "C12" in codes(check_prompt_quality([shot]))
+
+
+def test_c12_flags_too_few_words():
+    body = ", ".join(f"c{n}" for n in range(12))
+    shot = make_shot(1, "A", prompt=body + ", No Text. --ar 9:16")
+    assert "C12" in codes(check_prompt_quality([shot]))
+
+
+def test_c12_passes_a_dense_prompt():
+    body = ", ".join(f"clause {n} with several extra descriptive words here" for n in range(12))
+    shot = make_shot(1, "A", prompt=body + ", No Text. --ar 9:16")
+    assert "C12" not in codes(check_prompt_quality([shot]))

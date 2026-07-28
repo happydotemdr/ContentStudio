@@ -291,3 +291,51 @@ def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
                     )
 
     return findings
+
+
+MAX_SHARED_CLAUSES = 5
+MIN_CLAUSES = 10
+MIN_WORDS = 60
+
+
+def check_prompt_quality(shots: list[Shot]) -> list[Finding]:
+    """C11-C12: anti-clone and prompt density."""
+    findings: list[Finding] = []
+
+    for left, right in _pairs(shots):
+        shared = set(body_clauses(left)) & set(body_clauses(right))
+        if len(shared) > MAX_SHARED_CLAUSES:
+            findings.append(
+                Finding(
+                    "C11",
+                    right.index,
+                    f"shots {left.index} and {right.index} share {len(shared)} identical clauses "
+                    f"(max {MAX_SHARED_CLAUSES}). Consistency belongs in --sref, not in a cloned "
+                    f"prompt body. Shared: {sorted(shared)[:3]}",
+                )
+            )
+
+    for shot in shots:
+        clause_count = len(body_clauses(shot))
+        if clause_count < MIN_CLAUSES:
+            findings.append(
+                Finding(
+                    "C12",
+                    shot.index,
+                    f"{clause_count} clause(s); need >= {MIN_CLAUSES}. All 9 layers must carry "
+                    "concrete renderable content.",
+                )
+            )
+        words = body_word_count(shot)
+        if words < MIN_WORDS:
+            findings.append(
+                Finding("C12", shot.index, f"{words} words in body; need >= {MIN_WORDS}")
+            )
+
+    return findings
+
+
+def _pairs(shots: list[Shot]):
+    for i, left in enumerate(shots):
+        for right in shots[i + 1 :]:
+            yield left, right
