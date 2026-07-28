@@ -47,9 +47,11 @@ sports-culture angle, say so rather than forcing a pairing.
 Read `references/pairing-map.md`. Find 2–3 rows whose concept plausibly fits the topic (prefer
 map rows; only reach for `references/thinker-corpus-protocol.md` Path 2 if nothing fits). For
 each candidate, check `references/safety-sensitive-handling.md` if its research code is
-R5/R11/R12/R14, and check `rgs-briefs/` (glob the last ~20 files by date) for a recency flag —
-deprioritize (don't exclude) a thinker used in the last ~5 briefs; flag an exact concept×code
-repeat within the last ~15.
+R5/R11/R12/R14, and check `rgs-briefs/` (glob the last ~20 files by date, resolving each
+topic-slug to its **latest version only** — an older version of a topic already re-grounded must
+not be double-counted as a second use of its thinker) for a recency flag — deprioritize (don't
+exclude) a thinker used in the last ~5 briefs; flag an exact concept×code repeat within the last
+~15.
 
 This step is cheap — map + front-matter + brief filenames only, no deep source reading yet.
 
@@ -87,6 +89,8 @@ thinker: "[Name]"
 concept: "[concept]"
 research_codes: [[code]]
 archetype: [A1/A2/A3]
+version: [from `resolve_brief_version.py --next`, below]
+supersedes: [previous version's path, from resolve_brief_version.py's plain (non-"--next") call, below -- omit this line entirely if version is 1]
 status: candidate
 ---
 
@@ -142,8 +146,20 @@ mandatory 988 Suicide & Crisis Lifeline line required in final captions/copy"]
 
 ### 5. Save it
 
-Write the brief to `rgs-briefs/YYYY-MM-DD-<topic-slug>.md` (see `rgs-briefs/README.md` for the
-schema). Confirm the file was written before ending the turn.
+First, run `python scripts/resolve_brief_version.py --slug <topic-slug>` (no `--kind` — grounding
+briefs don't have one) from the repo root. If it prints a path (not `NONE`), that's the current
+version being superseded — remember its printed path verbatim for the `supersedes:` field below;
+it's already `rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
+
+Then run `python scripts/resolve_brief_version.py --slug <topic-slug> --next --date <YYYY-MM-DD>`
+to get the exact filename and version number to write (first-ever brief for this topic-slug:
+version 1, no `-v` suffix; a regrounding of an existing topic: the next version — this prints a
+bare filename, not a path, so `rgs-briefs/<that filename>` below is correct as written). Set the
+template's `version:` field to the printed version number, and — only when it's greater than 1 —
+add `supersedes: <the path the first resolve_brief_version.py call above printed>`. Write the
+brief to `rgs-briefs/<that filename>` (see `rgs-briefs/README.md` for the schema). Never edit an
+existing file in this directory — a `PreToolUse` hook blocks it. Confirm the file was written
+before ending the turn.
 
 ## Red flags — stop and re-verify
 
