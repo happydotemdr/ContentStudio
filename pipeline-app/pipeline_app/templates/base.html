@@ -17,12 +17,22 @@
         userLine.innerHTML = `<strong>you:</strong> ${message}`;
         transcript.appendChild(userLine);
 
+        // Kept visible (and updated in place) for the whole turn -- previously
+        // the panel showed nothing at all until the final `result` event,
+        // which for a 1-4+ minute turn reads as "did this die?" and is the
+        // most likely reason someone reloads mid-turn.
+        const statusLine = document.createElement("p");
+        statusLine.className = "turn-status";
+        statusLine.textContent = "running…";
+        transcript.appendChild(statusLine);
+
         const response = await fetch(formEl.action, {
           method: "POST",
           headers: {"Content-Type": "application/x-www-form-urlencoded"},
           body: `message=${encodeURIComponent(message)}`,
         });
         if (!response.ok) {
+          statusLine.remove();
           const line = document.createElement("p");
           line.textContent = `Error: ${await response.text()}`;
           transcript.appendChild(line);
@@ -40,12 +50,31 @@
           for (const part of parts) {
             if (!part.startsWith("data: ")) continue;
             const event = JSON.parse(part.slice(6));
-            if (event.type === "result" && event.result) {
+            if (event.type === "assistant" && event.message && event.message.content) {
+              for (const block of event.message.content) {
+                if (block.type === "text" && block.text && block.text.trim()) {
+                  const line = document.createElement("p");
+                  line.innerHTML = `<strong>assistant:</strong> ${block.text}`;
+                  transcript.insertBefore(line, statusLine);
+                } else if (block.type === "tool_use") {
+                  const line = document.createElement("p");
+                  line.innerHTML = `<strong>assistant:</strong> ↪ ${block.name}`;
+                  transcript.insertBefore(line, statusLine);
+                }
+              }
+            } else if (event.type === "result" && event.result) {
+              statusLine.remove();
               const line = document.createElement("p");
               line.innerHTML = `<strong>assistant:</strong> ${event.result}`;
               transcript.appendChild(line);
             }
           }
+        }
+        // Stream ended without a `result` event -- the turn was aborted
+        // (client disconnect, server restart, etc.). Say so instead of
+        // silently leaving "running…" up or silently removing it.
+        if (statusLine.isConnected) {
+          statusLine.textContent = "Turn ended without finishing — reload the page to check status.";
         }
       });
     }
