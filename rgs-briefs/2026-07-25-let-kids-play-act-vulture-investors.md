@@ -1,4 +1,5 @@
 ---
+version: 1
 date: 2026-07-25
 topic: "The Let Kids Play Act (S. 4522) — banning private-equity 'vulture investors' from youth sports"
 thinker: "Aristotle"

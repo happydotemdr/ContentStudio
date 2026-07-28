@@ -1,4 +1,5 @@
 ---
+version: 1
 date: 2026-07-28
 kind: assembly
 run: rgs-debut-20260728-055448

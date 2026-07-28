@@ -1,3 +1,6 @@
+---
+version: 1
+---
 ## Voice pick
 **Cloned own voice, Eleven v3 model.** A cloned-own voice is the corpus's top pick on two
 grounds: it's 100% unique against the sea of library-voice channels (avoiding the

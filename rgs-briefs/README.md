@@ -107,6 +107,13 @@ status: complete
   (`rgs-briefs/README.md` itself is the one file in this directory that
   isn't a versioned artifact and can be edited normally).
 
+## History
+
+**2026-07-28:** all pre-existing files in this directory as of this date were backfilled
+with `version: 1` (a handful that predated any frontmatter contract also gained a minimal
+`---\nversion: 1\n---` block) so that `scripts/resolve_brief_version.py` can resolve every
+file here without error. No other content in any backfilled file was changed.
+
 ## Who reads this
 
 - `rgs-grounding` (soft recency/variety rules — deprioritize a thinker used in the last ~5

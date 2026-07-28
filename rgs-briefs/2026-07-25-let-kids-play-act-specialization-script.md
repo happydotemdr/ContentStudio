@@ -1,3 +1,6 @@
+---
+version: 1
+---
 === SHORT SCRIPT — let-kids-play-act-specialization-01 ===
 Concept brief source: shorts-ideation, "The Trade Nobody Names" (rgs-briefs/2026-07-25-let-kids-play-act-specialization-concept-brief.md)
 Working title:   NFL Stat Kills the 'Specialize Early' Advice

@@ -1,3 +1,6 @@
+---
+version: 1
+---
 # Post Copy — "NFL Stat Kills the 'Specialize Early' Advice"
 
 Inputs consumed: the script's hook language/premise and the concept brief's packaging

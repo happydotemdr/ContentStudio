@@ -1,3 +1,6 @@
+---
+version: 1
+---
 # Concept Brief: The Trade Nobody Names
 
 ## Angle / take

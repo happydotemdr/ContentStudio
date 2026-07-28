@@ -1,4 +1,5 @@
 ---
+version: 1
 date: 2026-07-28
 kind: social-repurpose
 run: rgs-debut-20260728-055448

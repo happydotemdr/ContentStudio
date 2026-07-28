@@ -1,4 +1,5 @@
 ---
+version: 1
 date: 2026-07-25
 topic: "The Let Kids Play Act (S. 4522) as the news hook for youth-sports over-specialization — families sacrificing a kid's present joy for long-odds scholarship pressure"
 thinker: "Jean-Jacques Rousseau"

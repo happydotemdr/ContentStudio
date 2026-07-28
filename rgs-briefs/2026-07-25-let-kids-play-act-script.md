@@ -1,3 +1,6 @@
+---
+version: 1
+---
 === SHORT SCRIPT — let-kids-play-act-01 ===
 Concept brief source: shorts-ideation, "The Ancient Name for What's Buying Up Youth Sports" (rgs-briefs/2026-07-25-let-kids-play-act-concept-brief.md)
 Working title:   Aristotle Named This 2,300 Years Before Private Equity

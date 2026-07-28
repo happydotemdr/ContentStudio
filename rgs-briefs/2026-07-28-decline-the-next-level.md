@@ -1,4 +1,5 @@
 ---
+version: 1
 date: 2026-07-28
 topic: "declining the next level — the parent is allowed to say no, and the child's development doesn't pay for it"
 thinker: "John Dewey"

@@ -1,3 +1,6 @@
+---
+version: 1
+---
 === VISUAL PROMPT SHEET — NFL Stat Kills the 'Specialize Early' Advice ===
 
 WHOLE-SHORT SETUP

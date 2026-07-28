@@ -1,4 +1,5 @@
 ---
+version: 1
 date: 2026-07-28
 topic: "nobody asked the kid — the child is keeping a different scoreboard, and the answer is free to collect"
 thinker: "Charlotte Mason"

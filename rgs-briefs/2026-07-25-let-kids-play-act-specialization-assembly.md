@@ -1,3 +1,6 @@
+---
+version: 1
+---
 # Edit Plan — "NFL Stat Kills the 'Specialize Early' Advice"
 
 Inputs consumed: `2026-07-25-let-kids-play-act-specialization-script.md`,
