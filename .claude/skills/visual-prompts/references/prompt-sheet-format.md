@@ -162,18 +162,18 @@ present in every emitted sheet `[I]`:
   list, not a corpus or parser term `[I]`.
 - **The cover/thumbnail decision** (`SKILL.md` step 6) — either a dedicated cover
   prompt, or an explicit statement that the Hook still doubles as the cover. Never
-  silently omitted.
+  silently omitted `[I]`.
 - **The I2V block** — for any beat `SKILL.md` step 5 decided needs a real animated clip:
   source still, target tool and one-line why, the i2v prompt text itself, and
-  start/end-frame notes, per `references/image-to-video.md`.
+  start/end-frame notes, per `references/image-to-video.md` `[I]`.
 - **The overlay-copy handoff** — any on-screen text/hook-card/caption copy that was kept
   out of the Midjourney prompt (per `SKILL.md` step 4's "on-screen text never enters the
-  prompt" rule) is listed here for `shorts-assembly` to composite.
+  prompt" rule) is listed here for `shorts-assembly` to composite `[I]`.
 - **The validation line** — reports the outcome of all three gates before handoff: Gate A
   (`midjourney-prompting`'s syntax lint), Gate B (whatever upstream visual-quality check
   applies), and Gate C (`scripts/lint_prompt_sheet.py`, this file's own gate). State pass
   or fail for each; never report Gate C as passed without having actually run it
-  (`visual-arc.md` §9).
+  (`visual-arc.md` §9) `[I]`.
 
 ## 8. The i2v inheritance rule `[I]`
 
