@@ -167,6 +167,16 @@ async def run_stage_turn(
                 async for event in turn_stream:
                     collected.append(event)
                     f.write(json.dumps(event) + "\n")
+                    # Captured the moment it's known, not just on success --
+                    # an aborted turn (see except below) still resumes from
+                    # this session on the next attempt instead of re-paying
+                    # for the whole kickoff prompt.
+                    if (
+                        event.get("type") == "system"
+                        and event.get("subtype") == "init"
+                        and event.get("session_id")
+                    ):
+                        db_mod.update_stage_session(conn, stage_row["id"], event["session_id"])
                     yield event
     except BaseException:
         # Client disconnect (GeneratorExit) or any turn-time exception: the
