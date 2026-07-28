@@ -132,3 +132,55 @@ def body_word_count(shot: Shot) -> int:
 def signature_objects(world: dict[str, str]) -> list[str]:
     raw = world.get("register_a_signature_objects", "")
     return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+def check_sequence(shots: list[Shot]) -> list[Finding]:
+    """C1-C5: adjacency and whole-sheet spread."""
+    findings: list[Finding] = []
+
+    for previous, current in zip(shots, shots[1:]):
+        if previous.shot_class == current.shot_class:
+            findings.append(
+                Finding(
+                    "C1",
+                    current.index,
+                    f"shot class {current.shot_class!r} repeats from shot {previous.index}",
+                )
+            )
+        if previous.scale == current.scale:
+            findings.append(
+                Finding(
+                    "C2",
+                    current.index,
+                    f"scale {current.scale!r} repeats from shot {previous.index}",
+                )
+            )
+
+    non_plate = [s for s in shots if s.register != "PLATE"]
+    run_register: str | None = None
+    run_length = 0
+    for shot in non_plate:
+        run_length = run_length + 1 if shot.register == run_register else 1
+        run_register = shot.register
+        if run_length > 2:
+            findings.append(
+                Finding(
+                    "C3",
+                    shot.index,
+                    f"register {shot.register} runs for {run_length} consecutive shots (max 2)",
+                )
+            )
+
+    scales = {s.scale for s in shots}
+    if len(scales) < 3:
+        findings.append(
+            Finding("C4", None, f"only {len(scales)} distinct scale(s) across the sheet; need >= 3")
+        )
+
+    heights = {s.camera_height for s in shots}
+    if len(heights) < 2:
+        findings.append(
+            Finding("C5", None, f"only {len(heights)} camera height(s) across the sheet; need >= 2")
+        )
+
+    return findings

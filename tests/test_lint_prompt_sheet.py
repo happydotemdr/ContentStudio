@@ -5,12 +5,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from lint_prompt_sheet import (  # noqa: E402
     Shot,
+    Finding,
     parse_sheet,
     prompt_body,
     prompt_flags,
     body_clauses,
     body_word_count,
     signature_objects,
+    check_sequence,
 )
 
 SHEET = """\
@@ -103,3 +105,90 @@ def test_body_word_count_ignores_no_text_marker():
         prompt_line_count=1,
     )
     assert body_word_count(shot) == 5
+
+
+def make_shot(index, register="A", shot_class="DETAIL", scale="MACRO",
+              camera_height="LOW", prompt="alpha, beta, No Text. --ar 9:16"):
+    return Shot(
+        index=index,
+        beat=f"Beat {index}",
+        register=register,
+        shot_class=shot_class,
+        scale=scale,
+        camera_height=camera_height,
+        prompt=prompt,
+        prompt_line_count=1,
+    )
+
+
+def codes(findings):
+    return sorted({f.check for f in findings})
+
+
+VARIED = [
+    make_shot(1, "A", "DETAIL", "MACRO", "LOW"),
+    make_shot(2, "B", "WORLD", "XWIDE", "EYE"),
+    make_shot(3, "A", "ESTABLISHING", "WIDE", "HIGH"),
+    make_shot(4, "B", "FIGURE", "MID", "EYE"),
+    make_shot(5, "A", "HUMAN-COST", "CLOSE", "LOW"),
+]
+
+
+def test_c1_flags_repeated_adjacent_shot_class():
+    shots = [
+        make_shot(1, "A", "HUMAN-COST", "MID", "LOW"),
+        make_shot(2, "B", "HUMAN-COST", "WIDE", "EYE"),
+        make_shot(3, "A", "DETAIL", "MACRO", "HIGH"),
+    ]
+    assert "C1" in codes(check_sequence(shots))
+
+
+def test_c2_flags_repeated_adjacent_scale():
+    shots = [
+        make_shot(1, "A", "DETAIL", "MID", "LOW"),
+        make_shot(2, "B", "WORLD", "MID", "EYE"),
+        make_shot(3, "A", "ESTABLISHING", "WIDE", "HIGH"),
+    ]
+    assert "C2" in codes(check_sequence(shots))
+
+
+def test_c3_flags_run_of_three_in_same_register():
+    shots = [
+        make_shot(1, "A", "DETAIL", "MACRO", "LOW"),
+        make_shot(2, "A", "HUMAN-COST", "MID", "EYE"),
+        make_shot(3, "A", "ESTABLISHING", "WIDE", "HIGH"),
+        make_shot(4, "B", "WORLD", "XWIDE", "EYE"),
+    ]
+    assert "C3" in codes(check_sequence(shots))
+
+
+def test_c3_treats_plate_as_transparent():
+    shots = [
+        make_shot(1, "A", "DETAIL", "MACRO", "LOW"),
+        make_shot(2, "PLATE", "PLATE", "MID", "EYE"),
+        make_shot(3, "A", "ESTABLISHING", "WIDE", "HIGH"),
+        make_shot(4, "A", "WORLD", "XWIDE", "EYE"),
+    ]
+    assert "C3" in codes(check_sequence(shots))
+
+
+def test_c4_flags_fewer_than_three_scales():
+    shots = [
+        make_shot(1, "A", "DETAIL", "MACRO", "LOW"),
+        make_shot(2, "B", "WORLD", "WIDE", "EYE"),
+        make_shot(3, "A", "ESTABLISHING", "MACRO", "HIGH"),
+    ]
+    assert "C4" in codes(check_sequence(shots))
+
+
+def test_c5_flags_single_camera_height():
+    shots = [
+        make_shot(1, "A", "DETAIL", "MACRO", "LOW"),
+        make_shot(2, "B", "WORLD", "XWIDE", "LOW"),
+        make_shot(3, "A", "ESTABLISHING", "WIDE", "LOW"),
+    ]
+    assert "C5" in codes(check_sequence(shots))
+
+
+def test_varied_sheet_passes_all_sequence_checks():
+    assert check_sequence(VARIED) == []
