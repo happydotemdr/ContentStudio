@@ -1,6 +1,6 @@
 ---
 name: visual-prompts
-description: Storyboards a shot-ready ContentStudio Short script into a visual prompt sheet — mapping each script beat to a shot count at the corpus's ~3-second visual cadence, deciding which beats need real animated motion versus a still, writing the image-to-video (i2v) prompt for any beat that does (Kling, Seedance, Veo, etc.), calling the cover/thumbnail decision, and assembling the whole sheet for handoff. Use this whenever the user has a scripted/timed Short (from shorts-scripting) and asks to "storyboard this script," "build the prompt sheet," "how many shots does this beat need," "which beats need motion/animation," "write the i2v prompt," "give me a Kling/Seedance prompt," or asks how to visualize a faceless Short beat by beat. The actual Midjourney prompt wording and parameter stack is NOT this skill's job — it delegates every still prompt to the `midjourney-prompting` skill, which owns V8.2 prompt craft, the flag stack, and consistency mechanics. Use that skill directly for a one-off image prompt with no Short script behind it.
+description: Storyboards a shot-ready ContentStudio Short script into a visual prompt sheet using dual-register visual storytelling — locking a Register A/present and Register B/source-era world plus a per-Short sport/world lock, mapping each script beat to a shot count at the corpus's ~3-second visual cadence, building the whole shot sequence as an arc and passing it through Gate C before any prompt is written, deciding which beats need real animated motion versus a still, writing the image-to-video (i2v) prompt for any beat that does (Kling, Seedance, Veo, etc.), calling the cover/thumbnail decision, and assembling the whole sheet for handoff. Use this whenever the user has a scripted/timed Short (from shorts-scripting) and asks to "storyboard this script," "build the prompt sheet," "lock the world/registers," "how many shots does this beat need," "which beats need motion/animation," "write the i2v prompt," "give me a Kling/Seedance prompt," "run Gate C," or asks how to visualize a faceless Short beat by beat. The actual Midjourney prompt wording and parameter stack is NOT this skill's job — it delegates every still prompt to the `midjourney-prompting` skill, which owns V8.2 prompt craft, the flag stack, and consistency mechanics. Use that skill directly for a one-off image prompt with no Short script behind it.
 ---
 
 # Visual Prompts (script beats → Midjourney prompt sheet)
@@ -12,11 +12,15 @@ description: Storyboards a shot-ready ContentStudio Short script into a visual p
   duration and VO line per beat. **Optionally**, a companion grounding artifact may also be handed
   to this skill directly (or reached via the script's own upstream chain) — see "Optional input"
   below.
-- **This skill's job:** decide how each beat becomes pictures — the shot count per beat at the corpus's
-  ~3-second cadence, which beats need real animated motion rather than a still, and whether the cover
-  needs its own image — then assemble the sheet. **For any beat that genuinely needs motion, this skill
-  writes the image-to-video (i2v) prompt itself** (Kling, Seedance, etc.), built from
-  `references/image-to-video.md`. It also decides *which* whole-Short consistency mechanism applies.
+- **This skill's job:** lock the Short's two visual registers and its world **before** any per-beat
+  decision is made — Register A/present, Register B/source-era, and the sport/world-lock block per
+  `references/visual-registers.md` — then plan the whole sheet as a shot-by-shot arc (scale, camera
+  height, shot class, register) per `references/visual-arc.md`, and only then decide how each beat
+  becomes pictures: the shot count per beat at the corpus's ~3-second cadence, which beats need real
+  animated motion rather than a still, and whether the cover needs its own image `[I]`. **For any beat
+  that genuinely needs motion, this skill writes the image-to-video (i2v) prompt itself** (Kling,
+  Seedance, etc.), built from `references/image-to-video.md`. It also decides *which* whole-Short
+  consistency mechanism applies.
 - **Delegated to `midjourney-prompting`:** the wording of every still prompt and the parameter stack
   behind it. That skill owns the 9-layer prompt body, V8.2 flags, `--sref`/`--p`/`--oref` mechanics, the
   syntax lint, and GPU-cost discipline. Hand it each beat's visual note plus the stage; take back the
@@ -45,10 +49,22 @@ corpus theme (27 findings)**, flagged as such rather than padded with invented "
 find yourself about to write a rule with no `[C]`/`[I]`/`[T]` marker, stop — that's the signal you're
 inventing instead of sourcing. Say the corpus doesn't cover it and move on.
 
+The register system (`references/visual-registers.md`), its shot-class taxonomy, and the arc-first
+sequencing discipline (`references/visual-arc.md`) are **this skill's own operational design `[I]`** —
+the corpus has nothing to say about pairing a present-day register with a source-era register, or about
+sequencing a shot table before writing prompts. The thin `[C]` §6 pacing theme cited above backs the
+cautions those files guard against (stale frames, uncanny-valley motion), and the `[T]` Midjourney
+parameter bands they cite are web-verified against `docs.midjourney.com` — but the register/arc/Gate C
+system itself is not presented as corpus-derived, and neither file should be read as if it were.
+
 ## Optional input: a companion grounding artifact `[I]`
 
-If a companion grounding artifact is handed to this skill, use its visual motif cue as a
-shot-composition input for the beat(s) carrying that citation — fold the cue into step 2's
+If a companion grounding artifact is handed to this skill, it feeds two places, not just one.
+First, its named thinker/source and any motif cue feed **step 2.5's world lock** — the
+`register_b_thinker`/`register_b_era_place`/`register_b_locations`/`register_b_artifacts` keys
+come from the grounding artifact when one exists, and its motif becomes the `motif` key rendered
+in both registers per `references/visual-registers.md` §6. Second, the same motif cue still
+informs shot-composition for the beat(s) carrying that citation — fold it into step 2's
 still-count decision and step 4's prompt anatomy for that beat, the same way any other visual
 note is used.
 
@@ -76,7 +92,36 @@ said sentence-by-sentence, or the mismatch reads as confusing `[C]`, same refere
 beyond what the VO content actually supports — the rule is "don't let a frame go stale," not "cut for
 its own sake" (see the over-editing caution in the same reference file).
 
-### 3. Decide the whole-Short consistency *situation*, once
+### 2.5. Lock the world
+
+Before any per-beat decision or prompt exists, emit the `WORLD LOCK` block per
+`references/visual-registers.md` §7 — the twelve-key (11 real keys plus the `WORLD LOCK` heading)
+`register_a_*` / `register_b_*` / `motif` block that every downstream prompt inherits from `[I]`:
+
+```
+WORLD LOCK
+  register_a_sport:              [one sport]
+  register_a_venue:              [venue type]
+  register_a_signature_objects:  [2-3 objects that make the sport unmistakable]
+  register_a_season_time:        [season / time of day]
+  register_a_rationale:          [one line tying the sport to the claim's evidence]
+  register_b_thinker:            [name]
+  register_b_era_place:          [specific era and place]
+  register_b_locations:          [2-3 named period locations]
+  register_b_artifacts:          [2-3 period objects]
+  register_b_figure_archetype:   [role and dress; never a likeness]
+  motif:                         [the grounding brief's motif, rendered in BOTH registers]
+```
+
+**The sport is chosen here, with a stated rationale, only if nothing upstream names one.** Check three
+places in order — the incoming script, the concept brief, the grounding artifact — before picking a
+sport yourself; the sport is part of the argument, not a free aesthetic choice, so `register_a_rationale`
+must tie it to the claim's evidence `[I]` (`references/visual-registers.md` §8). Name the choice at the
+top of the prompt sheet, not buried in the world-lock block alone. If a grounding artifact was handed to
+this skill (see "Optional input" above), its thinker/source and motif populate the `register_b_*` keys
+and `motif` directly rather than being invented here `[I]`.
+
+### 3a. Decide the whole-Short consistency *situation*, once
 
 You decide **which situation the Short is in**; `midjourney-prompting` decides how to implement it and
 what it costs.
@@ -88,13 +133,40 @@ what it costs.
 | Cheap/low-stakes, perfection not required | `consistency: style-lock`, `budget: cheap` |
 | Subject-free b-roll/background plates | `consistency: none` |
 
-Only one mechanism is normally active per Short. This "pick one" framing is this skill's own
-operational guidance `[I]`, not a distinct corpus claim.
+**`style-lock` is the default for both registers under the dual-register system, with two `--sref`
+codes** — one harvested per Short for Register A, one fixed and harvested once channel-wide for
+Register B, reused unchanged on every subsequent Short (`references/visual-registers.md` §3–§4) `[I]`.
+Register B's archetype-figure treatment — unnamed, face averted or in shadow, dressed to the role, never
+a specific likeness — is precisely what makes `subject-lock` unnecessary there: there is no likeness to
+lock `[I]`.
+
+Only one mechanism is normally active per Short (or, under the dual-register system, per register).
+This "pick one" framing is this skill's own operational guidance `[I]`, not a distinct corpus claim.
 
 **Expect a pushback on `subject-lock`.** Attaching Omni Reference makes Midjourney run the whole job in
 V7 at 2× GPU cost `[T] (verified 2026-07-26)` — so a character-driven Short cannot also have V8.2's
 look. `midjourney-prompting` will surface that trade; carry it to the user rather than deciding for
 them, because it may change whether the Short wants a recurring character at all.
+
+### 3b. Build the visual arc
+
+Before writing a single prompt string, lay out the whole shot sequence as a table — one row per shot,
+columns `# | Beat | Register | Shot class | Scale | Camera height | What changes vs. previous` — per
+`references/visual-arc.md` §3 `[I]`. This is not cosmetic: fixing a repetitive arc later means editing a
+table row, not rewriting prompt strings that were written under the wrong plan, and it happens before
+any GPU minute is spent `[I]`. Rotate scale (at least 3 distinct values), camera height (at least 2
+distinct values), shot class, and register across the table per `references/visual-arc.md` §4–§6; review
+it by eye for repetition before writing a single prompt.
+
+Once the arc table is built, run Gate C against it **before writing any prompt**:
+
+```bash
+python scripts/lint_prompt_sheet.py <path>
+```
+
+This is the same Gate C run required again at emission (step 7) — running it here, on the table alone,
+catches a repetitive or unbalanced arc while it's still a one-cell edit, rather than after prompts exist
+`[I]` (`references/visual-arc.md` §1–§2, §9).
 
 ### 4. Delegate each still prompt to `midjourney-prompting`
 
@@ -105,7 +177,9 @@ subject:      [the beat's visual note — what this still shows]
 stage:        draft   (or refine / production, per where the Short is)
 look:         [photographic | stylized | illustrative — from the packaging direction]
 format:       9:16
-consistency:  [from step 3, plus the locked --sref/--p code or --oref URL once it exists]
+consistency:  [from step 3a, plus the locked --sref/--p code or --oref URL once it exists]
+register:     [A | B | PLATE — from the arc table row (step 3b)]
+shot_class:   [the register's own taxonomy value for this row, e.g. DETAIL / FIGURE / ESTABLISHING]
 literalism / variance / budget: [defaults unless the beat needs otherwise]
 ```
 
@@ -118,9 +192,16 @@ Two things you still own at this step:
 - **On-screen text never enters the prompt.** Midjourney cannot reliably render legible text
   `[C] (Tokenized AI, qFYJb0zYztY)`, so a beat's hook card or caption copy passes through to
   `shorts-assembly` as overlay copy. Flag it in the handoff so `midjourney-prompting` appends `No Text.`
-- **Beat-to-beat coherence.** Each prompt must stand alone — Midjourney carries no context between
-  jobs `[T]` — but the *sheet* should read as one Short. If two adjacent beats come back looking
-  unrelated, that's a step-3 problem (wrong consistency situation), not a prompt-wording problem.
+- **Sheet-level coherence is Gate C's job, not a judgment call.** Whether the sheet reads as one Short
+  with real shot-to-shot variety is now a mechanical question — run `scripts/lint_prompt_sheet.py`
+  (step 3b, and again mandatory at step 7) rather than eyeballing whether two adjacent beats "look
+  related" `[I]`. If Gate C fails, the fix is almost always the arc table (step 3b), not individual
+  prompt wording.
+- **Do not achieve consistency by repeating a shared style-vocabulary string across prompts.** Cloning a
+  style phrase (or an entire prompt body with a noun swapped) into every prompt is exactly what produced
+  six near-identical stills in a real production run — see `references/visual-arc.md` §1. Consistency
+  lives in `--sref`, not in the prompt body. Gate C's **C11** enforces this mechanically (no two shots
+  may share more than 5 identical prompt-body clauses) `[I]`.
 
 ### 5. Decide, per beat, whether a still suffices or the beat needs a real animated clip — and if so, write its i2v prompt
 
@@ -175,39 +256,70 @@ decision:
 
 ### 7. Emit the prompt sheet
 
-Use this shape (see `references/worked-example.md` for a full run of a real beat table through it):
+The exact, byte-level output shape — the `WORLD LOCK` block format, the per-shot heading and fence
+syntax, the one-line prompt rule, and the remaining sheet sections (`WHOLE-SHORT SETUP`, cover/thumbnail,
+I2V block, overlay-copy handoff, validation line) — now lives in `references/prompt-sheet-format.md`.
+Read it before emitting; it is the literal format `scripts/lint_prompt_sheet.py`'s parser accepts, and a
+sheet that drifts from it (wrong dash, wrong case, a missing field) has shots silently skipped by the
+parser, not flagged. See `references/worked-example.md` for a full run of a real beat table through it.
+
+Skeleton (see `references/prompt-sheet-format.md` §2–§7 for the exact syntax of every piece below):
 
 ```
 === VISUAL PROMPT SHEET — [Short ID / title] ===
 
+WORLD LOCK
+  [11 keys — see references/visual-registers.md §7 and step 2.5]
+
 WHOLE-SHORT SETUP
   Aspect ratio:     --ar 9:16
-  Style/params:     [as returned by midjourney-prompting — e.g. --raw --s 95 --c 0]
-  Consistency:      [subject-lock via --oref (NOTE: renders in V7) | style-lock via --sref CODE --sw N
-                     | mood board --p CODE | fixed --seed N | none — subject-free plates]
-  Notes:            [anything beat-specific that overrides the default]
+  Register A --sref: [harvested this Short]
+  Register B --sref: [fixed channel-level code, reused unchanged]
+  Phase ladder:      [the ordered beat list this sheet covers]
+  Notes:             [anything beat-specific that overrides the default]
 
 COVER / THUMBNAIL
   [Dedicated prompt from midjourney-prompting — see step 6]
   — or —
   Cover = Hook beat still #1 + shorts-assembly's text overlay. No separate generation.
 
-PER-BEAT PROMPTS
-| Beat | Dur | Still # | Midjourney prompt | Params | Motion |
-|---|---|---|---|---|---|
-| Hook | 0-3s | 1 | [prompt string as returned by midjourney-prompting, ending "No Text."] | [flags as returned] | still |
-| ... | ... | ... | ... | ... | still / --motion low / see I2V block below |
+### Shot <N> — <Beat> (<time range>) · Register <A|B|PLATE> · <SHOT CLASS> · <SCALE> · <CAMERA HEIGHT>
+Changes vs. previous: <one line naming the visual change>
+
+```text
+<the entire prompt on ONE line>
+```
 
 I2V PROMPTS (only for beats marked "see I2V block" above — omit this section if none)
 | Beat | Source still | Target tool | I2V prompt | Start/end-frame notes |
 |---|---|---|---|---|
 | [Beat name] | [Beat/still # this clip animates] | [Kling / Seedance 2.0 / Veo 3 / etc. — one-line why] | [full motion prompt: framing, action, speed, "in a single shot, no cuts," "no subtitles and no music"] | [end frame description + how it was produced, or "single frame, no end-keyframe needed"] |
+
+OVERLAY COPY HANDOFF
+  [any on-screen text/hook-card copy kept out of the Midjourney prompt — step 4]
+
+VALIDATION
+  Gate A (midjourney-prompting syntax lint): [pass/fail]
+  Gate B (upstream visual-quality check, if applicable): [pass/fail]
+  Gate C (scripts/lint_prompt_sheet.py):     [pass/fail — see below]
 ```
 
 Write each row's still prompt to stand alone — Midjourney does not carry context between separate jobs
 `[T]`, so a prompt that only makes sense as a continuation of the previous row will not render as
 intended. An i2v prompt is the one exception that's *allowed* to depend on another row — it explicitly
 names its source still as the start frame, per `references/image-to-video.md`.
+
+**Before emitting the sheet, run Gate C — this is mandatory, not optional:**
+
+```bash
+python scripts/lint_prompt_sheet.py <path-to-sheet.md>
+```
+
+**A failing gate blocks emission.** Exit 0 is the only outcome that allows handing the sheet downstream;
+exit 1 (findings) or exit 2 (nothing parsed — almost always a format error, see
+`references/prompt-sheet-format.md`) means fix the sheet and re-run, not report it as done anyway. Never
+state or record Gate C as "passed" without having actually run it and observed exit 0 `[I]`
+(`references/visual-arc.md` §9).
 
 ## Corpus coverage note (state this to the user if asked how solid these rules are)
 
@@ -220,6 +332,15 @@ The image-to-video rules (`references/image-to-video.md`) rest on the guide's **
 (79 findings)** — well-supported for the `[C]` prompt-craft/technique rules, but the model-landscape
 table (which tool is strong at what) is the part of this skill most likely to go stale fastest, since
 external video-gen tools ship new versions far more often than Midjourney itself.
+
+The dual-register system (`references/visual-registers.md`), the arc-first sequencing discipline
+(`references/visual-arc.md`), and the copy-paste output contract (`references/prompt-sheet-format.md`)
+are **this skill's own operational design `[I]`**, not corpus findings — the corpus's thin §6 visuals
+theme (27 findings) says nothing about registers, shot-class taxonomies, arc sequencing, or a
+machine-parseable output format. Say so plainly if asked how solid these three files are: the pacing
+cautions they build on (`[C]`) and the Midjourney parameter bands they cite (`[T]`, verified 2026-07-26)
+are sourced; the register system, the shot classes, the arc discipline, Gate C's checks, and the sheet
+format itself are not — they are this skill's answer to a gap the corpus leaves open.
 
 **`[T]` facts most likely to need re-verification before you rely on them:**
 - Midjourney model/parameter facts — see `midjourney-prompting`'s own staleness list, which is current
