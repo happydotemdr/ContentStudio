@@ -436,3 +436,21 @@ def test_main_returns_two_when_no_shots_parse(tmp_path):
     empty = tmp_path / "empty.md"
     empty.write_text("nothing here", encoding="utf-8")
     assert main([str(empty)]) == 2
+
+
+def test_worked_example_sheet_passes_gate_c():
+    shots, findings = lint_fixture("worked_example_sheet.md")
+    assert len(shots) >= 8, f"worked example has only {len(shots)} shots"
+    assert findings == [], [f"{f.check}#{f.shot_index}: {f.message}" for f in findings]
+
+
+def test_worked_example_uses_all_four_register_a_shot_classes():
+    shots, _ = lint_fixture("worked_example_sheet.md")
+    classes = {s.shot_class for s in shots if s.register == "A"}
+    assert classes == {"ESTABLISHING", "ACTION-ADJACENT", "DETAIL", "HUMAN-COST"}
+
+
+def test_worked_example_uses_all_three_register_b_shot_classes():
+    shots, _ = lint_fixture("worked_example_sheet.md")
+    classes = {s.shot_class for s in shots if s.register == "B"}
+    assert classes == {"FIGURE", "WORLD", "ARTIFACT"}

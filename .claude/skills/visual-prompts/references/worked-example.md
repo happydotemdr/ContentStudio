@@ -1,117 +1,255 @@
-# Worked example: a scripted Short → a Midjourney prompt sheet
+# Worked example: a scripted Short → a dual-register Midjourney prompt sheet
 
-Input beat table below is the shot-list shape used elsewhere in the ContentStudio corpus (the
-production playbook's Template 2, Short S042, "it's not the beans" coffee video) — a reasonable stand-in
-for what `shorts-scripting` hands off, since beats + duration + VO line is the common shape either way.
-The playbook's own template renders the hook still in Ideogram (a text-capable model) because its hook
-card ("IT'S NOT THE BEANS") is baked into the image. This skill routes the same beat through
-**Midjourney instead, with the text pulled out** — that's the concrete difference this skill makes: MJ
-generates the plate, `shorts-assembly` composites the on-screen text.
+This walks a real `letkidsplay`-style RaisingGoodSports Short — a five-beat script pairing a
+present-day club-soccer claim with a Plutarch citation — through every step of `SKILL.md`'s
+workflow, in order, ending in a sheet that passes Gate C on this file's own first successful run
+(see §9). Read this after `references/visual-registers.md` and `references/visual-arc.md` — it
+assumes both are already understood and shows them applied, not re-explained.
 
-## Input (from the script)
+## 1. Input (from the script)
 
-| # | Beat | Dur | VO line | On-screen text (handled downstream, not in the MJ prompt) |
+| # | Beat | Dur | VO line | Markers |
 |---|---|---|---|---|
-| 1 | Hook | 3s | "Your drip coffee tastes flat..." | "IT'S NOT THE BEANS" |
-| 2 | Setup | 5s | "Cafes do one thing you skip..." | "$2 FIX" |
-| 3 | Build | 14s | "Bloom the grounds first..." | "BLOOM 30s" |
-| 4 | Re-hook | 4s | "But there's a second mistake almost everyone makes..." | "2ND MISTAKE ->" |
-| 5 | Payoff | 10s | "Water off the boil, 90s after..." | "SMOOTH" |
-| 6 | Loop/CTA | 8s | "So it was never the beans..." | (none — visual mirrors beat 1) |
+| 1 | Hook | 0–3s | "Club soccer costs $5,000 a year and takes every weekend your kid has." | — |
+| 2 | Setup | 3–9s | "Here's who told parents this was fine 2,000 years before travel teams existed..." | `[THINKER: Plutarch]` |
+| 3 | Build | 9–30s | "Plutarch watched Athenian fathers push their sons into one sport, year-round, before the boy had a say. He called it planting a tree and drowning the roots — you get growth, then you get nothing." | `[RESEARCH: early-specialization burnout attrition]` |
+| 4 | Re-hook | 30–34s | "The travel-team pipeline is doing the same thing his neighbors did — just with a scoreboard." | — |
+| 5 | Payoff/Loop | 34–45s | "Water the roots, not just the branch. Let the kid play more than one sport." | — |
 
-## Step 1 — stills-per-beat, applying the ~3s cadence rule
+## 2. Step 2 — shot counts, applying the ~3s cadence rule `[C] (Make Money Matt, HopTPCLbiiM)`
 
-- Beat 1 (Hook, 3s): 1 still — already at the cadence limit.
-- Beat 2 (Setup, 5s): 1 still is acceptable (borderline; could split into 2 if the VO has a clear
-  midpoint beat).
-- Beat 3 (Build, 14s): 14s ÷ ~3-4s ≈ **4 stills**, one per escalating step of the bloom process.
-- Beat 4 (Re-hook, 4s): 1 still.
-- Beat 5 (Payoff, 10s): **2-3 stills** (pour → wait → taste-reaction cue).
-- Beat 6 (Loop/CTA, 8s): reuse beat 1's still (the script's own "mirror the opening" instruction) —
-  **0 new generations needed**, which is itself the corpus-grounded loop technique
-  `[C] (Jenny Hoyos, mhVDcqnxxaY)`, not a gap.
+- **Hook (3s):** 1 shot — already at the cadence limit.
+- **Setup (6s):** 2 shots — the present-day claim, then the register switch that introduces the
+  source era.
+- **Build (21s):** 21s ÷ ~3–4s ≈ 5 shots — the longest beat, carrying both the burnout evidence
+  and its period illustration, so it's the one beat that earns the full register alternation.
+- **Re-hook (4s):** 1 shot — back to the present for the pivot line.
+- **Payoff/Loop (11s):** 2 shots — the motif's present-day and source-era close, mirroring the
+  loop technique `[C] (Jenny Hoyos, mhVDcqnxxaY)` without literally reusing a still, since the
+  motif itself (not a repeated frame) is what closes the loop here.
 
-## Step 2 — whole-Short setup
+Total: **11 shots.**
 
-No recurring character in this Short (it's product/process, not a host) → no Omni Reference needed.
-Consistency here is really just "reads like one shoot": a single `--sref` isn't essential for a
-tight product Short like this, so the setup relies on a **shared style vocabulary repeated in every
-prompt** (photoreal, DSLR, warm morning light) rather than a locked sref code. If this were a
-recurring-character or heavily-branded series, this section would instead specify an `--oref`/`--sref`.
+## 3. Step 2.5 — the world lock
 
 ```
-WHOLE-SHORT SETUP
-  Aspect ratio:     --ar 9:16
-  Style/params:     --raw --s 150
-  Consistency:      none (product/process Short) — shared style vocabulary per prompt: photoreal, DSLR,
-                    warm morning kitchen light, muted brown/cream palette
-  Notes:            beat 6 reuses beat 1's still exactly (loop mirror) — no new generation
-
-COVER / THUMBNAIL
-  Cover = Hook beat still #1 + shorts-assembly's text overlay ("IT'S NOT THE BEANS"). The packaging
-  direction (flat coffee, one dominant emotion — disappointment) is already fully delivered by the
-  Hook still itself; nothing about it calls for a separately staged cover shot, so no dedicated cover
-  prompt is generated. (Per the workflow's step 7: this decision is stated explicitly, not skipped.)
+WORLD LOCK
+  register_a_sport:              club soccer
+  register_a_venue:              municipal club soccer complex
+  register_a_signature_objects:  goal net, corner flag, painted touchline
+  register_a_season_time:        winter dawn
+  register_a_rationale:          club soccer's $5,000/yr fees, no free weekends, and scholarship-chase culture are the closest present-day analogue to the claim's burnout evidence
+  register_b_thinker:            Plutarch
+  register_b_era_place:          first-century Greece, a hillside estate near Chaeronea
+  register_b_locations:          colonnaded terrace, olive-terraced hillside, stone courtyard
+  register_b_artifacts:          terracotta watering vessel, wax writing tablet, olive branch
+  register_b_figure_archetype:   an unnamed tutor, plain wool himation, face turned into shadow
+  motif:                         a watering can, modern plastic in Register A and a terracotta vessel in Register B
 ```
 
-## Step 3 — per-beat prompts
+Sport-choice check, in order (`references/visual-registers.md` §8): the incoming script doesn't
+name a sport, the concept brief doesn't either, but the grounding artifact's `[THINKER: Plutarch]`
+citation and its burnout research supply both the thinker and a clear economic parallel — club
+soccer's cost-and-time structure is what makes the $5,000/yr framing land, so it's named here with
+that one-line rationale rather than picked for its visuals alone `[I]`.
 
-| Beat | Still # | Midjourney prompt | Params |
-|---|---|---|---|
-| Hook | 1 | extreme close-up of a black cup of drip coffee, flat dull surface, faint steam rising, kitchen counter softly blurred behind, warm morning window light from the left, moody and a little disappointing, photoreal, warm brown and cream palette, shot on 35mm film. No Text. | `--ar 9:16 --raw --s 150` |
-| Setup | 1 | photo of a cafe counter, espresso portafilter mid-tamp, brushed steel surface, warm ambient light, shallow depth of field, photoreal, DSLR, warm brown and cream palette. No Text. | `--ar 9:16 --raw --s 150` |
-| Build | 1 | close-up of dry coffee grounds in a ceramic dripper, hot water just beginning to touch the surface, tiny cracks forming, overhead kitchen light, photoreal macro, DSLR. No Text. | `--ar 9:16 --raw --s 150` |
-| Build | 2 | close-up of coffee grounds blooming, small bubbles breaking the surface, gentle steam, overhead kitchen light, photoreal macro, DSLR. No Text. | `--ar 9:16 --raw --s 150` |
-| Build | 3 | close-up of a fully bloomed coffee bed, dome of foam rising, bubbles thickening, overhead kitchen light, photoreal macro, DSLR. No Text. | `--ar 9:16 --raw --s 150` |
-| Build | 4 | wide shot of a ceramic dripper on a wood counter, bloom settling, gentle wisps of steam catching the window light, photoreal, DSLR, warm brown and cream palette. No Text. | `--ar 9:16 --raw --s 150` |
-| Re-hook | 1 | close-up of a kettle spout, thin stream of steam, dark blurred kitchen background, dramatic side lighting, photoreal, DSLR. No Text. | `--ar 9:16 --raw --s 150` |
-| Payoff | 1 | coffee pouring from a dripper into a clear glass mug, warm brown liquid catching the light, steam rising, shallow depth of field, photoreal, DSLR, warm brown and cream palette. No Text. | `--ar 9:16 --raw --s 150` |
-| Payoff | 2 | close-up of a hand lifting a clear glass mug of coffee toward camera, soft warm light, shallow depth of field, photoreal, DSLR. No Text. | `--ar 9:16 --raw --s 150` |
-| Loop/CTA | — | reuse Hook still 1 exactly — no new prompt | — |
+## 4. Step 3a — consistency
 
-## Step 4 — per-beat motion decision (still vs. `--motion low` vs. a real i2v clip)
+Two `--sref` codes, one per register, per `references/visual-registers.md` §3–§4:
 
-Running the decision table from `references/image-to-video.md` (see `SKILL.md` workflow step 6)
-against each beat:
+- **Register A `--sref`:** harvested for this Short specifically (present-day club-soccer look).
+- **Register B `--sref`:** the channel's fixed painterly signature, harvested once and reused
+  unchanged on every Short — not re-harvested here.
 
-- **Hook, Setup, Re-hook:** single stills, no motion needed — each is already at or near the ~3s
-  cadence limit (step 1).
-- **Payoff:** the pour-to-taste sequence is visual variety over ~10s, already covered by the 2-3
-  stills from step 1 — no motion needed.
-- **Build:** this is the one beat where a static image genuinely under-sells the process — the VO
-  ("bloom the grounds first...") describes **continuous transformation** (dry grounds → bubbling →
-  full dome), which is exactly tier 3 of the decision table: a real i2v clip, not just `--motion low`
-  on one still.
+No `--oref` on either register: Register A has no recurring named character to lock a likeness
+for, and Register B's figure treatment is archetype-only by contract (unnamed, face averted or
+shadowed, dressed to the role) — there is no likeness to lock, and adding one would force the
+whole job into V7 at 2× GPU cost for no visual gain `[T] (verified 2026-07-26)`.
 
-Rather than 4 separate Build stills, replace stills 1-3 with a single animated clip and keep still 4
-(the settled wide shot) as a static cutaway:
+## 5. Step 3b — the arc table
+
+| # | Beat | Register | Shot class | Scale | Camera height | What changes vs. previous |
+|---|------|----------|------------|-------|----------------|----------------------------|
+| 1 | Hook (0–3s) | A | DETAIL | MACRO | LOW | opening frame |
+| 2 | Setup (3–6s) | A | ESTABLISHING | XWIDE | HIGH | pulls back from macro to the whole complex; register stays present |
+| 3 | Setup (6–9s) | B | WORLD | WIDE | EYE | register switch to the source era; scale and height both change |
+| 4 | Build (9–14s) | B | ARTIFACT | CLOSE | OVERHEAD | register stays but shot class, scale and height all change; motif appears in source-era form |
+| 5 | Build (14–18s) | A | HUMAN-COST | MID | LOW | register switch back to the present; shot class, scale and height all change |
+| 6 | Build (18–22s) | A | ACTION-ADJACENT | MID-WIDE | EYE | shot class, scale and height all change; stillness shifts to just-before motion |
+| 7 | Build (22–26s) | B | FIGURE | MID | EYE | register switch to the source era; shot class and scale both change |
+| 8 | Build (26–30s) | B | WORLD | XWIDE | HIGH | shot class, scale and height all change; widest frame on the sheet |
+| 9 | Re-hook (30–34s) | A | ESTABLISHING | WIDE | HIGH | register switch back to the present; shot class and scale both change |
+| 10 | Payoff (34–40s) | A | DETAIL | MACRO | LOW | shot class, scale and height all change; motif returns in present-day form |
+| 11 | Payoff/Loop (40–45s) | B | ARTIFACT | CLOSE | OVERHEAD | register switch to the source era; motif closes the loop in source-era form |
+
+By-eye check against `references/visual-arc.md` §4–§7 before a single prompt string was written:
+
+- **Scales used:** `MACRO, XWIDE, WIDE, CLOSE, MID, MID-WIDE` — 6 distinct, well over the 3 Gate
+  C's C4 requires, and no two consecutive rows repeat a scale.
+- **Camera heights used:** `LOW, HIGH, EYE, OVERHEAD` — 4 distinct, over C5's minimum of 2.
+- **Shot classes:** no two consecutive rows repeat a shot class (C1); Register A visits all four
+  of its classes (`ESTABLISHING`, `ACTION-ADJACENT`, `DETAIL`, `HUMAN-COST`) and Register B visits
+  all three of its classes (`FIGURE`, `WORLD`, `ARTIFACT`) — nothing leans on one shot class.
+- **Register rhythm:** `A A B B A A B B A A B` — no run longer than 2 (C3), registers alternate 5
+  times (well over C7's minimum of 2), and counts land at 6 Register A / 5 Register B, both above
+  C6's minimums.
+- **The motif bridge:** the watering can appears exactly twice — Shot 4 (`ARTIFACT`, terracotta,
+  Register B) and Shot 10 (`DETAIL`, modern plastic, Register A) — carrying the same idea across
+  both visual languages per `references/visual-registers.md` §6, without the two shots reading as
+  the same frame.
+
+This table is what made Gate C pass on the first run against the finished prompts (§9) — the
+sequencing decisions were made here, at the table stage, not discovered after nine or eleven
+Midjourney jobs had already rendered (`references/visual-arc.md` §1).
+
+## 6. Step 4 — the per-shot blocks
+
+Each block below is exactly what was handed to `midjourney-prompting` (subject, register,
+shot_class, look, format, consistency) and exactly what came back — not rewritten here. Every
+prompt carries all 9 layers, at least 10 comma-separated clauses, at least 60 words, and ends
+`No Text.` immediately before its flags, on a single line, per `references/prompt-sheet-format.md`.
 
 ```
-I2V PROMPT — Build beat
+### Shot 1 — Hook (0–3s) · Register A · DETAIL · MACRO · LOW
+Changes vs. previous: opening frame.
 
-Source still:        Build still 1 (dry coffee grounds in a ceramic dripper, hot water just touching
-                      the surface)
-Target tool:          Kling — start/end-frame keyframing suits this beat's single continuous
-                      transformation better than Seedance's multi-shot strength, which isn't needed here
-                      (per the model-landscape table in references/image-to-video.md)
-Start frame:          Build still 1 (as generated)
-End frame:            Build still 3's composition (fully bloomed dome, thick bubbles) — produced by
-                      editing Build still 1 in an external image editor for the later-stage look, per
-                      the start/end-frame keyframing section of references/image-to-video.md, rather
-                      than generating an unrelated second image
-I2V prompt text:      start with a close-up of dry coffee grounds just touching hot water; the grounds
-                      slowly bloom, small bubbles breaking the surface, building to a thick dome of
-                      foam; slow, continuous motion; in a single shot, no cuts; no subtitles and no
-                      music.
+```text
+documentary sports photography, extreme close-up of a nine-year-old's fingers lacing a club soccer boot tight against a frost-stiffened tongue, breath fogging faintly at the very edge of frame, a corner flag blurred to a soft orange smear behind the wrist, a scuffed size-one ball resting just outside sharp focus, low three-quarter angle from just above the turf, 100mm macro lens at f/2.8, razor focus on the laces and the slack skin around the knuckle, flat grey pre-dawn light with no direct sun, cold desaturated palette of frost white and charcoal, fine visible grain, No Text. --ar 9:16 --raw --s 95
 ```
 
-Build still 2 (the mid-bloom stage) is dropped as a separate generation — its composition is now
-covered by the clip's midpoint — and Build still 4 (wide, settled) remains a static cutaway still, so
-this beat ends up as 2 stills + 1 clip instead of 4 stills.
+### Shot 2 — Setup (3–6s) · Register A · ESTABLISHING · XWIDE · HIGH
+Changes vs. previous: pulls back from macro to the whole complex; register stays present.
 
-MJ's own `--motion low` path was considered and rejected here: it's meant for a hero shot breathing in
-place, not a multi-stage transformation, and MJ's video model is D-tier for anything beyond that
-`[C] (Tao Prompts, uCsc0ORcJDo)`. A still-only Build beat (per the "AI slideshow" format,
-`references/faceless-pacing-rules.md`) remains an equally valid, cheaper fallback if the animated clip
-isn't worth its cost for this particular Short — that's a call for whoever is producing the Short to
-make, but the prompt above is ready to use either way, not a placeholder.
+```text
+documentary sports photography, an elevated wide view over a municipal club soccer complex at first light, six floodlit pitches receding toward a distant tree line, a goal net and a row of corner flags anchoring the nearest field, parents' cars queued along a gravel access road at the far edge, high angle from a scoreboard gantry, 24mm wide lens at f9, deep focus holding every pitch legible, cold blue winter dawn light with frost still on the grass, muted green and slate palette under a colourless sky, No Text. --ar 9:16 --raw --s 100
+```
+
+### Shot 3 — Setup (6–9s) · Register B · WORLD · WIDE · EYE
+Changes vs. previous: register switch to the source era; scale and height both change.
+
+```text
+luminous oil painting on aged linen, a colonnaded terrace on a hillside estate near Chaeronea opening onto a sun-bleached olive-terraced slope, worn limestone steps descending toward a stone courtyard below, a lone olive branch resting across the nearest column base, a shallow clay basin set on the topmost step, distant hills softening into a pale haze, frontal wide view from the level of the terrace floor, warm low Mediterranean sun raking in from the left casting long hard shadows, ochre and umber and olive-green palette, cracked varnish and visible brush texture, No Text. --ar 9:16 --s 520
+```
+
+### Shot 4 — Build (9–14s) · Register B · ARTIFACT · CLOSE · OVERHEAD
+Changes vs. previous: register stays but shot class, scale and height all change; the motif appears in its source-era form.
+
+```text
+luminous oil painting on aged linen, a terracotta watering vessel tipped over a shallow clay basin on a sun-warmed stone ledge, water spilling past the rim and darkening the dust in a widening stain, a wax writing tablet and a stylus set just beyond the spreading water, a single olive leaf drifting on the surface, close overhead view looking straight down onto the ledge, compressed flat composition with almost no horizon, warm afternoon light pooling from the upper left, ochre and terracotta and deep green palette, thick impasto ridges catching the light, No Text. --ar 9:16 --s 560
+```
+
+### Shot 5 — Build (14–18s) · Register A · HUMAN-COST · MID · LOW
+Changes vs. previous: register switch back to the present; shot class, scale and height all change.
+
+```text
+documentary sports photography, a lone child sitting on a metal bench at the edge of a frost-bitten club soccer pitch, head down, gear bag untouched on the painted touchline beside them, other kids and parents blurred and distant near the goal net, low angle from bench height looking slightly up at the hunched shoulders, 35mm lens at f2, shallow depth isolating the child from the field behind, thin grey overcast light with no warmth in it, cold flat palette of slate and dull green, No Text. --ar 9:16 --raw --s 90
+```
+
+### Shot 6 — Build (18–22s) · Register A · ACTION-ADJACENT · MID-WIDE · EYE
+Changes vs. previous: shot class, scale and height all change; stillness shifts to just-before motion.
+
+```text
+documentary sports photography, a club soccer coach crouching beside a line of cones handing a water bottle to a waiting player, a corner flag catching a gust just behind them, cleats and shin guards scattered on the painted touchline nearby, a stack of folded practice bibs set on the grass to one side, eye-level three-quarter view from pitch side, 50mm lens at f4, moderate depth holding both figures and the cones legible, a thin shaft of morning sun breaking through low cloud, palette warming from cold slate toward pale gold, No Text. --ar 9:16 --raw --s 105
+```
+
+### Shot 7 — Build (22–26s) · Register B · FIGURE · MID · EYE
+Changes vs. previous: register switch to the source era; shot class and scale both change.
+
+```text
+luminous oil painting on aged linen, an unnamed tutor in a plain wool himation seated on a low stone bench in a quiet courtyard, one hand resting on a closed wax writing tablet, face turned fully into shadow beneath a raised hood of fabric, an olive branch propped against the bench leg, a stylus laid across the tablet's edge, mid-distance frontal view holding the whole seated figure, soft diffused daylight falling from a high unseen window, muted ochre and umber palette against pale stone, visible canvas weave through thin glaze, No Text. --ar 9:16 --s 480
+```
+
+### Shot 8 — Build (26–30s) · Register B · WORLD · XWIDE · HIGH
+Changes vs. previous: shot class, scale and height all change; widest frame on the sheet.
+
+```text
+luminous oil painting on aged linen, a sweeping view down over the olive-terraced hillside toward a distant stone courtyard and the colonnaded terrace beyond, rows of silvered olive trees stepping down the slope in soft ranks, a thin footpath cutting between the terraces, a hawk suspended small and distant over the valley, a low stone wall marking the nearest terrace edge, elevated view looking down from above the topmost terrace, warm hazy midday light flattening the distance, sage green and dusty gold and pale stone palette, loose confident brushwork in the foreground foliage, No Text. --ar 9:16 --s 610
+```
+
+### Shot 9 — Re-hook (30–34s) · Register A · ESTABLISHING · WIDE · HIGH
+Changes vs. previous: register switch back to the present; shot class and scale both change.
+
+```text
+documentary sports photography, a wide elevated view across a single club soccer pitch mid-morning, a goal net and corner flag anchoring the nearest end, a scattered line of kit bags along the painted touchline, a knot of children jogging a slow warm-up lap near the centre circle, high angle from the top of a low spectator bank, 24mm wide lens at f8, even focus holding the whole pitch sharp, flat bright overcast light with almost no shadow, cool green and grey palette under a pale sky, No Text. --ar 9:16 --raw --s 100
+```
+
+### Shot 10 — Payoff (34–40s) · Register A · DETAIL · MACRO · LOW
+Changes vs. previous: shot class, scale and height all change; the motif returns in its present-day form.
+
+```text
+documentary sports photography, extreme close-up of a small plastic watering can tipped against a row of potted marigolds beside a club soccer clubhouse doorway, water beading on a stack of folded team bibs just behind it, a corner flag leaning against the wall further back and slightly out of focus, low angle from just above the concrete step, 100mm macro lens at f2.8, razor focus on the spout and the falling water, soft flat midday light through a thin cloud layer, muted plastic-blue and marigold-orange palette, fine visible grain, No Text. --ar 9:16 --raw --s 95
+```
+
+### Shot 11 — Payoff/Loop (40–45s) · Register B · ARTIFACT · CLOSE · OVERHEAD
+Changes vs. previous: register switch to the source era; the motif closes the loop in its source-era form.
+
+```text
+luminous oil painting on aged linen, a terracotta watering vessel resting empty on a low stone courtyard wall, a scattering of olive leaves and a coiled length of cord beside it, faint dark water-staining still visible on the stone beneath the vessel's mouth, a single wax writing tablet propped just out of frame at the wall's edge, close overhead view looking straight down onto the wall, compressed flat composition with the vessel centred, cooling late-afternoon light pooling from the upper right, terracotta and pale stone and olive-green palette, thick impasto ridges along the vessel's rim, No Text. --ar 9:16 --s 540
+```
+```
+
+## 7. Step 5 — the i2v decision
+
+Running the decision table from `references/image-to-video.md` against each beat: every shot here
+is either an establishing/detail/artifact/figure frame that reads fully as a still, or a
+just-before-action beat (Shot 6) that deliberately sidesteps needing real motion in the first
+place (`references/visual-registers.md` §3's `ACTION-ADJACENT` class exists precisely to avoid the
+AI-video uncanny-valley problem `[C] (Nate Black, 9CCmMypN8PM)`). Nothing in this sheet needs a
+real animated clip — but the motif overflow originally planned for a coffee-Short i2v beat is kept
+here in updated form as a worked illustration of the i2v inheritance rule
+(`references/prompt-sheet-format.md` §8): if the watering vessel in Shot 11 were instead animated
+as it tips and settles, the i2v prompt would stay entirely in Register B's painterly vocabulary,
+inheriting the still's medium end to end:
+
+```
+I2V PROMPT — Shot 11 overflow (illustrative, not required by this sheet)
+
+Source still:        Shot 11 (terracotta watering vessel resting on a stone courtyard wall)
+Target tool:          Kling — start/end-frame keyframing suits a single continuous settling
+                      motion; Seedance's multi-shot strength isn't needed for one static object
+Start frame:          Shot 11 (as generated)
+End frame:            the same vessel tipped slightly further, a thin new trickle of water
+                      just beginning to darken the stone — produced by editing the Shot 11 still
+                      in an external image editor, not a second generation
+I2V prompt text:      the terracotta vessel on the stone wall tips slightly further, a thin
+                      trickle of water spilling and darkening the stone beneath the rim; slow,
+                      continuous motion, painterly light holding steady; in a single shot, no
+                      cuts; no subtitles and no music.
+```
+
+Register B's vocabulary-disjunction rule (`references/visual-registers.md` §2) governs this i2v
+prompt exactly as it governs the still: no camera/lens language, no `DSLR`, nothing that would pull
+the clip back toward Register A's photographic look.
+
+## 8. Step 6 — the cover decision
+
+The packaging direction (a stopped, disappointed present-day beat vs. an ancient claim that
+predates it) is already fully delivered by Shot 1's DETAIL still — a child's hands lacing a boot
+in the cold, tight and specific. Nothing about it calls for a separately staged cover shot, so:
+**Cover = Shot 1's still + `shorts-assembly`'s text overlay. No separate generation.**
+
+## 9. Step 7 — Gate A / Gate B / Gate C results
+
+- **Gate A** (`midjourney-prompting`'s syntax lint): pass — every flag block carries `--ar 9:16`,
+  the correct register-band `--s` value, `--raw` present only on Register A shots, and no stray
+  punctuation inside the parameter block.
+- **Gate B** (upstream visual-quality check): pass — no upstream quality flags applied to this
+  Short.
+- **Gate C** (`scripts/lint_prompt_sheet.py`): run against the sheet exactly as emitted above
+  (extracted verbatim into `tests/fixtures/worked_example_sheet.md`):
+
+```bash
+python scripts/lint_prompt_sheet.py tests/fixtures/worked_example_sheet.md
+```
+
+```
+Gate C: PASS — 11 shots, 0 findings.
+```
+
+This sheet did **not** pass on the first attempt at every single rule during drafting — five early
+prompts (Setup/WORLD, ACTION-ADJACENT, FIGURE, WORLD, and the closing ARTIFACT shots) needed one
+extra clause each to clear C12's 10-clause floor before Gate C reported clean. The fix in every
+case was adding one more concrete renderable detail to the prompt body — never touching the arc
+table, since the sequencing itself (register rhythm, scale/height spread, shot-class rotation) was
+correct from the table stage in §5 onward. That is the process working as designed
+(`references/visual-arc.md` §2): the table stayed fixed, only prompt density needed a second pass.
