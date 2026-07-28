@@ -170,6 +170,66 @@ async def test_disconnected_turn_is_marked_aborted_not_left_running(conn, projec
     assert updated_stage["status"] == StageStatus.READY.value
 
 
+@pytest.mark.asyncio
+async def test_aborted_turn_still_persists_session_id_captured_from_init_event(conn, project, monkeypatch, tmp_path):
+    """A disconnect must not throw away a session id the CLI already handed
+    back -- without it, the next attempt can't resume and re-pays for the
+    whole kickoff prompt (see turn_service.py's is_first_turn check)."""
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "session-1"},
+        {"type": "assistant", "message": {}},
+        {"type": "result", "result": "done", "is_error": False},
+    ]
+
+    async def _slow_gen(prompt, cwd, resume_session_id, **kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _slow_gen)
+
+    stage_def = STAGES[0]
+    agen = turn_service.run_stage_turn(
+        conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
+        project["project_id"], "abc-20260725-120000", stage_def, STAGES, "idea",
+    )
+    await agen.__anext__()  # consume only the init event, then simulate a dropped connection
+    await agen.aclose()
+
+    updated_stage = db.get_stage(conn, project["project_id"], "ideation")
+    assert updated_stage["claude_session_id"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_aborted_turn_persists_cost_when_a_result_event_was_captured(conn, project, monkeypatch, tmp_path):
+    """Rare but real: the disconnect can land after the CLI already sent its
+    `result` event (with the turn's cost) but before run_stage_turn finished
+    its own bookkeeping. That cost must not be thrown away."""
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "session-1"},
+        {"type": "result", "result": "done", "total_cost_usd": 0.42, "is_error": False},
+        {"type": "system", "subtype": "extra"},
+    ]
+
+    async def _slow_gen(prompt, cwd, resume_session_id, **kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _slow_gen)
+
+    stage_def = STAGES[0]
+    agen = turn_service.run_stage_turn(
+        conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
+        project["project_id"], "abc-20260725-120000", stage_def, STAGES, "idea",
+    )
+    await agen.__anext__()  # init
+    await agen.__anext__()  # result -- cost is now inside `collected`
+    await agen.aclose()      # disconnect happens after the result, before natural completion
+
+    turns = db.list_turns(conn, project["stage_row_id"])
+    assert turns[-1]["status"] == "aborted"
+    assert turns[-1]["cost_usd"] == 0.42
+
+
 CHAIN_STAGES = [
     StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02", depends_on=[]),
     StageDef(id="voiceover", skill="voiceover-brief", dir_prefix="03", depends_on=["scripting"]),

@@ -50,6 +50,28 @@ def test_scripting_template_references_input_file():
     assert "runs/x/01-ideation/artifact.v1.md" in prompt
 
 
+def test_voiceover_template_omits_grounding_block_when_none():
+    prompt = render_kickoff_prompt(TEMPLATES_DIR, "voiceover", {
+        "skill": "voiceover-brief",
+        "user_message": "",
+        "grounding_pointer": None,
+        "input_file": "runs/x/02-scripting/artifact.v1.md",
+        "raw_output_path": "runs/x/03-voiceover/raw_output.md",
+    })
+    assert "companion grounding artifact" not in prompt
+
+
+def test_voiceover_template_includes_grounding_block_when_present():
+    prompt = render_kickoff_prompt(TEMPLATES_DIR, "voiceover", {
+        "skill": "voiceover-brief",
+        "user_message": "",
+        "grounding_pointer": "rgs-briefs/2026-07-25-idea.md",
+        "input_file": "runs/x/02-scripting/artifact.v1.md",
+        "raw_output_path": "runs/x/03-voiceover/raw_output.md",
+    })
+    assert "rgs-briefs/2026-07-25-idea.md" in prompt
+
+
 def test_visual_template_includes_grounding_block_when_present():
     prompt = render_kickoff_prompt(TEMPLATES_DIR, "visual", {
         "skill": "visual-prompts",
@@ -59,6 +81,18 @@ def test_visual_template_includes_grounding_block_when_present():
         "raw_output_path": "runs/x/03-visual/raw_output.md",
     })
     assert "rgs-briefs/2026-07-25-idea.md" in prompt
+
+
+def test_visual_template_deliverable_names_i2v_and_cover_not_just_stills():
+    prompt = render_kickoff_prompt(TEMPLATES_DIR, "visual", {
+        "skill": "visual-prompts",
+        "user_message": "",
+        "grounding_pointer": None,
+        "input_file": "runs/x/02-scripting/artifact.v1.md",
+        "raw_output_path": "runs/x/03-visual/raw_output.md",
+    })
+    assert "i2v" in prompt.lower()
+    assert "cover" in prompt.lower()
 
 
 def test_grounding_template_has_no_input_file_reference():

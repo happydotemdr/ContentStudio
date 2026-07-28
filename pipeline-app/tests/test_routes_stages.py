@@ -37,15 +37,81 @@ def test_stage_page_shows_input_output_and_transcript(client):
 
     events_dir = stage_dir / "events"
     events_dir.mkdir()
-    (events_dir / "1.jsonl").write_text(
-        json.dumps({"type": "result", "result": "here is your concept brief"}) + "\n",
-        encoding="utf-8",
-    )
+    lines = [
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "here is your concept brief"},
+        ]}}),
+        json.dumps({"type": "result", "result": "here is your concept brief"}),
+    ]
+    (events_dir / "1.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     page = test_client.get(f"/projects/{project_id}/stages/ideation")
     assert page.status_code == 200
     assert "concept brief text" in page.text
     assert "here is your concept brief" in page.text
+
+
+def test_stage_page_transcript_shows_intermediate_assistant_and_tool_use_events(client):
+    """_load_transcript must not wait for the final `result` event -- a
+    reloaded page after an aborted turn should still show whatever the
+    assistant said/did before the connection dropped, not an empty panel."""
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    stage_dir = run_dir / "01-ideation"
+    events_dir = stage_dir / "events"
+    events_dir.mkdir(parents=True)
+    lines = [
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Reading the concept brief first."},
+        ]}}),
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "x.md"}},
+        ]}}),
+    ]
+    (events_dir / "1.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert "Reading the concept brief first." in page.text
+    # Not "Read" -- that word already appears in the text block above ("Reading
+    # the concept brief"), so a bare substring check would pass even if the
+    # tool_use branch were never implemented. "↪ Read" is what only the
+    # tool_use branch produces.
+    assert "↪ Read" in page.text
+
+
+def test_stage_page_transcript_does_not_duplicate_final_assistant_text(client):
+    """Task 4 added rendering of assistant-type events' text blocks but the
+    pre-existing `result` event was still being appended as a separate
+    transcript entry too -- and the final assistant event's text is
+    byte-identical to the result event's `result` string on a real recorded
+    turn, so the final answer rendered twice. The assistant text block(s)
+    already cover the result event's content; _load_transcript must not
+    append a second entry for it."""
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    stage_dir = run_dir / "01-ideation"
+    events_dir = stage_dir / "events"
+    events_dir.mkdir(parents=True)
+    lines = [
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "here is your concept brief"},
+        ]}}),
+        json.dumps({"type": "result", "result": "here is your concept brief"}),
+    ]
+    (events_dir / "1.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert page.text.count("here is your concept brief") == 1
 
 
 def test_stage_page_shows_grounding_output_via_pointer(client):
@@ -215,13 +281,21 @@ def test_stage_page_shows_grouped_parallel_pair_in_nav(tmp_path: Path, monkeypat
     # can never exercise grouping through the stage route — this test uses
     # its own pipeline.yaml specifically to cover that gap.
     monkeypatch.chdir(tmp_path)
+    (tmp_path / ".claude" / "skills" / "elevenlabs-audio").mkdir(parents=True)
+    (tmp_path / ".claude" / "skills" / "elevenlabs-audio" / "SKILL.md").write_text(
+        "---\nname: elevenlabs-audio\n---\n", encoding="utf-8",
+    )
+    (tmp_path / ".claude" / "skills" / "midjourney-prompting").mkdir(parents=True)
+    (tmp_path / ".claude" / "skills" / "midjourney-prompting" / "SKILL.md").write_text(
+        "---\nname: midjourney-prompting\n---\n", encoding="utf-8",
+    )
     (tmp_path / "pipeline.yaml").write_text(
         "stages:\n"
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n"
         "  - id: voiceover\n    skill: voiceover-brief\n    specialist: elevenlabs-audio\n"
-        "    dir_prefix: \"03\"\n    depends_on: [scripting]\n"
+        "    specialist_mode: manual\n    dir_prefix: \"03\"\n    depends_on: [scripting]\n"
         "  - id: visual\n    skill: visual-prompts\n    specialist: midjourney-prompting\n"
-        "    dir_prefix: \"03\"\n    depends_on: [scripting]\n",
+        "    specialist_mode: auto\n    dir_prefix: \"03\"\n    depends_on: [scripting]\n",
         encoding="utf-8",
     )
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
@@ -233,6 +307,8 @@ def test_stage_page_shows_grouped_parallel_pair_in_nav(tmp_path: Path, monkeypat
     assert page.status_code == 200
     assert "elevenlabs-audio" in page.text
     assert "midjourney-prompting" in page.text
+    assert "manual hand-off" in page.text
+    assert "auto-delegated" in page.text
     # scripting is its own step; voiceover+visual share dir_prefix "03" and
     # must render inside ONE grouped step, not two.
     assert page.text.count('class="pipeline-step"') == 2

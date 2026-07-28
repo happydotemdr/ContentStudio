@@ -122,7 +122,7 @@ Two things you still own at this step:
   jobs `[T]` — but the *sheet* should read as one Short. If two adjacent beats come back looking
   unrelated, that's a step-3 problem (wrong consistency situation), not a prompt-wording problem.
 
-### 6. Decide, per beat, whether a still suffices or the beat needs a real animated clip — and if so, write its i2v prompt
+### 5. Decide, per beat, whether a still suffices or the beat needs a real animated clip — and if so, write its i2v prompt
 
 This skill defaults to **stills** — the corpus's cited "AI slideshow" format (stills + slow pans,
 scenes changing every 1–5s) is cheap and currently performing well, per `faceless-pacing-rules.md`.
@@ -152,7 +152,7 @@ decision table in `references/image-to-video.md`:
 `shorts-assembly` still chooses how the rendered clip fits the edit and owns actually running the tool
 — but the prompt it receives should already be a complete, usable one, not a placeholder note.
 
-### 7. Decide the cover/thumbnail image
+### 6. Decide the cover/thumbnail image
 
 Read the packaging direction handed down from `shorts-ideation` (focal point, dominant emotion, what
 it shows). Two outcomes, and this skill must state which one applies rather than silently skip the
@@ -173,7 +173,7 @@ decision:
   prompt sheet: "Cover = Hook still + `shorts-assembly`'s text overlay, no separate generation." Don't
   leave the decision implicit — an unstated cover is indistinguishable from a forgotten one.
 
-### 8. Emit the prompt sheet
+### 7. Emit the prompt sheet
 
 Use this shape (see `references/worked-example.md` for a full run of a real beat table through it):
 
@@ -188,7 +188,7 @@ WHOLE-SHORT SETUP
   Notes:            [anything beat-specific that overrides the default]
 
 COVER / THUMBNAIL
-  [Dedicated prompt from midjourney-prompting — see step 7]
+  [Dedicated prompt from midjourney-prompting — see step 6]
   — or —
   Cover = Hook beat still #1 + shorts-assembly's text overlay. No separate generation.
 

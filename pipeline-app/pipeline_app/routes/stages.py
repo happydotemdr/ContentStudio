@@ -21,8 +21,17 @@ def _load_transcript(stage_dir):
             if not line.strip():
                 continue
             event = json.loads(line)
-            if event.get("type") == "result":
-                messages.append({"type": "assistant", "text": event.get("result", "")})
+            if event.get("type") == "assistant":
+                for block in event.get("message", {}).get("content", []) or []:
+                    if block.get("type") == "text" and block.get("text", "").strip():
+                        messages.append({"type": "assistant", "text": block["text"]})
+                    elif block.get("type") == "tool_use":
+                        messages.append({"type": "assistant", "text": f"↪ {block.get('name')}"})
+            # The final `result` event's `result` string is byte-identical to
+            # the last assistant text block on a real recorded turn (verified
+            # empirically) -- the assistant-text branch above already
+            # rendered it, so appending it again here would show the turn's
+            # final answer twice. No separate entry for `result` events.
     return messages
 
 

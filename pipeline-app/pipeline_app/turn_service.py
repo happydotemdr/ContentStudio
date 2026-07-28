@@ -167,6 +167,16 @@ async def run_stage_turn(
                 async for event in turn_stream:
                     collected.append(event)
                     f.write(json.dumps(event) + "\n")
+                    # Captured the moment it's known, not just on success --
+                    # an aborted turn (see except below) still resumes from
+                    # this session on the next attempt instead of re-paying
+                    # for the whole kickoff prompt.
+                    if (
+                        event.get("type") == "system"
+                        and event.get("subtype") == "init"
+                        and event.get("session_id")
+                    ):
+                        db_mod.update_stage_session(conn, stage_row["id"], event["session_id"])
                     yield event
     except BaseException:
         # Client disconnect (GeneratorExit) or any turn-time exception: the
@@ -188,7 +198,12 @@ async def run_stage_turn(
             StageStatus.AWAITING_REVIEW.value if latest is not None else StageStatus.READY.value
         )
         db_mod.update_stage_status(conn, stage_row["id"], new_status)
-        db_mod.update_turn(conn, turn_id, "aborted", _utcnow())
+        # extract_turn_result is safe to call on a partial `collected` -- it
+        # simply returns None fields for whatever never arrived. Covers the
+        # rare case where a `result` event (and its cost) was captured just
+        # before the disconnect, instead of always discarding it.
+        partial = cli_runner.extract_turn_result(collected)
+        db_mod.update_turn(conn, turn_id, "aborted", _utcnow(), partial.cost_usd)
         raise
 
     result = cli_runner.extract_turn_result(collected)
