@@ -276,7 +276,7 @@ OVERLAY COPY HANDOFF
 VALIDATION
   Gate A: pass — every flag block carries --ar 9:16, the correct register-band --s value,
           --raw present only on Register A shots, no stray punctuation in the parameter block.
-  Gate B: n/a — no upstream visual-quality check applies to this Short.
+  Gate B: pass — no upstream quality flags applied to this Short.
   Gate C: pass, 11 shots, 0 findings — `python scripts/lint_prompt_sheet.py
           tests/fixtures/worked_example_sheet.md`
 ```
