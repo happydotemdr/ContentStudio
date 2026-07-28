@@ -62,7 +62,7 @@ Every task's requirements implicitly include this section.
 - **No assets are generated.** This run ends at *ready to generate*. No images, no audio,
   no video, no rendered thumbnails, no ElevenLabs credits consumed.
 - **Where things live:** working scratch in `runs/rgs-debut-<ts>/` (git-ignored per
-  `.gitignore:20`); committed deliverables in `rgs-briefs/` (the git-tracked production
+  `.gitignore:14`); committed deliverables in `rgs-briefs/` (the git-tracked production
   ledger); raw transcripts in `output/rgs-reference/2026-07-28/` (git-ignored).
 - **Naming for committed artifacts:** `rgs-briefs/2026-07-28-<slug>-<stage>.md`, matching
   the existing `2026-07-25-let-kids-play-act-specialization-*` set.
@@ -135,23 +135,30 @@ report.
 - [ ] **Step 4: Create the run scaffold**
 
 ```bash
-cd /c/Projects/ContentStudio && RUN_DIR="runs/rgs-debut-$(date +%Y%m%d-%H%M%S)" && mkdir -p "$RUN_DIR"/{00-scan,06-validation} "$RUN_DIR"/short-{a,b}/{00-grounding,01-ideation,02-scripting,03-voiceover,03-visual,04-assembly,05-repurpose} output/rgs-reference/2026-07-28 && echo "$RUN_DIR" > "$RUN_DIR/../.rgs-debut-current" && echo "RUN_DIR=$RUN_DIR"
+cd /c/Projects/ContentStudio && RUN_DIR="runs/rgs-debut-$(date +%Y%m%d-%H%M%S)" && mkdir -p "$RUN_DIR"/{00-scan,06-validation} "$RUN_DIR"/short-{a,b}/{00-grounding,01-ideation,02-scripting,03-voiceover,03-visual,04-assembly,05-repurpose} output/rgs-reference/2026-07-28 && echo "RUN_DIR=$RUN_DIR"
 ```
 
-- [ ] **Step 5: Verify the scaffold and that nothing is stageable**
+Record the printed `RUN_DIR` value. Later tasks re-derive it with
+`find runs -maxdepth 1 -type d -name "rgs-debut-*" | sort | tail -1`.
+
+- [ ] **Step 5: Verify the scaffold creates nothing stageable**
 
 ```bash
-cd /c/Projects/ContentStudio && find runs -type d -name "rgs-debut-*" | head -1 && git status --porcelain
+cd /c/Projects/ContentStudio && find runs -maxdepth 1 -type d -name "rgs-debut-*" | sort | tail -1 && git status --porcelain | grep -E "^\?\? (runs/|output/)" && echo "LEAK: run paths are stageable" || echo "no run/output paths stageable — correct"
 ```
 
-Expected: the run directory path, and `git status --porcelain` prints **nothing** — both
-`runs/` and `output/` are ignored, so this task creates no commit. That is correct.
+Expected: the run directory path, then `no run/output paths stageable — correct`.
+
+**Do not assert a globally clean tree.** The repo legitimately carries unrelated untracked
+files (e.g. `docs/superpowers/plans/2026-07-27-pipeline-turn-resilience.md`). The only
+thing this step proves is that **this task's** paths are ignored, which they are — `runs/`
+is `.gitignore:14` and `output/` is `.gitignore:3`.
 
 **Acceptance check:**
 - `yt-dlp` reports a version and `youtube_transcript_api` imports.
 - A live YouTube metadata fetch succeeds.
 - The run scaffold exists with all 16 subdirectories.
-- `git status --porcelain` is empty.
+- No `runs/` or `output/` path appears in `git status --porcelain`.
 
 - [ ] **Step 6: No commit**
 
@@ -227,7 +234,7 @@ assert len({x['video_id'] for x in d})==10, 'duplicate video_id'
 for x in shorts: assert x['upload_date']>='20260429', f\"{x['video_id']} too old: {x['upload_date']}\"
 for x in d:
     for k in ('video_id','title','channel','url','views','upload_date','format','why_relevant'):
-        assert x.get(k) not in (None,''), f'{k} missing on {x.get(video_id, \"?\")}'
+        assert x.get(k) not in (None,''), f\"{k} missing on {x.get('video_id','?')}\"
 print('candidates.json OK')
 "
 ```
@@ -249,7 +256,15 @@ Expected: `candidates.json OK`.
 ### Task 3: Fetch the ten transcripts
 
 **Files:**
-- Create: `<scratchpad>/fetch_reference.py`
+- Create: `$SCRATCH/fetch_reference.py`, where `$SCRATCH` is this session's scratchpad
+  directory. Export it first — it is **not** set by the shell:
+
+```bash
+export SCRATCH="/c/Users/BKing/AppData/Local/Temp/claude/C--Projects-ContentStudio/db9c7698-3dde-420a-ab9f-be88a75f98bc/scratchpad" && mkdir -p "$SCRATCH" && echo "$SCRATCH"
+```
+
+  If executing in a different session, substitute that session's scratchpad path. The
+  script is throwaway and never committed.
 - Create: `output/rgs-reference/2026-07-28/<video_id>.md` × 10
 
 **Interfaces:**
@@ -353,8 +368,11 @@ if __name__ == "__main__":
 - [ ] **Step 2: Run it**
 
 ```bash
-cd /c/Projects/ContentStudio && ./.venv/Scripts/python.exe "$SCRATCHPAD/fetch_reference.py"
+cd /c/Projects/ContentStudio && ./.venv/Scripts/python.exe "$SCRATCH/fetch_reference.py"
 ```
+
+`$SCRATCH` must already be exported per this task's Files block. If it is empty, the
+command silently becomes `python.exe /fetch_reference.py` and fails with `No such file`.
 
 Expected: ten `wrote <id>.md` lines and `all transcripts fetched`.
 
@@ -602,18 +620,17 @@ citation without having opened that exact file is a failure, not a shortcut.
 
 ```bash
 cd /c/Projects/ContentStudio && ./.venv/Scripts/python.exe -c "
-import pathlib,re,sys
-p=pathlib.Path('rgs-briefs').glob('2026-07-28-*.md')
-p=[x for x in p if 'rgs-debut' not in x.name]
-assert p, 'no grounding brief found'
-t=p[0].read_text('utf-8')
+import pathlib
+p=pathlib.Path('rgs-briefs/2026-07-28-<slug-a>.md')
+assert p.exists(), f'{p} not found'
+t=p.read_text('utf-8')
 for k in ('date:','topic:','thinker:','concept:','research_codes:','archetype:','status:'):
     assert k in t, f'front-matter missing {k}'
 for h in ('## Pairing','## Hook','## Turn','## Payoff','## Reframe','## Verification record','## Handoff'):
     assert h in t, f'section missing {h}'
 assert '[THINKER:' in t and '[RESEARCH:' in t, 'citation markers missing'
 assert 'archetype: A1' in t, 'Short A must be archetype A1'
-print(f'{p[0].name} OK')
+print(f'{p.name} OK')
 "
 ```
 
@@ -673,21 +690,29 @@ exact passage and finding are present in this invocation. Check `edition:` again
 
 ```bash
 cd /c/Projects/ContentStudio && ./.venv/Scripts/python.exe -c "
-import pathlib
-ps=[x for x in pathlib.Path('rgs-briefs').glob('2026-07-28-*.md') if 'rgs-debut' not in x.name]
-assert len(ps)==2, f'expected 2 grounding briefs, got {len(ps)}'
-ts=[x.read_text('utf-8') for x in ps]
+import pathlib,re
+ps=[pathlib.Path('rgs-briefs/2026-07-28-<slug-a>.md'),
+    pathlib.Path('rgs-briefs/2026-07-28-<slug-b>.md')]
+for p in ps: assert p.exists(), f'{p} not found'
+ts=[p.read_text('utf-8') for p in ps]
 for t,p in zip(ts,ps):
     for k in ('date:','topic:','thinker:','concept:','research_codes:','archetype:','status:'):
         assert k in t, f'{p.name}: front-matter missing {k}'
     for h in ('## Pairing','## Hook','## Turn','## Payoff','## Reframe','## Verification record','## Handoff'):
         assert h in t, f'{p.name}: section missing {h}'
     assert '[THINKER:' in t and '[RESEARCH:' in t, f'{p.name}: citation markers missing'
-import re
-th=[re.search(r'^thinker:\s*(.+)$',t,re.M).group(1).strip() for t in ts]
+th=[]
+for t,p in zip(ts,ps):
+    m=re.search(r'^thinker:\s*(.+)$',t,re.M)
+    assert m, f'{p.name}: no thinker field'
+    th.append(m.group(1).strip().strip('\"'))
 assert th[0]!=th[1], f'both briefs use the same thinker: {th[0]}'
-arch=sorted(re.search(r'^archetype:\s*(\w+)',t,re.M).group(1) for t in ts)
-assert arch==['A1','A3'], f'expected A1 and A3, got {arch}'
+arch=[]
+for t,p in zip(ts,ps):
+    m=re.search(r'^archetype:\s*(\w+)',t,re.M)
+    assert m, f'{p.name}: no archetype field'
+    arch.append(m.group(1))
+assert sorted(arch)==['A1','A3'], f'expected A1 and A3, got {arch}'
 print(f'both briefs OK — thinkers: {th}')
 "
 ```
@@ -732,25 +757,36 @@ cd /c/Projects/ContentStudio && sed -n '/^# Visual brand kit/,/^---$/p' output/r
 ````markdown
 # RGS Shared Visual System — Debut Pair (locked 2026-07-28)
 
-Binds both debut Shorts. **Change the words, not the system.** [C] (brand visual block:
-consistency "turns your thumbnails into a brand")
+Binds both debut Shorts. **Change the words, not the system.** [T] (brand visual block,
+citing vidIQ and 1of10, verified 2026-07-20 — re-verify before relying on it)
+
+> **Marker discipline for this document.** The brand's visual block is sourced from
+> vidIQ / 1of10 / Spotter Studio blog posts dated 2026-07-20, **not** from the 420-video
+> corpus. Those lines are therefore `[T]`, never `[C]`. `[C]` here would be a false
+> citation — exactly the failure the anti-generic guarantee exists to prevent. Use `[I]`
+> for general craft and `[T-unverified]` for anything the brand doc itself flags as
+> unverified.
 
 ## What is shared (identical across both Shorts)
 
 - **Palette:** ground `#0E3B43`, accent `#F2A541`, type `#F7F3E8`, sparing `#C1543A`
   (reserved for "the system" framing — never for blame). 2–3 colors per image, max.
-  Text/ground contrast ≥4.5:1. [C]
-- **Type:** one bold sans-serif (DejaVu Sans Bold is the shipping face — the compositor
-  has no other font installed). ALL-CAPS only for the single accent word. ≥60pt at
-  1280×720. [C][T]
+  Text/ground contrast ≥4.5:1. [T]
+- **Type:** one bold sans-serif, two at most. ALL-CAPS only for the single accent word.
+  ≥60pt at 1280×720. [T]
+  (The brand doc's DejaVu Sans Bold note is scoped to FamilyBrain's Pi-side image
+  compositor and is **out of scope here** — this run emits Midjourney prompts and an edit
+  plan, nothing Pi-composited. Do not import it as a constraint.)
 - **Subject treatment — anonymous human presence:** cleats on a bench, a parent's shoulders
   on a sideline, hands gripping a fence, a silhouette against field lights. Never a host
-  face; never an empty frame. [C] (the brand's own resolution of the faceless-face tension)
+  face; never an empty frame. [I] (the brand's own resolution of the faceless-face tension —
+  neither cited source prescribes a substitute, so this is a brand judgment call, not a
+  sourced rule)
 - **Midjourney consistency mechanism:** [state the exact `--sref` strategy and seed
   discipline, per `.claude/skills/midjourney-prompting/`] [T]
 - **Caption/overlay treatment:** [one specification — position, weight, reveal timing]
 - **Thumbnail layout:** ground field; amber accent word; subject right of center; 3–5 words
-  of text left; rule of thirds; must read at 120px wide. [C]
+  of text left; rule of thirds; must read at 120px wide. [T]
 - **Safe zone:** text inside the middle ~60% vertically, clear of the bottom 25% and right
   15%. **UNVERIFIED** — no official YouTube safe-zone spec exists; third-party numbers
   conflict. Verify on a phone before committing a template. [T-unverified]
@@ -784,7 +820,13 @@ cd /c/Projects/ContentStudio && RUN_DIR=$(find runs -maxdepth 1 -type d -name "r
 
 **Acceptance check:**
 - All four hex values appear verbatim and match the brand definition.
-- Every normative line carries a marker; the safe-zone line is marked `[T-unverified]`.
+- Every normative line carries a marker, **and the marker is correct** — blog-sourced brand
+  facts are `[T]`, brand judgment calls are `[I]`, and nothing is marked `[C]` unless it
+  traces to a 420-video transcript with a `(Channel, video_id)` citation. Counting markers
+  is not enough; read each one.
+- The safe-zone line is marked `[T-unverified]`.
+- No FamilyBrain-scoped infrastructure fact (the Pi compositor, `braind`, DejaVu font
+  availability) has been imported as a constraint.
 - The two motif families are distinct and each traces to its brief's Handoff motif cue.
 - The still-pool numbering scheme and the ≈1.5× target are stated.
 
@@ -811,7 +853,9 @@ fallback on the angle pick and record alternates.
 - [ ] **Step 2: Enforce packaging-before-script**
 
 The brand's binding rule: **write the title and build the thumbnail concept first.** The
-concept brief must contain both, and an explicit go/no-go line. If the packaging is not
+concept brief must contain both, and the skill's own Validation block must record
+**Packaging-compellingness: pass/fail + why** (that block is the go/no-go — see
+`.claude/skills/shorts-ideation/SKILL.md` "## Validation"). If the packaging is not
 compelling, rework the concept — do not proceed to Task 10 with weak packaging.
 
 Package for the viewer who **stays**, not the viewer who clicks: YouTube's built-in A/B
@@ -832,7 +876,9 @@ t=p.read_text('utf-8')
 import re
 n=len(re.findall(r'\[(C|I|T|T-unverified)\]',t))
 assert n>=5, f'only {n} provenance markers — expected several'
-for w in ('bad parent','crush it','game-changer','the secret to','hack'):
+BANNED=('bad parent','ruining your kid','if you really cared','crush it',
+        'game-changer','game changer','the secret to','life hack',' hack ')
+for w in BANNED:
     assert w.lower() not in t.lower(), f'banned lexicon: {w}'
 print(f'concept brief OK — {n} markers')
 "
@@ -845,7 +891,8 @@ cd /c/Projects/ContentStudio && RUN_DIR=$(find runs -maxdepth 1 -type d -name "r
 ```
 
 **Acceptance check:**
-- A concrete title string and a thumbnail concept are both present, with a go/no-go line.
+- Title candidates and a thumbnail direction are present, and the Validation block records
+  Packaging-compellingness as pass/fail with a reason.
 - Thumbnail conforms to the locked layout and uses 3–5 words.
 - The angle traces to the grounding brief's pairing.
 - Every normative line carries a marker; no banned lexicon.
@@ -895,10 +942,15 @@ cliffhanger of dread.
 cd /c/Projects/ContentStudio && ./.venv/Scripts/python.exe -c "
 import pathlib,re
 t=pathlib.Path('rgs-briefs/2026-07-28-<slug-a>-script.md').read_text('utf-8')
-secs=re.findall(r'(\d+(?:\.\d+)?)\s*s\b',t)
-assert secs, 'no per-beat timings found'
+beats=re.findall(r'^\s*(?:[|#*-]\s*)?(Hook|Setup|Build|Payoff|Loop|CTA|Loop/?-?CTA)\b',t,re.M|re.I)
+assert len(set(b.lower() for b in beats))>=4, f'expected the full beat spine, found {beats}'
+secs=re.findall(r'(\d+(?:\.\d+)?)\s*(?:s|sec|seconds)\b',t)
+assert len(secs)>=len(set(b.lower() for b in beats)), f'{len(secs)} timing marks for {len(set(b.lower() for b in beats))} beats — not every beat is timed'
+assert re.search(r'total|runtime|duration',t,re.I), 'no stated total runtime'
 assert re.search(r'hook',t,re.I), 'no hook beat'
-for w in ('bad parent','crush it','game-changer','the secret to'):
+BANNED=('bad parent','ruining your kid','if you really cared','crush it',
+        'game-changer','game changer','the secret to','life hack',' hack ')
+for w in BANNED:
     assert w.lower() not in t.lower(), f'banned lexicon: {w}'
 n=len(re.findall(r'\[(C|I|T|T-unverified)\]',t))
 assert n>=5, f'only {n} provenance markers'
@@ -967,7 +1019,13 @@ for k in ('stability','similarity','style','speed','LUFS'):
     assert re.search(k,t,re.I), f'missing setting: {k}'
 assert '-14' in t or '−14' in t, 'missing -14 LUFS target'
 assert re.search(r'model',t,re.I), 'no model routing'
-assert '{' in t and '}' in t, 'no JSON payload block'
+import json
+pl=None
+for b in re.findall(r'(\{.*?\})\s*\`\`\`',t,re.S):
+    try: pl=json.loads(b); break
+    except Exception: continue
+assert pl is not None, 'no parseable JSON request payload in a fenced block'
+assert 'text' in pl or 'model_id' in pl, f'payload missing text/model_id: {list(pl)}'
 assert re.search(r'disclos',t,re.I), 'no AI disclosure line'
 n=len(re.findall(r'\[(C|I|T|T-unverified)\]',t))
 assert n>=5, f'only {n} markers'
@@ -1037,7 +1095,9 @@ t=pathlib.Path('rgs-briefs/2026-07-28-<slug-a>-visual-prompts.md').read_text('ut
 ids=sorted(set(re.findall(r'\bA-\d{2}\b',t)))
 assert len(ids)>=4, f'still pool too small: {ids}'
 assert 'Still pool index' in t, 'missing Still pool index section'
-assert '--' in t, 'no Midjourney parameter flags found'
+flags=set(re.findall(r'--(ar|sref|oref|sw|ow|v|s|style|stylize|draft|hd|no|chaos|seed|p)\b',t))
+assert 'ar' in flags, 'no --ar aspect flag — every Short still needs one'
+assert len(flags)>=3, f'only {sorted(flags)} MJ flags — expected an actual parameter stack'
 assert re.search(r'#0E3B43|teal-ink',t,re.I), 'palette not referenced'
 assert re.search(r'i2v|image-to-video|motion',t,re.I), 'no motion decision recorded'
 n=len(re.findall(r'\[(C|I|T|T-unverified)\]',t))
@@ -1098,7 +1158,7 @@ assert re.search(r'safe.?zone',t,re.I), 'no safe-zone spec'
 assert re.search(r'caption',t,re.I), 'no caption treatment'
 assert re.search(r'duck',t,re.I), 'no ducking spec'
 assert re.search(r'disclos',t,re.I), 'no AI disclosure placement'
-assert re.search(r'\$0|free',t,re.I) and re.search(r'paid',t,re.I), 'missing one of the two tool stacks'
+assert re.search(r'[\$]0|free|no-?cost',t,re.I) and re.search(r'paid',t,re.I), 'missing one of the two tool stacks'
 n=len(re.findall(r'\[(C|I|T|T-unverified)\]',t))
 assert n>=5, f'only {n} markers'
 print(f'assembly OK — {n} markers')
@@ -1155,10 +1215,16 @@ re-cut, no re-crop, no alternate aspect. This is the whole point of the constrai
 cd /c/Projects/ContentStudio && ./.venv/Scripts/python.exe -c "
 import pathlib,re
 t=pathlib.Path('rgs-briefs/2026-07-28-<slug-a>-social-repurpose.md').read_text('utf-8')
-for s in ('YouTube','TikTok','Instagram','Bluesky','Threads','X'):
-    assert re.search(rf'\b{s}\b',t), f'missing surface: {s}'
+secs=re.split(r'^#{2,4}\s+',t,flags=re.M)
+for s in ('YouTube','TikTok','Instagram','Bluesky','Threads',r'\bX\b'):
+    body=[x for x in secs if re.match(s if s.startswith(chr(92)) else rf'{s}\b',x)]
+    assert body, f'no dedicated section for surface: {s}'
+    words=len(body[0].split())
+    assert words>=15, f'surface {s} has only {words} words — names the platform but carries no real copy'
 assert re.search(r'identical export|same export|no re-?cut',t,re.I), 'asset-constraint statement missing'
-for w in ('bad parent','crush it','game-changer','the secret to'):
+BANNED=('bad parent','ruining your kid','if you really cared','crush it',
+        'game-changer','game changer','the secret to','life hack',' hack ')
+for w in BANNED:
     assert w.lower() not in t.lower(), f'banned lexicon: {w}'
 n=len(re.findall(r'\[(C|I|T|T-unverified)\]',t))
 assert n>=5, f'only {n} markers'
@@ -1201,7 +1267,8 @@ check, take the non-interactive fallback, record alternates.
 
 - [ ] **Step 2: Enforce packaging-before-script**
 
-Title and thumbnail concept first, with a go/no-go line. Package for the viewer who stays,
+Title candidates and thumbnail direction first, with the Validation block's
+Packaging-compellingness pass/fail recorded. Package for the viewer who stays,
 not the viewer who clicks. [T]
 
 - [ ] **Step 3: Conform to the locked system, in Short B's motif family**
@@ -1222,7 +1289,9 @@ import pathlib,re
 t=pathlib.Path('rgs-briefs/2026-07-28-<slug-b>-concept-brief.md').read_text('utf-8')
 n=len(re.findall(r'\[(C|I|T|T-unverified)\]',t))
 assert n>=5, f'only {n} markers'
-for w in ('bad parent','crush it','game-changer','the secret to','hack'):
+BANNED=('bad parent','ruining your kid','if you really cared','crush it',
+        'game-changer','game changer','the secret to','life hack',' hack ')
+for w in BANNED:
     assert w.lower() not in t.lower(), f'banned lexicon: {w}'
 assert re.search(r'distinct|differs from|non-?converg',t,re.I), 'no non-convergence statement vs Short A'
 print(f'concept brief B OK — {n} markers')
@@ -1236,7 +1305,7 @@ cd /c/Projects/ContentStudio && RUN_DIR=$(find runs -maxdepth 1 -type d -name "r
 ```
 
 **Acceptance check:**
-- Title string and thumbnail concept present, with a go/no-go line.
+- Title candidates and thumbnail direction present; Packaging-compellingness pass/fail recorded.
 - Thumbnail uses the locked layout but Short B's motif family.
 - An explicit statement of how B differs from A.
 - Markers present; no banned lexicon; villain is the system.
@@ -1286,7 +1355,9 @@ import pathlib,re
 t=pathlib.Path('rgs-briefs/2026-07-28-<slug-b>-script.md').read_text('utf-8')
 secs=re.findall(r'(\d+(?:\.\d+)?)\s*s\b',t)
 assert secs, 'no per-beat timings'
-for w in ('bad parent','crush it','game-changer','the secret to'):
+BANNED=('bad parent','ruining your kid','if you really cared','crush it',
+        'game-changer','game changer','the secret to','life hack',' hack ')
+for w in BANNED:
     assert w.lower() not in t.lower(), f'banned lexicon: {w}'
 n=len(re.findall(r'\[(C|I|T|T-unverified)\]',t))
 assert n>=5, f'only {n} markers'
@@ -1550,10 +1621,16 @@ of the parent reading it.
 cd /c/Projects/ContentStudio && ./.venv/Scripts/python.exe -c "
 import pathlib,re
 t=pathlib.Path('rgs-briefs/2026-07-28-<slug-b>-social-repurpose.md').read_text('utf-8')
-for s in ('YouTube','TikTok','Instagram','Bluesky','Threads','X'):
-    assert re.search(rf'\b{s}\b',t), f'missing surface: {s}'
+secs=re.split(r'^#{2,4}\s+',t,flags=re.M)
+for s in ('YouTube','TikTok','Instagram','Bluesky','Threads',r'\bX\b'):
+    body=[x for x in secs if re.match(s if s.startswith(chr(92)) else rf'{s}\b',x)]
+    assert body, f'no dedicated section for surface: {s}'
+    words=len(body[0].split())
+    assert words>=15, f'surface {s} has only {words} words — names the platform but carries no real copy'
 assert re.search(r'identical export|same export|no re-?cut',t,re.I), 'asset-constraint statement missing'
-for w in ('bad parent','crush it','game-changer','the secret to'):
+BANNED=('bad parent','ruining your kid','if you really cared','crush it',
+        'game-changer','game changer','the secret to','life hack',' hack ')
+for w in BANNED:
     assert w.lower() not in t.lower(), f'banned lexicon: {w}'
 n=len(re.findall(r'\[(C|I|T|T-unverified)\]',t))
 assert n>=5, f'only {n} markers'
@@ -1579,8 +1656,14 @@ cd /c/Projects/ContentStudio && RUN_DIR=$(find runs -maxdepth 1 -type d -name "r
 - Create: `<RUN_DIR>/06-validation/persona-<1|2|3>.md` (three files)
 
 **Interfaces:**
-- Consumes: all twelve committed Short artifacts.
-- Produces: three independent verdicts. Task 22 synthesizes them.
+- Consumes: **only** the eight audience-facing artifacts — both Shorts'
+  `-concept-brief.md`, `-script.md`, `-assembly.md`, and `-social-repurpose.md`. The
+  grounding briefs, reference scan, sparks, visual system, and prompt sheets are
+  deliberately withheld.
+- Produces: three independent verdicts in `persona-<n>.md`, synthesized by Task 22 into
+  the committed report (the spec's §4 called this `panel-report.md`; the committed
+  filename is `rgs-briefs/2026-07-28-rgs-debut-validation.md` — same artifact, named to
+  match the ledger convention).
 
 - [ ] **Step 1: Assemble the review packet**
 
@@ -1621,7 +1704,11 @@ Read the two YouTube Shorts packages below cold. For EACH Short, answer:
    rest is good.
 5. TRUST TEST — do the claims feel earned or asserted? Does anything read as a
    stranger claiming medical authority?
-6. The single change that would most improve it.
+6. LANGUAGE — does any phrase sound like a marketing guru or a scold? Quote it.
+   Specifically flag anything resembling: "bad parent," "you're ruining your kid,"
+   "if you really cared," "hack," "crush it," "game-changer," "the secret to," or a
+   headline that states an absolute about what you're doing wrong.
+7. The single change that would most improve it.
 
 Be blunt. A polite review is a useless review.
 
@@ -1772,11 +1859,23 @@ print('validation report OK')
 - [ ] **Step 7: Final inventory**
 
 ```bash
-cd /c/Projects/ContentStudio && ls rgs-briefs/2026-07-28-*.md && echo "--- count ---" && ls rgs-briefs/2026-07-28-*.md | wc -l && echo "--- clean tree? ---" && git status --porcelain
+cd /c/Projects/ContentStudio && ls rgs-briefs/2026-07-28-*.md && echo "--- count (expect 18) ---" && ls rgs-briefs/2026-07-28-*.md | wc -l && echo "--- anything of ours uncommitted? ---" && git status --porcelain -- rgs-briefs/ docs/ && echo "(nothing above = all committed)"
 ```
 
-Expected: 16 files (scan, sparks, visual system, validation, 2 grounding briefs, 2×6 stage
-artifacts minus the 2 counted as grounding = 16), and a clean tree.
+Expected **18** files:
+
+| Group | Count |
+|---|---|
+| Run-level: reference-scan, sparks, visual-system, validation | 4 |
+| Grounding briefs (A, B) | 2 |
+| Short A stage artifacts: concept-brief, script, voiceover-brief, visual-prompts, assembly, social-repurpose | 6 |
+| Short B stage artifacts (same six) | 6 |
+| **Total** | **18** |
+
+The grounding brief is a **seventh** per-Short file, not one of the six stage artifacts.
+
+`git status --porcelain -- rgs-briefs/ docs/` must print nothing. Do **not** assert a
+globally clean tree — the repo carries unrelated untracked files.
 
 **Acceptance check:**
 - Every blame-test failure from round 1 was fixed and re-validated.
@@ -1799,7 +1898,7 @@ asset economy → Task 8 (system lock), Task 12 (pool), Task 18 (REUSE/NEW enfor
 4 (spark convergence), Task 8 (motif divergence), Task 22 Step 4 (loop cap).
 
 **Known deviation from spec:** the spec's §4 says run artifacts are committed. They are
-not — `.gitignore:20` ignores `runs/`. The plan commits to `rgs-briefs/` instead and keeps
+not — `.gitignore:14` ignores `runs/`. The plan commits to `rgs-briefs/` instead and keeps
 `runs/` as scratch, matching the existing `2026-07-25-let-kids-play-act-specialization-*`
 artifact set.
 
@@ -1810,3 +1909,51 @@ document templates is content to be authored, not a plan gap.
 **ID consistency:** `A-NN` still IDs are created in Task 12 Step 5, read in Task 18 Step 1,
 enforced in Task 18 Step 6, and referenced in Task 19 Step 3. `RUN_DIR` is created in Task 1
 Step 4 and re-derived by the same `find … | sort | tail -1` idiom in every later task.
+
+## Adversarial review pass (2026-07-28)
+
+An independent Opus 5 review found and this plan fixed:
+
+**Blocking, would have halted execution:**
+- `$SCRATCHPAD` was undefined in Task 3 — bash expanded it to empty and the fetch failed.
+  Now exported explicitly in Task 3's Files block as `$SCRATCH`.
+- Tasks 1 and 22 asserted a globally clean `git status`, which can never hold — the repo
+  carries unrelated untracked files. Both now scope the check to their own paths.
+- Task 22's expected file count was 16; the correct count is **18** (the grounding brief is
+  a seventh per-Short file, not one of the six stage artifacts). Now shown as a table.
+- Tasks 6 and 7 globbed `2026-07-28-*.md`, which breaks the moment Task 9 writes its
+  artifact — fatal given Task 22's revision loop re-runs stages. Both now address the two
+  briefs by explicit filename.
+
+**Correctness, would have produced a bad deliverable:**
+- Task 8's template marked blog-sourced brand facts `[C]`. `[C]` means a 420-video
+  transcript citation; these trace to vidIQ/1of10/Spotter posts and are `[T]`, or `[I]`
+  where the brand made a judgment call. A marker-discipline note now heads that template,
+  and the acceptance check requires markers be *correct*, not merely present.
+- Task 8 imported "DejaVu Sans Bold is the shipping face" as binding. That is scoped to
+  FamilyBrain's Pi-side compositor and is irrelevant here — a firewall violation in spirit
+  and a false constraint in fact. Removed, with a note explaining why.
+- `re.search(r'\$0|free', …)` inside a double-quoted bash string collapsed to `$0|free`,
+  which can never match — verified empirically. Now `[\$]0|free|no-?cost`.
+- Three checks were theater and are now real: `'--' in t` → an actual MJ flag set requiring
+  `--ar`; `'{' in t and '}' in t` → `json.loads` of a fenced block requiring `text` or
+  `model_id`; one incidental "2s" → a per-beat count reconciled against the beat spine plus
+  a stated total runtime.
+- The six-surface check matched bare platform names, so `\bX\b` passed on any table cell —
+  the weakest check on the stage `social-repurpose/SKILL.md` records **zero** corpus
+  findings for. Now requires a dedicated section per surface carrying ≥15 words.
+- The banned-lexicon greps covered four of seven terms. Now a shared `BANNED` tuple, and
+  the persona prompt gained an explicit language question (spec §9.2's "Is banned lexicon
+  absent?", which had no home).
+- Task 2's assertion message raised `NameError` on the bare `video_id`, masking the real
+  failure. Quoted.
+
+**Verified sound and left alone:** every brand-definition quote in Global Constraints (four
+hex values, banned lexicon, contrast ratio, safe-zone framing, thumbnail layout, archetype
+definitions); the `rgs-grounding` section structure and its Handoff motif-cue line; the run
+folder prefixes against `pipeline.yaml`'s `dir_prefix` values; task ordering throughout — no
+consumer precedes its producer; `fetch_reference.py` against `youtube-transcript-api` ≥1.0.
+
+**Naming reconciliation:** the spec's §4 `06-validation/panel-report.md` is realized as
+`rgs-briefs/2026-07-28-rgs-debut-validation.md` — same artifact, named to the ledger
+convention. Noted in Task 21's Interfaces.
