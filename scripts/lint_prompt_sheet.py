@@ -184,3 +184,38 @@ def check_sequence(shots: list[Shot]) -> list[Finding]:
         )
 
     return findings
+
+
+MIN_REGISTER_A = 3
+MIN_REGISTER_B = 2
+MIN_ALTERNATIONS = 2
+
+
+def check_register_balance(shots: list[Shot]) -> list[Finding]:
+    """C6-C7: register quota and intercut rhythm."""
+    findings: list[Finding] = []
+
+    count_a = sum(1 for s in shots if s.register == "A")
+    count_b = sum(1 for s in shots if s.register == "B")
+    if count_a < MIN_REGISTER_A:
+        findings.append(
+            Finding("C6", None, f"{count_a} Register A shot(s); need >= {MIN_REGISTER_A}")
+        )
+    if count_b < MIN_REGISTER_B:
+        findings.append(
+            Finding("C6", None, f"{count_b} Register B shot(s); need >= {MIN_REGISTER_B}")
+        )
+
+    sequence = [s.register for s in shots if s.register != "PLATE"]
+    alternations = sum(1 for a, b in zip(sequence, sequence[1:]) if a != b)
+    if alternations < MIN_ALTERNATIONS:
+        findings.append(
+            Finding(
+                "C7",
+                None,
+                f"registers alternate {alternations} time(s); need >= {MIN_ALTERNATIONS}. "
+                "Bookending the source era at the open and close is not an intercut rhythm.",
+            )
+        )
+
+    return findings

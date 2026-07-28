@@ -13,6 +13,7 @@ from lint_prompt_sheet import (  # noqa: E402
     body_word_count,
     signature_objects,
     check_sequence,
+    check_register_balance,
 )
 
 SHEET = """\
@@ -192,3 +193,48 @@ def test_c5_flags_single_camera_height():
 
 def test_varied_sheet_passes_all_sequence_checks():
     assert check_sequence(VARIED) == []
+
+
+def test_c6_flags_too_few_register_b_shots():
+    shots = [
+        make_shot(1, "A", "DETAIL", "MACRO", "LOW"),
+        make_shot(2, "B", "WORLD", "XWIDE", "EYE"),
+        make_shot(3, "A", "ESTABLISHING", "WIDE", "HIGH"),
+        make_shot(4, "A", "HUMAN-COST", "MID", "LOW"),
+    ]
+    assert "C6" in codes(check_register_balance(shots))
+
+
+def test_c6_flags_too_few_register_a_shots():
+    shots = [
+        make_shot(1, "A", "DETAIL", "MACRO", "LOW"),
+        make_shot(2, "B", "WORLD", "XWIDE", "EYE"),
+        make_shot(3, "B", "FIGURE", "MID", "HIGH"),
+    ]
+    assert "C6" in codes(check_register_balance(shots))
+
+
+def test_c7_flags_bookended_registers():
+    shots = [
+        make_shot(1, "A", "DETAIL", "MACRO", "LOW"),
+        make_shot(2, "A", "ESTABLISHING", "WIDE", "EYE"),
+        make_shot(3, "B", "WORLD", "XWIDE", "HIGH"),
+        make_shot(4, "B", "FIGURE", "MID", "LOW"),
+    ]
+    findings = check_register_balance(shots)
+    assert "C7" in codes(findings)
+
+
+def test_c7_passes_when_registers_alternate_twice():
+    shots = [
+        make_shot(1, "A", "DETAIL", "MACRO", "LOW"),
+        make_shot(2, "B", "WORLD", "XWIDE", "EYE"),
+        make_shot(3, "A", "ESTABLISHING", "WIDE", "HIGH"),
+        make_shot(4, "B", "FIGURE", "MID", "LOW"),
+        make_shot(5, "A", "HUMAN-COST", "CLOSE", "LOW"),
+    ]
+    assert "C7" not in codes(check_register_balance(shots))
+
+
+def test_varied_sheet_passes_register_balance():
+    assert check_register_balance(VARIED) == []
