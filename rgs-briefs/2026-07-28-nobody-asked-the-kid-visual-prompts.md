@@ -205,7 +205,7 @@ a noun.
 - **Shot classes:** no two consecutive rows repeat one (C1). Register A visits all four of its
   classes; Register B visits all three of its. Nothing leans on a single class — and specifically
   the sheet is not built out of `HUMAN-COST` shots, which is the taxonomy's named failure mode.
-- **Register rhythm:** `A A B B A A B B A A B A A B A` — no run longer than 2 (C3), 9 alternations
+- **Register rhythm:** `A A B B A A B B A A B A A B A` — no run longer than 2 (C3), 8 alternations
   (C7 wants ≥2), 9 Register A and 6 Register B (C6 wants ≥3 and ≥2).
 - **The two script-binding constraints are satisfied at the table, not patched into prompts later:**
   the reframe rows (12, 13) carry **no parent figure and no child figure**, per the script's binding
