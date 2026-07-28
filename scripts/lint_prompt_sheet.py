@@ -8,8 +8,11 @@ Stdlib only. See docs/superpowers/specs/2026-07-28-dual-register-visual-system-d
 
 from __future__ import annotations
 
+import argparse
 import re
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 SHOT_HEADING_RE = re.compile(
     r"^###\s+Shot\s+(\d+)\s+—\s+(.+?)\s+·\s+Register\s+(A|B|PLATE)"
@@ -403,3 +406,43 @@ def check_format(shots: list[Shot]) -> list[Finding]:
             )
 
     return findings
+
+
+def lint(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
+    """Run every Gate C check, in check order."""
+    return [
+        *check_sequence(shots),
+        *check_register_balance(shots),
+        *check_world_lock(shots, world),
+        *check_prompt_quality(shots),
+        *check_format(shots),
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="lint_prompt_sheet",
+        description="Gate C — shot-variety lint for ContentStudio visual prompt sheets.",
+    )
+    parser.add_argument("sheet", type=Path, help="path to an emitted prompt sheet (.md)")
+    args = parser.parse_args(argv)
+
+    shots, world = parse_sheet(args.sheet.read_text(encoding="utf-8"))
+    if not shots:
+        print(f"Gate C: no shots parsed from {args.sheet}. Check the sheet format.")
+        return 2
+
+    findings = lint(shots, world)
+    if not findings:
+        print(f"Gate C: PASS — {len(shots)} shots, 0 findings.")
+        return 0
+
+    print(f"Gate C: FAIL — {len(shots)} shots, {len(findings)} finding(s).")
+    for finding in findings:
+        where = f"shot {finding.shot_index}" if finding.shot_index else "sheet"
+        print(f"  [{finding.check}] {where}: {finding.message}")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

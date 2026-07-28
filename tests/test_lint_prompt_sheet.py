@@ -17,6 +17,8 @@ from lint_prompt_sheet import (  # noqa: E402
     check_world_lock,
     check_prompt_quality,
     check_format,
+    lint,
+    main,
 )
 
 SHEET = """\
@@ -395,3 +397,42 @@ def test_c14_passes_correct_bands():
     b = make_shot(2, "B", "WORLD", "XWIDE", "EYE",
                   DENSE_A + ", No Text. --ar 9:16 --s 520")
     assert check_format([a, b]) == []
+
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+def lint_fixture(name):
+    shots, world = parse_sheet((FIXTURES / name).read_text(encoding="utf-8"))
+    return shots, lint(shots, world)
+
+
+def test_passing_fixture_parses_five_shots():
+    shots, _ = lint_fixture("passing_sheet.md")
+    assert len(shots) == 5
+
+
+def test_passing_fixture_is_clean():
+    _, findings = lint_fixture("passing_sheet.md")
+    assert findings == [], [f"{f.check}#{f.shot_index}: {f.message}" for f in findings]
+
+
+def test_failing_fixture_reproduces_the_original_defects():
+    _, findings = lint_fixture("failing_sheet.md")
+    found = codes(findings)
+    for expected in ["C1", "C2", "C3", "C6", "C7", "C9", "C11", "C12"]:
+        assert expected in found, f"{expected} not raised; got {found}"
+
+
+def test_main_returns_zero_for_a_clean_sheet():
+    assert main([str(FIXTURES / "passing_sheet.md")]) == 0
+
+
+def test_main_returns_one_for_a_failing_sheet():
+    assert main([str(FIXTURES / "failing_sheet.md")]) == 1
+
+
+def test_main_returns_two_when_no_shots_parse(tmp_path):
+    empty = tmp_path / "empty.md"
+    empty.write_text("nothing here", encoding="utf-8")
+    assert main([str(empty)]) == 2
