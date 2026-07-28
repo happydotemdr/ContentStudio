@@ -21,7 +21,13 @@ def _load_transcript(stage_dir):
             if not line.strip():
                 continue
             event = json.loads(line)
-            if event.get("type") == "result":
+            if event.get("type") == "assistant":
+                for block in event.get("message", {}).get("content", []) or []:
+                    if block.get("type") == "text" and block.get("text", "").strip():
+                        messages.append({"type": "assistant", "text": block["text"]})
+                    elif block.get("type") == "tool_use":
+                        messages.append({"type": "assistant", "text": f"↪ {block.get('name')}"})
+            elif event.get("type") == "result":
                 messages.append({"type": "assistant", "text": event.get("result", "")})
     return messages
 

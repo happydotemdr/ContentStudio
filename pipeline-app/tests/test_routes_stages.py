@@ -48,6 +48,39 @@ def test_stage_page_shows_input_output_and_transcript(client):
     assert "here is your concept brief" in page.text
 
 
+def test_stage_page_transcript_shows_intermediate_assistant_and_tool_use_events(client):
+    """_load_transcript must not wait for the final `result` event -- a
+    reloaded page after an aborted turn should still show whatever the
+    assistant said/did before the connection dropped, not an empty panel."""
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    stage_dir = run_dir / "01-ideation"
+    events_dir = stage_dir / "events"
+    events_dir.mkdir(parents=True)
+    lines = [
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Reading the concept brief first."},
+        ]}}),
+        json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "x.md"}},
+        ]}}),
+    ]
+    (events_dir / "1.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert "Reading the concept brief first." in page.text
+    # Not "Read" -- that word already appears in the text block above ("Reading
+    # the concept brief"), so a bare substring check would pass even if the
+    # tool_use branch were never implemented. "↪ Read" is what only the
+    # tool_use branch produces.
+    assert "↪ Read" in page.text
+
+
 def test_stage_page_shows_grounding_output_via_pointer(client):
     """Grounding writes its real output to rgs-briefs/, referenced by a
     pointer.yaml -- not artifact.v{N}.md like every other stage. The stage
