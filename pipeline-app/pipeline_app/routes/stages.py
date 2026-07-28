@@ -1,6 +1,7 @@
 import datetime
 import json
 
+import markdown
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
@@ -74,6 +75,7 @@ def stage_page(request: Request, project_id: int, stage_id: str):
             _, dep_body = artifacts.parse_frontmatter(up_latest.read_text(encoding="utf-8"))
             input_sections.append(f"## From {dep_id}\n\n{dep_body}")
     input_body = "\n\n---\n\n".join(input_sections) if input_sections else None
+    input_html = markdown.markdown(input_body) if input_body else None
 
     # Grounding is an optional RGS companion, not a formal `depends_on` --
     # the chat/turn_service path already hands it to the AI via
@@ -89,11 +91,13 @@ def stage_page(request: Request, project_id: int, stage_id: str):
             _, grounding_input_body = artifacts.parse_frontmatter(
                 grounding_path.read_text(encoding="utf-8")
             )
+    grounding_input_html = markdown.markdown(grounding_input_body) if grounding_input_body else None
 
     output_body = None
     latest = artifacts.resolve_latest_artifact(request.app.state.repo_root, stage_id, stage_dir)
     if latest is not None:
         _, output_body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+    output_html = markdown.markdown(output_body) if output_body else None
 
     transcript = _load_transcript(stage_dir)
     stage_rows = db_mod.list_stages(request.app.state.conn, project_id)
@@ -103,8 +107,9 @@ def stage_page(request: Request, project_id: int, stage_id: str):
         request, "stage.html",
         {
             "project": project, "stage_id": stage_id, "stage_status": stage_row["status"],
-            "input_body": input_body, "grounding_input_body": grounding_input_body,
-            "output_body": output_body,
+            "input_body": input_body, "input_html": input_html,
+            "grounding_input_body": grounding_input_body, "grounding_input_html": grounding_input_html,
+            "output_body": output_body, "output_html": output_html,
             "transcript": transcript, "nav": nav,
         },
     )
