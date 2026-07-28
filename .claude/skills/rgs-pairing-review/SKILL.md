@@ -49,6 +49,10 @@ Grep `rgs-briefs/*.md` for the literal heading `## Gap-fill flag` (see `rgs-grou
 `references/thinker-corpus-protocol.md`). Each match is a pairing `rgs-grounding` used outside
 the map — add it to this review pass as a candidate, even if its thinker/research slugs were
 already in the reviewed lists.
+Resolve each topic-slug to its **latest version only** before grepping — a superseded (older)
+version of a brief that already got its gap-fill flag reviewed must not be re-surfaced as if it
+were new. `scripts/resolve_brief_version.py --slug <topic-slug>` (no `--kind`) returns the
+current version's path for a given topic-slug.
 
 ### 4. Verify and draft, or reject with a reason
 
