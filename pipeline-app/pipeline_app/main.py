@@ -24,6 +24,7 @@ def create_app(repo_root: Path, db_path: Path) -> FastAPI:
     app.state.orphaned_count = preflight.reconcile_orphaned_turns(
         app.state.conn, app.state.repo_root, app.state.stage_defs
     )
+    app.state.cli_available = preflight.check_cli_available()["available"]
 
     app.state.templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")
