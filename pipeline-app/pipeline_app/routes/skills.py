@@ -29,7 +29,12 @@ def skill_list(request: Request):
     repo_root = request.app.state.repo_root
     skill_names = sorted(_discovered_skill_names(repo_root))
     return request.app.state.templates.TemplateResponse(
-        request, "skill_list.html", {"skill_names": skill_names}
+        request, "skill_list.html",
+        {
+            "skill_names": skill_names,
+            "active_nav": "skills",
+            "cli_available": request.app.state.cli_available,
+        },
     )
 
 
@@ -62,6 +67,8 @@ def skill_detail(request: Request, skill_name: str):
             "skill_name": skill_name,
             "skill_md_content": skill_md_content,
             "kickoff_template_content": kickoff_template_content,
+            "active_nav": "skills",
+            "cli_available": request.app.state.cli_available,
         },
     )
 

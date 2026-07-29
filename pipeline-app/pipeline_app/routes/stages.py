@@ -111,6 +111,8 @@ def stage_page(request: Request, project_id: int, stage_id: str):
             "grounding_input_body": grounding_input_body, "grounding_input_html": grounding_input_html,
             "output_body": output_body, "output_html": output_html,
             "transcript": transcript, "nav": nav,
+            "active_nav": "projects",
+            "cli_available": request.app.state.cli_available,
         },
     )
 

@@ -13,7 +13,12 @@ def list_projects(request: Request):
     conn = request.app.state.conn
     projects = db_mod.list_projects(conn)
     return request.app.state.templates.TemplateResponse(
-        request, "project_list.html", {"projects": projects}
+        request, "project_list.html",
+        {
+            "projects": projects,
+            "active_nav": "projects",
+            "cli_available": request.app.state.cli_available,
+        },
     )
 
 
@@ -40,5 +45,11 @@ def project_home(request: Request, project_id: int):
     stage_rows = db_mod.list_stages(conn, project_id)
     nav = build_stage_nav(request.app.state.stage_defs, stage_rows)
     return request.app.state.templates.TemplateResponse(
-        request, "project_home.html", {"project": project, "nav": nav}
+        request, "project_home.html",
+        {
+            "project": project,
+            "nav": nav,
+            "active_nav": "projects",
+            "cli_available": request.app.state.cli_available,
+        },
     )
