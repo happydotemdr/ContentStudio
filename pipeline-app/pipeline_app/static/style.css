@@ -119,6 +119,7 @@ th, td { text-align: left; padding: 0.25rem 0.75rem 0.25rem 0; vertical-align: t
 
 .app-shell { display: flex; gap: 2rem; align-items: flex-start; padding: 1.5rem 2rem; }
 .app-sidebar { flex: 0 0 260px; }
+.app-sidebar:not(:has(*)) { flex: 0 0 0; }
 .app-main { flex: 1 1 auto; min-width: 0; max-width: 1400px; }
 
 .site-header {

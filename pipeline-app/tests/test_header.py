@@ -57,3 +57,33 @@ def test_project_home_and_stage_page_mark_projects_active_with_breadcrumb(client
     resp = client.get(f"/projects/{project_id}")
     assert '<a href="/" class="active">Projects</a>' in resp.text
     assert 'class="breadcrumb"' not in resp.text  # no stage_id on the project-home page
+
+
+@pytest.fixture
+def client_with_stage(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    return TestClient(app), app
+
+
+def test_stage_page_shows_breadcrumb_with_run_id_and_stage_id(client_with_stage):
+    test_client, app = client_with_stage
+
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+
+    stage_resp = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert stage_resp.status_code == 200
+    assert 'class="breadcrumb"' in stage_resp.text
+    assert f"{project['run_id']} / ideation" in stage_resp.text
