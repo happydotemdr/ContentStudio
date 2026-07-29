@@ -107,8 +107,10 @@
   </script>
 </head>
 <body>
-  <header><a href="/">ContentStudio Pipeline</a></header>
-  {% block sidebar %}{% include "partials/sidebar.html" %}{% endblock %}
-  <main>{% block content %}{% endblock %}</main>
+  {% include "partials/header.html" %}
+  <div class="app-shell">
+    <aside class="app-sidebar">{% block sidebar %}{% include "partials/sidebar.html" %}{% endblock %}</aside>
+    <main class="app-main">{% block content %}{% endblock %}</main>
+  </div>
 </body>
 </html>
