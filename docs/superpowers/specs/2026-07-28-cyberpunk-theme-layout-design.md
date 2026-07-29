@@ -82,6 +82,12 @@ headings, nav, buttons, status pills, and the header wordmark switch to
 restraint principle already used by the corpus/skills docs in this repo:
 flavor on structural chrome, plain and legible on content.
 
+Base font size increases from the browser default (16px) to `18px` on `body`,
+for readability — the current UI has no explicit `font-size` anywhere, so
+this is a net-new baseline rather than an override. `pre`/code blocks get
+`1rem` (matching the new 18px base) instead of typically-smaller monospace
+defaults, so transcript/script output is easy to read at a glance.
+
 `pre` blocks (script/prompt output) get `background: var(--bg-panel)`,
 `border: 1px solid var(--border)`, `color: var(--text)` — dark-mode versions
 of what they already do, no new behavior.
