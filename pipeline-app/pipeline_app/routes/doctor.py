@@ -18,5 +18,7 @@ def doctor_page(request: Request):
             "cli": check_cli_available(),
             "skill_names": skill_names,
             "orphaned_count": getattr(request.app.state, "orphaned_count", 0),
+            "active_nav": "doctor",
+            "cli_available": request.app.state.cli_available,
         },
     )

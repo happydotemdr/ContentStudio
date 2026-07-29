@@ -32,3 +32,28 @@ def test_page_shell_wraps_sidebar_and_main(client: TestClient):
     assert 'class="app-shell"' in resp.text
     assert 'class="app-sidebar"' in resp.text
     assert 'class="app-main"' in resp.text
+
+
+def test_active_nav_marks_the_current_top_nav_link(client: TestClient):
+    resp = client.get("/")
+    assert '<a href="/" class="active">Projects</a>' in resp.text
+
+    resp = client.get("/skills")
+    assert '<a href="/skills" class="active">Skills</a>' in resp.text
+
+    resp = client.get("/doctor")
+    assert '<a href="/doctor" class="active">Doctor</a>' in resp.text
+
+    resp = client.get("/inspector")
+    assert '<a href="/inspector" class="active">Inspector</a>' in resp.text
+
+
+def test_project_home_and_stage_page_mark_projects_active_with_breadcrumb(client: TestClient):
+    client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    home = client.get("/")
+    import re
+    project_id = re.search(r'/projects/(\d+)', home.text).group(1)
+
+    resp = client.get(f"/projects/{project_id}")
+    assert '<a href="/" class="active">Projects</a>' in resp.text
+    assert 'class="breadcrumb"' not in resp.text  # no stage_id on the project-home page

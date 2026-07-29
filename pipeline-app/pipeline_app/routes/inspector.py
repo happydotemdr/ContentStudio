@@ -10,7 +10,10 @@ router = APIRouter()
 
 @router.get("/inspector")
 def inspector_form(request: Request):
-    return request.app.state.templates.TemplateResponse(request, "inspector.html", {})
+    return request.app.state.templates.TemplateResponse(
+        request, "inspector.html",
+        {"active_nav": "inspector", "cli_available": request.app.state.cli_available},
+    )
 
 
 @router.post("/inspector")
@@ -38,9 +41,18 @@ def inspector_inspect(request: Request, path: str = Form(...)):
             meta, body = artifacts.parse_frontmatter(text)
             return request.app.state.templates.TemplateResponse(
                 request, "inspector.html",
-                {"path": path, "frontmatter": meta, "body_html": markdown.markdown(body)},
+                {
+                    "path": path, "frontmatter": meta, "body_html": markdown.markdown(body),
+                    "active_nav": "inspector",
+                    "cli_available": request.app.state.cli_available,
+                },
             )
 
     return request.app.state.templates.TemplateResponse(
-        request, "inspector.html", {"path": path, "error": error}
+        request, "inspector.html",
+        {
+            "path": path, "error": error,
+            "active_nav": "inspector",
+            "cli_available": request.app.state.cli_available,
+        },
     )
