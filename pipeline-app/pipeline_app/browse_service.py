@@ -3,6 +3,7 @@
 Browse page. Pure logic only -- no FastAPI or Jinja imports here."""
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -93,25 +94,44 @@ def _is_md_name(name: str) -> bool:
     return name.lower().endswith(".md")
 
 
-def _has_md_below(folder: Path) -> bool:
+def _has_md_below(folder: Path, repo_root: Path) -> bool:
     try:
         with os.scandir(folder) as it:
             for entry in it:
                 if entry.is_symlink():
                     continue
+                if entry.is_file() and entry.name == "raw_output.md":
+                    # Must agree with list_children's exclusion below --
+                    # otherwise a stage folder containing only this file
+                    # would appear as an expandable folder that renders
+                    # empty when opened.
+                    continue
                 if entry.is_file() and _is_md_name(entry.name):
                     return True
-                if entry.is_dir() and _has_md_below(Path(entry.path)):
+                if entry.is_file() and entry.name == "pointer.yaml":
+                    if resolve_grounding_pointer(folder, repo_root) is not None:
+                        return True
+                if entry.is_dir() and _has_md_below(Path(entry.path), repo_root):
                     return True
     except OSError:
         # Can't even scan this folder (permission denied, removed mid-scan,
-        # etc.) -- treat it as contributing no visible .md file to its
+        # etc.) -- treat it as contributing no visible content to its
         # ancestor's listing. Defensive default, not a correctness claim.
         return False
     return False
 
 
-def list_children(folder: Path, root: Path) -> list["Entry"]:
+_ARTIFACT_VERSION_RE = re.compile(r"artifact\.v(\d+)\.md$", re.IGNORECASE)
+
+
+def _file_sort_key(entry: "Entry") -> tuple:
+    m = _ARTIFACT_VERSION_RE.match(entry.name)
+    if m:
+        return (0, int(m.group(1)), entry.name.lower())
+    return (1, 0, entry.name.lower())
+
+
+def list_children(folder: Path, root: Path, repo_root: Path) -> list["Entry"]:
     dirs: list[Entry] = []
     files: list[Entry] = []
     try:
@@ -122,16 +142,30 @@ def list_children(folder: Path, root: Path) -> list["Entry"]:
                 path = Path(entry.path)
                 rel_path = path.relative_to(root).as_posix()
                 if entry.is_dir():
-                    if _has_md_below(path):
+                    if _has_md_below(path, repo_root):
                         dirs.append(Entry(name=entry.name, rel_path=rel_path, is_dir=True))
-                elif entry.is_file() and _is_md_name(entry.name):
-                    files.append(Entry(name=entry.name, rel_path=rel_path, is_dir=False))
+                elif entry.is_file():
+                    if entry.name == "raw_output.md":
+                        # Pre-versioning scratch state, already captured in
+                        # the corresponding artifact.vN.md body -- showing
+                        # both is redundant clutter, not useful history.
+                        continue
+                    if _is_md_name(entry.name):
+                        files.append(Entry(name=entry.name, rel_path=rel_path, is_dir=False))
+                    elif entry.name == "pointer.yaml":
+                        target = resolve_grounding_pointer(folder, repo_root)
+                        if target is not None:
+                            files.append(Entry(
+                                name=f"current-brief.md ({target.name})",
+                                rel_path=rel_path,
+                                is_dir=False,
+                            ))
     except OSError as exc:
         # Unlike an empty folder, this must surface as an error rather than
         # silently returning [] -- to the caller those would look identical.
         raise FolderReadError(str(exc)) from exc
     dirs.sort(key=lambda e: e.name.lower())
-    files.sort(key=lambda e: e.name.lower())
+    files.sort(key=_file_sort_key)
     return dirs + files
 
 

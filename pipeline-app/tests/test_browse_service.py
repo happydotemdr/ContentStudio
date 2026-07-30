@@ -83,41 +83,41 @@ def _touch(path: Path, text: str = "content") -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def test_list_children_sorts_folders_then_files(root):
+def test_list_children_sorts_folders_then_files(root, tmp_path):
     _touch(root / "zeta.md")
     _touch(root / "alpha" / "notes.md")
     _touch(root / "beta.md")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert [e.name for e in entries] == ["alpha", "beta.md", "zeta.md"]
     assert [e.is_dir for e in entries] == [True, False, False]
 
 
-def test_list_children_excludes_folder_with_no_md_anywhere(root):
+def test_list_children_excludes_folder_with_no_md_anywhere(root, tmp_path):
     _touch(root / "transcripts" / "raw.txt")
     _touch(root / "thinkers" / "plato.md")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert [e.name for e in entries] == ["thinkers"]
 
 
-def test_list_children_hides_non_md_files(root):
+def test_list_children_hides_non_md_files(root, tmp_path):
     _touch(root / "notes.md")
     _touch(root / "raw.json")
     _touch(root / "clip.vtt")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert [e.name for e in entries] == ["notes.md"]
 
 
-def test_list_children_case_insensitive_md_suffix(root):
+def test_list_children_case_insensitive_md_suffix(root, tmp_path):
     _touch(root / "NOTES.MD")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert [e.name for e in entries] == ["NOTES.MD"]
 
 
-def test_list_children_rel_path_uses_forward_slashes(root):
+def test_list_children_rel_path_uses_forward_slashes(root, tmp_path):
     _touch(root / "thinkers" / "plato.md")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert entries[0].rel_path == "thinkers"
-    child_entries = browse_service.list_children(root / "thinkers", root)
+    child_entries = browse_service.list_children(root / "thinkers", root, tmp_path)
     assert child_entries[0].rel_path == "thinkers/plato.md"
 
 
@@ -128,7 +128,7 @@ def test_list_children_skips_symlinked_dir(root, tmp_path):
         (root / "link").symlink_to(real, target_is_directory=True)
     except OSError:
         pytest.skip("symlinks require admin rights / Developer Mode on this platform")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert entries == []
 
 
@@ -139,20 +139,20 @@ def test_list_children_skips_symlinked_file(root, tmp_path):
         (root / "link.md").symlink_to(real_file)
     except OSError:
         pytest.skip("symlinks require admin rights / Developer Mode on this platform")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert entries == []
 
 
-def test_list_children_scandir_oserror_raises_folder_read_error(root, monkeypatch):
+def test_list_children_scandir_oserror_raises_folder_read_error(root, tmp_path, monkeypatch):
     def _raise(*args, **kwargs):
         raise OSError("permission denied")
 
     monkeypatch.setattr(os, "scandir", _raise)
     with pytest.raises(browse_service.FolderReadError):
-        browse_service.list_children(root, root)
+        browse_service.list_children(root, root, tmp_path)
 
 
-def test_has_md_below_scandir_oserror_returns_false(root, monkeypatch):
+def test_has_md_below_scandir_oserror_returns_false(root, tmp_path, monkeypatch):
     subfolder = root / "sub"
     subfolder.mkdir()
     _touch(subfolder / "note.md")
@@ -165,10 +165,10 @@ def test_has_md_below_scandir_oserror_returns_false(root, monkeypatch):
         return real_scandir(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "scandir", _raise_for_subfolder)
-    assert browse_service._has_md_below(subfolder) is False
+    assert browse_service._has_md_below(subfolder, tmp_path) is False
     # And the unreadable subfolder is excluded from its parent's listing
     # rather than blowing up the whole scan.
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert entries == []
 
 
@@ -299,3 +299,83 @@ def test_resolve_grounding_pointer_rejects_traversal_outside_repo_root(tmp_path)
     pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
     grounding_service.write_pointer(pointer_dir, "../../../etc/passwd")
     assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
+
+
+def test_list_children_excludes_raw_output_md(root, tmp_path):
+    _touch(root / "01-ideation" / "artifact.v1.md")
+    _touch(root / "01-ideation" / "raw_output.md")
+    entries = browse_service.list_children(root / "01-ideation", root, tmp_path)
+    assert [e.name for e in entries] == ["artifact.v1.md"]
+
+
+def test_list_children_sorts_artifact_versions_numerically(root, tmp_path):
+    _touch(root / "stage" / "artifact.v2.md")
+    _touch(root / "stage" / "artifact.v10.md")
+    _touch(root / "stage" / "artifact.v1.md")
+    entries = browse_service.list_children(root / "stage", root, tmp_path)
+    assert [e.name for e in entries] == ["artifact.v1.md", "artifact.v2.md", "artifact.v10.md"]
+
+
+def test_has_md_below_true_when_valid_grounding_pointer_present(root, tmp_path):
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    (briefs_dir / "topic.md").write_text("# Brief", encoding="utf-8")
+    grounding_dir = root / "00-grounding"
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/topic.md")
+    assert browse_service._has_md_below(grounding_dir, tmp_path) is True
+
+
+def test_has_md_below_false_when_only_raw_output_md_present(root, tmp_path):
+    # _has_md_below and list_children must agree on raw_output.md: if
+    # list_children hides it but _has_md_below still counts it as content,
+    # a stage folder containing only raw_output.md would show up as an
+    # expandable folder that renders completely empty when opened.
+    stage_dir = root / "01-ideation"
+    _touch(stage_dir / "raw_output.md")
+    assert browse_service._has_md_below(stage_dir, tmp_path) is False
+    entries = browse_service.list_children(root, root, tmp_path)
+    assert entries == []
+
+
+def test_has_md_below_false_when_no_pointer_and_no_md(root, tmp_path):
+    grounding_dir = root / "00-grounding"
+    (grounding_dir / "events").mkdir(parents=True)
+    assert browse_service._has_md_below(grounding_dir, tmp_path) is False
+
+
+def test_has_md_below_false_when_pointer_target_missing(root, tmp_path):
+    grounding_dir = root / "00-grounding"
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md")
+    assert browse_service._has_md_below(grounding_dir, tmp_path) is False
+
+
+def test_list_children_includes_grounding_folder_when_pointer_valid(root, tmp_path):
+    # This is the parent-level survival check the Opus review caught as
+    # broken: without the _has_md_below fix, "00-grounding" never appears
+    # here at all, regardless of what list_children itself would do with it.
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    (briefs_dir / "topic.md").write_text("# Brief", encoding="utf-8")
+    grounding_service.write_pointer(root / "00-grounding", "rgs-briefs/topic.md")
+    entries = browse_service.list_children(root, root, tmp_path)
+    assert [e.name for e in entries] == ["00-grounding"]
+
+
+def test_list_children_synthesizes_current_brief_entry_for_pointer(root, tmp_path):
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    (briefs_dir / "2026-07-28-topic.md").write_text("# Brief", encoding="utf-8")
+    grounding_dir = root / "00-grounding"
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/2026-07-28-topic.md")
+    entries = browse_service.list_children(grounding_dir, root, tmp_path)
+    assert len(entries) == 1
+    assert entries[0].name == "current-brief.md (2026-07-28-topic.md)"
+    assert entries[0].rel_path == "00-grounding/pointer.yaml"
+    assert entries[0].is_dir is False
+
+
+def test_list_children_omits_pointer_entry_when_target_missing(root, tmp_path):
+    grounding_dir = root / "00-grounding"
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md")
+    entries = browse_service.list_children(grounding_dir, root, tmp_path)
+    assert entries == []

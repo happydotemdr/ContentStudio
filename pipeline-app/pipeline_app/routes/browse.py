@@ -15,7 +15,7 @@ def _folder_context(request: Request, rel_path: str) -> dict:
     if not folder.is_dir():
         return {"error": "Folder not found."}
     try:
-        return {"entries": browse_service.list_children(folder, root)}
+        return {"entries": browse_service.list_children(folder, root, request.app.state.repo_root)}
     except browse_service.FolderReadError as exc:
         return {"error": f"Could not read folder: {exc}"}
 
