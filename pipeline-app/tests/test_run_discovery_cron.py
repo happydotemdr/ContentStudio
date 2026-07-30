@@ -1,0 +1,75 @@
+from pathlib import Path
+
+import pytest
+
+from pipeline_app import db
+import run_discovery_cron as cron
+
+
+@pytest.fixture
+def repo_root(tmp_path: Path):
+    db_path = tmp_path / "pipeline-app" / "pipeline.db"
+    db_path.parent.mkdir(parents=True)
+    schema_path = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db.init_db(db_path, schema_path)
+    return tmp_path
+
+
+def test_scheduled_mode_skips_when_not_due(monkeypatch, repo_root):
+    monkeypatch.setattr(cron, "_is_due_now", lambda repo_root_arg: False)
+    called = {"n": 0}
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+    exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+    assert exit_code == 0
+    assert called["n"] == 0
+
+
+def test_scheduled_mode_runs_when_due(monkeypatch, repo_root):
+    monkeypatch.setattr(cron, "_is_due_now", lambda repo_root_arg: True)
+    calls = []
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: (calls.append(k), {"run_row_id": 1, "status": "completed"})[1])
+    exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+    assert exit_code == 0
+    assert calls[0]["trigger"] == "scheduled"
+    assert calls[0]["mode"] == "incremental"
+
+
+def test_incremental_mode_always_runs(monkeypatch, repo_root):
+    calls = []
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: (calls.append(k), {"run_row_id": 1, "status": "completed"})[1])
+    exit_code = cron.main(["--mode", "incremental", "--repo-root", str(repo_root)])
+    assert exit_code == 0
+    assert calls[0]["trigger"] == "manual"
+    assert calls[0]["mode"] == "incremental"
+
+
+def test_backfill_mode_requires_start_and_end(repo_root):
+    with pytest.raises(SystemExit):
+        cron.main(["--mode", "backfill", "--repo-root", str(repo_root)])
+
+
+def test_backfill_mode_passes_dates_through(monkeypatch, repo_root):
+    calls = []
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: (calls.append(k), {"run_row_id": 1, "status": "completed"})[1])
+    exit_code = cron.main([
+        "--mode", "backfill", "--backfill-start", "2026-06-01", "--backfill-end", "2026-06-30",
+        "--repo-root", str(repo_root),
+    ])
+    assert exit_code == 0
+    assert calls[0]["mode"] == "backfill"
+    assert calls[0]["backfill_start"] == "2026-06-01"
+    assert calls[0]["backfill_end"] == "2026-06-30"
+
+
+def test_validate_handle_mode_requires_handle_id(repo_root):
+    with pytest.raises(SystemExit):
+        cron.main(["--mode", "validate_handle", "--repo-root", str(repo_root)])
+
+
+def test_validate_handle_mode_passes_handle_id_through(monkeypatch, repo_root):
+    calls = []
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: (calls.append(k), {"run_row_id": 1, "status": "completed"})[1])
+    exit_code = cron.main(["--mode", "validate_handle", "--handle-id", "42", "--repo-root", str(repo_root)])
+    assert exit_code == 0
+    assert calls[0]["handle_id"] == 42
+    assert calls[0]["mode"] == "validate_handle"

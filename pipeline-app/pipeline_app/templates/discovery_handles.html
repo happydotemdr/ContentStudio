@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Discovery: Handles</h1>
+{% if handles %}
+<table>
+  <thead>
+    <tr><th>Platform</th><th>Handle</th><th>Display name</th><th>Cohort</th><th>Status</th><th>Included</th><th>Last seen</th></tr>
+  </thead>
+  <tbody>
+    {% for h in handles %}
+    <tr>
+      <td>{{ h.platform }}</td>
+      <td>{{ h.handle }}</td>
+      <td>{{ h.display_name or "" }}</td>
+      <td>{{ h.cohort }}</td>
+      <td><span class="status" data-handle-status="{{ h.id }}">{{ h.status }}</span></td>
+      <td>
+        <form method="post" action="/discovery/handles/{{ h.id }}/toggle">
+          <button type="submit">{{ "Exclude" if h.included else "Include" }}</button>
+        </form>
+      </td>
+      <td>{{ h.last_seen_published_at or "" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No handles yet.</p>
+{% endif %}
+
+<h2>Add handle</h2>
+<form method="post" action="/discovery/handles">
+  <select name="platform">
+    <option value="youtube">YouTube</option>
+    <option value="bluesky">Bluesky</option>
+  </select>
+  <input name="handle" placeholder="@handle or actor.bsky.social" required>
+  <input name="display_name" placeholder="Display name">
+  <input name="cohort" placeholder="cohort" list="cohort-suggestions" required>
+  <datalist id="cohort-suggestions">
+    {% for c in cohort_suggestions %}<option value="{{ c }}">{% endfor %}
+  </datalist>
+  <input name="keyword_filter" placeholder="keyword filter (optional)">
+  <button type="submit">Add handle</button>
+</form>
+
+<h2>Run now</h2>
+<form method="post" action="/discovery/run-now">
+  <button type="submit">Run Now (incremental)</button>
+</form>
+<form method="post" action="/discovery/run-now-backfill">
+  <input type="date" name="start" required>
+  <input type="date" name="end" required>
+  <button type="submit">Run Now (backfill)</button>
+</form>
+
+<h2>Schedule</h2>
+<p>Daily at {{ settings.time_of_day }} ({{ settings.timezone }})</p>
+<form method="post" action="/discovery/settings">
+  <input type="time" name="time_of_day" value="{{ settings.time_of_day }}" required>
+  <input name="timezone" value="{{ settings.timezone }}" required placeholder="e.g. America/Chicago">
+  <button type="submit">Update schedule</button>
+</form>
+
+<script>
+  document.querySelectorAll("[data-handle-status]").forEach((el) => {
+    const status = el.textContent.trim();
+    if (status !== "pending" && status !== "validating") return;
+    const handleId = el.dataset.handleStatus;
+    const poll = setInterval(async () => {
+      const res = await fetch(`/discovery/handles/${handleId}/status`);
+      const data = await res.json();
+      if (data.status !== "pending" && data.status !== "validating") {
+        clearInterval(poll);
+        window.location.reload();
+      }
+    }, 3000);
+  });
+</script>
+{% endblock %}
