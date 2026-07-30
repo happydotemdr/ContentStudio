@@ -53,3 +53,38 @@ def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _
             downloaded.append(result)
 
     return downloaded
+
+
+def process_handle_backfill(adapter: PlatformAdapter, repo_root: Path, handle_row, start_date: _dt.date, end_date: _dt.date) -> list[dict]:
+    handle = handle_row["handle"]
+    keyword_filter = handle_row["keyword_filter"]
+    on_disk = adapter.on_disk_ids(repo_root, handle)
+    enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
+    downloaded: list[dict] = []
+
+    for item in enumerated:
+        item_id = item["id"]
+        if item_id in on_disk:
+            continue
+        published = item.get("published") or adapter.peek_upload_date(item_id)
+        if published is None:
+            continue
+        pub_date = _dt.datetime.strptime(published, "%Y-%m-%d").date()
+        if pub_date < start_date or pub_date > end_date:
+            continue
+        result = adapter.download_item(repo_root, handle, item_id, item["title"])
+        if result.get("ok"):
+            downloaded.append(result)
+
+    return downloaded
+
+
+def process_handle_validate(adapter: PlatformAdapter, repo_root: Path, handle_row) -> dict:
+    handle = handle_row["handle"]
+    keyword_filter = handle_row["keyword_filter"]
+    enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
+    if not enumerated:
+        return {"ok": False, "item": None}
+    newest = enumerated[0]
+    result = adapter.download_item(repo_root, handle, newest["id"], newest["title"])
+    return {"ok": bool(result.get("ok")), "item": result if result.get("ok") else None}

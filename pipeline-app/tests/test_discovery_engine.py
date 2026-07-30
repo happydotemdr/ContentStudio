@@ -129,3 +129,48 @@ def test_keyword_filter_applied_before_the_walk():
         adapter, None, FakeHandleRow(handle="@bigthink", keyword_filter="Adam Grant"), now=NOW
     )
     assert [r["id"] for r in results] == ["v1"]
+
+
+from pipeline_app.discovery_engine import process_handle_backfill, process_handle_validate
+
+
+def test_backfill_downloads_only_items_in_range_and_not_on_disk():
+    enumerated = [
+        {"id": "v1", "title": "too new", "published": "2026-07-29"},
+        {"id": "v2", "title": "in range", "published": "2026-06-15"},
+        {"id": "v3", "title": "already on disk, in range", "published": "2026-06-10"},
+        {"id": "v4", "title": "too old", "published": "2026-01-01"},
+    ]
+    adapter = FakeAdapter(enumerated, on_disk={"v3"})
+    results = process_handle_backfill(
+        adapter, None, FakeHandleRow(handle="@a", keyword_filter=None),
+        start_date=_dt.date(2026, 6, 1), end_date=_dt.date(2026, 6, 30),
+    )
+    assert [r["id"] for r in results] == ["v2"]
+
+
+def test_backfill_uses_peek_when_published_missing():
+    enumerated = [{"id": "v1", "title": "x", "published": None}]
+    adapter = FakeAdapter(enumerated, on_disk=set(), dates={"v1": "2026-06-15"})
+    results = process_handle_backfill(
+        adapter, None, FakeHandleRow(handle="@a", keyword_filter=None),
+        start_date=_dt.date(2026, 6, 1), end_date=_dt.date(2026, 6, 30),
+    )
+    assert [r["id"] for r in results] == ["v1"]
+
+
+def test_validate_downloads_single_most_recent_item():
+    enumerated = [{"id": "v1", "title": "newest", "published": "2026-07-29"}]
+    adapter = FakeAdapter(enumerated, on_disk=set())
+    result = process_handle_validate(adapter, None, FakeHandleRow(handle="@new", keyword_filter=None))
+    assert result["ok"] is True
+    assert result["item"]["id"] == "v1"
+    assert adapter.downloaded_ids == ["v1"]
+
+
+def test_validate_reports_not_ok_when_enumeration_empty():
+    adapter = FakeAdapter(enumerated=[], on_disk=set())
+    result = process_handle_validate(adapter, None, FakeHandleRow(handle="@dead", keyword_filter=None))
+    assert result["ok"] is False
+    assert result["item"] is None
+    assert adapter.downloaded_ids == []
