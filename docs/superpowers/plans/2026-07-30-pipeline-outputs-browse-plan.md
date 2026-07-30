@@ -6,6 +6,8 @@
 
 **Architecture:** Generalize `browse_service.py`'s single hardcoded `output/` root into two named roots (`output`, `pipeline` → `runs/`). Extend the existing recursive folder scan (`list_children`/`_has_md_below`) to thread through a `repo_root` parameter, needed because the `grounding` stage's `pointer.yaml` resolves to a file outside `runs/` (in `rgs-briefs/`) and needs its own containment check. Add one new function, `list_pipeline_projects`, for the project-listing top level (filesystem-driven, DB-annotated with brand). Routes gain a `root` query param; templates render two tree sections sharing one viewer pane.
 
+**Deviation from the design spec, deliberate:** the spec's §6 described both tree sections as htmx-loaded on page open. This plan has `browse_root` compute both sections' top-level entries synchronously and render them inline instead — matching the app's *existing* pattern (today's single `output/` section is already rendered this way, not htmx-loaded) and avoiding two extra round trips on every page load for no benefit, since the data is cheap to compute server-side. Only folder-expand and file-open remain htmx-driven, exactly as today. Deeper tree levels are unaffected either way.
+
 **Tech Stack:** FastAPI, Jinja2, htmx, pytest, sqlite3 — all already in use, no new dependencies.
 
 **Working directory:** All file paths below are relative to `pipeline-app/` (e.g. `pipeline_app/browse_service.py` means `pipeline-app/pipeline_app/browse_service.py` from the repo root). Run tests from inside `pipeline-app/`: `pytest tests/ -v`.
@@ -137,12 +139,15 @@ def test_resolve_grounding_pointer_returns_none_when_target_missing(tmp_path):
 def test_resolve_grounding_pointer_rejects_path_outside_rgs_briefs(tmp_path):
     # A corrupted/hand-edited pointer.yaml pointing elsewhere under repo_root
     # (e.g. another project's runs/ folder) must not be followed, even
-    # though the resolved path is still technically "under repo_root".
+    # though the resolved path is still technically "under repo_root". The
+    # target here is repo-root-relative ("runs/other-run/secret.md"), same
+    # form pointer.yaml actually stores its values in -- not a "../" escape,
+    # which is a distinct case already covered by the traversal test below.
     secret = tmp_path / "runs" / "other-run" / "secret.md"
     secret.parent.mkdir(parents=True)
     secret.write_text("secret", encoding="utf-8")
     pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
-    grounding_service.write_pointer(pointer_dir, "../other-run/secret.md")
+    grounding_service.write_pointer(pointer_dir, "runs/other-run/secret.md")
     assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
 
 
@@ -207,6 +212,7 @@ This is the core fix for the bug the Opus review caught: `_has_md_below` current
 **Files:**
 - Modify: `pipeline_app/browse_service.py` (rewrite `_has_md_below` and `list_children`, add `_file_sort_key` and `_ARTIFACT_VERSION_RE`)
 - Modify: `tests/test_browse_service.py` (update existing call sites, add new tests)
+- Modify: `pipeline_app/routes/browse.py` (Step 7 only — minimal interim patch to the one `list_children` call site, so the app keeps working before Task 5's full rewrite)
 
 **Interfaces:**
 - Consumes: `resolve_grounding_pointer` (Task 2).
@@ -309,7 +315,7 @@ def test_has_md_below_scandir_oserror_returns_false(root, tmp_path, monkeypatch)
 - [ ] **Step 2: Run tests to verify they fail on the signature mismatch**
 
 Run: `pytest tests/test_browse_service.py -v`
-Expected: FAIL — `TypeError: list_children() missing 1 required positional argument: 'repo_root'` (and similarly for `_has_md_below`) across the tests just updated, since the implementation hasn't changed yet.
+Expected: FAIL — `TypeError: list_children() takes 2 positional arguments but 3 were given` (and similarly for `_has_md_below`) across the tests just updated, since the implementation hasn't changed yet.
 
 - [ ] **Step 3: Write the new failing tests for the added behavior**
 
@@ -338,6 +344,18 @@ def test_has_md_below_true_when_valid_grounding_pointer_present(root, tmp_path):
     grounding_dir = root / "00-grounding"
     grounding_service.write_pointer(grounding_dir, "rgs-briefs/topic.md")
     assert browse_service._has_md_below(grounding_dir, tmp_path) is True
+
+
+def test_has_md_below_false_when_only_raw_output_md_present(root, tmp_path):
+    # _has_md_below and list_children must agree on raw_output.md: if
+    # list_children hides it but _has_md_below still counts it as content,
+    # a stage folder containing only raw_output.md would show up as an
+    # expandable folder that renders completely empty when opened.
+    stage_dir = root / "01-ideation"
+    _touch(stage_dir / "raw_output.md")
+    assert browse_service._has_md_below(stage_dir, tmp_path) is False
+    entries = browse_service.list_children(root, root, tmp_path)
+    assert entries == []
 
 
 def test_has_md_below_false_when_no_pointer_and_no_md(root, tmp_path):
@@ -387,6 +405,7 @@ def test_list_children_omits_pointer_entry_when_target_missing(root, tmp_path):
 - [ ] **Step 4: Run new tests to verify they fail**
 
 Run: `pytest tests/test_browse_service.py -k "raw_output_md or numerically or grounding_pointer or grounding_folder or current_brief or pointer_entry" -v`
+Note: `test_has_md_below_false_when_only_raw_output_md_present` matches this filter (`raw_output_md`).
 Expected: FAIL (signature/behavior not implemented yet)
 
 - [ ] **Step 5: Implement**
@@ -405,6 +424,12 @@ def _has_md_below(folder: Path, repo_root: Path) -> bool:
         with os.scandir(folder) as it:
             for entry in it:
                 if entry.is_symlink():
+                    continue
+                if entry.is_file() and entry.name == "raw_output.md":
+                    # Must agree with list_children's exclusion below --
+                    # otherwise a stage folder containing only this file
+                    # would appear as an expandable folder that renders
+                    # empty when opened.
                     continue
                 if entry.is_file() and _is_md_name(entry.name):
                     return True
@@ -475,15 +500,41 @@ def list_children(folder: Path, root: Path, repo_root: Path) -> list["Entry"]:
     return dirs + files
 ```
 
-- [ ] **Step 6: Run all tests to verify they pass**
+- [ ] **Step 6: Run all `browse_service` tests to verify they pass**
 
 Run: `pytest tests/test_browse_service.py -v`
 Expected: PASS (all tests, including every pre-existing one updated in Step 1)
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Patch the one existing route call site so the app keeps working**
+
+`list_children`'s signature just changed from 2 args to 3, but `routes/browse.py`'s `_folder_context` (not yet rewritten — that's Task 5) still calls it with 2. Left as-is, every request to `/browse`, `/browse/tree`, or `/browse/file` would 500 between this commit and Task 5's. Patch just the one call site in `pipeline_app/routes/browse.py`'s `_folder_context` function:
+
+```python
+def _folder_context(request: Request, rel_path: str) -> dict:
+    root = browse_service.output_root(request.app.state.repo_root)
+    try:
+        folder = browse_service.resolve_under_output(root, rel_path)
+    except browse_service.PathSafetyError:
+        return {"error": "Invalid path."}
+    if not folder.is_dir():
+        return {"error": "Folder not found."}
+    try:
+        return {"entries": browse_service.list_children(folder, root, request.app.state.repo_root)}
+    except browse_service.FolderReadError as exc:
+        return {"error": f"Could not read folder: {exc}"}
+```
+
+(Only the `list_children(...)` call line actually changes — the rest of the function is unchanged. This whole function gets fully replaced again in Task 5 as part of adding the `root` query param; this is a minimal interim fix, not the final form.)
+
+- [ ] **Step 8: Run the route tests to confirm nothing broke**
+
+Run: `pytest tests/test_routes_browse.py -v`
+Expected: PASS — every existing `root=output`-default test still passes unchanged, confirming the interim patch didn't regress anything before Task 5 lands.
+
+- [ ] **Step 9: Commit**
 
 ```bash
-git add pipeline-app/pipeline_app/browse_service.py pipeline-app/tests/test_browse_service.py
+git add pipeline-app/pipeline_app/browse_service.py pipeline-app/pipeline_app/routes/browse.py pipeline-app/tests/test_browse_service.py
 git commit -m "fix(browse): thread repo_root through list_children/_has_md_below for grounding pointer support; exclude raw_output.md; fix artifact version sort"
 ```
 
@@ -561,6 +612,26 @@ def test_list_pipeline_projects_orphan_folder_sorted_by_parsed_timestamp(conn, t
     _touch(tmp_path / "runs" / "newer-20260728-120000" / "01-ideation" / "artifact.v1.md")
     entries = browse_service.list_pipeline_projects(conn, tmp_path)
     assert [e.rel_path for e in entries] == ["newer-20260728-120000", "older-20260701-090000"]
+
+
+def test_list_pipeline_projects_mixed_db_and_orphan_sort_by_real_chronology(conn, tmp_path):
+    # A naive string-sort comparing ISO created_at ("2026-...") against a
+    # compact orphan-fallback key ("2026...") would put every orphan above
+    # every DB-matched project regardless of actual date, since "-" sorts
+    # below "0" at the same string index. This must sort by real
+    # chronological value across both formats: db-matched (July 28) is
+    # newest, then the orphan (July 15), then db-matched (July 1) oldest.
+    _touch(tmp_path / "runs" / "db-newest-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "orphan-mid-20260715-120000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "db-oldest-20260701-090000" / "01-ideation" / "artifact.v1.md")
+    db_mod.create_project(conn, "db-newest-20260728-120000", "db-newest", "generic", "2026-07-28T12:00:00+00:00")
+    db_mod.create_project(conn, "db-oldest-20260701-090000", "db-oldest", "generic", "2026-07-01T09:00:00+00:00")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert [e.rel_path for e in entries] == [
+        "db-newest-20260728-120000",
+        "orphan-mid-20260715-120000",
+        "db-oldest-20260701-090000",
+    ]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -573,6 +644,8 @@ Expected: FAIL with `AttributeError: module 'pipeline_app.browse_service' has no
 Add to the import block in `pipeline_app/browse_service.py`:
 
 ```python
+from datetime import datetime, timezone
+
 from pipeline_app import db as db_mod
 ```
 
@@ -580,6 +653,17 @@ Add the function (anywhere after `runs_root`):
 
 ```python
 _RUN_ID_TIMESTAMP_RE = re.compile(r"-(\d{8}-\d{6})$")
+
+
+def _parse_created_at(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _parse_run_id_timestamp(name: str) -> datetime | None:
+    m = _RUN_ID_TIMESTAMP_RE.search(name)
+    if not m:
+        return None
+    return datetime.strptime(m.group(1), "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
 
 
 def list_pipeline_projects(conn, repo_root: Path) -> list["Entry"]:
@@ -602,13 +686,20 @@ def list_pipeline_projects(conn, repo_root: Path) -> list["Entry"]:
     except OSError as exc:
         raise FolderReadError(str(exc)) from exc
 
+    _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
     def sort_tuple(item: tuple[str, str | None, str | None]):
+        # DB created_at is ISO 8601 ("2026-07-28T12:00:00+00:00"); an
+        # orphan folder's fallback key is parsed from its run_id suffix
+        # ("20260728-120000"). These two string formats do NOT compare
+        # correctly against each other lexically (e.g. "2026-...": the
+        # "-" at index 4 sorts below the "0" a compact-format string has
+        # at the same index) -- both are parsed to real datetimes here so
+        # comparison is always by actual chronological value, never by
+        # incidental string shape.
         name, _brand, created_at = item
-        key = created_at
-        if not key:
-            m = _RUN_ID_TIMESTAMP_RE.search(name)
-            key = m.group(1) if m else None
-        return (key is not None, key or "", name.lower())
+        when = _parse_created_at(created_at) if created_at else _parse_run_id_timestamp(name)
+        return (when is not None, when or _EPOCH, name.lower())
 
     candidates.sort(key=sort_tuple, reverse=True)
     return [
@@ -624,7 +715,7 @@ def list_pipeline_projects(conn, repo_root: Path) -> list["Entry"]:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_browse_service.py -k list_pipeline_projects -v`
-Expected: PASS (6 tests)
+Expected: PASS (7 tests)
 
 - [ ] **Step 5: Run the full browse_service test suite**
 
@@ -828,6 +919,28 @@ def test_browse_file_pipeline_grounding_pointer_missing_target_shows_error(clien
     )
     assert resp.status_code == 200
     assert "Grounding pointer could not be resolved." in resp.text
+
+
+def test_browse_file_pipeline_grounding_pointer_outside_rgs_briefs_shows_error(client):
+    # End-to-end containment check: a pointer.yaml whose content resolves
+    # somewhere else under repo_root (not rgs-briefs/) must not be followed
+    # and must not leak that file's content into the viewer.
+    test_client, tmp_path = client
+    secret = tmp_path / "runs" / "other-run" / "secret.md"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("# Secret\n", encoding="utf-8")
+    from pipeline_app import grounding_service
+    grounding_service.write_pointer(
+        tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding",
+        "runs/other-run/secret.md",
+    )
+    resp = test_client.get(
+        "/browse/file",
+        params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding/pointer.yaml"},
+    )
+    assert resp.status_code == 200
+    assert "Grounding pointer could not be resolved." in resp.text
+    assert "Secret" not in resp.text
 
 
 def test_browse_file_unknown_root_returns_invalid_path(client):
@@ -1064,6 +1177,18 @@ git commit -m "feat(browse): render Pipeline Outputs and Corpus Docs as two tree
 ```
 
 ---
+
+## Revision history
+
+**2026-07-30, initial draft → Opus review → this revision.** A second Opus-model review (of the plan itself, after the earlier spec review) caught five issues, all fixed above:
+
+1. **Real sort bug in `list_pipeline_projects`:** DB `created_at` (ISO 8601) and the orphan-folder fallback key (compact `YYYYMMDD-HHMMSS`) were compared as raw strings — since `"-"` sorts below `"0"` at the same index, every orphan folder would sort above every DB-matched project regardless of actual date. Fixed by parsing both to real `datetime` objects before comparing (Task 4); added a mixed-format regression test that a homogeneous-data test can't catch.
+2. **Asymmetry between `_has_md_below` and `list_children` on `raw_output.md`:** `list_children` skipped it but `_has_md_below` still counted it as content, so a stage folder containing only `raw_output.md` would render as an expandable folder that opens empty. Fixed by skipping it in both (Task 3), with a test.
+3. **Misleading test:** `test_resolve_grounding_pointer_rejects_path_outside_rgs_briefs` used a `"../other-run/secret.md"` value, which is a traversal-outside-`repo_root` case already covered by a separate test, not an "elsewhere-under-repo_root" case. Fixed to use `"runs/other-run/secret.md"` (Task 2), and added the equivalent end-to-end route test (Task 5).
+4. **Broken intermediate commit:** Task 3 changed `list_children`'s signature but the not-yet-rewritten `routes/browse.py` (Task 5's job) still called it with the old arity — landing that commit alone would 500 every `/browse` request. Fixed by adding an interim one-line patch to the existing call site at the end of Task 3, verified by running `test_routes_browse.py` before committing (Task 3, Steps 7-8).
+5. **Missing end-to-end coverage:** the design spec's Testing section asked for the pointer containment-violation case to be covered at the route level, not just the service level. Added (Task 5).
+
+Also documented as a deliberate, declared deviation (not a defect): the design spec described both tree sections as htmx-loaded on page open; this plan renders them synchronously in the `/browse` route instead, matching the app's existing pattern for the current single `output/` section and avoiding two extra round trips for no benefit. See the Architecture note above.
 
 ## Self-Review Notes
 
