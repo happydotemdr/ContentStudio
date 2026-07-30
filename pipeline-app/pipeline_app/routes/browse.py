@@ -14,12 +14,17 @@ def _folder_context(request: Request, rel_path: str) -> dict:
         return {"error": "Invalid path."}
     if not folder.is_dir():
         return {"error": "Folder not found."}
-    return {"entries": browse_service.list_children(folder, root)}
+    try:
+        return {"entries": browse_service.list_children(folder, root)}
+    except browse_service.FolderReadError as exc:
+        return {"error": f"Could not read folder: {exc}"}
 
 
 @router.get("/browse")
 def browse_root(request: Request):
     context = _folder_context(request, "")
+    context["active_nav"] = "browse"
+    context["cli_available"] = request.app.state.cli_available
     return request.app.state.templates.TemplateResponse(request, "browse.html", context)
 
 

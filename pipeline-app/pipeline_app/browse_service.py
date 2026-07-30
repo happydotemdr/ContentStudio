@@ -18,6 +18,11 @@ class PathSafetyError(Exception):
     """Raised when a requested path would resolve outside output/."""
 
 
+class FolderReadError(Exception):
+    """Raised when a folder cannot be scanned (permission error, folder
+    removed between the route's existence check and the scan, etc.)."""
+
+
 def output_root(repo_root: Path) -> Path:
     return (repo_root / "output").resolve()
 
@@ -59,31 +64,42 @@ def _is_md_name(name: str) -> bool:
 
 
 def _has_md_below(folder: Path) -> bool:
-    with os.scandir(folder) as it:
-        for entry in it:
-            if entry.is_symlink():
-                continue
-            if entry.is_file() and _is_md_name(entry.name):
-                return True
-            if entry.is_dir() and _has_md_below(Path(entry.path)):
-                return True
+    try:
+        with os.scandir(folder) as it:
+            for entry in it:
+                if entry.is_symlink():
+                    continue
+                if entry.is_file() and _is_md_name(entry.name):
+                    return True
+                if entry.is_dir() and _has_md_below(Path(entry.path)):
+                    return True
+    except OSError:
+        # Can't even scan this folder (permission denied, removed mid-scan,
+        # etc.) -- treat it as contributing no visible .md file to its
+        # ancestor's listing. Defensive default, not a correctness claim.
+        return False
     return False
 
 
 def list_children(folder: Path, root: Path) -> list["Entry"]:
     dirs: list[Entry] = []
     files: list[Entry] = []
-    with os.scandir(folder) as it:
-        for entry in it:
-            if entry.is_symlink():
-                continue
-            path = Path(entry.path)
-            rel_path = path.relative_to(root).as_posix()
-            if entry.is_dir():
-                if _has_md_below(path):
-                    dirs.append(Entry(name=entry.name, rel_path=rel_path, is_dir=True))
-            elif entry.is_file() and _is_md_name(entry.name):
-                files.append(Entry(name=entry.name, rel_path=rel_path, is_dir=False))
+    try:
+        with os.scandir(folder) as it:
+            for entry in it:
+                if entry.is_symlink():
+                    continue
+                path = Path(entry.path)
+                rel_path = path.relative_to(root).as_posix()
+                if entry.is_dir():
+                    if _has_md_below(path):
+                        dirs.append(Entry(name=entry.name, rel_path=rel_path, is_dir=True))
+                elif entry.is_file() and _is_md_name(entry.name):
+                    files.append(Entry(name=entry.name, rel_path=rel_path, is_dir=False))
+    except OSError as exc:
+        # Unlike an empty folder, this must surface as an error rather than
+        # silently returning [] -- to the caller those would look identical.
+        raise FolderReadError(str(exc)) from exc
     dirs.sort(key=lambda e: e.name.lower())
     files.sort(key=lambda e: e.name.lower())
     return dirs + files

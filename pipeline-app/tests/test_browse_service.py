@@ -1,4 +1,5 @@
 # tests/test_browse_service.py
+import os
 from pathlib import Path
 
 import pytest
@@ -63,13 +64,15 @@ def test_resolve_under_output_rejects_sibling_prefix_escape(tmp_path):
     (tmp_path / "output-old").mkdir()
     (tmp_path / "output-old" / "secret.md").write_text("x", encoding="utf-8")
     root = browse_service.output_root(tmp_path)
-    # This is caught by the ".." segment rejection before the containment
-    # check even runs -- with that rejection in place, is_relative_to() is
-    # currently unreachable dead code for any input, kept only as
-    # defense-in-depth (e.g. if the ".." check is ever loosened). This test
-    # still matters: it's the concrete regression check that a naive
-    # str.startswith(str(root)) containment check (which "output-old" would
-    # wrongly pass, since it shares the "output" prefix) is never
+    # This particular input is caught by the ".." segment rejection before
+    # the containment check even runs -- but is_relative_to() is not truly
+    # dead code: a symlink nested inside output/ whose target resolves
+    # outside output/ has no ".." segment in the input path at all, yet
+    # .resolve() follows the symlink before the containment test runs, so
+    # is_relative_to() is exactly what catches that case. This test still
+    # matters on its own terms: it's the concrete regression check that a
+    # naive str.startswith(str(root)) containment check (which "output-old"
+    # would wrongly pass, since it shares the "output" prefix) is never
     # reintroduced here.
     with pytest.raises(browse_service.PathSafetyError):
         browse_service.resolve_under_output(root, "../output-old/secret.md")
@@ -136,6 +139,35 @@ def test_list_children_skips_symlinked_file(root, tmp_path):
         (root / "link.md").symlink_to(real_file)
     except OSError:
         pytest.skip("symlinks require admin rights / Developer Mode on this platform")
+    entries = browse_service.list_children(root, root)
+    assert entries == []
+
+
+def test_list_children_scandir_oserror_raises_folder_read_error(root, monkeypatch):
+    def _raise(*args, **kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(os, "scandir", _raise)
+    with pytest.raises(browse_service.FolderReadError):
+        browse_service.list_children(root, root)
+
+
+def test_has_md_below_scandir_oserror_returns_false(root, monkeypatch):
+    subfolder = root / "sub"
+    subfolder.mkdir()
+    _touch(subfolder / "note.md")
+
+    real_scandir = os.scandir
+
+    def _raise_for_subfolder(path, *args, **kwargs):
+        if Path(path) == subfolder:
+            raise OSError("permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", _raise_for_subfolder)
+    assert browse_service._has_md_below(subfolder) is False
+    # And the unreadable subfolder is excluded from its parent's listing
+    # rather than blowing up the whole scan.
     entries = browse_service.list_children(root, root)
     assert entries == []
 

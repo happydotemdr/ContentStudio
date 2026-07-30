@@ -81,6 +81,46 @@ def test_browse_nav_link_present(client):
     assert 'href="/browse"' in resp.text
 
 
+def test_browse_root_marks_nav_link_active(client):
+    test_client, _ = client
+    resp = test_client.get("/browse")
+    assert resp.status_code == 200
+    assert '<a href="/browse" class="active">Browse</a>' in resp.text
+
+
+def test_browse_root_cli_status_reflects_app_state_true(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / "output").mkdir()
+    monkeypatch.setattr(
+        "pipeline_app.preflight.check_cli_available",
+        lambda: {"available": True, "path": r"C:\fake\claude.CMD", "error": None},
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app)
+    resp = test_client.get("/browse")
+    assert resp.status_code == 200
+    assert 'class="status-dot online"' in resp.text
+    assert "SYSTEM ONLINE" in resp.text
+    assert "CLI UNAVAILABLE" not in resp.text
+
+
+def test_browse_root_cli_status_reflects_app_state_false(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / "output").mkdir()
+    monkeypatch.setattr(
+        "pipeline_app.preflight.check_cli_available",
+        lambda: {"available": False, "path": None, "error": "not found"},
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app)
+    resp = test_client.get("/browse")
+    assert resp.status_code == 200
+    assert 'class="status-dot offline"' in resp.text
+    assert "CLI UNAVAILABLE" in resp.text
+
+
 def test_browse_tree_nested_folder_returns_children(client):
     test_client, tmp_path = client
     _touch(tmp_path / "output" / "thinkers" / "anchorandwave" / "plato.md")
@@ -117,6 +157,19 @@ def test_browse_tree_sibling_prefix_folder_not_admitted(client):
     assert resp.status_code == 200
     assert "Invalid path." in resp.text
     assert "secret.md" not in resp.text
+
+
+def test_browse_tree_scandir_oserror_returns_error_not_500(client, monkeypatch):
+    test_client, tmp_path = client
+    (tmp_path / "output" / "thinkers").mkdir()
+
+    def _raise(*args, **kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("os.scandir", _raise)
+    resp = test_client.get("/browse/tree", params={"path": "thinkers"})
+    assert resp.status_code == 200
+    assert "Could not read folder:" in resp.text
 
 
 def test_browse_tree_missing_folder_returns_folder_not_found(client):
