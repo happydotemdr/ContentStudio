@@ -909,7 +909,10 @@ def test_handle_dir_youtube(tmp_path: Path):
 
 def test_handle_dir_bluesky(tmp_path: Path):
     result = handle_dir(tmp_path, "bluesky", "adamgrant.bsky.social")
-    assert result == tmp_path / "output" / "brand-intel" / "bluesky" / "adamgrant-bsky-social"
+    # slugify strips '.' entirely (not in \w, not whitespace, not '-') rather
+    # than replacing it with a hyphen -- "adamgrant.bsky.social" collapses to
+    # one run-on word. Verified against the actual regex, not assumed.
+    assert result == tmp_path / "output" / "brand-intel" / "bluesky" / "adamgrantbskysocial"
 
 
 def test_run_record_path(tmp_path: Path):
@@ -1247,7 +1250,14 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str) -> di
         "## description", "", description.strip() or "(none)", "",
         "## transcript", "", transcript.strip() or "(no transcript available)", "",
     ]
-    dest.write_text("\n".join(md), encoding="utf-8")
+    # Write to a temp path and rename into place (atomic on both POSIX and
+    # Windows via Path.replace) rather than writing dest directly -- an
+    # interrupted write (process killed mid-download) must never leave a
+    # truncated file at a path the next run's on_disk_ids() would treat as
+    # already-captured.
+    tmp_dest = dest.with_name(dest.name + ".tmp")
+    tmp_dest.write_text("\n".join(md), encoding="utf-8")
+    tmp_dest.replace(dest)
 
     for p in tmp_dir.glob(f"{video_id}*"):
         p.unlink(missing_ok=True)
@@ -1289,9 +1299,13 @@ git commit -m "feat(discovery): add YouTube platform adapter (enumerate/peek-dat
     `{"id": rkey, "title": text[:60], "published": "YYYY-MM-DD" | None}` — unlike YouTube, Bluesky's
     `getAuthorFeed` already carries a date per item, so `published` is populated directly
     (`peek_upload_date` is a no-op passthrough for this adapter — see Task 9's use of `item.get("published")`).
-  - `peek_upload_date(handle: str, item_id: str, title: str) -> str | None` — always returns `None`
-    (never called in practice since `enumerate_newest_first` already populates `published`; present
-    only to satisfy the shared `PlatformAdapter` shape).
+  - `peek_upload_date(item_id: str) -> str | None` — always returns `None`. Deliberately given the
+    *same single-argument signature* `discovery_engine.process_handle` actually calls
+    (`adapter.peek_upload_date(item_id)`, see Task 9) rather than a Bluesky-flavored
+    `(handle, item_id, title)` signature — `enumerate_newest_first` already populates `published`
+    for every item with a `createdAt`/`indexedAt`, so this is normally dead code, but matching the
+    real call site's arity means a Bluesky item that's somehow missing both timestamps degrades to
+    "treated as undated, skipped" instead of raising `TypeError` from an arity mismatch.
   - `download_item(repo_root: Path, handle: str, rkey: str, title: str) -> dict`
 
 - [ ] **Step 1: Write the failing tests**
@@ -1306,7 +1320,8 @@ from pipeline_app import discovery_bluesky as bsky
 
 
 def test_on_disk_ids_matches_bare_rkey_filename(tmp_path: Path):
-    handle_dir = tmp_path / "output" / "brand-intel" / "bluesky" / "adamgrant-bsky-social"
+    # Matches Task 6's slugify behavior: dots are stripped, not hyphenated.
+    handle_dir = tmp_path / "output" / "brand-intel" / "bluesky" / "adamgrantbskysocial"
     handle_dir.mkdir(parents=True)
     (handle_dir / "3abc123.md").write_text("x", encoding="utf-8")
     assert bsky.on_disk_ids(tmp_path, "adamgrant.bsky.social") == {"3abc123"}
@@ -1377,6 +1392,7 @@ download_brandintel.py's do_bluesky (that script stays unmodified)."""
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -1408,7 +1424,7 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None, page_limit: 
         if cursor:
             params["cursor"] = cursor
         try:
-            data = __import__("json").loads(_http_get(f"{BLUESKY_API}?{urllib.parse.urlencode(params)}"))
+            data = json.loads(_http_get(f"{BLUESKY_API}?{urllib.parse.urlencode(params)}"))
         except Exception:
             break
         feed = data.get("feed") or []
@@ -1435,8 +1451,8 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None, page_limit: 
     return items
 
 
-def peek_upload_date(handle: str, item_id: str, title: str) -> str | None:
-    return None  # never called: enumerate_newest_first always populates 'published'
+def peek_upload_date(item_id: str) -> str | None:
+    return None  # normally dead code: enumerate_newest_first always populates 'published'
 
 
 def download_item(repo_root: Path, handle: str, rkey: str, title: str) -> dict:
@@ -1458,7 +1474,11 @@ def download_item(repo_root: Path, handle: str, rkey: str, title: str) -> dict:
         f"- created: {published or ''}", f"- fetched_at: {fetched_at}", "",
         title or "(empty)", "",
     ]
-    dest.write_text("\n".join(md), encoding="utf-8")
+    # Write-temp-then-rename, same as discovery_youtube.download_item (Task 7)
+    # -- see that task's comment for why.
+    tmp_dest = dest.with_name(dest.name + ".tmp")
+    tmp_dest.write_text("\n".join(md), encoding="utf-8")
+    tmp_dest.replace(dest)
     return {"id": rkey, "ok": True, "published": published}
 ```
 
@@ -1702,13 +1722,13 @@ def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _
     return downloaded
 ```
 
-Note: `FakeAdapter.peek_upload_date` in the tests above takes only `video_id`, matching the
-YouTube adapter's real signature (Task 7); Bluesky's `peek_upload_date(handle, item_id, title)`
-(Task 8) is never actually invoked because Bluesky's `enumerate_newest_first` always populates
-`published` — `process_handle` calls `adapter.peek_upload_date(item_id)` positionally, so this
-works for both real adapters since Bluesky's version is unreachable dead code by construction, not
-because the signatures match exactly. (Both real adapters are wired in at Task 11 via a thin
-per-platform closure — see that task for exactly how the positional call is bridged.)
+Note: `FakeAdapter.peek_upload_date` in the tests above takes only `video_id`/`item_id`, matching
+both real adapters' actual signatures — Task 7's YouTube `peek_upload_date(video_id)` and Task 8's
+Bluesky `peek_upload_date(item_id)` are single-argument by design specifically so `process_handle`'s
+`adapter.peek_upload_date(item_id)` call works identically against either real adapter (Task 8's is
+normally unreachable since Bluesky always populates `published` at enumeration time, but matching
+arity means it degrades gracefully — "treated as undated" — rather than raising `TypeError` in the
+rare case it is reached).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -2066,7 +2086,14 @@ class SingleFakeAdapter:
         return self._enumerated.get(handle, [])
 
     def peek_upload_date(self, item_id):
-        return None
+        # Every test handle in this fixture is "brand new" (empty on_disk_ids
+        # by default), so process_handle's new-handle branch always needs a
+        # date to pass the 3-month cutoff check before it will call
+        # download_item at all -- return a fixed recent date rather than None,
+        # or every item gets silently skipped and no test here would ever
+        # observe a download. (Tests that care about the exact date-cutoff
+        # boundary use Task 9's own FakeAdapter with an explicit `dates` dict.)
+        return "2026-07-29"
 
     def download_item(self, repo_root, handle, item_id, title):
         return {"id": item_id, "ok": True, "published": "2026-07-29"}
@@ -2142,6 +2169,23 @@ def test_run_discovery_second_concurrent_call_is_locked(engine_conn, tmp_path):
     result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental")
     assert result["status"] == "locked"
     assert db.list_run_handle_results(engine_conn, result["run_row_id"]) == []
+    locked_row = db.get_run(engine_conn, result["run_row_id"])
+    assert locked_row["md_path"] is not None  # locked runs still get a paired record
+
+
+def test_run_discovery_reclaims_stale_run_and_writes_abandoned_record(engine_conn, tmp_path):
+    stale_started = "2026-07-30T05:00:00+00:00"
+    stale_id = db.insert_running_run(engine_conn, "stale-run", "manual", "incremental", stale_started)
+    db.update_run_heartbeat(engine_conn, stale_id, "2026-07-30T05:01:00+00:00")
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]})
+    now = __import__("datetime").datetime(2026, 7, 30, 6, 0, 0, tzinfo=__import__("datetime").timezone.utc)
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental", now=now)
+    assert result["status"] == "completed"  # the new run itself succeeds
+    stale_row = db.get_run(engine_conn, stale_id)
+    assert stale_row["status"] == "abandoned"
+    assert stale_row["md_path"] is not None
 
 
 def test_run_discovery_validate_handle_bypasses_lock_while_a_run_is_active(engine_conn, tmp_path):
@@ -2192,7 +2236,25 @@ def now_iso(now: _dt.datetime | None = None) -> str:
 
 
 def make_run_id(now: _dt.datetime) -> str:
-    return now.strftime("%Y-%m-%dT%H-%M-%S%z") or now.strftime("%Y-%m-%dT%H-%M-%S")
+    # Microsecond resolution, not just seconds: two processes can legitimately
+    # start in the same second (a manual "Run Now" fired moments after the
+    # scheduled trigger, or a validate_handle spawned alongside an
+    # incremental run), and run_id is UNIQUE -- a second-resolution id would
+    # raise an uncaught IntegrityError completely unrelated to the intended
+    # single-flight lock on status='running'.
+    return now.strftime("%Y-%m-%dT%H-%M-%S-%f%z")
+
+
+def _write_abandoned_records_for_reclaimed_runs(conn: sqlite3.Connection, repo_root: Path, reclaimed_ids: list[int], now: _dt.datetime) -> None:
+    for reclaimed_id in reclaimed_ids:
+        reclaimed_row = db_mod.get_run(conn, reclaimed_id)
+        finished_at = now_iso(now)
+        md_path = write_run_record(repo_root, {
+            "run_id": reclaimed_row["run_id"], "trigger": reclaimed_row["trigger"], "mode": reclaimed_row["mode"],
+            "status": "abandoned", "started_at": reclaimed_row["started_at"], "finished_at": finished_at,
+            "backfill_start": reclaimed_row["backfill_start"], "backfill_end": reclaimed_row["backfill_end"],
+        }, [])  # no handle_results: we don't know how far the dead process got
+        db_mod.finish_run(conn, reclaimed_id, "abandoned", finished_at, str(md_path))
 
 
 def _run_heartbeat_loop(conn: sqlite3.Connection, run_row_id: int, interval_s: float, stop_event: threading.Event) -> None:
@@ -2222,8 +2284,9 @@ def run_discovery(
     run_id = make_run_id(now)
 
     if mode == "validate_handle":
-        adapter = adapters[db_mod.get_handle(conn, handle_id)["platform"]]
         handle_row = db_mod.get_handle(conn, handle_id)
+        adapter = adapters[handle_row["platform"]]
+        db_mod.set_handle_status(conn, handle_id, "validating")
         outcome = process_handle_validate(adapter, repo_root, handle_row)
         finished_at = now_iso()
         if outcome["ok"]:
@@ -2253,12 +2316,24 @@ def run_discovery(
         return {"run_row_id": run_row_id, "status": status}
 
     # incremental / backfill: single-flight lock applies.
-    db_mod.reclaim_stale_runs(conn, now_iso(now), stale_after_s)
+    reclaimed_ids = db_mod.reclaim_stale_runs(conn, now_iso(now), stale_after_s)
+    _write_abandoned_records_for_reclaimed_runs(conn, repo_root, reclaimed_ids, now)
     try:
         run_row_id = db_mod.insert_running_run(conn, run_id, trigger, mode, started_at, backfill_start, backfill_end)
     except sqlite3.IntegrityError:
+        # A fresh run_id for the locked row -- reusing `run_id` here would
+        # collide with the very row that just won the lock (both share the
+        # same run_id UNIQUE constraint), raising a second, unrelated
+        # IntegrityError instead of cleanly recording "locked".
         finished_at = now_iso()
-        locked_id = db_mod.insert_locked_run(conn, run_id, trigger, mode, started_at, finished_at)
+        locked_run_id = make_run_id(_dt.datetime.now(_dt.timezone.utc))
+        locked_id = db_mod.insert_locked_run(conn, locked_run_id, trigger, mode, started_at, finished_at)
+        md_path = write_run_record(repo_root, {
+            "run_id": locked_run_id, "trigger": trigger, "mode": mode, "status": "locked",
+            "started_at": started_at, "finished_at": finished_at,
+            "backfill_start": backfill_start, "backfill_end": backfill_end,
+        }, [])
+        db_mod.finish_run(conn, locked_id, "locked", finished_at, str(md_path))
         return {"run_row_id": locked_id, "status": "locked"}
 
     stop_event = threading.Event()
@@ -2269,17 +2344,21 @@ def run_discovery(
 
     handle_results = []
     any_error = False
+    outer_crash: Exception | None = None
     try:
         handles = db_mod.list_handles(conn, included_only=True)
         for handle_row in handles:
             try:
                 downloaded = _process_one_handle(adapters, repo_root, handle_row, mode, backfill_start, backfill_end, now)
-                if downloaded:
-                    latest = max(d["published"] for d in downloaded if d.get("published"))
-                    db_mod.set_handle_last_seen(conn, handle_row["id"], latest)
-                    status = "ok"
-                else:
-                    status = "no_new_content"
+                # Not every downloaded item is guaranteed to carry a date (a
+                # YouTube item whose info.json write failed reports
+                # published=None) -- guard max() against an empty sequence
+                # rather than letting a fully-successful download raise
+                # ValueError and get mislabeled as a per-handle "error".
+                published_dates = [d["published"] for d in downloaded if d.get("published")]
+                if published_dates:
+                    db_mod.set_handle_last_seen(conn, handle_row["id"], max(published_dates))
+                status = "ok" if downloaded else "no_new_content"
                 db_mod.record_handle_result(conn, run_row_id, handle_row["id"], status, len(downloaded))
                 handle_results.append({
                     "handle": handle_row["handle"], "platform": handle_row["platform"],
@@ -2295,11 +2374,24 @@ def run_discovery(
                     "cohort": handle_row["cohort"], "status": "error", "items_downloaded": 0,
                     "last_seen_published_at": None, "error_message": str(exc),
                 })
+    except Exception as exc:  # noqa: BLE001 - a crash OUTSIDE the per-handle loop
+        # (e.g. db_mod.list_handles itself raising) -- distinct from any
+        # individual handle's error above. The run still gets a terminal
+        # status and a paired record with whatever partial handle_results
+        # were collected before the crash, per the spec's error-handling
+        # requirement, rather than leaving the row stuck at 'running' forever
+        # (that's what reclaim_stale_runs is for on a hard process kill; this
+        # branch is for a crash the process itself survives long enough to
+        # report).
+        outer_crash = exc
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=5)
 
-    final_status = "completed_with_errors" if any_error else "completed"
+    if outer_crash is not None:
+        final_status = "failed"
+    else:
+        final_status = "completed_with_errors" if any_error else "completed"
     finished_at = now_iso()
     md_path = write_run_record(repo_root, {
         "run_id": run_id, "trigger": trigger, "mode": mode, "status": final_status,
@@ -2307,7 +2399,7 @@ def run_discovery(
         "backfill_start": backfill_start, "backfill_end": backfill_end,
     }, handle_results)
     db_mod.finish_run(conn, run_row_id, final_status, finished_at, str(md_path))
-    if trigger == "scheduled":
+    if trigger == "scheduled" and final_status != "failed":
         db_mod.set_last_scheduled_run_date(conn, now.date().isoformat())
     return {"run_row_id": run_row_id, "status": final_status}
 ```
@@ -2392,6 +2484,17 @@ def test_due_again_next_day_after_time_of_day():
 Run: `cd pipeline-app && python -m pytest tests/test_discovery_scheduling.py -v`
 Expected: FAIL — module doesn't exist. (`America/Chicago` is UTC-5 during the tests' July/August
 dates because CDT is in effect; verify with `python -c "import zoneinfo,datetime; print(datetime.datetime(2026,7,30,tzinfo=zoneinfo.ZoneInfo('America/Chicago')))"` if the offset in a test comment ever looks wrong.)
+
+**Before Step 3**, add `tzdata` to `pipeline-app/requirements.txt` (append after the `youtube-transcript-api>=1.0`
+line added in Task 7):
+
+```
+tzdata>=2024.1
+```
+
+Windows does not ship the IANA timezone database the way Linux/macOS do — stdlib `zoneinfo` has no
+data to load on a bare Windows Python install, and `ZoneInfo("America/Chicago")` raises
+`ZoneInfoNotFoundError` without this package. Install it now: `cd pipeline-app && pip install -r requirements.txt`.
 
 - [ ] **Step 3: Implement**
 
@@ -2570,17 +2673,12 @@ def build_adapters():
     return {"youtube": discovery_youtube, "bluesky": discovery_bluesky}
 
 
-def _is_due_now(repo_root: Path) -> bool:
-    db_path = repo_root / "pipeline-app" / "pipeline.db"
-    conn = db.get_connection(db_path)
-    try:
-        settings = db.get_settings(conn)
-        return is_due(
-            _dt.datetime.now(_dt.timezone.utc), settings["timezone"],
-            settings["time_of_day"], settings["last_scheduled_run_date"],
-        )
-    finally:
-        conn.close()
+def _is_due_now(conn) -> bool:
+    settings = db.get_settings(conn)
+    return is_due(
+        _dt.datetime.now(_dt.timezone.utc), settings["timezone"],
+        settings["time_of_day"], settings["last_scheduled_run_date"],
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2599,22 +2697,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "validate_handle" and args.handle_id is None:
         ap.error("--mode validate_handle requires --handle-id")
 
-    if args.mode == "scheduled":
-        if not _is_due_now(repo_root):
-            return 0
-        trigger, mode = "scheduled", "incremental"
-    elif args.mode == "incremental":
-        trigger, mode = "manual", "incremental"
-    elif args.mode == "backfill":
-        trigger, mode = "manual", "backfill"
-    else:
-        trigger, mode = "manual", "validate_handle"
-
+    # Schema init happens BEFORE any due-check or run attempt -- on the very
+    # first-ever scheduled wake (no pipeline.db yet), sqlite3.connect silently
+    # creates an empty file, and db.get_settings against a table-less DB
+    # raises OperationalError. init_db is idempotent (Task 1's IF NOT EXISTS
+    # everywhere), so running it on every invocation, scheduled or not, is
+    # always safe.
     db_path = repo_root / "pipeline-app" / "pipeline.db"
     schema_path = HERE / "pipeline_app" / "schema.sql"
     db.init_db(db_path, schema_path)
     conn = db.get_connection(db_path)
     try:
+        if args.mode == "scheduled":
+            if not _is_due_now(conn):
+                return 0
+            trigger, mode = "scheduled", "incremental"
+        elif args.mode == "incremental":
+            trigger, mode = "manual", "incremental"
+        elif args.mode == "backfill":
+            trigger, mode = "manual", "backfill"
+        else:
+            trigger, mode = "manual", "validate_handle"
+
         result = run_discovery(
             conn, repo_root, build_adapters(), trigger=trigger, mode=mode,
             backfill_start=args.backfill_start, backfill_end=args.backfill_end,
@@ -2735,14 +2839,21 @@ def test_handle_status_endpoint_returns_json(client: TestClient, monkeypatch):
     client.post("/discovery/handles", data={
         "platform": "youtube", "handle": "@a", "display_name": "A", "cohort": "guru", "keyword_filter": "",
     })
-    from pipeline_app import db as db_mod
-    conn = db_mod.get_connection.__wrapped__ if hasattr(db_mod.get_connection, "__wrapped__") else None
     listing = client.get("/discovery/handles")
     import re
     handle_id = re.search(r'/discovery/handles/(\d+)/toggle', listing.text).group(1)
     response = client.get(f"/discovery/handles/{handle_id}/status")
     assert response.status_code == 200
     assert response.json()["status"] in ("pending", "validating", "validated", "invalid")
+
+
+def test_add_duplicate_handle_returns_400_not_500(client: TestClient, monkeypatch):
+    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", lambda *a, **k: type("P", (), {"pid": 1})())
+    data = {"platform": "youtube", "handle": "@a", "display_name": "A", "cohort": "guru", "keyword_filter": ""}
+    first = client.post("/discovery/handles", data=data)
+    assert first.status_code in (200, 303, 307)
+    second = client.post("/discovery/handles", data=data)
+    assert second.status_code == 400
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -2761,7 +2872,7 @@ import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 from pipeline_app import db as db_mod
 
@@ -2798,6 +2909,8 @@ def add_handle(
 ):
     conn = request.app.state.conn
     repo_root = request.app.state.repo_root
+    if db_mod.get_handle_by_platform_and_handle(conn, platform, handle) is not None:
+        return PlainTextResponse(f"handle already exists: {platform}/{handle}", status_code=400)
     added_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     handle_id = db_mod.create_handle(
         conn, platform, handle, display_name or None, cohort, keyword_filter or None, added_at,
@@ -2925,19 +3038,25 @@ git commit -m "feat(discovery): add handle roster page with add/validate/include
 
 ---
 
-## Task 16: `routes/discovery.py` — Run Now / Run Now (backfill)
+## Task 16: `routes/discovery.py` — Run Now / Run Now (backfill) / schedule settings
 
 **Files:**
 - Modify: `pipeline-app/pipeline_app/routes/discovery.py` (append routes)
-- Modify: `pipeline-app/pipeline_app/templates/discovery_handles.html` (add Run Now controls)
+- Modify: `pipeline-app/pipeline_app/templates/discovery_handles.html` (add Run Now + schedule controls)
 - Test: `pipeline-app/tests/test_routes_discovery.py` (append)
 
 **Interfaces:**
-- Consumes: `_spawn_cron` (Task 15).
+- Consumes: `_spawn_cron` (Task 15), `db.get_settings`/`db.update_settings` (Task 4).
 - Produces routes:
   - `POST /discovery/run-now` — spawns `--mode incremental`, redirects to `/discovery/runs`.
   - `POST /discovery/run-now-backfill` — form fields `start`, `end` (`YYYY-MM-DD`); spawns
     `--mode backfill --backfill-start <start> --backfill-end <end>`, redirects to `/discovery/runs`.
+  - `POST /discovery/settings` — form fields `time_of_day` (`HH:MM`), `timezone`; writes to
+    `discovery_settings` via `db.update_settings` (frequency is fixed at `"daily"` for now — see
+    the spec's Non-goals — so the form only exposes time and timezone), redirects back to
+    `/discovery/handles`. This is the spec's "UI schedule form" (Goal 4 / "Scheduling" section) —
+    it does **not** touch Windows Task Scheduler at all (see Task 18's `setup_discovery_task.py`
+    and Task 14's `run_discovery_cron.py --mode scheduled`, which is what actually reads this row).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2966,11 +3085,27 @@ def test_run_now_backfill_spawns_backfill_mode_with_dates(client: TestClient, mo
     assert "backfill" in spawned["cmd"]
     assert "2026-06-01" in spawned["cmd"]
     assert "2026-06-30" in spawned["cmd"]
+
+
+def test_update_settings_persists_time_and_timezone(client: TestClient):
+    response = client.post("/discovery/settings", data={"time_of_day": "07:30", "timezone": "America/New_York"})
+    assert response.status_code in (200, 303, 307)
+    from pipeline_app import db as db_mod
+    row = db_mod.get_settings(client.app.state.conn)
+    assert row["time_of_day"] == "07:30"
+    assert row["timezone"] == "America/New_York"
+
+
+def test_handles_page_shows_current_schedule(client: TestClient):
+    client.post("/discovery/settings", data={"time_of_day": "07:30", "timezone": "America/New_York"})
+    listing = client.get("/discovery/handles")
+    assert "07:30" in listing.text
+    assert "America/New_York" in listing.text
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd pipeline-app && python -m pytest tests/test_routes_discovery.py -k run_now -v`
+Run: `cd pipeline-app && python -m pytest tests/test_routes_discovery.py -k "run_now or settings" -v`
 Expected: FAIL — routes don't exist yet.
 
 - [ ] **Step 3: Implement**
@@ -2990,6 +3125,30 @@ def run_now_backfill(request: Request, start: str = Form(...), end: str = Form(.
         "--mode", "backfill", "--backfill-start", start, "--backfill-end", end,
     ])
     return RedirectResponse(url="/discovery/runs", status_code=303)
+
+
+@router.post("/discovery/settings")
+def update_settings(request: Request, time_of_day: str = Form(...), timezone: str = Form(...)):
+    conn = request.app.state.conn
+    db_mod.update_settings(conn, "daily", time_of_day, timezone)
+    return RedirectResponse(url="/discovery/handles", status_code=303)
+```
+
+Modify `discovery_handles_page` (Task 15) to also pass the current schedule into the template context:
+
+```python
+@router.get("/discovery/handles")
+def discovery_handles_page(request: Request):
+    conn = request.app.state.conn
+    handles = db_mod.list_handles(conn)
+    settings = db_mod.get_settings(conn)
+    return request.app.state.templates.TemplateResponse(
+        request, "discovery_handles.html",
+        {
+            "handles": handles, "cohort_suggestions": COHORT_SUGGESTIONS, "settings": settings,
+            "active_nav": "discovery_handles", "cli_available": request.app.state.cli_available,
+        },
+    )
 ```
 
 Add to `pipeline-app/pipeline_app/templates/discovery_handles.html`, before `{% endblock %}`:
@@ -3004,6 +3163,14 @@ Add to `pipeline-app/pipeline_app/templates/discovery_handles.html`, before `{% 
   <input type="date" name="end" required>
   <button type="submit">Run Now (backfill)</button>
 </form>
+
+<h2>Schedule</h2>
+<p>Daily at {{ settings.time_of_day }} ({{ settings.timezone }})</p>
+<form method="post" action="/discovery/settings">
+  <input type="time" name="time_of_day" value="{{ settings.time_of_day }}" required>
+  <input name="timezone" value="{{ settings.timezone }}" required placeholder="e.g. America/Chicago">
+  <button type="submit">Update schedule</button>
+</form>
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -3015,7 +3182,7 @@ Expected: PASS
 
 ```bash
 git add pipeline-app/pipeline_app/routes/discovery.py pipeline-app/pipeline_app/templates/discovery_handles.html pipeline-app/tests/test_routes_discovery.py
-git commit -m "feat(discovery): add Run Now and Run Now (backfill) UI actions"
+git commit -m "feat(discovery): add Run Now, Run Now (backfill), and schedule settings UI"
 ```
 
 ---
@@ -3339,9 +3506,13 @@ verification. If everything already passed cleanly in Tasks 1-18, this step may 
 **Spec coverage:** every section of `docs/superpowers/specs/2026-07-30-discovery-cron-automation-design.md`
 maps to a task — Data model → Tasks 1-4, Migration → Task 5, Roster page → Task 15, Validation →
 Tasks 10/12/15, Extraction engine → Tasks 6-9, Run Now/backfill → Tasks 10/16, Concurrency → Task 12,
-Scheduling → Tasks 13-14/18, History page → Task 17, Paired record → Task 11, Error handling →
-Task 12 (with the `handle_not_found`-vs-`error` limitation explicitly flagged as a known gap, not
-silently dropped), Testing → woven into every task.
+Scheduling → Tasks 13-14/16/18 (the UI schedule-settings form, originally missing from the first
+draft of this plan, is now in Task 16), History page → Task 17, Paired record → Task 11
+(including the `abandoned`/`locked` terminal-status record paths, and a `failed` outer-crash path,
+all originally missing from the first draft and now in Task 12), Error handling → Task 12 (with the
+`handle_not_found`-vs-`error` limitation for incremental/backfill runs explicitly flagged as a known
+gap, not silently dropped) plus the write-temp-then-rename invariant in Tasks 7-8, Testing → woven
+into every task.
 
 **Deviation from the spec, and why:** the spec's Handle Validation section says a new handle's
 "3-month-old" video is "discarded, not saved" after a full download — Task 9 instead peeks the
@@ -3352,7 +3523,23 @@ out-of-window videos entirely). This is an implementation-level refinement, not 
 requirement change.
 
 **Type/interface consistency check:** `PlatformAdapter.peek_upload_date` is declared as `(*args) -> str | None`
-in Task 9 specifically because Tasks 7 and 8 give it different arities (YouTube: `(video_id)`;
-Bluesky: `(handle, item_id, title)`, unreachable in practice). `process_handle`/`process_handle_backfill`
-always call it as `adapter.peek_upload_date(item_id)` — verified against both real adapters in
-Tasks 7-8's function signatures and called out explicitly in Task 9's implementation note.
+in Task 9's `Protocol`, but both real adapters (Tasks 7 and 8) deliberately implement it as the
+same single-argument `(item_id) -> str | None`, matching exactly how `process_handle`/
+`process_handle_backfill` call it (`adapter.peek_upload_date(item_id)`) — the earlier draft of this
+plan gave Bluesky's version a 3-argument signature that would have raised `TypeError` if ever
+reached; fixed to match arity exactly instead of relying on "unreachable in practice."
+
+**Accepted, documented gaps** (raised by a second-pass review, judged not worth the added complexity
+for this iteration; revisit if they cause real friction after Task 19's manual verification):
+- The roster page (Task 15) sorts `ORDER BY cohort, handle` rather than rendering explicit
+  collapsible cohort sections — visually grouped, not interactively filterable. Fine for ~16-20
+  handles; revisit if the roster grows much larger.
+- Backfill mode's "Bluesky pagination depth limit reached, coverage may be partial" reporting
+  (spec's Run Now/backfill section) isn't implemented — a backfill against a very old date range on
+  a high-volume Bluesky account may silently under-report rather than flagging partial coverage.
+  Low risk given this toolkit's actual Bluesky roster is a single handle today.
+- No dedicated test asserts "no discovery code path calls unlink/rmtree/move outside `_tmp/`" or
+  "`_manifest.csv` is never written by the discovery engine" as standalone invariants — the
+  invariants hold by construction in the code as written (verified by inspection: Tasks 7-8's only
+  `unlink` calls are the YouTube `_tmp` cleanup and the `peek_upload_date` temp-file cleanup; no
+  task's code ever opens `_manifest.csv`), but nothing would catch a future edit that breaks them.
