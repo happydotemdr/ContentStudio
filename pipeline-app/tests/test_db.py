@@ -259,3 +259,23 @@ def test_record_and_list_run_handle_results(conn):
     assert len(results) == 1
     assert results[0]["status"] == "ok"
     assert results[0]["items_downloaded"] == 2
+
+
+def test_get_settings_returns_defaults(conn):
+    row = db.get_settings(conn)
+    assert row["frequency"] == "daily"
+    assert row["time_of_day"] == "06:00"
+    assert row["timezone"] == "America/Chicago"
+    assert row["last_scheduled_run_date"] is None
+
+
+def test_update_settings(conn):
+    db.update_settings(conn, "daily", "07:30", "America/New_York")
+    row = db.get_settings(conn)
+    assert row["time_of_day"] == "07:30"
+    assert row["timezone"] == "America/New_York"
+
+
+def test_set_last_scheduled_run_date(conn):
+    db.set_last_scheduled_run_date(conn, "2026-07-30")
+    assert db.get_settings(conn)["last_scheduled_run_date"] == "2026-07-30"

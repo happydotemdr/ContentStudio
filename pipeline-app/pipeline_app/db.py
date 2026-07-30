@@ -272,3 +272,20 @@ def list_run_handle_results(conn: sqlite3.Connection, run_row_id: int) -> list[s
     return conn.execute(
         "SELECT * FROM discovery_run_handles WHERE run_id = ?", (run_row_id,)
     ).fetchall()
+
+
+def get_settings(conn: sqlite3.Connection) -> sqlite3.Row:
+    return conn.execute("SELECT * FROM discovery_settings WHERE id = 1").fetchone()
+
+
+def update_settings(conn: sqlite3.Connection, frequency: str, time_of_day: str, timezone: str) -> None:
+    conn.execute(
+        "UPDATE discovery_settings SET frequency = ?, time_of_day = ?, timezone = ? WHERE id = 1",
+        (frequency, time_of_day, timezone),
+    )
+    conn.commit()
+
+
+def set_last_scheduled_run_date(conn: sqlite3.Connection, date_iso: str) -> None:
+    conn.execute("UPDATE discovery_settings SET last_scheduled_run_date = ? WHERE id = 1", (date_iso,))
+    conn.commit()
