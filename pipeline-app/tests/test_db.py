@@ -180,3 +180,82 @@ def test_upsert_handle_from_migration_is_idempotent(conn):
     )
     assert second_id == first_id
     assert db.get_handle(conn, first_id)["status"] == "invalid"  # not clobbered by re-running
+
+
+def test_insert_running_run_then_second_raises(conn):
+    db.insert_running_run(conn, "run-1", "manual", "incremental", "2026-07-30T06:00:00Z")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.insert_running_run(conn, "run-2", "manual", "incremental", "2026-07-30T06:01:00Z")
+
+
+def test_insert_locked_run_after_conflict(conn):
+    db.insert_running_run(conn, "run-1", "manual", "incremental", "2026-07-30T06:00:00Z")
+    locked_id = db.insert_locked_run(
+        conn, "run-2", "manual", "incremental", "2026-07-30T06:01:00Z", "2026-07-30T06:01:00Z"
+    )
+    row = db.get_run(conn, locked_id)
+    assert row["status"] == "locked"
+
+
+def test_insert_terminal_run_has_no_running_phase(conn):
+    run_id = db.insert_terminal_run(
+        conn, "validate-1", "manual", "validate_handle", "completed",
+        "2026-07-30T06:00:00Z", "2026-07-30T06:00:30Z",
+    )
+    assert db.get_running_run(conn) is None
+    assert db.get_run(conn, run_id)["status"] == "completed"
+
+
+def test_get_running_run_returns_the_running_row(conn):
+    run_id = db.insert_running_run(conn, "run-1", "manual", "incremental", "2026-07-30T06:00:00Z")
+    row = db.get_running_run(conn)
+    assert row["id"] == run_id
+
+
+def test_update_run_heartbeat(conn):
+    run_id = db.insert_running_run(conn, "run-1", "manual", "incremental", "2026-07-30T06:00:00Z")
+    db.update_run_heartbeat(conn, run_id, "2026-07-30T06:00:30Z")
+    assert db.get_run(conn, run_id)["heartbeat_at"] == "2026-07-30T06:00:30Z"
+
+
+def test_reclaim_stale_runs_flips_to_abandoned(conn):
+    run_id = db.insert_running_run(conn, "run-1", "manual", "incremental", "2026-07-30T06:00:00Z")
+    db.update_run_heartbeat(conn, run_id, "2026-07-30T06:00:30Z")
+    reclaimed = db.reclaim_stale_runs(conn, "2026-07-30T06:20:00Z", staleness_seconds=600)
+    assert reclaimed == [run_id]
+    assert db.get_run(conn, run_id)["status"] == "abandoned"
+    assert db.get_running_run(conn) is None
+
+
+def test_reclaim_stale_runs_leaves_fresh_runs_alone(conn):
+    run_id = db.insert_running_run(conn, "run-1", "manual", "incremental", "2026-07-30T06:00:00Z")
+    db.update_run_heartbeat(conn, run_id, "2026-07-30T06:09:30Z")
+    reclaimed = db.reclaim_stale_runs(conn, "2026-07-30T06:10:00Z", staleness_seconds=600)
+    assert reclaimed == []
+    assert db.get_run(conn, run_id)["status"] == "running"
+
+
+def test_finish_run(conn):
+    run_id = db.insert_running_run(conn, "run-1", "manual", "incremental", "2026-07-30T06:00:00Z")
+    db.finish_run(conn, run_id, "completed", "2026-07-30T06:04:00Z", "output/discovery-runs/run-1.md")
+    row = db.get_run(conn, run_id)
+    assert row["status"] == "completed"
+    assert row["finished_at"] == "2026-07-30T06:04:00Z"
+    assert row["md_path"] == "output/discovery-runs/run-1.md"
+
+
+def test_list_runs_newest_first(conn):
+    db.insert_terminal_run(conn, "r1", "manual", "incremental", "completed", "2026-07-30T06:00:00Z", "2026-07-30T06:01:00Z")
+    db.insert_terminal_run(conn, "r2", "manual", "incremental", "completed", "2026-07-30T07:00:00Z", "2026-07-30T07:01:00Z")
+    rows = db.list_runs(conn)
+    assert [r["run_id"] for r in rows] == ["r2", "r1"]
+
+
+def test_record_and_list_run_handle_results(conn):
+    run_id = db.insert_terminal_run(conn, "r1", "manual", "incremental", "completed", "2026-07-30T06:00:00Z", "2026-07-30T06:01:00Z")
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-07-30T00:00:00Z")
+    db.record_handle_result(conn, run_id, handle_id, "ok", items_downloaded=2)
+    results = db.list_run_handle_results(conn, run_id)
+    assert len(results) == 1
+    assert results[0]["status"] == "ok"
+    assert results[0]["items_downloaded"] == 2
