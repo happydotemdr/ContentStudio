@@ -9,9 +9,16 @@ from __future__ import annotations
 import datetime as _dt
 from pathlib import Path
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 NEW_HANDLE_LOOKBACK_DAYS = 90
 EXISTING_HANDLE_STOP_GRACE = 3
+# For a brand-new handle, if peek_upload_date keeps returning None (e.g.
+# yt-dlp unavailable), there's no date-based cutoff to stop the walk -- left
+# unbounded, it would call peek_upload_date once per item across the ENTIRE
+# channel back-catalogue before giving up. Stop after this many consecutive
+# undated is_new items instead.
+NEW_HANDLE_UNDATED_STOP_GRACE = 5
 
 
 class PlatformAdapter(Protocol):
@@ -31,6 +38,7 @@ def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _
     enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
     downloaded: list[dict] = []
     consecutive_on_disk = 0
+    consecutive_undated = 0
 
     for item in enumerated:
         item_id = item["id"]
@@ -44,7 +52,11 @@ def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _
         if is_new:
             published = item.get("published") or adapter.peek_upload_date(item_id)
             if published is None:
+                consecutive_undated += 1
+                if consecutive_undated >= NEW_HANDLE_UNDATED_STOP_GRACE:
+                    break
                 continue
+            consecutive_undated = 0
             if _dt.datetime.strptime(published, "%Y-%m-%d").replace(tzinfo=_dt.timezone.utc) < cutoff:
                 break
 
@@ -124,6 +136,34 @@ def _write_abandoned_records_for_reclaimed_runs(conn: sqlite3.Connection, repo_r
         db_mod.finish_run(conn, reclaimed_id, "abandoned", finished_at, str(md_path))
 
 
+def _open_heartbeat_connection(conn: sqlite3.Connection) -> sqlite3.Connection | None:
+    """Best-effort: open a dedicated sqlite3.Connection to the same database
+    file for the heartbeat thread, so it doesn't commit through the same
+    Connection object the main per-handle loop writes through (both threads
+    sharing one Connection is a latent risk if a future multi-statement
+    transaction in the main loop gets partially committed by an unrelated
+    heartbeat tick). run_discovery only receives an already-open `conn` --
+    not a db_path -- so the file path is recovered via `PRAGMA database_list`
+    rather than widening run_discovery's public signature (which existing
+    callers/tests already depend on). Returns None for a connection with no
+    on-disk file (e.g. ':memory:'), in which case the caller falls back to
+    the pre-existing shared-connection behavior instead of crashing.
+    """
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        db_file = row[2] if row is not None else None
+    except sqlite3.Error:
+        return None
+    if not db_file:
+        return None
+    try:
+        hb_conn = sqlite3.connect(db_file, check_same_thread=False)
+        hb_conn.execute("PRAGMA busy_timeout = 5000")
+        return hb_conn
+    except sqlite3.Error:
+        return None
+
+
 def _run_heartbeat_loop(conn: sqlite3.Connection, run_row_id: int, interval_s: float, stop_event: threading.Event) -> None:
     while not stop_event.wait(interval_s):
         try:
@@ -194,9 +234,11 @@ def run_discovery(
             # failure here must not leave the handle stuck forever in
             # status='validating' with no run row and no paired record --
             # match the existing "enumeration returned nothing" failure path
-            # (set the handle back to 'invalid') and still produce a terminal
+            # (set the handle back to 'invalid' AND excluded, per the spec's
+            # auto-exclude-on-invalid behavior) and still produce a terminal
             # run row + markdown record documenting the error.
             db_mod.set_handle_status(conn, handle_id, "invalid")
+            db_mod.set_handle_included(conn, handle_id, False)
             status = "failed"
             finished_at = now_iso()
             handle_result = {"handle": handle_row["handle"], "platform": handle_row["platform"],
@@ -245,9 +287,10 @@ def run_discovery(
         db_mod.finish_run(conn, locked_id, "locked", finished_at, str(md_path))
         return {"run_row_id": locked_id, "status": "locked"}
 
+    heartbeat_conn = _open_heartbeat_connection(conn)
     stop_event = threading.Event()
     heartbeat_thread = threading.Thread(
-        target=_run_heartbeat_loop, args=(conn, run_row_id, heartbeat_interval_s, stop_event), daemon=True,
+        target=_run_heartbeat_loop, args=(heartbeat_conn or conn, run_row_id, heartbeat_interval_s, stop_event), daemon=True,
     )
     heartbeat_thread.start()
 
@@ -296,6 +339,8 @@ def run_discovery(
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=5)
+        if heartbeat_conn is not None:
+            heartbeat_conn.close()
 
     if outer_crash is not None:
         final_status = "failed"
@@ -309,5 +354,13 @@ def run_discovery(
     }, handle_results)
     db_mod.finish_run(conn, run_row_id, final_status, finished_at, str(md_path))
     if trigger == "scheduled" and final_status != "failed":
-        db_mod.set_last_scheduled_run_date(conn, now.date().isoformat())
+        # Store the LOCAL calendar date in the configured timezone, not the
+        # UTC date -- discovery_scheduling.is_due compares this value against
+        # local_now.date().isoformat(), so storing a UTC date here would
+        # desync from that comparison for any schedule time where the UTC and
+        # local calendar dates diverge, causing the scheduled run to re-fire
+        # repeatedly.
+        timezone_name = db_mod.get_settings(conn)["timezone"]
+        local_date = now.astimezone(ZoneInfo(timezone_name)).date().isoformat()
+        db_mod.set_last_scheduled_run_date(conn, local_date)
     return {"run_row_id": run_row_id, "status": final_status}

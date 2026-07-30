@@ -119,6 +119,35 @@ def test_new_handle_skips_item_when_peek_returns_none():
     assert [r["id"] for r in results] == ["v2"]
 
 
+def test_new_handle_stops_after_undated_stop_grace_when_peek_always_none():
+    # peek_upload_date returning None for every item (yt-dlp unavailable,
+    # etc.) must not walk the entire channel back-catalogue -- it should stop
+    # after NEW_HANDLE_UNDATED_STOP_GRACE consecutive undated items.
+    from pipeline_app.discovery_engine import NEW_HANDLE_UNDATED_STOP_GRACE
+
+    enumerated = [{"id": f"v{i}", "title": f"video {i}", "published": None} for i in range(50)]
+    adapter = FakeAdapter(enumerated, on_disk=set(), dates={})  # peek always returns None
+    results = process_handle(adapter, None, FakeHandleRow(handle="@new", keyword_filter=None), now=NOW)
+    assert results == []
+    assert len(adapter.peek_calls) == NEW_HANDLE_UNDATED_STOP_GRACE
+
+
+def test_new_handle_undated_streak_resets_on_a_dated_item():
+    enumerated = [
+        {"id": "v1", "title": "undated", "published": None},
+        {"id": "v2", "title": "undated", "published": None},
+        {"id": "v3", "title": "undated", "published": None},
+        {"id": "v4", "title": "undated", "published": None},
+        {"id": "v5", "title": "dated", "published": None},  # resets the streak (peek returns a date)
+        {"id": "v6", "title": "undated", "published": None},
+    ]
+    adapter = FakeAdapter(enumerated, on_disk=set(), dates={"v5": "2026-07-20"})
+    results = process_handle(adapter, None, FakeHandleRow(handle="@new", keyword_filter=None), now=NOW)
+    assert [r["id"] for r in results] == ["v5"]
+    # all 6 items get peeked: the streak reset at v5 lets v6 be attempted too
+    assert adapter.peek_calls == ["v1", "v2", "v3", "v4", "v5", "v6"]
+
+
 def test_keyword_filter_applied_before_the_walk():
     enumerated = [
         {"id": "v1", "title": "Adam Grant on focus", "published": None},
@@ -341,6 +370,19 @@ def test_run_discovery_validate_handle_sets_invalid_and_excludes_on_empty_enumer
     assert row["included"] == 0
 
 
+def test_run_discovery_validate_handle_sets_invalid_and_excludes_on_crash(engine_conn, tmp_path):
+    handle_id = db.create_handle(engine_conn, "youtube", "@crashy", "Crashy", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({}, fail_handles={"@crashy"})
+    result = run_discovery(
+        engine_conn, tmp_path, {"youtube": adapter},
+        trigger="manual", mode="validate_handle", handle_id=handle_id,
+    )
+    assert result["status"] == "failed"
+    row = db.get_handle(engine_conn, handle_id)
+    assert row["status"] == "invalid"
+    assert row["included"] == 0
+
+
 class SlowFakeAdapter(SingleFakeAdapter):
     """Sleeps during download_item so the heartbeat loop gets a chance to tick
     at least once during a run, without depending on exact wall-clock timing."""
@@ -392,6 +434,21 @@ def test_run_discovery_scheduled_trigger_updates_last_scheduled_run_date(engine_
     db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
     adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]})
     now = __import__("datetime").datetime(2026, 7, 30, 6, 0, 0, tzinfo=__import__("datetime").timezone.utc)
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="scheduled", mode="incremental", now=now)
+
+    assert result["status"] == "completed"
+    assert db.get_settings(engine_conn)["last_scheduled_run_date"] == "2026-07-30"
+
+
+def test_run_discovery_scheduled_trigger_stores_local_date_not_utc_date(engine_conn, tmp_path):
+    # now is 2026-07-31T02:00:00 UTC, which is 2026-07-30T21:00:00-05:00 in
+    # America/Chicago -- a full calendar day earlier locally. The stored
+    # last_scheduled_run_date must match the LOCAL date (2026-07-30), since
+    # that's what discovery_scheduling.is_due compares against.
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]})
+    now = __import__("datetime").datetime(2026, 7, 31, 2, 0, 0, tzinfo=__import__("datetime").timezone.utc)
 
     result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="scheduled", mode="incremental", now=now)
 

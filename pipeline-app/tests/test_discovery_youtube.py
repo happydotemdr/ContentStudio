@@ -76,6 +76,33 @@ def test_peek_upload_date_reads_info_json(monkeypatch, tmp_path):
     assert yt.peek_upload_date("v1") == "2026-04-15"
 
 
+def test_peek_upload_date_does_not_depend_on_cwd(monkeypatch, tmp_path):
+    # peek_upload_date must use its own temp directory (tempfile.mkdtemp)
+    # rather than a bare relative path in the process's CWD -- under the
+    # registered Windows Scheduled Task there is no explicit working
+    # directory, so a scheduled wake could land somewhere unwritable (e.g.
+    # C:\Windows\System32). Deliberately do NOT chdir into a writable
+    # tmp_path here: if the implementation regresses to a relative path, this
+    # test fails wherever pytest's own CWD isn't writable.
+    def fake_run(cmd, capture_output, text):
+        out_flag_index = cmd.index("-o")
+        stem = Path(cmd[out_flag_index + 1].replace(".%(ext)s", ""))
+        # Assert the temp file lives in a real temp directory, not a bare
+        # relative "_peek_<id>" path resolved against the CWD.
+        assert stem.is_absolute()
+        stem.with_suffix(".info.json").write_text(
+            json.dumps({"upload_date": "20260415"}), encoding="utf-8"
+        )
+        class FakeProc:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return FakeProc()
+
+    monkeypatch.setattr(yt.subprocess, "run", fake_run)
+    assert yt.peek_upload_date("v1") == "2026-04-15"
+
+
 def test_peek_upload_date_returns_none_when_no_info_json(monkeypatch, tmp_path):
     class FakeProc:
         returncode = 1

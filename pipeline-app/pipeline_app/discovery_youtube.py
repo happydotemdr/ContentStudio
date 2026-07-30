@@ -9,8 +9,10 @@ from __future__ import annotations
 import html
 import json
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import datetime as _dt
 from pathlib import Path
 
@@ -45,24 +47,31 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
 
 
 def peek_upload_date(video_id: str) -> str | None:
-    tmp_stem = Path(f"_peek_{video_id}")
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    cmd = [
-        "yt-dlp", "--skip-download", "--write-info-json", "--no-warnings",
-        "--ignore-errors", "-o", str(tmp_stem) + ".%(ext)s", url,
-    ]
-    subprocess.run(cmd, capture_output=True, text=True)
-    info_path = tmp_stem.with_suffix(".info.json")
-    if not info_path.exists():
-        return None
+    # Use a dedicated temp directory rather than a bare relative path in the
+    # process's CWD: under a UI-triggered run _spawn_cron sets cwd=repo_root,
+    # but the registered Windows Scheduled Task has no explicit working
+    # directory, so a scheduled wake could run from an arbitrary directory
+    # (e.g. C:\Windows\System32) where a relative write may be denied,
+    # silently breaking new-handle discovery.
+    tmp_dir = Path(tempfile.mkdtemp(prefix="discovery_peek_"))
     try:
+        tmp_stem = tmp_dir / f"_peek_{video_id}"
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        cmd = [
+            "yt-dlp", "--skip-download", "--write-info-json", "--no-warnings",
+            "--ignore-errors", "-o", str(tmp_stem) + ".%(ext)s", url,
+        ]
+        subprocess.run(cmd, capture_output=True, text=True)
+        info_path = tmp_stem.with_suffix(".info.json")
+        if not info_path.exists():
+            return None
         info = json.loads(info_path.read_text(encoding="utf-8"))
+        upload_date = info.get("upload_date")
+        if not upload_date or len(upload_date) != 8:
+            return None
+        return f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
     finally:
-        info_path.unlink(missing_ok=True)
-    upload_date = info.get("upload_date")
-    if not upload_date or len(upload_date) != 8:
-        return None
-    return f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _vtt_to_text(vtt: str) -> str:

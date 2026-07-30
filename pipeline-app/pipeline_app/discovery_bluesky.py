@@ -55,7 +55,7 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None, page_limit: 
             text = (record.get("text") or "").strip()
             created = record.get("createdAt") or post.get("indexedAt") or ""
             published = created[:10] if len(created) >= 10 else None
-            items.append({"id": rkey, "title": text[:60], "published": published})
+            items.append({"id": rkey, "title": text[:60], "text": text, "published": published})
         cursor = data.get("cursor")
         if not cursor:
             break
@@ -85,6 +85,7 @@ def download_item(repo_root: Path, handle: str, rkey: str, title: str) -> dict:
         return {"id": rkey, "ok": False, "published": None}
 
     published = match["published"]
+    full_text = match.get("text") or title
     purl = f"https://bsky.app/profile/{handle}/post/{rkey}"
     fetched_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
@@ -93,7 +94,7 @@ def download_item(repo_root: Path, handle: str, rkey: str, title: str) -> dict:
         f"# bluesky post {rkey}", "",
         f"- url: {purl}", f"- author: {handle}",
         f"- created: {published or ''}", f"- fetched_at: {fetched_at}", "",
-        title or "(empty)", "",
+        full_text or "(empty)", "",
     ]
     # Write-temp-then-rename, same as discovery_youtube.download_item (Task 7)
     # -- see that task's comment for why.
