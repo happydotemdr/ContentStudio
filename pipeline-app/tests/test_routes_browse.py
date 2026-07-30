@@ -53,25 +53,13 @@ def test_browse_tree_items_carry_htmx_attributes_not_ids(client):
     _touch(tmp_path / "output" / "thinkers" / "plato.md")
     resp = test_client.get("/browse")
     assert resp.status_code == 200
-    assert 'hx-get="/browse/tree?path=thinkers"' in resp.text
+    assert 'hx-get="/browse/tree?path=thinkers&root=output"' in resp.text
     assert 'hx-trigger="toggle once from:closest details"' in resp.text
     assert 'hx-target="this"' in resp.text
 
-    # The file-row htmx attributes appear one level deeper, once "thinkers"
-    # is expanded: list_children (and this route) render one folder's
-    # children at a time -- a lazy tree, confirmed by Task 5's
-    # nested-folder test -- so a file nested inside a subfolder is not
-    # present in the root-level response above. Fetch its parent folder's
-    # tree partial directly, exactly as the browser does after a toggle
-    # click, instead of asserting it's already present on the root page.
-    tree_resp = test_client.get("/browse/tree", params={"path": "thinkers"})
+    tree_resp = test_client.get("/browse/tree", params={"path": "thinkers", "root": "output"})
     assert tree_resp.status_code == 200
-    # Jinja's `urlencode` filter leaves "/" unescaped (verified against the
-    # installed jinja2==3.1.6: only reserved query-string characters like
-    # "&"/"="/"+" get percent-encoded) -- a literal, unencoded "/" here is
-    # correct, not a bug: FastAPI/Starlette's query-string parsing accepts
-    # unencoded slashes in a value just fine.
-    assert 'hx-get="/browse/file?path=thinkers/plato.md"' in tree_resp.text
+    assert 'hx-get="/browse/file?path=thinkers/plato.md&root=output"' in tree_resp.text
     assert 'hx-sync="#browse-doc:replace"' in tree_resp.text
 
 
@@ -272,3 +260,194 @@ def test_browse_file_uppercase_extension_renders(client):
     resp = test_client.get("/browse/file", params={"path": "NOTES.MD"})
     assert resp.status_code == 200
     assert "<h1>Upper</h1>" in resp.text
+
+
+def test_browse_root_shows_pipeline_and_corpus_headings(client):
+    test_client, _ = client
+    resp = test_client.get("/browse")
+    assert resp.status_code == 200
+    assert "Pipeline Outputs" in resp.text
+    assert "Corpus Docs" in resp.text
+
+
+def test_browse_root_no_runs_dir_shows_empty_message(client):
+    test_client, _ = client
+    resp = test_client.get("/browse")
+    assert resp.status_code == 200
+    assert "No pipeline runs yet." in resp.text
+
+
+def test_browse_tree_pipeline_root_lists_projects_from_filesystem(client):
+    test_client, tmp_path = client
+    _touch(tmp_path / "runs" / "my-run-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    resp = test_client.get("/browse/tree", params={"root": "pipeline"})
+    assert resp.status_code == 200
+    assert "my-run-20260728-120000" in resp.text
+
+
+def test_browse_tree_pipeline_root_annotates_brand_from_db(client):
+    test_client, tmp_path = client
+    _touch(tmp_path / "runs" / "my-run-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    from pipeline_app import db as db_mod
+    db_mod.create_project(
+        test_client.app.state.conn, "my-run-20260728-120000", "my-run",
+        "raisinggoodsports", "2026-07-28T12:00:00Z",
+    )
+    resp = test_client.get("/browse/tree", params={"root": "pipeline"})
+    assert resp.status_code == 200
+    assert "my-run-20260728-120000 (raisinggoodsports)" in resp.text
+
+
+def test_browse_tree_pipeline_stage_lists_artifact_versions_numerically(client):
+    test_client, tmp_path = client
+    stage_dir = tmp_path / "runs" / "my-run-20260728-120000" / "01-ideation"
+    _touch(stage_dir / "artifact.v2.md")
+    _touch(stage_dir / "artifact.v10.md")
+    _touch(stage_dir / "artifact.v1.md")
+    resp = test_client.get(
+        "/browse/tree",
+        params={"root": "pipeline", "path": "my-run-20260728-120000/01-ideation"},
+    )
+    assert resp.status_code == 200
+    assert resp.text.index("artifact.v1.md") < resp.text.index("artifact.v2.md") < resp.text.index("artifact.v10.md")
+
+
+def test_browse_tree_pipeline_excludes_raw_output(client):
+    test_client, tmp_path = client
+    stage_dir = tmp_path / "runs" / "my-run-20260728-120000" / "01-ideation"
+    _touch(stage_dir / "artifact.v1.md")
+    _touch(stage_dir / "raw_output.md")
+    resp = test_client.get(
+        "/browse/tree",
+        params={"root": "pipeline", "path": "my-run-20260728-120000/01-ideation"},
+    )
+    assert resp.status_code == 200
+    assert "raw_output.md" not in resp.text
+
+
+def test_browse_tree_pipeline_project_shows_grounding_folder_when_pointer_valid(client):
+    test_client, tmp_path = client
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    (briefs_dir / "2026-07-28-topic.md").write_text("# Brief", encoding="utf-8")
+    from pipeline_app import grounding_service
+    grounding_service.write_pointer(
+        tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding",
+        "rgs-briefs/2026-07-28-topic.md",
+    )
+    resp = test_client.get(
+        "/browse/tree", params={"root": "pipeline", "path": "my-run-20260728-120000"}
+    )
+    assert resp.status_code == 200
+    assert "00-grounding" in resp.text
+
+
+def test_browse_tree_pipeline_grounding_no_pointer_excluded_from_project(client):
+    test_client, tmp_path = client
+    (tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding" / "events").mkdir(parents=True)
+    resp = test_client.get(
+        "/browse/tree", params={"root": "pipeline", "path": "my-run-20260728-120000"}
+    )
+    assert resp.status_code == 200
+    assert "00-grounding" not in resp.text
+
+
+def test_browse_tree_pipeline_grounding_stage_shows_synthetic_current_brief_entry(client):
+    test_client, tmp_path = client
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    (briefs_dir / "2026-07-28-topic.md").write_text("# Brief", encoding="utf-8")
+    from pipeline_app import grounding_service
+    grounding_service.write_pointer(
+        tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding",
+        "rgs-briefs/2026-07-28-topic.md",
+    )
+    resp = test_client.get(
+        "/browse/tree",
+        params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding"},
+    )
+    assert resp.status_code == 200
+    assert "current-brief.md (2026-07-28-topic.md)" in resp.text
+
+
+def test_browse_file_pipeline_artifact_renders(client):
+    test_client, tmp_path = client
+    _touch(
+        tmp_path / "runs" / "my-run-20260728-120000" / "01-ideation" / "artifact.v1.md",
+        "---\nstatus: draft\n---\n\n# Concept\n\nBody.\n",
+    )
+    resp = test_client.get(
+        "/browse/file",
+        params={"root": "pipeline", "path": "my-run-20260728-120000/01-ideation/artifact.v1.md"},
+    )
+    assert resp.status_code == 200
+    assert "<h1>Concept</h1>" in resp.text
+
+
+def test_browse_file_pipeline_grounding_pointer_renders_target(client):
+    test_client, tmp_path = client
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    (briefs_dir / "2026-07-28-topic.md").write_text("# Grounded Brief\n", encoding="utf-8")
+    from pipeline_app import grounding_service
+    grounding_service.write_pointer(
+        tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding",
+        "rgs-briefs/2026-07-28-topic.md",
+    )
+    resp = test_client.get(
+        "/browse/file",
+        params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding/pointer.yaml"},
+    )
+    assert resp.status_code == 200
+    assert "<h1>Grounded Brief</h1>" in resp.text
+
+
+def test_browse_file_pipeline_grounding_pointer_missing_target_shows_error(client):
+    test_client, tmp_path = client
+    from pipeline_app import grounding_service
+    grounding_service.write_pointer(
+        tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding",
+        "rgs-briefs/does-not-exist.md",
+    )
+    resp = test_client.get(
+        "/browse/file",
+        params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding/pointer.yaml"},
+    )
+    assert resp.status_code == 200
+    assert "Grounding pointer could not be resolved." in resp.text
+
+
+def test_browse_file_pipeline_grounding_pointer_outside_rgs_briefs_shows_error(client):
+    # End-to-end containment check: a pointer.yaml whose content resolves
+    # somewhere else under repo_root (not rgs-briefs/) must not be followed
+    # and must not leak that file's content into the viewer.
+    test_client, tmp_path = client
+    secret = tmp_path / "runs" / "other-run" / "secret.md"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("# Secret\n", encoding="utf-8")
+    from pipeline_app import grounding_service
+    grounding_service.write_pointer(
+        tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding",
+        "runs/other-run/secret.md",
+    )
+    resp = test_client.get(
+        "/browse/file",
+        params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding/pointer.yaml"},
+    )
+    assert resp.status_code == 200
+    assert "Grounding pointer could not be resolved." in resp.text
+    assert "Secret" not in resp.text
+
+
+def test_browse_file_unknown_root_returns_invalid_path(client):
+    test_client, _ = client
+    resp = test_client.get("/browse/file", params={"root": "bogus", "path": "x.md"})
+    assert resp.status_code == 200
+    assert "Invalid path." in resp.text
+
+
+def test_browse_tree_unknown_root_returns_invalid_path(client):
+    test_client, _ = client
+    resp = test_client.get("/browse/tree", params={"root": "bogus", "path": ""})
+    assert resp.status_code == 200
+    assert "Invalid path." in resp.text

@@ -3,13 +3,16 @@
 Browse page. Pure logic only -- no FastAPI or Jinja imports here."""
 
 import os
+import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import markdown
 import yaml
 
-from pipeline_app import artifacts
+from pipeline_app import artifacts, grounding_service
+from pipeline_app import db as db_mod
 
 MAX_FILE_BYTES = 5 * 1024 * 1024
 
@@ -25,6 +28,108 @@ class FolderReadError(Exception):
 
 def output_root(repo_root: Path) -> Path:
     return (repo_root / "output").resolve()
+
+
+def runs_root(repo_root: Path) -> Path:
+    return (repo_root / "runs").resolve()
+
+
+def root_path(repo_root: Path, root: str) -> Path:
+    if root == "output":
+        return output_root(repo_root)
+    if root == "pipeline":
+        return runs_root(repo_root)
+    raise ValueError(f"unknown browse root: {root!r}")
+
+
+_RUN_ID_TIMESTAMP_RE = re.compile(r"-(\d{8}-\d{6})$")
+
+
+def _parse_created_at(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _parse_run_id_timestamp(name: str) -> datetime | None:
+    m = _RUN_ID_TIMESTAMP_RE.search(name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        # Shape-valid (8 digits, 6 digits) but calendar-invalid (e.g. Feb
+        # 31st, hour 25) -- treat the same as "no parseable timestamp"
+        # rather than letting this crash the whole /browse page.
+        return None
+
+
+def list_pipeline_projects(conn, repo_root: Path) -> list["Entry"]:
+    runs_dir = runs_root(repo_root)
+    if not runs_dir.is_dir():
+        return []
+
+    brand_and_created: dict[str, tuple[str, str]] = {
+        row["run_id"]: (row["brand"], row["created_at"]) for row in db_mod.list_projects(conn)
+    }
+
+    candidates: list[tuple[str, str | None, str | None]] = []
+    try:
+        with os.scandir(runs_dir) as it:
+            for entry in it:
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+                brand, created_at = brand_and_created.get(entry.name, (None, None))
+                candidates.append((entry.name, brand, created_at))
+    except OSError as exc:
+        raise FolderReadError(str(exc)) from exc
+
+    _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+    def sort_tuple(item: tuple[str, str | None, str | None]):
+        # DB created_at is ISO 8601 ("2026-07-28T12:00:00+00:00"); an
+        # orphan folder's fallback key is parsed from its run_id suffix
+        # ("20260728-120000"). These two string formats do NOT compare
+        # correctly against each other lexically (e.g. "2026-...": the
+        # "-" at index 4 sorts below the "0" a compact-format string has
+        # at the same index) -- both are parsed to real datetimes here so
+        # comparison is always by actual chronological value, never by
+        # incidental string shape.
+        name, _brand, created_at = item
+        when = _parse_created_at(created_at) if created_at else _parse_run_id_timestamp(name)
+        return (when is not None, when or _EPOCH, name.lower())
+
+    candidates.sort(key=sort_tuple, reverse=True)
+    return [
+        Entry(
+            name=f"{name} ({brand})" if brand else name,
+            rel_path=name,
+            is_dir=True,
+        )
+        for name, brand, _created_at in candidates
+    ]
+
+
+def resolve_grounding_pointer(pointer_dir: Path, repo_root: Path) -> Path | None:
+    """Resolve a grounding stage's pointer.yaml to the real rgs-briefs/ file
+    it references. pointer.yaml's content is read from disk, not derived
+    from the request/tree structure, so its target path is a new trust
+    boundary here and gets an explicit containment check against the real
+    rgs-briefs/ folder rather than being trusted outright."""
+    try:
+        target_rel = grounding_service.read_pointer(pointer_dir)
+    except (yaml.YAMLError, AttributeError, TypeError):
+        # Malformed or non-mapping pointer.yaml content (hand-edited or
+        # truncated) -- treat the same as "no valid pointer here" rather
+        # than crashing tree expansion for the whole project.
+        return None
+    if not target_rel:
+        return None
+    rgs_briefs_root = (repo_root / "rgs-briefs").resolve()
+    target = (repo_root / target_rel).resolve()
+    if not target.is_relative_to(rgs_briefs_root):
+        return None
+    if not target.exists():
+        return None
+    return target
 
 
 def resolve_under_output(root: Path, rel_path: str) -> Path:
@@ -63,25 +168,44 @@ def _is_md_name(name: str) -> bool:
     return name.lower().endswith(".md")
 
 
-def _has_md_below(folder: Path) -> bool:
+def _has_md_below(folder: Path, repo_root: Path) -> bool:
     try:
         with os.scandir(folder) as it:
             for entry in it:
                 if entry.is_symlink():
                     continue
+                if entry.is_file() and entry.name == "raw_output.md":
+                    # Must agree with list_children's exclusion below --
+                    # otherwise a stage folder containing only this file
+                    # would appear as an expandable folder that renders
+                    # empty when opened.
+                    continue
                 if entry.is_file() and _is_md_name(entry.name):
                     return True
-                if entry.is_dir() and _has_md_below(Path(entry.path)):
+                if entry.is_file() and entry.name == "pointer.yaml":
+                    if resolve_grounding_pointer(folder, repo_root) is not None:
+                        return True
+                if entry.is_dir() and _has_md_below(Path(entry.path), repo_root):
                     return True
     except OSError:
         # Can't even scan this folder (permission denied, removed mid-scan,
-        # etc.) -- treat it as contributing no visible .md file to its
+        # etc.) -- treat it as contributing no visible content to its
         # ancestor's listing. Defensive default, not a correctness claim.
         return False
     return False
 
 
-def list_children(folder: Path, root: Path) -> list["Entry"]:
+_ARTIFACT_VERSION_RE = re.compile(r"artifact\.v(\d+)\.md$", re.IGNORECASE)
+
+
+def _file_sort_key(entry: "Entry") -> tuple:
+    m = _ARTIFACT_VERSION_RE.match(entry.name)
+    if m:
+        return (0, int(m.group(1)), entry.name.lower())
+    return (1, 0, entry.name.lower())
+
+
+def list_children(folder: Path, root: Path, repo_root: Path) -> list["Entry"]:
     dirs: list[Entry] = []
     files: list[Entry] = []
     try:
@@ -92,16 +216,30 @@ def list_children(folder: Path, root: Path) -> list["Entry"]:
                 path = Path(entry.path)
                 rel_path = path.relative_to(root).as_posix()
                 if entry.is_dir():
-                    if _has_md_below(path):
+                    if _has_md_below(path, repo_root):
                         dirs.append(Entry(name=entry.name, rel_path=rel_path, is_dir=True))
-                elif entry.is_file() and _is_md_name(entry.name):
-                    files.append(Entry(name=entry.name, rel_path=rel_path, is_dir=False))
+                elif entry.is_file():
+                    if entry.name == "raw_output.md":
+                        # Pre-versioning scratch state, already captured in
+                        # the corresponding artifact.vN.md body -- showing
+                        # both is redundant clutter, not useful history.
+                        continue
+                    if _is_md_name(entry.name):
+                        files.append(Entry(name=entry.name, rel_path=rel_path, is_dir=False))
+                    elif entry.name == "pointer.yaml":
+                        target = resolve_grounding_pointer(folder, repo_root)
+                        if target is not None:
+                            files.append(Entry(
+                                name=f"current-brief.md ({target.name})",
+                                rel_path=rel_path,
+                                is_dir=False,
+                            ))
     except OSError as exc:
         # Unlike an empty folder, this must surface as an error rather than
         # silently returning [] -- to the caller those would look identical.
         raise FolderReadError(str(exc)) from exc
     dirs.sort(key=lambda e: e.name.lower())
-    files.sort(key=lambda e: e.name.lower())
+    files.sort(key=_file_sort_key)
     return dirs + files
 
 

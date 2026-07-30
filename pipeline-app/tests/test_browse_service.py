@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from pipeline_app import browse_service
+from pipeline_app import browse_service, grounding_service
+from pipeline_app import db as db_mod
 
 
 @pytest.fixture
@@ -83,41 +84,41 @@ def _touch(path: Path, text: str = "content") -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def test_list_children_sorts_folders_then_files(root):
+def test_list_children_sorts_folders_then_files(root, tmp_path):
     _touch(root / "zeta.md")
     _touch(root / "alpha" / "notes.md")
     _touch(root / "beta.md")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert [e.name for e in entries] == ["alpha", "beta.md", "zeta.md"]
     assert [e.is_dir for e in entries] == [True, False, False]
 
 
-def test_list_children_excludes_folder_with_no_md_anywhere(root):
+def test_list_children_excludes_folder_with_no_md_anywhere(root, tmp_path):
     _touch(root / "transcripts" / "raw.txt")
     _touch(root / "thinkers" / "plato.md")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert [e.name for e in entries] == ["thinkers"]
 
 
-def test_list_children_hides_non_md_files(root):
+def test_list_children_hides_non_md_files(root, tmp_path):
     _touch(root / "notes.md")
     _touch(root / "raw.json")
     _touch(root / "clip.vtt")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert [e.name for e in entries] == ["notes.md"]
 
 
-def test_list_children_case_insensitive_md_suffix(root):
+def test_list_children_case_insensitive_md_suffix(root, tmp_path):
     _touch(root / "NOTES.MD")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert [e.name for e in entries] == ["NOTES.MD"]
 
 
-def test_list_children_rel_path_uses_forward_slashes(root):
+def test_list_children_rel_path_uses_forward_slashes(root, tmp_path):
     _touch(root / "thinkers" / "plato.md")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert entries[0].rel_path == "thinkers"
-    child_entries = browse_service.list_children(root / "thinkers", root)
+    child_entries = browse_service.list_children(root / "thinkers", root, tmp_path)
     assert child_entries[0].rel_path == "thinkers/plato.md"
 
 
@@ -128,7 +129,7 @@ def test_list_children_skips_symlinked_dir(root, tmp_path):
         (root / "link").symlink_to(real, target_is_directory=True)
     except OSError:
         pytest.skip("symlinks require admin rights / Developer Mode on this platform")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert entries == []
 
 
@@ -139,20 +140,20 @@ def test_list_children_skips_symlinked_file(root, tmp_path):
         (root / "link.md").symlink_to(real_file)
     except OSError:
         pytest.skip("symlinks require admin rights / Developer Mode on this platform")
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert entries == []
 
 
-def test_list_children_scandir_oserror_raises_folder_read_error(root, monkeypatch):
+def test_list_children_scandir_oserror_raises_folder_read_error(root, tmp_path, monkeypatch):
     def _raise(*args, **kwargs):
         raise OSError("permission denied")
 
     monkeypatch.setattr(os, "scandir", _raise)
     with pytest.raises(browse_service.FolderReadError):
-        browse_service.list_children(root, root)
+        browse_service.list_children(root, root, tmp_path)
 
 
-def test_has_md_below_scandir_oserror_returns_false(root, monkeypatch):
+def test_has_md_below_scandir_oserror_returns_false(root, tmp_path, monkeypatch):
     subfolder = root / "sub"
     subfolder.mkdir()
     _touch(subfolder / "note.md")
@@ -165,10 +166,10 @@ def test_has_md_below_scandir_oserror_returns_false(root, monkeypatch):
         return real_scandir(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "scandir", _raise_for_subfolder)
-    assert browse_service._has_md_below(subfolder) is False
+    assert browse_service._has_md_below(subfolder, tmp_path) is False
     # And the unreadable subfolder is excluded from its parent's listing
     # rather than blowing up the whole scan.
-    entries = browse_service.list_children(root, root)
+    entries = browse_service.list_children(root, root, tmp_path)
     assert entries == []
 
 
@@ -235,3 +236,247 @@ def test_render_md_file_stat_error_returns_error_not_500(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "stat", _raise)
     result = browse_service.render_md_file(f)
     assert result == {"error": "Could not read file: file vanished"}
+
+
+def test_runs_root_resolves_under_repo_root(tmp_path):
+    (tmp_path / "runs").mkdir()
+    result = browse_service.runs_root(tmp_path)
+    assert result == (tmp_path / "runs").resolve()
+
+
+def test_root_path_dispatches_output(tmp_path):
+    (tmp_path / "output").mkdir()
+    assert browse_service.root_path(tmp_path, "output") == browse_service.output_root(tmp_path)
+
+
+def test_root_path_dispatches_pipeline(tmp_path):
+    (tmp_path / "runs").mkdir()
+    assert browse_service.root_path(tmp_path, "pipeline") == browse_service.runs_root(tmp_path)
+
+
+def test_root_path_rejects_unknown_root(tmp_path):
+    with pytest.raises(ValueError):
+        browse_service.root_path(tmp_path, "bogus")
+
+
+def test_resolve_grounding_pointer_returns_target_when_valid(tmp_path):
+    (tmp_path / "rgs-briefs").mkdir()
+    brief = tmp_path / "rgs-briefs" / "2026-07-28-topic.md"
+    brief.write_text("# Brief", encoding="utf-8")
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    grounding_service.write_pointer(pointer_dir, "rgs-briefs/2026-07-28-topic.md")
+    result = browse_service.resolve_grounding_pointer(pointer_dir, tmp_path)
+    assert result == brief.resolve()
+
+
+def test_resolve_grounding_pointer_returns_none_when_no_pointer(tmp_path):
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    pointer_dir.mkdir(parents=True)
+    assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
+
+
+def test_resolve_grounding_pointer_returns_none_when_target_missing(tmp_path):
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    grounding_service.write_pointer(pointer_dir, "rgs-briefs/does-not-exist.md")
+    assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
+
+
+def test_resolve_grounding_pointer_rejects_path_outside_rgs_briefs(tmp_path):
+    # A corrupted/hand-edited pointer.yaml pointing elsewhere under repo_root
+    # (e.g. another project's runs/ folder) must not be followed, even
+    # though the resolved path is still technically "under repo_root". The
+    # target here is repo-root-relative ("runs/other-run/secret.md"), same
+    # form pointer.yaml actually stores its values in -- not a "../" escape,
+    # which is a distinct case already covered by the traversal test below.
+    secret = tmp_path / "runs" / "other-run" / "secret.md"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("secret", encoding="utf-8")
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    grounding_service.write_pointer(pointer_dir, "runs/other-run/secret.md")
+    assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
+
+
+def test_resolve_grounding_pointer_rejects_traversal_outside_repo_root(tmp_path):
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    grounding_service.write_pointer(pointer_dir, "../../../etc/passwd")
+    assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
+
+
+def test_list_children_excludes_raw_output_md(root, tmp_path):
+    _touch(root / "01-ideation" / "artifact.v1.md")
+    _touch(root / "01-ideation" / "raw_output.md")
+    entries = browse_service.list_children(root / "01-ideation", root, tmp_path)
+    assert [e.name for e in entries] == ["artifact.v1.md"]
+
+
+def test_list_children_sorts_artifact_versions_numerically(root, tmp_path):
+    _touch(root / "stage" / "artifact.v2.md")
+    _touch(root / "stage" / "artifact.v10.md")
+    _touch(root / "stage" / "artifact.v1.md")
+    entries = browse_service.list_children(root / "stage", root, tmp_path)
+    assert [e.name for e in entries] == ["artifact.v1.md", "artifact.v2.md", "artifact.v10.md"]
+
+
+def test_has_md_below_true_when_valid_grounding_pointer_present(root, tmp_path):
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    (briefs_dir / "topic.md").write_text("# Brief", encoding="utf-8")
+    grounding_dir = root / "00-grounding"
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/topic.md")
+    assert browse_service._has_md_below(grounding_dir, tmp_path) is True
+
+
+def test_has_md_below_false_when_only_raw_output_md_present(root, tmp_path):
+    # _has_md_below and list_children must agree on raw_output.md: if
+    # list_children hides it but _has_md_below still counts it as content,
+    # a stage folder containing only raw_output.md would show up as an
+    # expandable folder that renders completely empty when opened.
+    stage_dir = root / "01-ideation"
+    _touch(stage_dir / "raw_output.md")
+    assert browse_service._has_md_below(stage_dir, tmp_path) is False
+    entries = browse_service.list_children(root, root, tmp_path)
+    assert entries == []
+
+
+def test_has_md_below_false_when_no_pointer_and_no_md(root, tmp_path):
+    grounding_dir = root / "00-grounding"
+    (grounding_dir / "events").mkdir(parents=True)
+    assert browse_service._has_md_below(grounding_dir, tmp_path) is False
+
+
+def test_has_md_below_false_when_pointer_target_missing(root, tmp_path):
+    grounding_dir = root / "00-grounding"
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md")
+    assert browse_service._has_md_below(grounding_dir, tmp_path) is False
+
+
+def test_list_children_includes_grounding_folder_when_pointer_valid(root, tmp_path):
+    # This is the parent-level survival check the Opus review caught as
+    # broken: without the _has_md_below fix, "00-grounding" never appears
+    # here at all, regardless of what list_children itself would do with it.
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    (briefs_dir / "topic.md").write_text("# Brief", encoding="utf-8")
+    grounding_service.write_pointer(root / "00-grounding", "rgs-briefs/topic.md")
+    entries = browse_service.list_children(root, root, tmp_path)
+    assert [e.name for e in entries] == ["00-grounding"]
+
+
+def test_list_children_synthesizes_current_brief_entry_for_pointer(root, tmp_path):
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    (briefs_dir / "2026-07-28-topic.md").write_text("# Brief", encoding="utf-8")
+    grounding_dir = root / "00-grounding"
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/2026-07-28-topic.md")
+    entries = browse_service.list_children(grounding_dir, root, tmp_path)
+    assert len(entries) == 1
+    assert entries[0].name == "current-brief.md (2026-07-28-topic.md)"
+    assert entries[0].rel_path == "00-grounding/pointer.yaml"
+    assert entries[0].is_dir is False
+
+
+def test_list_children_omits_pointer_entry_when_target_missing(root, tmp_path):
+    grounding_dir = root / "00-grounding"
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md")
+    entries = browse_service.list_children(grounding_dir, root, tmp_path)
+    assert entries == []
+
+
+@pytest.fixture
+def conn(tmp_path: Path):
+    db_path = tmp_path / "pipeline.db"
+    schema_path = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db_mod.init_db(db_path, schema_path)
+    connection = db_mod.get_connection(db_path)
+    yield connection
+    connection.close()
+
+
+def test_list_pipeline_projects_empty_when_no_runs_dir(conn, tmp_path):
+    assert browse_service.list_pipeline_projects(conn, tmp_path) == []
+
+
+def test_list_pipeline_projects_lists_folders_from_filesystem(conn, tmp_path):
+    _touch(tmp_path / "runs" / "my-run-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert [e.name for e in entries] == ["my-run-20260728-120000"]
+    assert entries[0].rel_path == "my-run-20260728-120000"
+    assert entries[0].is_dir is True
+
+
+def test_list_pipeline_projects_annotates_brand_from_db(conn, tmp_path):
+    _touch(tmp_path / "runs" / "my-run-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    db_mod.create_project(conn, "my-run-20260728-120000", "my-run", "raisinggoodsports", "2026-07-28T12:00:00Z")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert entries[0].name == "my-run-20260728-120000 (raisinggoodsports)"
+
+
+def test_list_pipeline_projects_orphan_folder_shown_without_brand(conn, tmp_path):
+    _touch(tmp_path / "runs" / "orphan-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert entries[0].name == "orphan-20260728-120000"
+
+
+def test_list_pipeline_projects_sorted_newest_first_by_db_created_at(conn, tmp_path):
+    _touch(tmp_path / "runs" / "older-20260701-090000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "newer-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    db_mod.create_project(conn, "older-20260701-090000", "older", "generic", "2026-07-01T09:00:00Z")
+    db_mod.create_project(conn, "newer-20260728-120000", "newer", "generic", "2026-07-28T12:00:00Z")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert [e.rel_path for e in entries] == ["newer-20260728-120000", "older-20260701-090000"]
+
+
+def test_list_pipeline_projects_orphan_folder_sorted_by_parsed_timestamp(conn, tmp_path):
+    # No DB rows at all -- both folders fall back to parsing the trailing
+    # YYYYMMDD-HHMMSS from the folder name.
+    _touch(tmp_path / "runs" / "older-20260701-090000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "newer-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert [e.rel_path for e in entries] == ["newer-20260728-120000", "older-20260701-090000"]
+
+
+def test_list_pipeline_projects_mixed_db_and_orphan_sort_by_real_chronology(conn, tmp_path):
+    # A naive string-sort comparing ISO created_at ("2026-...") against a
+    # compact orphan-fallback key ("2026...") would put every orphan above
+    # every DB-matched project regardless of actual date, since "-" sorts
+    # below "0" at the same string index. This must sort by real
+    # chronological value across both formats: db-matched (July 28) is
+    # newest, then the orphan (July 15), then db-matched (July 1) oldest.
+    _touch(tmp_path / "runs" / "db-newest-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "orphan-mid-20260715-120000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "db-oldest-20260701-090000" / "01-ideation" / "artifact.v1.md")
+    db_mod.create_project(conn, "db-newest-20260728-120000", "db-newest", "generic", "2026-07-28T12:00:00+00:00")
+    db_mod.create_project(conn, "db-oldest-20260701-090000", "db-oldest", "generic", "2026-07-01T09:00:00+00:00")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert [e.rel_path for e in entries] == [
+        "db-newest-20260728-120000",
+        "orphan-mid-20260715-120000",
+        "db-oldest-20260701-090000",
+    ]
+
+
+def test_list_pipeline_projects_calendar_invalid_timestamp_does_not_crash(conn, tmp_path):
+    # "bad-20260231-120000" is shape-valid (8 digits, 6 digits) but
+    # calendar-invalid (Feb 31st does not exist), which used to raise an
+    # unguarded ValueError out of datetime.strptime and crash the whole
+    # /browse page. It must instead be treated like "no parseable
+    # timestamp" -- included in the results, sorted last.
+    _touch(tmp_path / "runs" / "bad-20260231-120000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "good-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert [e.rel_path for e in entries] == [
+        "good-20260728-120000",
+        "bad-20260231-120000",
+    ]
+
+
+def test_resolve_grounding_pointer_returns_none_when_pointer_not_a_mapping(tmp_path):
+    # A hand-edited/truncated pointer.yaml can parse as valid YAML that
+    # isn't a mapping (e.g. a bare scalar string) -- grounding_service's
+    # read_pointer then raises AttributeError calling .get() on it. This
+    # must be treated like any other "no valid pointer here" case.
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    pointer_dir.mkdir(parents=True)
+    (pointer_dir / "pointer.yaml").write_text("not-a-mapping", encoding="utf-8")
+    assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
+    assert browse_service._has_md_below(pointer_dir, tmp_path) is False
