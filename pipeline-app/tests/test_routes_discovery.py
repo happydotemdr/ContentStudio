@@ -14,7 +14,7 @@ def client(tmp_path: Path, monkeypatch):
         encoding="utf-8",
     )
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
-    return TestClient(app)
+    return TestClient(app, follow_redirects=False)
 
 
 def test_get_handles_page_lists_no_handles_initially(client: TestClient):
@@ -79,3 +79,43 @@ def test_add_duplicate_handle_returns_400_not_500(client: TestClient, monkeypatc
     assert first.status_code in (200, 303, 307)
     second = client.post("/discovery/handles", data=data)
     assert second.status_code == 400
+
+
+def test_run_now_spawns_incremental_mode(client: TestClient, monkeypatch):
+    spawned = {}
+    def fake_popen(cmd, **kwargs):
+        spawned["cmd"] = cmd
+        return type("P", (), {"pid": 1})()
+    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", fake_popen)
+    response = client.post("/discovery/run-now")
+    assert response.status_code in (200, 303, 307)
+    assert "incremental" in spawned["cmd"]
+
+
+def test_run_now_backfill_spawns_backfill_mode_with_dates(client: TestClient, monkeypatch):
+    spawned = {}
+    def fake_popen(cmd, **kwargs):
+        spawned["cmd"] = cmd
+        return type("P", (), {"pid": 1})()
+    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", fake_popen)
+    response = client.post("/discovery/run-now-backfill", data={"start": "2026-06-01", "end": "2026-06-30"})
+    assert response.status_code in (200, 303, 307)
+    assert "backfill" in spawned["cmd"]
+    assert "2026-06-01" in spawned["cmd"]
+    assert "2026-06-30" in spawned["cmd"]
+
+
+def test_update_settings_persists_time_and_timezone(client: TestClient):
+    response = client.post("/discovery/settings", data={"time_of_day": "07:30", "timezone": "America/New_York"})
+    assert response.status_code in (200, 303, 307)
+    from pipeline_app import db as db_mod
+    row = db_mod.get_settings(client.app.state.conn)
+    assert row["time_of_day"] == "07:30"
+    assert row["timezone"] == "America/New_York"
+
+
+def test_handles_page_shows_current_schedule(client: TestClient):
+    client.post("/discovery/settings", data={"time_of_day": "07:30", "timezone": "America/New_York"})
+    listing = client.get("/discovery/handles")
+    assert "07:30" in listing.text
+    assert "America/New_York" in listing.text

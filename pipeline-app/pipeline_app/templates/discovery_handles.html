@@ -44,6 +44,24 @@
   <button type="submit">Add handle</button>
 </form>
 
+<h2>Run now</h2>
+<form method="post" action="/discovery/run-now">
+  <button type="submit">Run Now (incremental)</button>
+</form>
+<form method="post" action="/discovery/run-now-backfill">
+  <input type="date" name="start" required>
+  <input type="date" name="end" required>
+  <button type="submit">Run Now (backfill)</button>
+</form>
+
+<h2>Schedule</h2>
+<p>Daily at {{ settings.time_of_day }} ({{ settings.timezone }})</p>
+<form method="post" action="/discovery/settings">
+  <input type="time" name="time_of_day" value="{{ settings.time_of_day }}" required>
+  <input name="timezone" value="{{ settings.timezone }}" required placeholder="e.g. America/Chicago">
+  <button type="submit">Update schedule</button>
+</form>
+
 <script>
   document.querySelectorAll("[data-handle-status]").forEach((el) => {
     const status = el.textContent.trim();

@@ -25,10 +25,11 @@ def _spawn_cron(repo_root: Path, args: list[str]) -> None:
 def discovery_handles_page(request: Request):
     conn = request.app.state.conn
     handles = db_mod.list_handles(conn)
+    settings = db_mod.get_settings(conn)
     return request.app.state.templates.TemplateResponse(
         request, "discovery_handles.html",
         {
-            "handles": handles, "cohort_suggestions": COHORT_SUGGESTIONS,
+            "handles": handles, "cohort_suggestions": COHORT_SUGGESTIONS, "settings": settings,
             "active_nav": "discovery_handles", "cli_available": request.app.state.cli_available,
         },
     )
@@ -67,3 +68,24 @@ def handle_status(request: Request, handle_id: int):
     if row is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse({"status": row["status"]})
+
+
+@router.post("/discovery/run-now")
+def run_now(request: Request) -> RedirectResponse:
+    _spawn_cron(request.app.state.repo_root, ["--mode", "incremental"])
+    return RedirectResponse(url="/discovery/runs", status_code=303)
+
+
+@router.post("/discovery/run-now-backfill")
+def run_now_backfill(request: Request, start: str = Form(...), end: str = Form(...)) -> RedirectResponse:
+    _spawn_cron(request.app.state.repo_root, [
+        "--mode", "backfill", "--backfill-start", start, "--backfill-end", end,
+    ])
+    return RedirectResponse(url="/discovery/runs", status_code=303)
+
+
+@router.post("/discovery/settings")
+def update_settings(request: Request, time_of_day: str = Form(...), timezone: str = Form(...)) -> RedirectResponse:
+    conn = request.app.state.conn
+    db_mod.update_settings(conn, "daily", time_of_day, timezone)
+    return RedirectResponse(url="/discovery/handles", status_code=303)
