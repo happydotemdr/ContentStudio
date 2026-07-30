@@ -1,6 +1,6 @@
 # Pipeline Outputs on the Browse Page — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add a "Pipeline Outputs" section to `/browse`, organized project → stage → artifact version, alongside the existing "Corpus Docs" (`output/`) section, reusing the same tree/viewer UI.
 
@@ -31,7 +31,7 @@
 **Interfaces:**
 - Produces: `browse_service.runs_root(repo_root: Path) -> Path`, `browse_service.root_path(repo_root: Path, root: str) -> Path` (raises `ValueError` for unknown `root`). Later tasks/routes call `root_path()` to resolve either named root.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/test_browse_service.py`:
 
@@ -57,12 +57,12 @@ def test_root_path_rejects_unknown_root(tmp_path):
         browse_service.root_path(tmp_path, "bogus")
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/test_browse_service.py -k "runs_root or root_path" -v`
 Expected: FAIL with `AttributeError: module 'pipeline_app.browse_service' has no attribute 'runs_root'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `pipeline_app/browse_service.py`, immediately after the existing `output_root` function:
 
@@ -79,12 +79,12 @@ def root_path(repo_root: Path, root: str) -> Path:
     raise ValueError(f"unknown browse root: {root!r}")
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_browse_service.py -k "runs_root or root_path" -v`
 Expected: PASS (4 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add pipeline-app/pipeline_app/browse_service.py pipeline-app/tests/test_browse_service.py
@@ -103,7 +103,7 @@ git commit -m "feat(browse): add output/pipeline root registry to browse_service
 - Consumes: `grounding_service.read_pointer(pointer_dir: Path) -> str | None` (existing, unchanged).
 - Produces: `browse_service.resolve_grounding_pointer(pointer_dir: Path, repo_root: Path) -> Path | None`. Tasks 3 and 5 call this — Task 3 to decide whether a grounding folder "has content," Task 5's file route to resolve a clicked pointer.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add near the top of `tests/test_browse_service.py`, alongside the existing imports:
 
@@ -157,12 +157,12 @@ def test_resolve_grounding_pointer_rejects_traversal_outside_repo_root(tmp_path)
     assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/test_browse_service.py -k resolve_grounding_pointer -v`
 Expected: FAIL with `AttributeError: module 'pipeline_app.browse_service' has no attribute 'resolve_grounding_pointer'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `pipeline_app/browse_service.py`, add to the import block (with the existing `from pipeline_app import artifacts`):
 
@@ -191,12 +191,12 @@ def resolve_grounding_pointer(pointer_dir: Path, repo_root: Path) -> Path | None
     return target
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_browse_service.py -k resolve_grounding_pointer -v`
 Expected: PASS (5 tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add pipeline-app/pipeline_app/browse_service.py pipeline-app/tests/test_browse_service.py
@@ -218,7 +218,7 @@ This is the core fix for the bug the Opus review caught: `_has_md_below` current
 - Consumes: `resolve_grounding_pointer` (Task 2).
 - Produces: `browse_service.list_children(folder: Path, root: Path, repo_root: Path) -> list[Entry]` and `browse_service._has_md_below(folder: Path, repo_root: Path) -> bool` — **signature changed** (both gained a `repo_root` parameter). Task 4/5 call `list_children` with all three args.
 
-- [ ] **Step 1: Update existing tests for the new signatures**
+- [x] **Step 1: Update existing tests for the new signatures**
 
 In `tests/test_browse_service.py`, every existing call to `list_children(root, root)` becomes `list_children(root, root, tmp_path)`, and every call to `_has_md_below(subfolder)` becomes `_has_md_below(subfolder, tmp_path)`. Replace these specific test bodies (the `root` fixture's `tmp_path` is the stand-in "repo_root" for these tests, matching how `root` = `tmp_path / "output"`):
 
@@ -312,12 +312,12 @@ def test_has_md_below_scandir_oserror_returns_false(root, tmp_path, monkeypatch)
     assert entries == []
 ```
 
-- [ ] **Step 2: Run tests to verify they fail on the signature mismatch**
+- [x] **Step 2: Run tests to verify they fail on the signature mismatch**
 
 Run: `pytest tests/test_browse_service.py -v`
 Expected: FAIL — `TypeError: list_children() takes 2 positional arguments but 3 were given` (and similarly for `_has_md_below`) across the tests just updated, since the implementation hasn't changed yet.
 
-- [ ] **Step 3: Write the new failing tests for the added behavior**
+- [x] **Step 3: Write the new failing tests for the added behavior**
 
 Append to `tests/test_browse_service.py`:
 
@@ -402,13 +402,13 @@ def test_list_children_omits_pointer_entry_when_target_missing(root, tmp_path):
     assert entries == []
 ```
 
-- [ ] **Step 4: Run new tests to verify they fail**
+- [x] **Step 4: Run new tests to verify they fail**
 
 Run: `pytest tests/test_browse_service.py -k "raw_output_md or numerically or grounding_pointer or grounding_folder or current_brief or pointer_entry" -v`
 Note: `test_has_md_below_false_when_only_raw_output_md_present` matches this filter (`raw_output_md`).
 Expected: FAIL (signature/behavior not implemented yet)
 
-- [ ] **Step 5: Implement**
+- [x] **Step 5: Implement**
 
 Add near the top of `pipeline_app/browse_service.py` (with the other imports):
 
@@ -500,12 +500,12 @@ def list_children(folder: Path, root: Path, repo_root: Path) -> list["Entry"]:
     return dirs + files
 ```
 
-- [ ] **Step 6: Run all `browse_service` tests to verify they pass**
+- [x] **Step 6: Run all `browse_service` tests to verify they pass**
 
 Run: `pytest tests/test_browse_service.py -v`
 Expected: PASS (all tests, including every pre-existing one updated in Step 1)
 
-- [ ] **Step 7: Patch the one existing route call site so the app keeps working**
+- [x] **Step 7: Patch the one existing route call site so the app keeps working**
 
 `list_children`'s signature just changed from 2 args to 3, but `routes/browse.py`'s `_folder_context` (not yet rewritten — that's Task 5) still calls it with 2. Left as-is, every request to `/browse`, `/browse/tree`, or `/browse/file` would 500 between this commit and Task 5's. Patch just the one call site in `pipeline_app/routes/browse.py`'s `_folder_context` function:
 
@@ -526,12 +526,12 @@ def _folder_context(request: Request, rel_path: str) -> dict:
 
 (Only the `list_children(...)` call line actually changes — the rest of the function is unchanged. This whole function gets fully replaced again in Task 5 as part of adding the `root` query param; this is a minimal interim fix, not the final form.)
 
-- [ ] **Step 8: Run the route tests to confirm nothing broke**
+- [x] **Step 8: Run the route tests to confirm nothing broke**
 
 Run: `pytest tests/test_routes_browse.py -v`
 Expected: PASS — every existing `root=output`-default test still passes unchanged, confirming the interim patch didn't regress anything before Task 5 lands.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add pipeline-app/pipeline_app/browse_service.py pipeline-app/pipeline_app/routes/browse.py pipeline-app/tests/test_browse_service.py
@@ -550,7 +550,7 @@ git commit -m "fix(browse): thread repo_root through list_children/_has_md_below
 - Consumes: `db_mod.list_projects(conn) -> list[sqlite3.Row]` (existing, unchanged; each row has `run_id`, `brand`, `created_at`). `runs_root` (Task 1).
 - Produces: `browse_service.list_pipeline_projects(conn, repo_root: Path) -> list[Entry]`. Task 5's route calls this for the pipeline tree's top level (empty `path`).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `tests/test_browse_service.py`, near the top:
 
@@ -634,12 +634,12 @@ def test_list_pipeline_projects_mixed_db_and_orphan_sort_by_real_chronology(conn
     ]
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/test_browse_service.py -k list_pipeline_projects -v`
 Expected: FAIL with `AttributeError: module 'pipeline_app.browse_service' has no attribute 'list_pipeline_projects'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add to the import block in `pipeline_app/browse_service.py`:
 
@@ -712,17 +712,17 @@ def list_pipeline_projects(conn, repo_root: Path) -> list["Entry"]:
     ]
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_browse_service.py -k list_pipeline_projects -v`
 Expected: PASS (7 tests)
 
-- [ ] **Step 5: Run the full browse_service test suite**
+- [x] **Step 5: Run the full browse_service test suite**
 
 Run: `pytest tests/test_browse_service.py -v`
 Expected: PASS (all tests from Tasks 1-4)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add pipeline-app/pipeline_app/browse_service.py pipeline-app/tests/test_browse_service.py
@@ -741,7 +741,7 @@ git commit -m "feat(browse): add list_pipeline_projects for the pipeline tree's 
 - Consumes: `browse_service.root_path`, `list_pipeline_projects`, `list_children`, `resolve_grounding_pointer`, `render_md_file`, `resolve_under_output`, `PathSafetyError`, `FolderReadError` (all from Tasks 1-4 plus existing).
 - Produces: `/browse` (renders both `output` and `pipeline` sections), `/browse/tree?root=&path=`, `/browse/file?root=&path=` — `root` defaults to `"output"` on all three for backward compatibility.
 
-- [ ] **Step 1: Update the one existing test whose assertions change**
+- [x] **Step 1: Update the one existing test whose assertions change**
 
 The htmx links now carry `&root=...`. Replace this test in `tests/test_routes_browse.py`:
 
@@ -761,7 +761,7 @@ def test_browse_tree_items_carry_htmx_attributes_not_ids(client):
     assert 'hx-sync="#browse-doc:replace"' in tree_resp.text
 ```
 
-- [ ] **Step 2: Write the new failing tests**
+- [x] **Step 2: Write the new failing tests**
 
 Append to `tests/test_routes_browse.py`:
 
@@ -957,12 +957,12 @@ def test_browse_tree_unknown_root_returns_invalid_path(client):
     assert "Invalid path." in resp.text
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `pytest tests/test_routes_browse.py -v`
 Expected: FAIL — the updated htmx-attribute test fails on the missing `&root=` suffix; the new `pipeline`-root tests fail (route doesn't accept/handle `root` yet); `TypeError` from `list_children` missing `repo_root` inside the still-unmodified route.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 Replace the entire contents of `pipeline_app/routes/browse.py`:
 
@@ -1061,12 +1061,12 @@ def browse_file(request: Request, path: str = "", root: str = "output"):
     )
 ```
 
-- [ ] **Step 5: Run tests — expect template-related failures still**
+- [x] **Step 5: Run tests — expect template-related failures still**
 
 Run: `pytest tests/test_routes_browse.py -v`
 Expected: The `pipeline`-root and htmx-attribute tests still FAIL at this point (templates haven't been updated — Task 6). Confirm no `TypeError`/`AttributeError` remain and failures are only assertion mismatches on rendered HTML content (e.g. missing "Pipeline Outputs" heading, missing `&root=` in links) — this confirms the route logic itself is correct before moving to templates.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add pipeline-app/pipeline_app/routes/browse.py pipeline-app/tests/test_routes_browse.py
@@ -1085,12 +1085,12 @@ git commit -m "feat(browse): add root query param, pipeline top-level listing, a
 - Consumes: `output`/`pipeline` context dicts from `browse_root` (Task 5, each shaped `{"entries": [...]}` or `{"error": "..."}` or `{"empty_message": "..."}`); `root` context key from `browse_tree` (Task 5).
 - Produces: fully working `/browse` page. No downstream consumers — this is the last task.
 
-- [ ] **Step 1: Run the full test suite to confirm it currently fails only on template content**
+- [x] **Step 1: Run the full test suite to confirm it currently fails only on template content**
 
 Run: `pytest tests/test_routes_browse.py -v`
 Expected: FAIL on the specific assertions noted at the end of Task 5 (missing headings, missing `&root=` in links, missing "No pipeline runs yet." text) — confirms scope before editing templates.
 
-- [ ] **Step 2: Rewrite `browse.html`**
+- [x] **Step 2: Rewrite `browse.html`**
 
 Replace the entire contents of `pipeline_app/templates/browse.html`:
 
@@ -1120,7 +1120,7 @@ Replace the entire contents of `pipeline_app/templates/browse.html`:
 {% endblock %}
 ```
 
-- [ ] **Step 3: Rewrite `browse_tree_items.html`**
+- [x] **Step 3: Rewrite `browse_tree_items.html`**
 
 Replace the entire contents of `pipeline_app/templates/partials/browse_tree_items.html`:
 
@@ -1160,16 +1160,16 @@ Replace the entire contents of `pipeline_app/templates/partials/browse_tree_item
 {% endif %}
 ```
 
-- [ ] **Step 4: Run the full test suite**
+- [x] **Step 4: Run the full test suite**
 
 Run: `pytest tests/ -v`
 Expected: PASS — every test across `test_browse_service.py` and `test_routes_browse.py` (Tasks 1-6), plus all pre-existing suites (`test_routes_projects.py`, `test_routes_stages.py`, etc. — unaffected by this feature) passes.
 
-- [ ] **Step 5: Manual smoke check**
+- [x] **Step 5: Manual smoke check**
 
 Run the app and confirm visually: `uvicorn pipeline_app.main:create_default_app --factory --reload` from `pipeline-app/`, then open `http://127.0.0.1:8420/browse` (adjust port/host to match how it's normally launched in this repo) — confirm "Pipeline Outputs" lists real `runs/` projects newest-first with brand labels, a stage folder's artifact versions open in the same viewer pane as `output/` docs, and an RGS project's grounding stage (if one exists locally) shows a clickable `current-brief.md (...)` entry that renders the real brief.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add pipeline-app/pipeline_app/templates/browse.html pipeline-app/pipeline_app/templates/partials/browse_tree_items.html
