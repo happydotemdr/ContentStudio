@@ -1,7 +1,7 @@
 # Pipeline outputs on the Browse page — design spec
 
 Date: 2026-07-30
-Status: Approved
+Status: Approved (revised after Opus review — see "Revision history")
 
 ## Problem
 
@@ -14,9 +14,19 @@ no single place to see every artifact from every project, browsable the same
 way the corpus docs already are.
 
 One stage is a special case: `grounding` (RaisingGoodSports only) never writes
-`artifact.vN.md` into its `runs/` folder — it writes a `pointer.yaml` pointing
-at the real file in the repo-root `rgs-briefs/` folder. A plain filesystem scan
-of `runs/` would show that stage as always-empty.
+`artifact.vN.md` into its `runs/` folder — it writes a `pointer.yaml` whose
+`rgs_brief_path` field is an already-repo-root-relative path (e.g.
+`rgs-briefs/2026-07-28-....md`) into the real file, living in the repo-root
+`rgs-briefs/` folder. A plain filesystem scan of `runs/` would show that stage
+as always-empty, since `.md`-file discovery (`_has_md_below`) only looks for
+`.md` files and `pointer.yaml` isn't one — this filters `00-grounding` out of
+its *parent* folder's listing before any stage-level logic runs.
+
+Each stage folder also contains a `raw_output.md` (`turn_service.py:132`) — a
+pre-versioning scratch file whose content becomes the body of the next
+`artifact.vN.md` once a turn finalizes. It persists on disk after that, so a
+naive `.md`-file scan would surface it as an extra, confusing entry alongside
+the real versioned artifacts.
 
 ## Goals
 
@@ -25,8 +35,11 @@ of `runs/` would show that stage as always-empty.
 - Reuse the existing markdown-viewing pipeline (`render_md_file`,
   `browse_file.html`) unchanged — a pipeline artifact opens exactly like a
   corpus doc does today.
-- Resolve the grounding stage's pointer-based storage into one synthetic,
-  clickable entry so grounding output isn't invisible in this view.
+- Resolve the grounding stage's pointer-based storage into one real,
+  clickable entry (not a synthetic path scheme) so grounding output isn't
+  invisible in this view, with explicit path-containment validation on the
+  pointer's target — this is a new trust boundary (a file read whose target
+  path comes from YAML content) and gets checked accordingly.
 - Keep `output/` browsing (existing behavior) completely intact.
 
 ## Non-goals
@@ -55,91 +68,160 @@ def root_path(repo_root: Path, root: str) -> Path:
     raise ValueError(f"unknown browse root: {root!r}")
 ```
 
-`resolve_under_output`, `list_children`, and `render_md_file` are unchanged in
-behavior — they already just take a `root: Path` and a folder/file `Path`
-under it. Callers pass whichever root's path.
+`resolve_under_output` is unchanged — it already just takes a `root: Path`
+and resolves safely under it, for either named root.
 
 ### 2. Routes gain a `root` query param
 
 `routes/browse.py`'s three routes (`/browse`, `/browse/tree`, `/browse/file`)
 each gain `root: str = "output"` (default preserves today's behavior for any
-existing bookmarked links). `_folder_context` and the file route resolve
+existing bookmarked links). `_folder_context` resolves
 `browse_service.root_path(repo_root, root)` instead of always calling
-`output_root(...)`.
+`output_root(...)`. If `runs/` doesn't exist yet (fresh checkout, no projects
+created), `/browse/tree?root=pipeline` returns a friendly "No pipeline runs
+yet." context distinct from the generic "Folder not found." error, so an
+empty pipeline section doesn't read as broken.
 
-### 3. Pipeline tree contents (project → stage → version)
+### 3. `list_children` / `_has_md_below` gain a `repo_root` parameter
 
-A new function, `list_pipeline_projects(conn, repo_root) -> list[Entry]`,
-builds the top level of the pipeline tree:
+Both functions currently take `(folder, root)`. They gain a third parameter,
+`repo_root: Path`, needed because a grounding pointer's target is resolved
+relative to `repo_root` (`rgs-briefs/...`), not relative to `root` (which is
+`runs/` for the pipeline tree, `output/` for the corpus tree — neither is
+`repo_root` itself, and the two named roots don't share a common ancestor
+inside the repo tree either way, so this can't be derived from `root` alone).
+For `output/` scanning, `repo_root` is simply threaded through and unused by
+existing logic — no behavior change there.
 
-- Enumerate `runs/*` folders on disk (filesystem is the source of truth, same
-  principle as `output/` browsing — no folder is hidden just because its DB
-  row is missing).
-- For each, look up its `brand` from the `projects` table by `run_id` (a
-  best-effort annotation, not a requirement — a folder with no matching DB row
-  still appears, just without a `(brand)` suffix).
-- Label: `{run_id} ({brand})` or just `{run_id}` if no DB match.
-- Sort **newest first**, parsed from the trailing `YYYYMMDD-HHMMSS` in
-  `run_id` (falls back to name-sort if a folder doesn't match that pattern).
+**File-inclusion rules** (in `list_children`), in order:
 
-Below a project, `list_children` already recurses correctly with no changes:
-stage folders (`00-grounding`, `01-ideation`, ...) sort correctly today because
-`NN-` prefixes are already zero-padded strings. One real bug to fix while
-here: `_versions_in`/`list_children`'s file sort is a plain string sort, so
-`artifact.v10.md` sorts before `artifact.v2.md` once a stage passes 9
-revisions. `list_children` gets a version-aware sort key for filenames
-matching `artifact.v{N}.md` (numeric on `N`), falling back to the existing
-alpha sort for anything else — this fixes the bug for both the new pipeline
-view and the (currently theoretical, since `output/` doesn't contain
-`artifact.vN.md` files) general case.
+1. A file named `raw_output.md` is always skipped — it's pre-versioning
+   scratch state already captured in the corresponding `artifact.vN.md` body,
+   and showing both is redundant clutter, not useful history.
+2. A file matching `artifact.v{N}.md` or any other `.md` file: included as
+   today.
+3. A file named exactly `pointer.yaml`: read via
+   `grounding_service.read_pointer(folder)`. If it resolves to an existing
+   file under `repo_root`, include a synthetic `Entry` — name
+   `current-brief.md → {target filename}`, but critically **`rel_path` is
+   the pointer.yaml's own real, already-safe path** (e.g.
+   `{run_id}/00-grounding/pointer.yaml`), not an invented scheme. It resolves
+   through the existing `resolve_under_output` exactly like any other file,
+   with no new path-safety surface at the tree-building layer. If the
+   pointer is missing or its target doesn't exist, no entry is added (empty
+   stage, accurately).
 
-### 4. Grounding special case
+**`_has_md_below`** gets the matching fix: a folder counts as "has content"
+if it has an `.md` file below (existing rule, unchanged) **or** it directly
+contains a `pointer.yaml` whose target resolves to an existing file under
+`repo_root` (checked via the same `read_pointer` + existence check as above).
+This is what makes `00-grounding` survive its *parent* folder's listing filter
+— today it's invisible before `list_children` on the stage folder itself is
+ever reached, since the parent-level scan is what decides whether to
+recurse into it at all. No brand check is needed anywhere in this logic:
+`pointer.yaml` only exists in `00-grounding` folders for RGS projects by
+construction (`project_service.create_project` never materializes that stage
+row/dir for other brands — `pipeline_config.py`'s `brand_scope` filtering
+already guarantees this), so the file-based check is sufficient without
+threading brand/project context through the recursive scan.
 
-When `list_children` scans a stage folder whose name matches the grounding
-stage's dir (`00-grounding`, brand-scoped to `raisinggoodsports`), it reads
-that folder's `pointer.yaml` via the existing `grounding_service.read_pointer`.
-If present and the target file exists under `rgs-briefs/`, one synthetic
-`Entry` is appended: name `current-brief.md → {target filename}`, with a
-distinct `rel_path` scheme (`pointer:{run_id}/00-grounding`) that isn't a real
-filesystem path — it signals to the file route "resolve via the pointer, not
-directly." If no pointer or the target is missing, no synthetic entry is
-added (stage shows genuinely empty, which is accurate).
+**Version sort fix**: `list_children`'s `files.sort(key=lambda e: e.name.lower())`
+is replaced with a key that sorts `artifact.v{N}.md` names numerically on
+`N` (matching a local regex, same pattern as `artifacts._VERSION_RE`) and
+falls back to the existing alpha sort for anything else (e.g. the synthetic
+`current-brief.md` entry). This was misattributed in the original draft of
+this spec to `artifacts._versions_in` — that function is already numeric
+(`int(m.group(1))`); the actual bug is `browse_service.py`'s file sort.
+`output/` doesn't currently contain any `artifact.vN.md`-named files, so this
+is a no-op there today, not a behavior change requiring justification beyond
+"fixes the one real place it matters."
 
-`/browse/file` recognizes the `pointer:` prefix, re-reads the same
-`pointer.yaml`, resolves the target under `repo_root / "rgs-briefs"`
-(a third, internal-only root — never exposed as a browsable top-level
-section, only ever reached via this server-generated link), and renders it
-through the existing `render_md_file`.
+### 4. Pointer resolution in the file route — explicit containment check
 
-### 5. Template changes
+`routes/browse.py`'s `/browse/file` handler, after resolving `file_path` via
+`resolve_under_output` (which may now resolve to a real `pointer.yaml` under
+`runs/`), gains one branch **before** its existing `.md`-suffix check:
 
-- `browse.html`: two stacked sections, each with its own `htmx`-loaded tree
-  container — `Pipeline Outputs` (`hx-get="/browse/tree?root=pipeline"`) above
-  `Corpus Docs` (`hx-get="/browse/tree?root=output"`, today's behavior,
-  functionally unchanged apart from now passing `root=output` explicitly).
-  Both feed the same `#browse-doc` viewer pane via the existing click/htmx
-  wiring in `browse_tree_items.html` — no changes needed to
-  `browse_file.html`.
-- `partials/browse_tree_items.html`: needs `root` threaded through its
-  recursive `hx-get` links (folder-expand and file-select) so descending into
-  a subfolder or opening a file preserves which root it came from.
+```python
+if file_path.name == "pointer.yaml":
+    target_rel = grounding_service.read_pointer(file_path.parent)
+    rgs_briefs_root = (repo_root / "rgs-briefs").resolve()
+    target = (repo_root / (target_rel or "")).resolve() if target_rel else None
+    if target is None or not target.is_relative_to(rgs_briefs_root) or not target.exists():
+        context = {"error": "Grounding pointer could not be resolved."}
+    else:
+        file_path = target  # falls through to the existing .md/render checks
+```
 
-### 6. Error handling
+The `is_relative_to(rgs_briefs_root)` check is the actual security property
+here — not "this link is server-generated," which the original draft of this
+spec incorrectly treated as sufficient. `pointer.yaml`'s content is
+YAML read from disk; treating its `rgs_brief_path` value as a trusted
+relative path without containment validation would let a corrupted or
+hand-edited pointer file read arbitrary files under `repo_root`. This mirrors
+the validation `resolve_under_output` already does for ordinary tree
+navigation, applied at the one new point where a file path comes from
+content rather than from the request/tree structure.
 
-No new error paths — this reuses `PathSafetyError`, `FolderReadError`, and the
-5MB oversize cap exactly as they exist today. The one new failure mode
-(pointer file references a deleted `rgs-briefs` file) degrades to "no
-synthetic entry shown," not a 500.
+No third named root is introduced — `rgs-briefs/` is validated inline against
+`repo_root`, not exposed as a browsable root or reachable via any
+user-suppliable query parameter.
+
+### 5. Pipeline tree top level (project listing)
+
+A new function, `list_pipeline_projects(conn, repo_root) -> list[Entry]`:
+
+- Enumerates `runs/*` folders on disk (filesystem is the source of truth,
+  same principle as `output/` browsing — no folder is hidden just because
+  its DB row is missing).
+- Builds a `run_id -> (brand, created_at)` lookup from `db_mod.list_projects(conn)`
+  (already returns both columns — no new DB query function needed).
+- Label: `{run_id} ({brand})` if a DB match exists, else just `{run_id}`.
+- Sort **newest first**: DB-matched projects sort by their `created_at`
+  (ISO 8601, sorts correctly as a string); folders with no DB match fall back
+  to the `YYYYMMDD-HHMMSS` suffix parsed from the folder name, and sort
+  amongst the rest by that parsed timestamp. A folder matching neither
+  pattern sorts last, by name.
+
+### 6. Template changes
+
+- `browse.html`: drops the hardcoded `<h1>Browse output/</h1>` and the
+  single server-rendered `{% include %}`. Becomes two independently
+  htmx-loaded sections, each with its own heading and its own error/empty
+  state — `Pipeline Outputs` (`hx-get="/browse/tree?root=pipeline"`, fires on
+  page load) above `Corpus Docs` (`hx-get="/browse/tree?root=output"`, same
+  load-on-page-open behavior that today's server-side include effectively
+  provided). Both feed the same shared `#browse-doc` viewer pane.
+- `partials/browse_tree_items.html`: threads `root` through its recursive
+  `hx-get` links (folder-expand and file-select), so descending into a
+  subfolder or opening a file preserves which root it came from.
+- `partials/browse_file.html`: unchanged — it already renders whatever
+  `render_md_file` returns, regardless of which root or which special-case
+  path produced the file being viewed.
+
+### 7. Error handling
+
+- Reuses `PathSafetyError`, `FolderReadError`, and the 5MB oversize cap
+  exactly as they exist today for all ordinary tree/file navigation.
+- New failure mode, handled explicitly (not a 500): a pointer references a
+  deleted or out-of-bounds target — surfaces as "Grounding pointer could not
+  be resolved." in the viewer pane (§4).
+- New empty state, handled explicitly: `runs/` doesn't exist yet — "No
+  pipeline runs yet." in the Pipeline Outputs section (§2).
 
 ## Testing
 
 - `test_browse_service.py`: `root_path()` for both known roots and the
-  unknown-root error; the numeric version-sort fix (`v2` before `v10`); the
-  grounding pointer → synthetic entry logic (present pointer, missing pointer,
-  pointer target deleted).
+  unknown-root error; `list_children`'s numeric version-sort fix (`v2` before
+  `v10`); `raw_output.md` exclusion; the grounding pointer → synthetic entry
+  logic (present pointer, missing pointer, pointer target deleted) at both
+  the `_has_md_below` (parent-filter) and `list_children` (entry-generation)
+  layers.
 - `test_routes_browse.py`: `root=pipeline` end-to-end for tree and file
-  routes, including the `pointer:` file-route path; confirm `root=output`
-  behavior is byte-identical to pre-change responses.
+  routes, including the `pointer.yaml`-resolution path — both the success
+  case and the containment-violation/missing-target error case; confirm
+  `root=output` behavior is byte-identical to pre-change responses; confirm
+  the "no `runs/` folder" empty state.
 
 ## Risks / open questions
 
@@ -147,3 +229,26 @@ None blocking. Worth calling out: pipeline-outputs browsing is filesystem-driven
 first, DB-annotated second — consistent with how `output/` already works, and
 means an orphaned `runs/` folder (DB row deleted, folder left behind) still
 shows up rather than silently vanishing.
+
+## Revision history
+
+- **2026-07-30, initial draft → Opus review → this revision.** An Opus-model
+  review caught three implementability bugs in the initial draft, all fixed
+  above: (1) the grounding synthetic-entry logic was placed one level too
+  deep to ever fire, since the parent folder's `.md`-only filter hides
+  `00-grounding` first — fixed by extending `_has_md_below` itself (§3); (2)
+  the proposed "third internal-only root" for `rgs-briefs/` resolution
+  double-prefixed the path, since `pointer.yaml` already stores a
+  repo-root-relative path — fixed by resolving directly under `repo_root`
+  with an explicit containment check (§4); (3) the original `pointer:`
+  synthetic rel_path scheme was asserted safe on the basis of being
+  "server-generated" without actually validating that a client-supplied query
+  string couldn't smuggle a traversal payload through it — fixed by not
+  introducing that scheme at all, instead treating `pointer.yaml` as a real,
+  already-safely-contained file and moving the actual new trust boundary
+  (YAML-sourced target path) to one explicit, tested containment check (§4).
+  The review also corrected a misattribution (the version-sort bug is in
+  `browse_service.list_children`, not `artifacts._versions_in`, which was
+  already correct) and identified two gaps (no existing `run_id`-keyed DB
+  lookup — resolved by reusing `list_projects()`, §5; `raw_output.md` was
+  unaccounted for — resolved by explicit exclusion, §3).
