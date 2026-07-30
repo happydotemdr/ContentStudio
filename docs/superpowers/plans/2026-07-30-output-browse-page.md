@@ -20,6 +20,7 @@
 - All relative paths emitted into HTML (in `hx-get` URLs) use `PurePath.as_posix()` — never a raw `str(path)`, which would emit backslashes on Windows.
 - This worktree's `output/` directory does not exist (git-ignored, only present in the main checkout). Every automated test builds its own fake `output/` tree under `tmp_path`; nothing in this plan touches the real corpus.
 - This worktree's `base.html` currently has no nav list at all (a prior refactor removed `partials/header.html`) — the only UI change to it is one added `<a href="/browse">Browse</a>` link, not a rebuilt nav system.
+- This worktree has no `pipeline-app/.venv` (unlike the main checkout). All `pytest`/`uvicorn` commands below run against the system `python` on PATH, which already has `pipeline_app` importable and `pytest`/`jinja2` installed — verified before writing this plan (`python -c "import pipeline_app"` resolves to this worktree's package).
 
 ---
 
@@ -144,15 +145,21 @@ def test_resolve_under_output_rejects_sibling_prefix_escape(tmp_path):
     (tmp_path / "output-old").mkdir()
     (tmp_path / "output-old" / "secret.md").write_text("x", encoding="utf-8")
     root = browse_service.output_root(tmp_path)
-    # A naive str.startswith(str(root)) check would wrongly admit this --
-    # "output-old" shares the "output" prefix but is a different directory.
+    # This is caught by the ".." segment rejection before the containment
+    # check even runs -- with that rejection in place, is_relative_to() is
+    # currently unreachable dead code for any input, kept only as
+    # defense-in-depth (e.g. if the ".." check is ever loosened). This test
+    # still matters: it's the concrete regression check that a naive
+    # str.startswith(str(root)) containment check (which "output-old" would
+    # wrongly pass, since it shares the "output" prefix) is never
+    # reintroduced here.
     with pytest.raises(browse_service.PathSafetyError):
         browse_service.resolve_under_output(root, "../output-old/secret.md")
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_browse_service.py -v`
+Run: `cd pipeline-app && python -m pytest tests/test_browse_service.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'pipeline_app.browse_service'`
 
 - [ ] **Step 3: Write the minimal implementation**
@@ -209,8 +216,8 @@ def resolve_under_output(root: Path, rel_path: str) -> Path:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_browse_service.py -v`
-Expected: PASS (10 tests)
+Run: `cd pipeline-app && python -m pytest tests/test_browse_service.py -v`
+Expected: PASS (9 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -228,7 +235,7 @@ git commit -m "feat(pipeline-app): add path-safety layer for Browse page"
 - Test: `tests/test_browse_service.py`
 
 **Interfaces:**
-- Consumes: nothing new from Task 1 directly (operates on already-resolved `Path`s)
+- Consumes: `browse_service.output_root(repo_root: Path) -> Path` (Task 1) — the test fixture's `root` uses it, and `list_children`/`_has_md_below` both operate on `Path`s already resolved by Task 1's `output_root`/`resolve_under_output`, though they don't call those functions themselves
 - Produces: `Entry` dataclass, `list_children(folder: Path, root: Path) -> list[Entry]`
 
 - [ ] **Step 1: Write the failing tests**
@@ -303,7 +310,7 @@ def test_list_children_skips_symlinked_file(root, tmp_path):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_browse_service.py -v`
+Run: `cd pipeline-app && python -m pytest tests/test_browse_service.py -v`
 Expected: FAIL — `AttributeError: module 'pipeline_app.browse_service' has no attribute 'list_children'`
 
 - [ ] **Step 3: Write the minimal implementation**
@@ -323,38 +330,42 @@ def _is_md_name(name: str) -> bool:
 
 
 def _has_md_below(folder: Path) -> bool:
-    for entry in os.scandir(folder):
-        if entry.is_symlink():
-            continue
-        if entry.is_file() and _is_md_name(entry.name):
-            return True
-        if entry.is_dir() and _has_md_below(Path(entry.path)):
-            return True
+    with os.scandir(folder) as it:
+        for entry in it:
+            if entry.is_symlink():
+                continue
+            if entry.is_file() and _is_md_name(entry.name):
+                return True
+            if entry.is_dir() and _has_md_below(Path(entry.path)):
+                return True
     return False
 
 
 def list_children(folder: Path, root: Path) -> list["Entry"]:
     dirs: list[Entry] = []
     files: list[Entry] = []
-    for entry in os.scandir(folder):
-        if entry.is_symlink():
-            continue
-        path = Path(entry.path)
-        rel_path = path.relative_to(root).as_posix()
-        if entry.is_dir():
-            if _has_md_below(path):
-                dirs.append(Entry(name=entry.name, rel_path=rel_path, is_dir=True))
-        elif entry.is_file() and _is_md_name(entry.name):
-            files.append(Entry(name=entry.name, rel_path=rel_path, is_dir=False))
+    with os.scandir(folder) as it:
+        for entry in it:
+            if entry.is_symlink():
+                continue
+            path = Path(entry.path)
+            rel_path = path.relative_to(root).as_posix()
+            if entry.is_dir():
+                if _has_md_below(path):
+                    dirs.append(Entry(name=entry.name, rel_path=rel_path, is_dir=True))
+            elif entry.is_file() and _is_md_name(entry.name):
+                files.append(Entry(name=entry.name, rel_path=rel_path, is_dir=False))
     dirs.sort(key=lambda e: e.name.lower())
     files.sort(key=lambda e: e.name.lower())
     return dirs + files
 ```
 
+Both use `with os.scandir(...) as it:` (a context manager) rather than a bare `os.scandir(...)` for-loop — `os.scandir` holds an open OS directory handle until closed/exhausted; the context-manager form guarantees it closes even if an exception propagates partway through the loop, avoiding a `ResourceWarning`/handle leak on Windows.
+
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_browse_service.py -v`
-Expected: PASS (17 tests total; the two symlink tests pass or skip depending on platform permissions)
+Run: `cd pipeline-app && python -m pytest tests/test_browse_service.py -v`
+Expected: PASS (16 tests total; the two symlink tests pass or skip depending on platform permissions)
 
 - [ ] **Step 5: Commit**
 
@@ -431,11 +442,23 @@ def test_render_md_file_oversize_never_reads_content(tmp_path, monkeypatch):
     assert result["cap_mb"] == pytest.approx(5.0)
     assert result["size_mb"] > 5.0
     assert result["abs_path"] == str(f)
+
+
+def test_render_md_file_stat_error_returns_error_not_500(tmp_path, monkeypatch):
+    f = tmp_path / "vanishes.md"
+    f.write_text("# Title\n", encoding="utf-8")
+
+    def _raise(*args, **kwargs):
+        raise OSError("file vanished")
+
+    monkeypatch.setattr(Path, "stat", _raise)
+    result = browse_service.render_md_file(f)
+    assert result == {"error": "Could not read file: file vanished"}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_browse_service.py -v`
+Run: `cd pipeline-app && python -m pytest tests/test_browse_service.py -v`
 Expected: FAIL — `AttributeError: module 'pipeline_app.browse_service' has no attribute 'render_md_file'`
 
 - [ ] **Step 3: Write the minimal implementation**
@@ -444,7 +467,14 @@ Expected: FAIL — `AttributeError: module 'pipeline_app.browse_service' has no 
 # append to pipeline_app/browse_service.py
 
 def render_md_file(path: Path) -> dict:
-    size = path.stat().st_size
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        # e.g. the file was deleted on disk between the route's existence
+        # check and this call -- a real (if narrow) TOCTOU window given
+        # this is a live filesystem browser, not a security boundary
+        # concern here (single-user, read-only local app).
+        return {"error": f"Could not read file: {exc}"}
     if size > MAX_FILE_BYTES:
         return {
             "oversize": True,
@@ -470,7 +500,7 @@ def render_md_file(path: Path) -> dict:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_browse_service.py -v`
+Run: `cd pipeline-app && python -m pytest tests/test_browse_service.py -v`
 Expected: PASS (23 tests total)
 
 - [ ] **Step 5: Commit**
@@ -556,9 +586,14 @@ def test_browse_tree_items_carry_htmx_attributes_not_ids(client):
     resp = test_client.get("/browse")
     assert resp.status_code == 200
     assert 'hx-get="/browse/tree?path=thinkers"' in resp.text
-    assert 'hx-trigger="toggle once"' in resp.text
+    assert 'hx-trigger="toggle once from:closest details"' in resp.text
     assert 'hx-target="this"' in resp.text
-    assert 'hx-get="/browse/file?path=thinkers%2Fplato.md"' in resp.text
+    # Jinja's `urlencode` filter leaves "/" unescaped (verified against the
+    # installed jinja2==3.1.6: only reserved query-string characters like
+    # "&"/"="/"+" get percent-encoded) -- a literal, unencoded "/" here is
+    # correct, not a bug: FastAPI/Starlette's query-string parsing accepts
+    # unencoded slashes in a value just fine.
+    assert 'hx-get="/browse/file?path=thinkers/plato.md"' in resp.text
     assert 'hx-sync="#browse-doc:replace"' in resp.text
 
 
@@ -570,7 +605,7 @@ def test_browse_nav_link_present(client):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_routes_browse.py -v`
+Run: `cd pipeline-app && python -m pytest tests/test_routes_browse.py -v`
 Expected: FAIL — 404 on `/browse` (route not registered yet)
 
 - [ ] **Step 3: Write the minimal implementation**
@@ -632,16 +667,19 @@ def browse_tree(request: Request, path: str = ""):
 <!-- pipeline_app/templates/partials/browse_tree_items.html -->
 {% if error %}
 <p class="browse-error">{{ error }}</p>
-{% elif not entries %}
-<p class="browse-empty">No .md files found here.</p>
 {% else %}
+  {# A folder with no .md files anywhere below it (only reachable via a
+     stale/typed-in path, since list_children already excludes such
+     subfolders from their parent's listing) renders as an empty result
+     with no special messaging, per the design spec -- an empty folder is
+     just an empty list, same as any other folder with no visible children. #}
   {% for entry in entries %}
     {% if entry.is_dir %}
     <details>
       <summary>{{ entry.name }}</summary>
       <div class="children"
            hx-get="/browse/tree?path={{ entry.rel_path | urlencode }}"
-           hx-trigger="toggle once"
+           hx-trigger="toggle once from:closest details"
            hx-target="this"
            hx-swap="innerHTML"></div>
     </details>
@@ -658,6 +696,14 @@ def browse_tree(request: Request, path: str = ""):
   {% endfor %}
 {% endif %}
 ```
+
+Note on `hx-trigger="toggle once from:closest details"`: the native `toggle` event fires on the
+`<details>` element itself and does not bubble to its children, so `hx-get` on the inner
+`<div class="children">` would never fire without the explicit `from:closest details` modifier
+telling htmx to listen on the ancestor `<details>` instead of the div carrying the attribute.
+`hx-target="this"` still refers to the div (the element with `hx-target` on it), so the
+fetched children swap into that div's own `innerHTML` regardless of which element the
+listener is attached to.
 
 Modify `pipeline_app/main.py`:
 
@@ -688,14 +734,14 @@ Append to `pipeline_app/static/style.css`:
 .browse-file-row a { cursor: pointer; }
 .browse-doc-wrap { flex: 1 1 auto; min-width: 0; }
 .browse-error { color: #a00; }
-.browse-empty, .browse-placeholder { color: #777; font-style: italic; }
+.browse-placeholder { color: #777; font-style: italic; }
 .htmx-indicator { opacity: 0; }
 .htmx-request.htmx-indicator, .htmx-request .htmx-indicator { opacity: 1; }
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_routes_browse.py -v`
+Run: `cd pipeline-app && python -m pytest tests/test_routes_browse.py -v`
 Expected: PASS (5 tests)
 
 - [ ] **Step 5: Commit**
@@ -781,13 +827,16 @@ def test_browse_tree_folder_with_no_md_anywhere_is_empty_not_error(client):
     test_client, tmp_path = client
     _touch(tmp_path / "output" / "empty_ish" / "raw.txt")
     resp = test_client.get("/browse/tree", params={"path": "empty_ish"})
+    # Empty, not an error: no error partial, and none of the excluded
+    # folder's contents leak into the response either.
     assert resp.status_code == 200
-    assert "No .md files found here." in resp.text
+    assert "browse-error" not in resp.text
+    assert "raw.txt" not in resp.text
 ```
 
 - [ ] **Step 2: Run tests to verify they fail (or pass already)**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_routes_browse.py -v`
+Run: `cd pipeline-app && python -m pytest tests/test_routes_browse.py -v`
 Expected: These should already PASS given Task 4's implementation — this step is a verification pass, not a new-code step. If any fail, it means Task 4's `_folder_context`/`list_children` has a gap; fix `browse_service.py` or `routes/browse.py` (not the tests) until all pass.
 
 - [ ] **Step 3: (only if Step 2 found failures) Fix the implementation**
@@ -796,7 +845,7 @@ Only touch `browse_service.py` or `routes/browse.py` — the tests above encode 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_routes_browse.py -v`
+Run: `cd pipeline-app && python -m pytest tests/test_routes_browse.py -v`
 Expected: PASS (13 tests total)
 
 - [ ] **Step 5: Commit**
@@ -902,7 +951,7 @@ def test_browse_file_uppercase_extension_renders(client):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_routes_browse.py -v`
+Run: `cd pipeline-app && python -m pytest tests/test_routes_browse.py -v`
 Expected: FAIL — 404 on `/browse/file` (route not implemented yet)
 
 - [ ] **Step 3: Write the minimal implementation**
@@ -958,7 +1007,7 @@ def browse_file(request: Request, path: str = ""):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest tests/test_routes_browse.py -v`
+Run: `cd pipeline-app && python -m pytest tests/test_routes_browse.py -v`
 Expected: PASS (22 tests total)
 
 - [ ] **Step 5: Commit**
@@ -983,7 +1032,7 @@ git commit -m "feat(pipeline-app): add Browse page file rendering endpoint"
 
 - [ ] **Step 1: Run the full test suite**
 
-Run: `cd pipeline-app && .venv/Scripts/python.exe -m pytest -q`
+Run: `cd pipeline-app && python -m pytest -q`
 Expected: PASS — every existing test (Inspector, projects, stages, skills, doctor, etc.) plus all new `browse_service`/`routes_browse` tests, with no regressions.
 
 - [ ] **Step 2: Manual verification note (cannot be automated in this worktree)**
@@ -994,7 +1043,7 @@ Expected: PASS — every existing test (Inspector, projects, stages, skills, doc
 # from the main checkout, not this worktree, OR after copying/symlinking
 # a real output/ subtree into this worktree first
 cd pipeline-app
-.venv/Scripts/python.exe -m uvicorn pipeline_app.main:create_default_app --factory --reload
+python -m uvicorn pipeline_app.main:create_default_app --factory --reload
 ```
 
 Then open `http://127.0.0.1:8000/browse`, expand a few folders, click into a `.md` file, and confirm the frontmatter table + rendered body appear in the right-hand pane. This step has no pass/fail assertion beyond "no exception in the server log and the page renders" — the automated test suite above is what actually verifies correctness; this is a sanity spot-check.
