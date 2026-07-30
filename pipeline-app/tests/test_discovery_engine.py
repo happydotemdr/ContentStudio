@@ -174,3 +174,168 @@ def test_validate_reports_not_ok_when_enumeration_empty():
     assert result["ok"] is False
     assert result["item"] is None
     assert adapter.downloaded_ids == []
+
+
+import sqlite3
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from pipeline_app import db
+from pipeline_app.discovery_engine import make_run_id, now_iso, run_discovery
+
+
+@pytest.fixture
+def engine_conn(tmp_path: Path):
+    db_path = tmp_path / "pipeline.db"
+    schema_path = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db.init_db(db_path, schema_path)
+    connection = db.get_connection(db_path)
+    yield connection
+    connection.close()
+
+
+class SingleFakeAdapter:
+    """One FakeAdapter reused for every handle in a run_discovery test."""
+    def __init__(self, enumerated_by_handle, on_disk_by_handle=None, fail_handles=None):
+        self._enumerated = enumerated_by_handle
+        self._on_disk = on_disk_by_handle or {}
+        self._fail = set(fail_handles or [])
+
+    def on_disk_ids(self, repo_root, handle):
+        return self._on_disk.get(handle, set())
+
+    def enumerate_newest_first(self, handle, keyword_filter):
+        if handle in self._fail:
+            raise RuntimeError(f"simulated enumerate failure for {handle}")
+        return self._enumerated.get(handle, [])
+
+    def peek_upload_date(self, item_id):
+        # Every test handle in this fixture is "brand new" (empty on_disk_ids
+        # by default), so process_handle's new-handle branch always needs a
+        # date to pass the 3-month cutoff check before it will call
+        # download_item at all -- return a fixed recent date rather than None,
+        # or every item gets silently skipped and no test here would ever
+        # observe a download. (Tests that care about the exact date-cutoff
+        # boundary use Task 9's own FakeAdapter with an explicit `dates` dict.)
+        return "2026-07-29"
+
+    def download_item(self, repo_root, handle, item_id, title):
+        return {"id": item_id, "ok": True, "published": "2026-07-29"}
+
+
+def test_now_iso_and_make_run_id_are_stable_format():
+    now = __import__("datetime").datetime(2026, 7, 30, 6, 0, 0, tzinfo=__import__("datetime").timezone.utc)
+    assert now_iso(now) == "2026-07-30T06:00:00+00:00"
+    run_id = make_run_id(now)
+    assert run_id.startswith("2026-07-30T06-00-00")
+
+
+def test_run_discovery_completes_and_writes_record(engine_conn, tmp_path):
+    handle_id = db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]})
+    now = __import__("datetime").datetime(2026, 7, 30, 6, 0, 0, tzinfo=__import__("datetime").timezone.utc)
+
+    result = run_discovery(
+        engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental", now=now,
+    )
+    assert result["status"] == "completed"
+    run_row = db.get_run(engine_conn, result["run_row_id"])
+    assert run_row["status"] == "completed"
+    assert run_row["md_path"] is not None
+    assert Path(run_row["md_path"]).exists() or (tmp_path / run_row["md_path"]).exists()
+    results = db.list_run_handle_results(engine_conn, result["run_row_id"])
+    assert len(results) == 1
+    assert results[0]["status"] == "ok"
+    assert results[0]["items_downloaded"] == 1
+    assert db.get_handle(engine_conn, handle_id)["last_seen_published_at"] == "2026-07-29"
+
+
+def test_run_discovery_excludes_handles_with_included_false(engine_conn, tmp_path):
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    excluded_id = db.create_handle(engine_conn, "youtube", "@b", "B", "guru", None, now_iso())
+    db.set_handle_included(engine_conn, excluded_id, False)
+    adapter = SingleFakeAdapter({
+        "@a": [{"id": "v1", "title": "x", "published": None}],
+        "@b": [{"id": "v2", "title": "y", "published": None}],
+    })
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental")
+    results = db.list_run_handle_results(engine_conn, result["run_row_id"])
+    assert len(results) == 1  # only @a
+
+
+def test_run_discovery_one_bad_handle_does_not_abort_the_run(engine_conn, tmp_path):
+    db.create_handle(engine_conn, "youtube", "@good", "Good", "guru", None, now_iso())
+    db.create_handle(engine_conn, "youtube", "@bad", "Bad", "guru", None, now_iso())
+    adapter = SingleFakeAdapter(
+        {"@good": [{"id": "v1", "title": "x", "published": None}]},
+        fail_handles={"@bad"},
+    )
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental")
+    assert result["status"] == "completed_with_errors"
+    results = {r["handle_id"]: r["status"] for r in db.list_run_handle_results(engine_conn, result["run_row_id"])}
+    assert list(results.values()).count("ok") == 1
+    assert list(results.values()).count("error") == 1
+
+
+def test_run_discovery_no_new_content_records_that_status(engine_conn, tmp_path):
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@a": []})
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental")
+    results = db.list_run_handle_results(engine_conn, result["run_row_id"])
+    assert results[0]["status"] == "no_new_content"
+    assert result["status"] == "completed"
+
+
+def test_run_discovery_second_concurrent_call_is_locked(engine_conn, tmp_path):
+    # Simulate a run already in progress by inserting a running row directly.
+    db.insert_running_run(engine_conn, "already-running", "manual", "incremental", now_iso())
+    adapter = SingleFakeAdapter({})
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental")
+    assert result["status"] == "locked"
+    assert db.list_run_handle_results(engine_conn, result["run_row_id"]) == []
+    locked_row = db.get_run(engine_conn, result["run_row_id"])
+    assert locked_row["md_path"] is not None  # locked runs still get a paired record
+
+
+def test_run_discovery_reclaims_stale_run_and_writes_abandoned_record(engine_conn, tmp_path):
+    stale_started = "2026-07-30T05:00:00+00:00"
+    stale_id = db.insert_running_run(engine_conn, "stale-run", "manual", "incremental", stale_started)
+    db.update_run_heartbeat(engine_conn, stale_id, "2026-07-30T05:01:00+00:00")
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]})
+    now = __import__("datetime").datetime(2026, 7, 30, 6, 0, 0, tzinfo=__import__("datetime").timezone.utc)
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental", now=now)
+    assert result["status"] == "completed"  # the new run itself succeeds
+    stale_row = db.get_run(engine_conn, stale_id)
+    assert stale_row["status"] == "abandoned"
+    assert stale_row["md_path"] is not None
+
+
+def test_run_discovery_validate_handle_bypasses_lock_while_a_run_is_active(engine_conn, tmp_path):
+    db.insert_running_run(engine_conn, "already-running", "manual", "incremental", now_iso())
+    handle_id = db.create_handle(engine_conn, "youtube", "@new", "New", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@new": [{"id": "v1", "title": "x", "published": "2026-07-29"}]})
+    result = run_discovery(
+        engine_conn, tmp_path, {"youtube": adapter},
+        trigger="manual", mode="validate_handle", handle_id=handle_id,
+    )
+    assert result["status"] in ("completed",)
+    assert db.get_handle(engine_conn, handle_id)["status"] == "validated"
+    # the still-running incremental run's lock row is untouched
+    assert db.get_running_run(engine_conn)["run_id"] == "already-running"
+
+
+def test_run_discovery_validate_handle_sets_invalid_and_excludes_on_empty_enumeration(engine_conn, tmp_path):
+    handle_id = db.create_handle(engine_conn, "youtube", "@dead", "Dead", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@dead": []})
+    run_discovery(
+        engine_conn, tmp_path, {"youtube": adapter},
+        trigger="manual", mode="validate_handle", handle_id=handle_id,
+    )
+    row = db.get_handle(engine_conn, handle_id)
+    assert row["status"] == "invalid"
+    assert row["included"] == 0
