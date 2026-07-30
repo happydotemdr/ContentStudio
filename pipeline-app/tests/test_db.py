@@ -127,3 +127,56 @@ def test_two_running_discovery_runs_violate_unique_index(tmp_path: Path):
             "VALUES ('run-2', 'manual', 'incremental', 'running', '2026-07-30T06:01:00Z')"
         )
     conn.close()
+
+
+def test_create_and_get_handle(conn):
+    handle_id = db.create_handle(conn, "youtube", "@Romayroh", "Romayroh", "guru", None, "2026-07-30T00:00:00Z")
+    row = db.get_handle(conn, handle_id)
+    assert row["handle"] == "@Romayroh"
+    assert row["platform"] == "youtube"
+    assert row["cohort"] == "guru"
+    assert row["included"] == 1
+    assert row["status"] == "pending"
+
+
+def test_get_handle_by_platform_and_handle(conn):
+    db.create_handle(conn, "youtube", "@Romayroh", "Romayroh", "guru", None, "2026-07-30T00:00:00Z")
+    row = db.get_handle_by_platform_and_handle(conn, "youtube", "@Romayroh")
+    assert row is not None
+    assert db.get_handle_by_platform_and_handle(conn, "bluesky", "@Romayroh") is None
+
+
+def test_list_handles_filters_included(conn):
+    a = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-07-30T00:00:00Z")
+    db.create_handle(conn, "youtube", "@b", None, "guru", None, "2026-07-30T00:00:00Z")
+    db.set_handle_included(conn, a, False)
+    assert len(db.list_handles(conn)) == 2
+    included_only = db.list_handles(conn, included_only=True)
+    assert len(included_only) == 1
+    assert included_only[0]["handle"] == "@b"
+
+
+def test_set_handle_status_and_validated_at(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-07-30T00:00:00Z")
+    db.set_handle_status(conn, handle_id, "validated", validated_at="2026-07-30T01:00:00Z")
+    row = db.get_handle(conn, handle_id)
+    assert row["status"] == "validated"
+    assert row["validated_at"] == "2026-07-30T01:00:00Z"
+
+
+def test_set_handle_last_seen(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-07-30T00:00:00Z")
+    db.set_handle_last_seen(conn, handle_id, "2026-07-28")
+    assert db.get_handle(conn, handle_id)["last_seen_published_at"] == "2026-07-28"
+
+
+def test_upsert_handle_from_migration_is_idempotent(conn):
+    first_id = db.upsert_handle_from_migration(
+        conn, "youtube", "@a", "A Channel", "guru", None, "validated", True, "2026-07-30T00:00:00Z"
+    )
+    db.set_handle_status(conn, first_id, "invalid")  # simulate a manual edit after migration
+    second_id = db.upsert_handle_from_migration(
+        conn, "youtube", "@a", "A Channel", "guru", None, "validated", True, "2026-07-30T00:00:00Z"
+    )
+    assert second_id == first_id
+    assert db.get_handle(conn, first_id)["status"] == "invalid"  # not clobbered by re-running
