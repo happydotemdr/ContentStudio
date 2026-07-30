@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline_app import browse_service
+from pipeline_app import browse_service, grounding_service
 
 
 @pytest.fixture
@@ -256,3 +256,46 @@ def test_root_path_dispatches_pipeline(tmp_path):
 def test_root_path_rejects_unknown_root(tmp_path):
     with pytest.raises(ValueError):
         browse_service.root_path(tmp_path, "bogus")
+
+
+def test_resolve_grounding_pointer_returns_target_when_valid(tmp_path):
+    (tmp_path / "rgs-briefs").mkdir()
+    brief = tmp_path / "rgs-briefs" / "2026-07-28-topic.md"
+    brief.write_text("# Brief", encoding="utf-8")
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    grounding_service.write_pointer(pointer_dir, "rgs-briefs/2026-07-28-topic.md")
+    result = browse_service.resolve_grounding_pointer(pointer_dir, tmp_path)
+    assert result == brief.resolve()
+
+
+def test_resolve_grounding_pointer_returns_none_when_no_pointer(tmp_path):
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    pointer_dir.mkdir(parents=True)
+    assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
+
+
+def test_resolve_grounding_pointer_returns_none_when_target_missing(tmp_path):
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    grounding_service.write_pointer(pointer_dir, "rgs-briefs/does-not-exist.md")
+    assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
+
+
+def test_resolve_grounding_pointer_rejects_path_outside_rgs_briefs(tmp_path):
+    # A corrupted/hand-edited pointer.yaml pointing elsewhere under repo_root
+    # (e.g. another project's runs/ folder) must not be followed, even
+    # though the resolved path is still technically "under repo_root". The
+    # target here is repo-root-relative ("runs/other-run/secret.md"), same
+    # form pointer.yaml actually stores its values in -- not a "../" escape,
+    # which is a distinct case already covered by the traversal test below.
+    secret = tmp_path / "runs" / "other-run" / "secret.md"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("secret", encoding="utf-8")
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    grounding_service.write_pointer(pointer_dir, "runs/other-run/secret.md")
+    assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
+
+
+def test_resolve_grounding_pointer_rejects_traversal_outside_repo_root(tmp_path):
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    grounding_service.write_pointer(pointer_dir, "../../../etc/passwd")
+    assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None

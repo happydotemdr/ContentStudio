@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import markdown
 import yaml
 
-from pipeline_app import artifacts
+from pipeline_app import artifacts, grounding_service
 
 MAX_FILE_BYTES = 5 * 1024 * 1024
 
@@ -37,6 +37,24 @@ def root_path(repo_root: Path, root: str) -> Path:
     if root == "pipeline":
         return runs_root(repo_root)
     raise ValueError(f"unknown browse root: {root!r}")
+
+
+def resolve_grounding_pointer(pointer_dir: Path, repo_root: Path) -> Path | None:
+    """Resolve a grounding stage's pointer.yaml to the real rgs-briefs/ file
+    it references. pointer.yaml's content is read from disk, not derived
+    from the request/tree structure, so its target path is a new trust
+    boundary here and gets an explicit containment check against the real
+    rgs-briefs/ folder rather than being trusted outright."""
+    target_rel = grounding_service.read_pointer(pointer_dir)
+    if not target_rel:
+        return None
+    rgs_briefs_root = (repo_root / "rgs-briefs").resolve()
+    target = (repo_root / target_rel).resolve()
+    if not target.is_relative_to(rgs_briefs_root):
+        return None
+    if not target.exists():
+        return None
+    return target
 
 
 def resolve_under_output(root: Path, rel_path: str) -> Path:
