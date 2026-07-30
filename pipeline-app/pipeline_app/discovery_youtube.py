@@ -133,6 +133,15 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str) -> di
         if fb:
             transcript, source = fb, "youtube-transcript-api"
 
+    # Determine actual download success: info.json must exist (yt-dlp must have
+    # succeeded in getting metadata). Without it, the download truly failed.
+    if not info_path.exists():
+        # Clean up temp files and return failure without writing dest, so the
+        # video stays eligible for retry on the next run.
+        for p in tmp_dir.glob(f"{video_id}*"):
+            p.unlink(missing_ok=True)
+        return {"id": video_id, "ok": False, "published": None}
+
     description = info.get("description") or ""
     upload_date = info.get("upload_date") or ""
     if upload_date and len(upload_date) == 8:
