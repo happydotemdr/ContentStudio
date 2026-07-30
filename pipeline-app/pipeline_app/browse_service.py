@@ -27,6 +27,18 @@ def output_root(repo_root: Path) -> Path:
     return (repo_root / "output").resolve()
 
 
+def runs_root(repo_root: Path) -> Path:
+    return (repo_root / "runs").resolve()
+
+
+def root_path(repo_root: Path, root: str) -> Path:
+    if root == "output":
+        return output_root(repo_root)
+    if root == "pipeline":
+        return runs_root(repo_root)
+    raise ValueError(f"unknown browse root: {root!r}")
+
+
 def resolve_under_output(root: Path, rel_path: str) -> Path:
     rel_path = (rel_path or "").strip()
     if rel_path in ("", ".", "/"):

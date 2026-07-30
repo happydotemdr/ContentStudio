@@ -235,3 +235,24 @@ def test_render_md_file_stat_error_returns_error_not_500(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "stat", _raise)
     result = browse_service.render_md_file(f)
     assert result == {"error": "Could not read file: file vanished"}
+
+
+def test_runs_root_resolves_under_repo_root(tmp_path):
+    (tmp_path / "runs").mkdir()
+    result = browse_service.runs_root(tmp_path)
+    assert result == (tmp_path / "runs").resolve()
+
+
+def test_root_path_dispatches_output(tmp_path):
+    (tmp_path / "output").mkdir()
+    assert browse_service.root_path(tmp_path, "output") == browse_service.output_root(tmp_path)
+
+
+def test_root_path_dispatches_pipeline(tmp_path):
+    (tmp_path / "runs").mkdir()
+    assert browse_service.root_path(tmp_path, "pipeline") == browse_service.runs_root(tmp_path)
+
+
+def test_root_path_rejects_unknown_root(tmp_path):
+    with pytest.raises(ValueError):
+        browse_service.root_path(tmp_path, "bogus")
