@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -91,3 +92,38 @@ def test_get_stage_by_row_id_returns_the_row(conn):
 
 def test_get_stage_by_row_id_returns_none_when_missing(conn):
     assert db.get_stage_by_row_id(conn, 999) is None
+
+
+def test_schema_init_is_idempotent_with_new_discovery_tables(tmp_path: Path):
+    db_path = tmp_path / "pipeline.db"
+    schema_path = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db.init_db(db_path, schema_path)
+    db.init_db(db_path, schema_path)  # second init must not raise
+    conn = db.get_connection(db_path)
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    assert {"handles", "discovery_runs", "discovery_run_handles", "discovery_settings"} <= tables
+    settings = conn.execute("SELECT * FROM discovery_settings WHERE id = 1").fetchone()
+    assert settings["frequency"] == "daily"
+    assert settings["time_of_day"] == "06:00"
+    assert settings["timezone"] == "America/Chicago"
+    conn.close()
+
+
+def test_two_running_discovery_runs_violate_unique_index(tmp_path: Path):
+    db_path = tmp_path / "pipeline.db"
+    schema_path = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db.init_db(db_path, schema_path)
+    conn = db.get_connection(db_path)
+    conn.execute(
+        "INSERT INTO discovery_runs (run_id, trigger, mode, status, started_at) "
+        "VALUES ('run-1', 'manual', 'incremental', 'running', '2026-07-30T06:00:00Z')"
+    )
+    conn.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO discovery_runs (run_id, trigger, mode, status, started_at) "
+            "VALUES ('run-2', 'manual', 'incremental', 'running', '2026-07-30T06:01:00Z')"
+        )
+    conn.close()
