@@ -138,3 +138,68 @@ def test_list_children_skips_symlinked_file(root, tmp_path):
         pytest.skip("symlinks require admin rights / Developer Mode on this platform")
     entries = browse_service.list_children(root, root)
     assert entries == []
+
+
+def test_render_md_file_returns_frontmatter_and_body(tmp_path):
+    f = tmp_path / "fixture.md"
+    f.write_text("---\nstage: shorts-ideation\n---\n\n# Title\n\nBody text.\n", encoding="utf-8")
+    result = browse_service.render_md_file(f)
+    assert result["frontmatter"] == {"stage": "shorts-ideation"}
+    assert "<h1>Title</h1>" in result["body_html"]
+
+
+def test_render_md_file_no_frontmatter(tmp_path):
+    f = tmp_path / "plain.md"
+    f.write_text("# Just a title\n", encoding="utf-8")
+    result = browse_service.render_md_file(f)
+    assert result["frontmatter"] == {}
+    assert "<h1>Just a title</h1>" in result["body_html"]
+
+
+def test_render_md_file_malformed_yaml_returns_error(tmp_path):
+    f = tmp_path / "bad.md"
+    f.write_text("---\nstage: [unterminated\n---\n\nBody.\n", encoding="utf-8")
+    result = browse_service.render_md_file(f)
+    assert result == {"error": "Frontmatter is not valid YAML."}
+
+
+def test_render_md_file_non_mapping_frontmatter_returns_error(tmp_path):
+    f = tmp_path / "listfm.md"
+    f.write_text("---\n- one\n- two\n---\n\nBody.\n", encoding="utf-8")
+    result = browse_service.render_md_file(f)
+    assert result == {"error": "Frontmatter is not a key/value mapping."}
+
+
+def test_render_md_file_bad_encoding_returns_error(tmp_path):
+    f = tmp_path / "binary.md"
+    f.write_bytes(b"\xff\xfe\x00\x01not utf-8 \xff")
+    result = browse_service.render_md_file(f)
+    assert "error" in result
+    assert result["error"].startswith("Could not read file:")
+
+
+def test_render_md_file_oversize_never_reads_content(tmp_path, monkeypatch):
+    f = tmp_path / "huge.md"
+    f.write_bytes(b"x" * (browse_service.MAX_FILE_BYTES + 1))
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("read_text should not be called for an oversize file")
+
+    monkeypatch.setattr(Path, "read_text", _fail_if_called)
+    result = browse_service.render_md_file(f)
+    assert result["oversize"] is True
+    assert result["cap_mb"] == pytest.approx(5.0)
+    assert result["size_mb"] > 5.0
+    assert result["abs_path"] == str(f)
+
+
+def test_render_md_file_stat_error_returns_error_not_500(tmp_path, monkeypatch):
+    f = tmp_path / "vanishes.md"
+    f.write_text("# Title\n", encoding="utf-8")
+
+    def _raise(*args, **kwargs):
+        raise OSError("file vanished")
+
+    monkeypatch.setattr(Path, "stat", _raise)
+    result = browse_service.render_md_file(f)
+    assert result == {"error": "Could not read file: file vanished"}

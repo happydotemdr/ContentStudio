@@ -87,3 +87,35 @@ def list_children(folder: Path, root: Path) -> list["Entry"]:
     dirs.sort(key=lambda e: e.name.lower())
     files.sort(key=lambda e: e.name.lower())
     return dirs + files
+
+
+def render_md_file(path: Path) -> dict:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        # e.g. the file was deleted on disk between the route's existence
+        # check and this call -- a real (if narrow) TOCTOU window given
+        # this is a live filesystem browser, not a security boundary
+        # concern here (single-user, read-only local app).
+        return {"error": f"Could not read file: {exc}"}
+    if size > MAX_FILE_BYTES:
+        return {
+            "oversize": True,
+            "size_mb": size / (1024 * 1024),
+            "cap_mb": MAX_FILE_BYTES / (1024 * 1024),
+            "abs_path": str(path),
+        }
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError) as exc:
+        return {"error": f"Could not read file: {exc}"}
+
+    try:
+        meta, body = artifacts.parse_frontmatter(text)
+    except yaml.YAMLError:
+        return {"error": "Frontmatter is not valid YAML."}
+    if not isinstance(meta, dict):
+        return {"error": "Frontmatter is not a key/value mapping."}
+
+    return {"frontmatter": meta, "body_html": markdown.markdown(body)}
