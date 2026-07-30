@@ -79,3 +79,67 @@ def test_browse_nav_link_present(client):
     test_client, _ = client
     resp = test_client.get("/browse")
     assert 'href="/browse"' in resp.text
+
+
+def test_browse_tree_nested_folder_returns_children(client):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "thinkers" / "anchorandwave" / "plato.md")
+    resp = test_client.get("/browse/tree", params={"path": "thinkers"})
+    assert resp.status_code == 200
+    assert "anchorandwave" in resp.text
+
+
+def test_browse_tree_dotdot_traversal_returns_invalid_path(client):
+    test_client, _ = client
+    resp = test_client.get("/browse/tree", params={"path": "../../../etc"})
+    assert resp.status_code == 200
+    assert "Invalid path." in resp.text
+
+
+def test_browse_tree_windows_drive_override_returns_invalid_path(client):
+    test_client, _ = client
+    resp = test_client.get("/browse/tree", params={"path": "C:/Windows"})
+    assert resp.status_code == 200
+    assert "Invalid path." in resp.text
+
+
+def test_browse_tree_leading_backslash_returns_invalid_path(client):
+    test_client, _ = client
+    resp = test_client.get("/browse/tree", params={"path": "\\Windows\\System32"})
+    assert resp.status_code == 200
+    assert "Invalid path." in resp.text
+
+
+def test_browse_tree_sibling_prefix_folder_not_admitted(client):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output-old" / "secret.md")
+    resp = test_client.get("/browse/tree", params={"path": "../output-old"})
+    assert resp.status_code == 200
+    assert "Invalid path." in resp.text
+    assert "secret.md" not in resp.text
+
+
+def test_browse_tree_missing_folder_returns_folder_not_found(client):
+    test_client, _ = client
+    resp = test_client.get("/browse/tree", params={"path": "does/not/exist"})
+    assert resp.status_code == 200
+    assert "Folder not found." in resp.text
+
+
+def test_browse_tree_uppercase_md_extension_listed(client):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "notes" / "NOTES.MD")
+    resp = test_client.get("/browse/tree", params={"path": "notes"})
+    assert resp.status_code == 200
+    assert "NOTES.MD" in resp.text
+
+
+def test_browse_tree_folder_with_no_md_anywhere_is_empty_not_error(client):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "empty_ish" / "raw.txt")
+    resp = test_client.get("/browse/tree", params={"path": "empty_ish"})
+    # Empty, not an error: no error partial, and none of the excluded
+    # folder's contents leak into the response either.
+    assert resp.status_code == 200
+    assert "browse-error" not in resp.text
+    assert "raw.txt" not in resp.text
