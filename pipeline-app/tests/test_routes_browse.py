@@ -143,3 +143,79 @@ def test_browse_tree_folder_with_no_md_anywhere_is_empty_not_error(client):
     assert resp.status_code == 200
     assert "browse-error" not in resp.text
     assert "raw.txt" not in resp.text
+
+
+def test_browse_file_renders_frontmatter_and_body(client):
+    test_client, tmp_path = client
+    _touch(
+        tmp_path / "output" / "thinkers" / "plato.md",
+        "---\nera: classical\n---\n\n# Plato\n\nBody.\n",
+    )
+    resp = test_client.get("/browse/file", params={"path": "thinkers/plato.md"})
+    assert resp.status_code == 200
+    assert "classical" in resp.text
+    assert "<h1>Plato</h1>" in resp.text
+
+
+def test_browse_file_malformed_yaml_shows_error_not_500(client):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "bad.md", "---\nstage: [unterminated\n---\n\nBody.\n")
+    resp = test_client.get("/browse/file", params={"path": "bad.md"})
+    assert resp.status_code == 200
+    assert "Frontmatter is not valid YAML." in resp.text
+
+
+def test_browse_file_non_mapping_frontmatter_shows_error(client):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "listfm.md", "---\n- one\n- two\n---\n\nBody.\n")
+    resp = test_client.get("/browse/file", params={"path": "listfm.md"})
+    assert resp.status_code == 200
+    assert "Frontmatter is not a key/value mapping." in resp.text
+
+
+def test_browse_file_oversize_shows_message(client):
+    test_client, tmp_path = client
+    import pipeline_app.browse_service as browse_service
+    f = tmp_path / "output" / "huge.md"
+    f.write_bytes(b"x" * (browse_service.MAX_FILE_BYTES + 1))
+    resp = test_client.get("/browse/file", params={"path": "huge.md"})
+    assert resp.status_code == 200
+    assert "too large to preview" in resp.text
+
+
+def test_browse_file_missing_file_returns_path_does_not_exist(client):
+    test_client, _ = client
+    resp = test_client.get("/browse/file", params={"path": "nope.md"})
+    assert resp.status_code == 200
+    assert "Path does not exist." in resp.text
+
+
+def test_browse_file_directory_path_returns_error(client):
+    test_client, tmp_path = client
+    (tmp_path / "output" / "thinkers").mkdir()
+    resp = test_client.get("/browse/file", params={"path": "thinkers"})
+    assert resp.status_code == 200
+    assert "Path is a directory, not a file." in resp.text
+
+
+def test_browse_file_wrong_suffix_returns_error(client):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "raw.txt")
+    resp = test_client.get("/browse/file", params={"path": "raw.txt"})
+    assert resp.status_code == 200
+    assert "Not a valid .md file path." in resp.text
+
+
+def test_browse_file_traversal_returns_invalid_path(client):
+    test_client, _ = client
+    resp = test_client.get("/browse/file", params={"path": "../../../etc/passwd"})
+    assert resp.status_code == 200
+    assert "Invalid path." in resp.text
+
+
+def test_browse_file_uppercase_extension_renders(client):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "NOTES.MD", "# Upper\n\nBody.\n")
+    resp = test_client.get("/browse/file", params={"path": "NOTES.MD"})
+    assert resp.status_code == 200
+    assert "<h1>Upper</h1>" in resp.text

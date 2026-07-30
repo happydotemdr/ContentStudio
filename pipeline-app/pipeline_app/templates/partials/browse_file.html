@@ -1,0 +1,19 @@
+<!-- pipeline_app/templates/partials/browse_file.html -->
+{% if error %}
+<p class="browse-error">{{ error }}</p>
+{% elif oversize %}
+<p class="browse-error">
+  File too large to preview ({{ "%.1f"|format(size_mb) }} MB — cap is {{ "%.0f"|format(cap_mb) }} MB).
+  Open it directly at <code>{{ abs_path }}</code>.
+</p>
+{% else %}
+{% if frontmatter %}
+<h2>Frontmatter</h2>
+<table>
+  {% for key, value in frontmatter.items() %}
+  <tr><th>{{ key }}</th><td>{{ value }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+<div>{{ body_html | safe }}</div>
+{% endif %}

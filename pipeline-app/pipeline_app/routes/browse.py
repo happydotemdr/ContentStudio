@@ -29,3 +29,27 @@ def browse_tree(request: Request, path: str = ""):
     return request.app.state.templates.TemplateResponse(
         request, "partials/browse_tree_items.html", context
     )
+
+
+@router.get("/browse/file")
+def browse_file(request: Request, path: str = ""):
+    root = browse_service.output_root(request.app.state.repo_root)
+    try:
+        file_path = browse_service.resolve_under_output(root, path)
+    except browse_service.PathSafetyError:
+        file_path = None
+        context = {"error": "Invalid path."}
+
+    if file_path is not None:
+        if not file_path.exists():
+            context = {"error": "Path does not exist."}
+        elif file_path.is_dir():
+            context = {"error": "Path is a directory, not a file."}
+        elif not file_path.name.lower().endswith(".md"):
+            context = {"error": "Not a valid .md file path."}
+        else:
+            context = browse_service.render_md_file(file_path)
+
+    return request.app.state.templates.TemplateResponse(
+        request, "partials/browse_file.html", context
+    )
