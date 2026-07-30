@@ -1,18 +1,20 @@
 <!-- pipeline_app/templates/partials/browse_tree_items.html -->
 {% if error %}
 <p class="browse-error">{{ error }}</p>
+{% elif empty_message %}
+<p class="browse-placeholder">{{ empty_message }}</p>
 {% else %}
-  {# A folder with no .md files anywhere below it (only reachable via a
+  {# A folder with no visible content below it (only reachable via a
      stale/typed-in path, since list_children already excludes such
      subfolders from their parent's listing) renders as an empty result
-     with no special messaging, per the design spec -- an empty folder is
-     just an empty list, same as any other folder with no visible children. #}
+     with no special messaging -- an empty folder is just an empty list,
+     same as any other folder with no visible children. #}
   {% for entry in entries %}
     {% if entry.is_dir %}
     <details>
       <summary>{{ entry.name }}</summary>
       <div class="children"
-           hx-get="/browse/tree?path={{ entry.rel_path | urlencode }}"
+           hx-get="/browse/tree?path={{ entry.rel_path | urlencode }}&root={{ root }}"
            hx-trigger="toggle once from:closest details"
            hx-target="this"
            hx-swap="innerHTML"></div>
@@ -20,7 +22,7 @@
     {% else %}
     <div class="browse-file-row">
       <a href="#"
-         hx-get="/browse/file?path={{ entry.rel_path | urlencode }}"
+         hx-get="/browse/file?path={{ entry.rel_path | urlencode }}&root={{ root }}"
          hx-target="#browse-doc"
          hx-swap="innerHTML"
          hx-sync="#browse-doc:replace"
