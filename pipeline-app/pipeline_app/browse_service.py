@@ -5,12 +5,14 @@ Browse page. Pure logic only -- no FastAPI or Jinja imports here."""
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import markdown
 import yaml
 
 from pipeline_app import artifacts, grounding_service
+from pipeline_app import db as db_mod
 
 MAX_FILE_BYTES = 5 * 1024 * 1024
 
@@ -38,6 +40,66 @@ def root_path(repo_root: Path, root: str) -> Path:
     if root == "pipeline":
         return runs_root(repo_root)
     raise ValueError(f"unknown browse root: {root!r}")
+
+
+_RUN_ID_TIMESTAMP_RE = re.compile(r"-(\d{8}-\d{6})$")
+
+
+def _parse_created_at(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _parse_run_id_timestamp(name: str) -> datetime | None:
+    m = _RUN_ID_TIMESTAMP_RE.search(name)
+    if not m:
+        return None
+    return datetime.strptime(m.group(1), "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+
+
+def list_pipeline_projects(conn, repo_root: Path) -> list["Entry"]:
+    runs_dir = runs_root(repo_root)
+    if not runs_dir.is_dir():
+        return []
+
+    brand_and_created: dict[str, tuple[str, str]] = {
+        row["run_id"]: (row["brand"], row["created_at"]) for row in db_mod.list_projects(conn)
+    }
+
+    candidates: list[tuple[str, str | None, str | None]] = []
+    try:
+        with os.scandir(runs_dir) as it:
+            for entry in it:
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+                brand, created_at = brand_and_created.get(entry.name, (None, None))
+                candidates.append((entry.name, brand, created_at))
+    except OSError as exc:
+        raise FolderReadError(str(exc)) from exc
+
+    _EPOCH = datetime.min.replace(tzinfo=timezone.utc)
+
+    def sort_tuple(item: tuple[str, str | None, str | None]):
+        # DB created_at is ISO 8601 ("2026-07-28T12:00:00+00:00"); an
+        # orphan folder's fallback key is parsed from its run_id suffix
+        # ("20260728-120000"). These two string formats do NOT compare
+        # correctly against each other lexically (e.g. "2026-...": the
+        # "-" at index 4 sorts below the "0" a compact-format string has
+        # at the same index) -- both are parsed to real datetimes here so
+        # comparison is always by actual chronological value, never by
+        # incidental string shape.
+        name, _brand, created_at = item
+        when = _parse_created_at(created_at) if created_at else _parse_run_id_timestamp(name)
+        return (when is not None, when or _EPOCH, name.lower())
+
+    candidates.sort(key=sort_tuple, reverse=True)
+    return [
+        Entry(
+            name=f"{name} ({brand})" if brand else name,
+            rel_path=name,
+            is_dir=True,
+        )
+        for name, brand, _created_at in candidates
+    ]
 
 
 def resolve_grounding_pointer(pointer_dir: Path, repo_root: Path) -> Path | None:

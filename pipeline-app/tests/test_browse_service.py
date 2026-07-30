@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_app import browse_service, grounding_service
+from pipeline_app import db as db_mod
 
 
 @pytest.fixture
@@ -379,3 +380,76 @@ def test_list_children_omits_pointer_entry_when_target_missing(root, tmp_path):
     grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md")
     entries = browse_service.list_children(grounding_dir, root, tmp_path)
     assert entries == []
+
+
+@pytest.fixture
+def conn(tmp_path: Path):
+    db_path = tmp_path / "pipeline.db"
+    schema_path = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db_mod.init_db(db_path, schema_path)
+    connection = db_mod.get_connection(db_path)
+    yield connection
+    connection.close()
+
+
+def test_list_pipeline_projects_empty_when_no_runs_dir(conn, tmp_path):
+    assert browse_service.list_pipeline_projects(conn, tmp_path) == []
+
+
+def test_list_pipeline_projects_lists_folders_from_filesystem(conn, tmp_path):
+    _touch(tmp_path / "runs" / "my-run-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert [e.name for e in entries] == ["my-run-20260728-120000"]
+    assert entries[0].rel_path == "my-run-20260728-120000"
+    assert entries[0].is_dir is True
+
+
+def test_list_pipeline_projects_annotates_brand_from_db(conn, tmp_path):
+    _touch(tmp_path / "runs" / "my-run-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    db_mod.create_project(conn, "my-run-20260728-120000", "my-run", "raisinggoodsports", "2026-07-28T12:00:00Z")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert entries[0].name == "my-run-20260728-120000 (raisinggoodsports)"
+
+
+def test_list_pipeline_projects_orphan_folder_shown_without_brand(conn, tmp_path):
+    _touch(tmp_path / "runs" / "orphan-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert entries[0].name == "orphan-20260728-120000"
+
+
+def test_list_pipeline_projects_sorted_newest_first_by_db_created_at(conn, tmp_path):
+    _touch(tmp_path / "runs" / "older-20260701-090000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "newer-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    db_mod.create_project(conn, "older-20260701-090000", "older", "generic", "2026-07-01T09:00:00Z")
+    db_mod.create_project(conn, "newer-20260728-120000", "newer", "generic", "2026-07-28T12:00:00Z")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert [e.rel_path for e in entries] == ["newer-20260728-120000", "older-20260701-090000"]
+
+
+def test_list_pipeline_projects_orphan_folder_sorted_by_parsed_timestamp(conn, tmp_path):
+    # No DB rows at all -- both folders fall back to parsing the trailing
+    # YYYYMMDD-HHMMSS from the folder name.
+    _touch(tmp_path / "runs" / "older-20260701-090000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "newer-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert [e.rel_path for e in entries] == ["newer-20260728-120000", "older-20260701-090000"]
+
+
+def test_list_pipeline_projects_mixed_db_and_orphan_sort_by_real_chronology(conn, tmp_path):
+    # A naive string-sort comparing ISO created_at ("2026-...") against a
+    # compact orphan-fallback key ("2026...") would put every orphan above
+    # every DB-matched project regardless of actual date, since "-" sorts
+    # below "0" at the same string index. This must sort by real
+    # chronological value across both formats: db-matched (July 28) is
+    # newest, then the orphan (July 15), then db-matched (July 1) oldest.
+    _touch(tmp_path / "runs" / "db-newest-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "orphan-mid-20260715-120000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "db-oldest-20260701-090000" / "01-ideation" / "artifact.v1.md")
+    db_mod.create_project(conn, "db-newest-20260728-120000", "db-newest", "generic", "2026-07-28T12:00:00+00:00")
+    db_mod.create_project(conn, "db-oldest-20260701-090000", "db-oldest", "generic", "2026-07-01T09:00:00+00:00")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert [e.rel_path for e in entries] == [
+        "db-newest-20260728-120000",
+        "orphan-mid-20260715-120000",
+        "db-oldest-20260701-090000",
+    ]
