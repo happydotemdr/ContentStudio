@@ -58,3 +58,29 @@ def test_enumerate_newest_first_returns_empty_on_fetch_failure(monkeypatch):
         raise OSError("network down")
     monkeypatch.setattr(bsky, "_http_get", raise_error)
     assert bsky.enumerate_newest_first("dead.bsky.social", keyword_filter=None) == []
+
+
+def test_download_item_returns_ok_false_when_refetch_finds_no_match(tmp_path, monkeypatch):
+    # When re-fetch returns a feed that doesn't contain the target rkey
+    # (aged out of page_limit=5, network error swallowed by enumerate, etc.),
+    # download_item must NOT write a degraded .md file and must return ok=False.
+    page = {
+        "feed": [
+            {"post": {"uri": "at://did/app.bsky.feed.post/other_rkey1",
+                      "record": {"text": "some other post", "createdAt": "2026-07-29T10:00:00Z"}}},
+            {"post": {"uri": "at://did/app.bsky.feed.post/other_rkey2",
+                      "record": {"text": "another post", "createdAt": "2026-07-28T10:00:00Z"}}},
+        ]
+    }
+    monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(page).encode("utf-8"))
+
+    result = bsky.download_item(tmp_path, "adamgrant.bsky.social", "target_rkey", "some title")
+
+    # Expect failure
+    assert result == {"id": "target_rkey", "ok": False, "published": None}
+
+    # Verify no .md file was written
+    out_dir = tmp_path / "output" / "brand-intel" / "bluesky" / "adamgrant.bsky.social"
+    assert not (out_dir / "target_rkey.md").exists()
+    # Also check no temp file lingering
+    assert not (out_dir / "target_rkey.md.tmp").exists()

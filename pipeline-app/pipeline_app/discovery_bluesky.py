@@ -76,7 +76,15 @@ def download_item(repo_root: Path, handle: str, rkey: str, title: str) -> dict:
     # created-at (enumerate_newest_first only carries a truncated title).
     items = enumerate_newest_first(handle, keyword_filter=None, page_limit=5)
     match = next((i for i in items if i["id"] == rkey), None)
-    published = match["published"] if match else None
+
+    # If re-fetch failed to find the item (network error, swallowed by enumerate,
+    # or aged out of page_limit=5), report failure rather than writing a degraded
+    # file. on_disk_ids() treats any existing {rkey}.md as "already captured,"
+    # so a silent write-with-blank-created would permanently hide the error.
+    if match is None:
+        return {"id": rkey, "ok": False, "published": None}
+
+    published = match["published"]
     purl = f"https://bsky.app/profile/{handle}/post/{rkey}"
     fetched_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
