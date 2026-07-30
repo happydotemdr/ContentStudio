@@ -1,0 +1,237 @@
+# tests/test_browse_service.py
+import os
+from pathlib import Path
+
+import pytest
+
+from pipeline_app import browse_service
+
+
+@pytest.fixture
+def root(tmp_path: Path) -> Path:
+    out = tmp_path / "output"
+    out.mkdir()
+    return browse_service.output_root(tmp_path)
+
+
+def test_output_root_resolves_under_repo_root(tmp_path):
+    (tmp_path / "output").mkdir()
+    result = browse_service.output_root(tmp_path)
+    assert result == (tmp_path / "output").resolve()
+
+
+def test_resolve_under_output_empty_path_returns_root(root):
+    assert browse_service.resolve_under_output(root, "") == root
+
+
+def test_resolve_under_output_nested_path(root):
+    nested = root / "thinkers" / "anchorandwave"
+    nested.mkdir(parents=True)
+    result = browse_service.resolve_under_output(root, "thinkers/anchorandwave")
+    assert result == nested.resolve()
+
+
+def test_resolve_under_output_rejects_dotdot(root):
+    with pytest.raises(browse_service.PathSafetyError):
+        browse_service.resolve_under_output(root, "../../../etc")
+
+
+def test_resolve_under_output_rejects_posix_absolute(root):
+    with pytest.raises(browse_service.PathSafetyError):
+        browse_service.resolve_under_output(root, "/etc/passwd")
+
+
+def test_resolve_under_output_rejects_windows_absolute(root):
+    with pytest.raises(browse_service.PathSafetyError):
+        browse_service.resolve_under_output(root, "C:/Windows")
+
+
+def test_resolve_under_output_rejects_leading_backslash(root):
+    with pytest.raises(browse_service.PathSafetyError):
+        browse_service.resolve_under_output(root, "\\Windows\\System32")
+
+
+def test_resolve_under_output_rejects_drive_relative(root):
+    # "C:foo" has a drive but no root -- pathlib's is_absolute() returns
+    # False for this form, so it needs its own explicit rejection (a colon
+    # anywhere in the input is never valid in a real output/ filename).
+    with pytest.raises(browse_service.PathSafetyError):
+        browse_service.resolve_under_output(root, "C:foo")
+
+
+def test_resolve_under_output_rejects_sibling_prefix_escape(tmp_path):
+    (tmp_path / "output").mkdir()
+    (tmp_path / "output-old").mkdir()
+    (tmp_path / "output-old" / "secret.md").write_text("x", encoding="utf-8")
+    root = browse_service.output_root(tmp_path)
+    # This particular input is caught by the ".." segment rejection before
+    # the containment check even runs -- but is_relative_to() is not truly
+    # dead code: a symlink nested inside output/ whose target resolves
+    # outside output/ has no ".." segment in the input path at all, yet
+    # .resolve() follows the symlink before the containment test runs, so
+    # is_relative_to() is exactly what catches that case. This test still
+    # matters on its own terms: it's the concrete regression check that a
+    # naive str.startswith(str(root)) containment check (which "output-old"
+    # would wrongly pass, since it shares the "output" prefix) is never
+    # reintroduced here.
+    with pytest.raises(browse_service.PathSafetyError):
+        browse_service.resolve_under_output(root, "../output-old/secret.md")
+
+
+def _touch(path: Path, text: str = "content") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_list_children_sorts_folders_then_files(root):
+    _touch(root / "zeta.md")
+    _touch(root / "alpha" / "notes.md")
+    _touch(root / "beta.md")
+    entries = browse_service.list_children(root, root)
+    assert [e.name for e in entries] == ["alpha", "beta.md", "zeta.md"]
+    assert [e.is_dir for e in entries] == [True, False, False]
+
+
+def test_list_children_excludes_folder_with_no_md_anywhere(root):
+    _touch(root / "transcripts" / "raw.txt")
+    _touch(root / "thinkers" / "plato.md")
+    entries = browse_service.list_children(root, root)
+    assert [e.name for e in entries] == ["thinkers"]
+
+
+def test_list_children_hides_non_md_files(root):
+    _touch(root / "notes.md")
+    _touch(root / "raw.json")
+    _touch(root / "clip.vtt")
+    entries = browse_service.list_children(root, root)
+    assert [e.name for e in entries] == ["notes.md"]
+
+
+def test_list_children_case_insensitive_md_suffix(root):
+    _touch(root / "NOTES.MD")
+    entries = browse_service.list_children(root, root)
+    assert [e.name for e in entries] == ["NOTES.MD"]
+
+
+def test_list_children_rel_path_uses_forward_slashes(root):
+    _touch(root / "thinkers" / "plato.md")
+    entries = browse_service.list_children(root, root)
+    assert entries[0].rel_path == "thinkers"
+    child_entries = browse_service.list_children(root / "thinkers", root)
+    assert child_entries[0].rel_path == "thinkers/plato.md"
+
+
+def test_list_children_skips_symlinked_dir(root, tmp_path):
+    real = tmp_path / "elsewhere"
+    _touch(real / "secret.md")
+    try:
+        (root / "link").symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks require admin rights / Developer Mode on this platform")
+    entries = browse_service.list_children(root, root)
+    assert entries == []
+
+
+def test_list_children_skips_symlinked_file(root, tmp_path):
+    real_file = tmp_path / "real.md"
+    real_file.write_text("x", encoding="utf-8")
+    try:
+        (root / "link.md").symlink_to(real_file)
+    except OSError:
+        pytest.skip("symlinks require admin rights / Developer Mode on this platform")
+    entries = browse_service.list_children(root, root)
+    assert entries == []
+
+
+def test_list_children_scandir_oserror_raises_folder_read_error(root, monkeypatch):
+    def _raise(*args, **kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(os, "scandir", _raise)
+    with pytest.raises(browse_service.FolderReadError):
+        browse_service.list_children(root, root)
+
+
+def test_has_md_below_scandir_oserror_returns_false(root, monkeypatch):
+    subfolder = root / "sub"
+    subfolder.mkdir()
+    _touch(subfolder / "note.md")
+
+    real_scandir = os.scandir
+
+    def _raise_for_subfolder(path, *args, **kwargs):
+        if Path(path) == subfolder:
+            raise OSError("permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", _raise_for_subfolder)
+    assert browse_service._has_md_below(subfolder) is False
+    # And the unreadable subfolder is excluded from its parent's listing
+    # rather than blowing up the whole scan.
+    entries = browse_service.list_children(root, root)
+    assert entries == []
+
+
+def test_render_md_file_returns_frontmatter_and_body(tmp_path):
+    f = tmp_path / "fixture.md"
+    f.write_text("---\nstage: shorts-ideation\n---\n\n# Title\n\nBody text.\n", encoding="utf-8")
+    result = browse_service.render_md_file(f)
+    assert result["frontmatter"] == {"stage": "shorts-ideation"}
+    assert "<h1>Title</h1>" in result["body_html"]
+
+
+def test_render_md_file_no_frontmatter(tmp_path):
+    f = tmp_path / "plain.md"
+    f.write_text("# Just a title\n", encoding="utf-8")
+    result = browse_service.render_md_file(f)
+    assert result["frontmatter"] == {}
+    assert "<h1>Just a title</h1>" in result["body_html"]
+
+
+def test_render_md_file_malformed_yaml_returns_error(tmp_path):
+    f = tmp_path / "bad.md"
+    f.write_text("---\nstage: [unterminated\n---\n\nBody.\n", encoding="utf-8")
+    result = browse_service.render_md_file(f)
+    assert result == {"error": "Frontmatter is not valid YAML."}
+
+
+def test_render_md_file_non_mapping_frontmatter_returns_error(tmp_path):
+    f = tmp_path / "listfm.md"
+    f.write_text("---\n- one\n- two\n---\n\nBody.\n", encoding="utf-8")
+    result = browse_service.render_md_file(f)
+    assert result == {"error": "Frontmatter is not a key/value mapping."}
+
+
+def test_render_md_file_bad_encoding_returns_error(tmp_path):
+    f = tmp_path / "binary.md"
+    f.write_bytes(b"\xff\xfe\x00\x01not utf-8 \xff")
+    result = browse_service.render_md_file(f)
+    assert "error" in result
+    assert result["error"].startswith("Could not read file:")
+
+
+def test_render_md_file_oversize_never_reads_content(tmp_path, monkeypatch):
+    f = tmp_path / "huge.md"
+    f.write_bytes(b"x" * (browse_service.MAX_FILE_BYTES + 1))
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("read_text should not be called for an oversize file")
+
+    monkeypatch.setattr(Path, "read_text", _fail_if_called)
+    result = browse_service.render_md_file(f)
+    assert result["oversize"] is True
+    assert result["cap_mb"] == pytest.approx(5.0)
+    assert result["size_mb"] > 5.0
+    assert result["abs_path"] == str(f)
+
+
+def test_render_md_file_stat_error_returns_error_not_500(tmp_path, monkeypatch):
+    f = tmp_path / "vanishes.md"
+    f.write_text("# Title\n", encoding="utf-8")
+
+    def _raise(*args, **kwargs):
+        raise OSError("file vanished")
+
+    monkeypatch.setattr(Path, "stat", _raise)
+    result = browse_service.render_md_file(f)
+    assert result == {"error": "Could not read file: file vanished"}

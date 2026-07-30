@@ -149,3 +149,15 @@ th, td { text-align: left; padding: 0.25rem 0.75rem 0.25rem 0; vertical-align: t
 .status-dot { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; margin-right: 0.35rem; }
 .status-dot.online { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
 .status-dot.offline { background: #ff4444; box-shadow: 0 0 6px #ff4444; }
+
+.browse-shell { display: flex; gap: 1.5rem; align-items: flex-start; }
+.browse-tree { flex: 0 0 22rem; max-height: 80vh; overflow-y: auto; }
+.browse-tree details { margin-left: 0.25rem; }
+.browse-tree summary { cursor: pointer; }
+.browse-file-row { margin-left: 1.25rem; }
+.browse-file-row a { cursor: pointer; }
+.browse-doc-wrap { flex: 1 1 auto; min-width: 0; }
+.browse-error { color: #a00; }
+.browse-placeholder { color: #777; font-style: italic; }
+.htmx-indicator { opacity: 0; }
+.htmx-request.htmx-indicator, .htmx-request .htmx-indicator { opacity: 1; }
