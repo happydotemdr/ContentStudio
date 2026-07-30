@@ -7,7 +7,7 @@ from fastapi.templating import Jinja2Templates
 from pipeline_app import db as db_mod
 from pipeline_app import preflight
 from pipeline_app.pipeline_config import load_topology
-from pipeline_app.routes import doctor, inspector, projects, skills, stages
+from pipeline_app.routes import browse, doctor, inspector, projects, skills, stages
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -34,6 +34,7 @@ def create_app(repo_root: Path, db_path: Path) -> FastAPI:
     app.include_router(skills.router)
     app.include_router(inspector.router)
     app.include_router(doctor.router)
+    app.include_router(browse.router)
     return app
 
 

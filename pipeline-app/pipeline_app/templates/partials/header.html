@@ -5,6 +5,7 @@
     <a href="/skills" class="{{ 'active' if active_nav == 'skills' }}">Skills</a>
     <a href="/doctor" class="{{ 'active' if active_nav == 'doctor' }}">Doctor</a>
     <a href="/inspector" class="{{ 'active' if active_nav == 'inspector' }}">Inspector</a>
+    <a href="/browse" class="{{ 'active' if active_nav == 'browse' }}">Browse</a>
   </nav>
   {% if project and stage_id %}
   <div class="breadcrumb">{{ project.run_id }} / {{ stage_id }}</div>

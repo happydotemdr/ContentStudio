@@ -1,0 +1,16 @@
+<!-- pipeline_app/templates/browse.html -->
+{% extends "base.html" %}
+{% block content %}
+<h1>Browse output/</h1>
+<div class="browse-shell">
+  <div class="browse-tree">
+    {% include "partials/browse_tree_items.html" %}
+  </div>
+  <div class="browse-doc-wrap">
+    <span id="browse-spinner" class="htmx-indicator">loading…</span>
+    <div class="browse-doc" id="browse-doc">
+      <p class="browse-placeholder">Select a .md file to view it here.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
