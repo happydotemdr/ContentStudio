@@ -89,3 +89,20 @@ def update_settings(request: Request, time_of_day: str = Form(...), timezone: st
     conn = request.app.state.conn
     db_mod.update_settings(conn, "daily", time_of_day, timezone)
     return RedirectResponse(url="/discovery/handles", status_code=303)
+
+
+@router.get("/discovery/runs")
+def discovery_runs_page(request: Request):
+    conn = request.app.state.conn
+    runs = db_mod.list_runs(conn)
+    runs_with_results = [
+        {"run": run, "handle_results": db_mod.list_run_handle_results(conn, run["id"])}
+        for run in runs
+    ]
+    return request.app.state.templates.TemplateResponse(
+        request, "discovery_runs.html",
+        {
+            "runs_with_results": runs_with_results, "active_nav": "discovery_runs",
+            "cli_available": request.app.state.cli_available,
+        },
+    )

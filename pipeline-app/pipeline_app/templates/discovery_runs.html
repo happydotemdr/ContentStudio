@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Discovery: Run History</h1>
+{% if runs_with_results %}
+<ul>
+  {% for entry in runs_with_results %}
+  <li>
+    <strong>{{ entry.run.run_id }}</strong>
+    — <span class="status status-{{ entry.run.status }}">{{ entry.run.status }}</span>
+    — trigger: {{ entry.run.trigger }}, mode: {{ entry.run.mode }}
+    — started: {{ entry.run.started_at }}, finished: {{ entry.run.finished_at or "—" }}
+    <ul>
+      {% for hr in entry.handle_results %}
+      <li>handle #{{ hr.handle_id }}: {{ hr.status }} ({{ hr.items_downloaded }} items){% if hr.error_message %} — {{ hr.error_message }}{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>No discovery runs yet.</p>
+{% endif %}
+<p><a href="/discovery/runs">Refresh</a></p>
+{% endblock %}

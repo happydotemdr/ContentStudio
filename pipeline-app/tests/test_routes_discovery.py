@@ -119,3 +119,24 @@ def test_handles_page_shows_current_schedule(client: TestClient):
     listing = client.get("/discovery/handles")
     assert "07:30" in listing.text
     assert "America/New_York" in listing.text
+
+
+def test_discovery_runs_page_lists_runs_newest_first(client: TestClient):
+    from pipeline_app import db as db_mod
+    conn = client.app.state.conn
+    handle_id = db_mod.create_handle(conn, "youtube", "@a", "A", "guru", None, "2026-07-30T00:00:00Z")
+    r1 = db_mod.insert_terminal_run(conn, "r1", "manual", "incremental", "completed", "2026-07-30T06:00:00Z", "2026-07-30T06:01:00Z")
+    db_mod.record_handle_result(conn, r1, handle_id, "ok", 2)
+    r2 = db_mod.insert_terminal_run(conn, "r2", "scheduled", "incremental", "completed_with_errors", "2026-07-30T07:00:00Z", "2026-07-30T07:01:00Z")
+    response = client.get("/discovery/runs")
+    assert response.status_code == 200
+    first_pos = response.text.index("r2")
+    second_pos = response.text.index("r1")
+    assert first_pos < second_pos  # r2 (newer) rendered before r1
+    assert "completed_with_errors" in response.text
+
+
+def test_discovery_runs_page_empty_state(client: TestClient):
+    response = client.get("/discovery/runs")
+    assert response.status_code == 200
+    assert "No discovery runs yet" in response.text
