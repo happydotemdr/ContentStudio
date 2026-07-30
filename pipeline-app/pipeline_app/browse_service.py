@@ -53,7 +53,13 @@ def _parse_run_id_timestamp(name: str) -> datetime | None:
     m = _RUN_ID_TIMESTAMP_RE.search(name)
     if not m:
         return None
-    return datetime.strptime(m.group(1), "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        # Shape-valid (8 digits, 6 digits) but calendar-invalid (e.g. Feb
+        # 31st, hour 25) -- treat the same as "no parseable timestamp"
+        # rather than letting this crash the whole /browse page.
+        return None
 
 
 def list_pipeline_projects(conn, repo_root: Path) -> list["Entry"]:
@@ -108,7 +114,13 @@ def resolve_grounding_pointer(pointer_dir: Path, repo_root: Path) -> Path | None
     from the request/tree structure, so its target path is a new trust
     boundary here and gets an explicit containment check against the real
     rgs-briefs/ folder rather than being trusted outright."""
-    target_rel = grounding_service.read_pointer(pointer_dir)
+    try:
+        target_rel = grounding_service.read_pointer(pointer_dir)
+    except (yaml.YAMLError, AttributeError, TypeError):
+        # Malformed or non-mapping pointer.yaml content (hand-edited or
+        # truncated) -- treat the same as "no valid pointer here" rather
+        # than crashing tree expansion for the whole project.
+        return None
     if not target_rel:
         return None
     rgs_briefs_root = (repo_root / "rgs-briefs").resolve()

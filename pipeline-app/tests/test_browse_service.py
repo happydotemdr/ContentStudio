@@ -453,3 +453,30 @@ def test_list_pipeline_projects_mixed_db_and_orphan_sort_by_real_chronology(conn
         "orphan-mid-20260715-120000",
         "db-oldest-20260701-090000",
     ]
+
+
+def test_list_pipeline_projects_calendar_invalid_timestamp_does_not_crash(conn, tmp_path):
+    # "bad-20260231-120000" is shape-valid (8 digits, 6 digits) but
+    # calendar-invalid (Feb 31st does not exist), which used to raise an
+    # unguarded ValueError out of datetime.strptime and crash the whole
+    # /browse page. It must instead be treated like "no parseable
+    # timestamp" -- included in the results, sorted last.
+    _touch(tmp_path / "runs" / "bad-20260231-120000" / "01-ideation" / "artifact.v1.md")
+    _touch(tmp_path / "runs" / "good-20260728-120000" / "01-ideation" / "artifact.v1.md")
+    entries = browse_service.list_pipeline_projects(conn, tmp_path)
+    assert [e.rel_path for e in entries] == [
+        "good-20260728-120000",
+        "bad-20260231-120000",
+    ]
+
+
+def test_resolve_grounding_pointer_returns_none_when_pointer_not_a_mapping(tmp_path):
+    # A hand-edited/truncated pointer.yaml can parse as valid YAML that
+    # isn't a mapping (e.g. a bare scalar string) -- grounding_service's
+    # read_pointer then raises AttributeError calling .get() on it. This
+    # must be treated like any other "no valid pointer here" case.
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    pointer_dir.mkdir(parents=True)
+    (pointer_dir / "pointer.yaml").write_text("not-a-mapping", encoding="utf-8")
+    assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
+    assert browse_service._has_md_below(pointer_dir, tmp_path) is False
