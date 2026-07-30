@@ -339,3 +339,72 @@ def test_run_discovery_validate_handle_sets_invalid_and_excludes_on_empty_enumer
     row = db.get_handle(engine_conn, handle_id)
     assert row["status"] == "invalid"
     assert row["included"] == 0
+
+
+class SlowFakeAdapter(SingleFakeAdapter):
+    """Sleeps during download_item so the heartbeat loop gets a chance to tick
+    at least once during a run, without depending on exact wall-clock timing."""
+    def __init__(self, *args, sleep_s=0.2, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._sleep_s = sleep_s
+
+    def download_item(self, repo_root, handle, item_id, title):
+        time.sleep(self._sleep_s)
+        return super().download_item(repo_root, handle, item_id, title)
+
+
+def test_run_discovery_heartbeat_ticks_at_least_once_during_a_run(engine_conn, tmp_path):
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SlowFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]}, sleep_s=0.2)
+
+    result = run_discovery(
+        engine_conn, tmp_path, {"youtube": adapter},
+        trigger="manual", mode="incremental", heartbeat_interval_s=0.05,
+    )
+
+    assert result["status"] == "completed"
+    run_row = db.get_run(engine_conn, result["run_row_id"])
+    # The heartbeat is cleared/overwritten by finish_run's own bookkeeping in
+    # some schemas, so the strongest signal available post-hoc is simply that
+    # a heartbeat was recorded at all -- confirming the loop body executed at
+    # least once during the (deliberately slow) handle processing.
+    assert run_row["heartbeat_at"] is not None
+
+
+def test_run_discovery_crash_outside_handle_loop_is_recorded_as_failed(engine_conn, tmp_path, monkeypatch):
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]})
+
+    def _boom(conn, included_only=False):
+        raise RuntimeError("simulated list_handles crash")
+
+    monkeypatch.setattr(db, "list_handles", _boom)
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental")
+
+    assert result["status"] == "failed"
+    run_row = db.get_run(engine_conn, result["run_row_id"])
+    assert run_row["status"] == "failed"
+    assert run_row["md_path"] is not None
+
+
+def test_run_discovery_scheduled_trigger_updates_last_scheduled_run_date(engine_conn, tmp_path):
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]})
+    now = __import__("datetime").datetime(2026, 7, 30, 6, 0, 0, tzinfo=__import__("datetime").timezone.utc)
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="scheduled", mode="incremental", now=now)
+
+    assert result["status"] == "completed"
+    assert db.get_settings(engine_conn)["last_scheduled_run_date"] == "2026-07-30"
+
+
+def test_run_discovery_manual_trigger_does_not_update_last_scheduled_run_date(engine_conn, tmp_path):
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]})
+    now = __import__("datetime").datetime(2026, 7, 30, 6, 0, 0, tzinfo=__import__("datetime").timezone.utc)
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental", now=now)
+
+    assert result["status"] == "completed"
+    assert db.get_settings(engine_conn)["last_scheduled_run_date"] is None

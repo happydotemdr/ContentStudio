@@ -91,6 +91,7 @@ def process_handle_validate(adapter: PlatformAdapter, repo_root: Path, handle_ro
 
 
 import sqlite3
+import sys
 import threading
 
 from pipeline_app import db as db_mod
@@ -125,7 +126,15 @@ def _write_abandoned_records_for_reclaimed_runs(conn: sqlite3.Connection, repo_r
 
 def _run_heartbeat_loop(conn: sqlite3.Connection, run_row_id: int, interval_s: float, stop_event: threading.Event) -> None:
     while not stop_event.wait(interval_s):
-        db_mod.update_run_heartbeat(conn, run_row_id, now_iso())
+        try:
+            db_mod.update_run_heartbeat(conn, run_row_id, now_iso())
+        except Exception as exc:  # noqa: BLE001 - a transient failure (locked DB,
+            # disk full, etc.) must not silently kill this thread: if
+            # heartbeat_at freezes, another process can see the run as stale,
+            # reclaim it, and start a concurrent run against the same
+            # single-flight lock -- so log and keep ticking instead of letting
+            # the exception propagate out of the thread target.
+            print(f"heartbeat update failed: {exc}", file=sys.stderr)
 
 
 def _process_one_handle(adapters: dict, repo_root, handle_row, mode, backfill_start, backfill_end, now):
@@ -153,33 +162,57 @@ def run_discovery(
         handle_row = db_mod.get_handle(conn, handle_id)
         adapter = adapters[handle_row["platform"]]
         db_mod.set_handle_status(conn, handle_id, "validating")
-        outcome = process_handle_validate(adapter, repo_root, handle_row)
-        finished_at = now_iso()
-        if outcome["ok"]:
-            db_mod.set_handle_status(conn, handle_id, "validated", validated_at=finished_at)
-            db_mod.set_handle_last_seen(conn, handle_id, outcome["item"]["published"])
-            status = "completed"
-            handle_result = {"handle": handle_row["handle"], "platform": handle_row["platform"],
-                              "cohort": handle_row["cohort"], "status": "ok", "items_downloaded": 1,
-                              "last_seen_published_at": outcome["item"]["published"], "error_message": None}
-        else:
+        try:
+            outcome = process_handle_validate(adapter, repo_root, handle_row)
+            finished_at = now_iso()
+            if outcome["ok"]:
+                db_mod.set_handle_status(conn, handle_id, "validated", validated_at=finished_at)
+                db_mod.set_handle_last_seen(conn, handle_id, outcome["item"]["published"])
+                status = "completed"
+                handle_result = {"handle": handle_row["handle"], "platform": handle_row["platform"],
+                                  "cohort": handle_row["cohort"], "status": "ok", "items_downloaded": 1,
+                                  "last_seen_published_at": outcome["item"]["published"], "error_message": None}
+            else:
+                db_mod.set_handle_status(conn, handle_id, "invalid")
+                db_mod.set_handle_included(conn, handle_id, False)
+                status = "completed_with_errors"
+                handle_result = {"handle": handle_row["handle"], "platform": handle_row["platform"],
+                                  "cohort": handle_row["cohort"], "status": "handle_not_found",
+                                  "items_downloaded": 0, "last_seen_published_at": None,
+                                  "error_message": "enumerate returned no results"}
+            run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
+            db_mod.record_handle_result(conn, run_row_id, handle_id, handle_result["status"],
+                                         handle_result["items_downloaded"], handle_result["error_message"])
+            db_mod.finish_run(conn, run_row_id, status, finished_at,
+                               str(write_run_record(repo_root, {
+                                   "run_id": run_id, "trigger": trigger, "mode": mode, "status": status,
+                                   "started_at": started_at, "finished_at": finished_at,
+                                   "backfill_start": None, "backfill_end": None,
+                               }, [handle_result])))
+            return {"run_row_id": run_row_id, "status": status}
+        except Exception as exc:  # noqa: BLE001 - an unguarded network/adapter
+            # failure here must not leave the handle stuck forever in
+            # status='validating' with no run row and no paired record --
+            # match the existing "enumeration returned nothing" failure path
+            # (set the handle back to 'invalid') and still produce a terminal
+            # run row + markdown record documenting the error.
             db_mod.set_handle_status(conn, handle_id, "invalid")
-            db_mod.set_handle_included(conn, handle_id, False)
-            status = "completed_with_errors"
+            status = "failed"
+            finished_at = now_iso()
             handle_result = {"handle": handle_row["handle"], "platform": handle_row["platform"],
-                              "cohort": handle_row["cohort"], "status": "handle_not_found",
+                              "cohort": handle_row["cohort"], "status": "error",
                               "items_downloaded": 0, "last_seen_published_at": None,
-                              "error_message": "enumerate returned no results"}
-        run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
-        db_mod.record_handle_result(conn, run_row_id, handle_id, handle_result["status"],
-                                     handle_result["items_downloaded"], handle_result["error_message"])
-        db_mod.finish_run(conn, run_row_id, status, finished_at,
-                           str(write_run_record(repo_root, {
-                               "run_id": run_id, "trigger": trigger, "mode": mode, "status": status,
-                               "started_at": started_at, "finished_at": finished_at,
-                               "backfill_start": None, "backfill_end": None,
-                           }, [handle_result])))
-        return {"run_row_id": run_row_id, "status": status}
+                              "error_message": str(exc)}
+            run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
+            db_mod.record_handle_result(conn, run_row_id, handle_id, handle_result["status"],
+                                         handle_result["items_downloaded"], handle_result["error_message"])
+            db_mod.finish_run(conn, run_row_id, status, finished_at,
+                               str(write_run_record(repo_root, {
+                                   "run_id": run_id, "trigger": trigger, "mode": mode, "status": status,
+                                   "started_at": started_at, "finished_at": finished_at,
+                                   "backfill_start": None, "backfill_end": None,
+                               }, [handle_result])))
+            return {"run_row_id": run_row_id, "status": status}
 
     # incremental / backfill: single-flight lock applies.
     reclaimed_ids = db_mod.reclaim_stale_runs(conn, now_iso(now), stale_after_s)
@@ -187,6 +220,16 @@ def run_discovery(
     try:
         run_row_id = db_mod.insert_running_run(conn, run_id, trigger, mode, started_at, backfill_start, backfill_end)
     except sqlite3.IntegrityError:
+        # discovery_runs.run_id also carries a plain UNIQUE constraint, so an
+        # IntegrityError here isn't necessarily the intended single-flight
+        # lock (ux_discovery_single_running) firing -- it could be a run_id
+        # collision (unlikely in production given microsecond-resolution ids,
+        # but real in tests that pass a fixed `now`). Confirm a running row
+        # actually exists before treating this as "locked"; if it doesn't,
+        # the IntegrityError was something else entirely and must not be
+        # silently swallowed.
+        if db_mod.get_running_run(conn) is None:
+            raise
         # A fresh run_id for the locked row -- reusing `run_id` here would
         # collide with the very row that just won the lock (both share the
         # same run_id UNIQUE constraint), raising a second, unrelated
