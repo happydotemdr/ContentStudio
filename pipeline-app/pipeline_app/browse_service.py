@@ -45,3 +45,45 @@ def resolve_under_output(root: Path, rel_path: str) -> Path:
     if not candidate.is_relative_to(root):
         raise PathSafetyError("path escapes output/")
     return candidate
+
+
+@dataclass(frozen=True)
+class Entry:
+    name: str
+    rel_path: str
+    is_dir: bool
+
+
+def _is_md_name(name: str) -> bool:
+    return name.lower().endswith(".md")
+
+
+def _has_md_below(folder: Path) -> bool:
+    with os.scandir(folder) as it:
+        for entry in it:
+            if entry.is_symlink():
+                continue
+            if entry.is_file() and _is_md_name(entry.name):
+                return True
+            if entry.is_dir() and _has_md_below(Path(entry.path)):
+                return True
+    return False
+
+
+def list_children(folder: Path, root: Path) -> list["Entry"]:
+    dirs: list[Entry] = []
+    files: list[Entry] = []
+    with os.scandir(folder) as it:
+        for entry in it:
+            if entry.is_symlink():
+                continue
+            path = Path(entry.path)
+            rel_path = path.relative_to(root).as_posix()
+            if entry.is_dir():
+                if _has_md_below(path):
+                    dirs.append(Entry(name=entry.name, rel_path=rel_path, is_dir=True))
+            elif entry.is_file() and _is_md_name(entry.name):
+                files.append(Entry(name=entry.name, rel_path=rel_path, is_dir=False))
+    dirs.sort(key=lambda e: e.name.lower())
+    files.sort(key=lambda e: e.name.lower())
+    return dirs + files

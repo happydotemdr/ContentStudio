@@ -73,3 +73,68 @@ def test_resolve_under_output_rejects_sibling_prefix_escape(tmp_path):
     # reintroduced here.
     with pytest.raises(browse_service.PathSafetyError):
         browse_service.resolve_under_output(root, "../output-old/secret.md")
+
+
+def _touch(path: Path, text: str = "content") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_list_children_sorts_folders_then_files(root):
+    _touch(root / "zeta.md")
+    _touch(root / "alpha" / "notes.md")
+    _touch(root / "beta.md")
+    entries = browse_service.list_children(root, root)
+    assert [e.name for e in entries] == ["alpha", "beta.md", "zeta.md"]
+    assert [e.is_dir for e in entries] == [True, False, False]
+
+
+def test_list_children_excludes_folder_with_no_md_anywhere(root):
+    _touch(root / "transcripts" / "raw.txt")
+    _touch(root / "thinkers" / "plato.md")
+    entries = browse_service.list_children(root, root)
+    assert [e.name for e in entries] == ["thinkers"]
+
+
+def test_list_children_hides_non_md_files(root):
+    _touch(root / "notes.md")
+    _touch(root / "raw.json")
+    _touch(root / "clip.vtt")
+    entries = browse_service.list_children(root, root)
+    assert [e.name for e in entries] == ["notes.md"]
+
+
+def test_list_children_case_insensitive_md_suffix(root):
+    _touch(root / "NOTES.MD")
+    entries = browse_service.list_children(root, root)
+    assert [e.name for e in entries] == ["NOTES.MD"]
+
+
+def test_list_children_rel_path_uses_forward_slashes(root):
+    _touch(root / "thinkers" / "plato.md")
+    entries = browse_service.list_children(root, root)
+    assert entries[0].rel_path == "thinkers"
+    child_entries = browse_service.list_children(root / "thinkers", root)
+    assert child_entries[0].rel_path == "thinkers/plato.md"
+
+
+def test_list_children_skips_symlinked_dir(root, tmp_path):
+    real = tmp_path / "elsewhere"
+    _touch(real / "secret.md")
+    try:
+        (root / "link").symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks require admin rights / Developer Mode on this platform")
+    entries = browse_service.list_children(root, root)
+    assert entries == []
+
+
+def test_list_children_skips_symlinked_file(root, tmp_path):
+    real_file = tmp_path / "real.md"
+    real_file.write_text("x", encoding="utf-8")
+    try:
+        (root / "link.md").symlink_to(real_file)
+    except OSError:
+        pytest.skip("symlinks require admin rights / Developer Mode on this platform")
+    entries = browse_service.list_children(root, root)
+    assert entries == []
