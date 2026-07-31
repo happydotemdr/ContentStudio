@@ -1,3 +1,4 @@
+import sys
 import json
 from pathlib import Path
 
@@ -331,3 +332,45 @@ def test_missing_transcript_ids_lists_only_missing(monkeypatch, tmp_path):
     missing = yt.missing_transcript_ids(tmp_path, "@testhandle")
     assert [m["id"] for m in missing] == ["gone"]
     assert missing[0]["url"] == "https://www.youtube.com/watch?v=gone"
+
+
+# --------------------------------------------------------------------------- #
+# a missing youtube-transcript-api must be loud, not silent
+
+def _simulate_missing_library(monkeypatch):
+    """Make `import youtube_transcript_api` raise ImportError.
+
+    Setting a sys.modules entry to None is the documented way to force an
+    ImportError for a module that may genuinely be installed.
+    """
+    monkeypatch.setitem(sys.modules, "youtube_transcript_api", None)
+    monkeypatch.setattr(yt, "_TRANSCRIPT_API_MISSING_WARNED", False)
+
+
+def test_missing_transcript_api_warns_instead_of_failing_silently(monkeypatch, capsys):
+    _simulate_missing_library(monkeypatch)
+    assert yt._fetch_transcript_fallback("v1") is None
+    err = capsys.readouterr().err
+    assert "youtube-transcript-api is not installed" in err
+    assert "DISABLED" in err
+
+
+def test_missing_transcript_api_warns_only_once_per_process(monkeypatch, capsys):
+    _simulate_missing_library(monkeypatch)
+    for _ in range(5):
+        yt._fetch_transcript_fallback("v1")
+    assert capsys.readouterr().err.count("not installed") == 1
+
+
+def test_missing_library_is_distinguishable_from_no_transcript(monkeypatch, capsys):
+    """The whole point: absent dependency and absent transcript must differ."""
+    # library present, but this video genuinely has no transcript -> silent None
+    class FakeApi:
+        def fetch(self, vid):
+            raise RuntimeError("no transcript for this video")
+    monkeypatch.setitem(sys.modules, "youtube_transcript_api",
+                        type(sys)("youtube_transcript_api"))
+    sys.modules["youtube_transcript_api"].YouTubeTranscriptApi = FakeApi
+    monkeypatch.setattr(yt, "_TRANSCRIPT_API_MISSING_WARNED", False)
+    assert yt._fetch_transcript_fallback("v1") is None
+    assert "not installed" not in capsys.readouterr().err

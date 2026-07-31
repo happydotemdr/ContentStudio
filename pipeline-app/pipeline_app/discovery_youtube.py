@@ -119,10 +119,26 @@ def _vtt_to_text(vtt: str) -> str:
     return "\n".join(lines_out)
 
 
+# Warn at most once per process: a missing dependency is a single fact about
+# the environment, not a per-video event, and a corpus run processes hundreds
+# of videos.
+_TRANSCRIPT_API_MISSING_WARNED = False
+
+
 def _fetch_transcript_fallback(video_id: str) -> str | None:
+    global _TRANSCRIPT_API_MISSING_WARNED
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
+        # Previously this returned None silently, making an uninstalled
+        # dependency indistinguishable from "this video has no transcript" --
+        # youtube-transcript-api is declared in requirements.txt but was absent
+        # from pipeline-app/.venv, so the fallback never ran and never said so.
+        if not _TRANSCRIPT_API_MISSING_WARNED:
+            _TRANSCRIPT_API_MISSING_WARNED = True
+            print("  ! youtube-transcript-api is not installed -- the transcript "
+                  "fallback is DISABLED and every video will report no transcript. "
+                  "Install it: pip install -r requirements.txt", file=sys.stderr)
         return None
     try:
         api = YouTubeTranscriptApi()
