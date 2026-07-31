@@ -21,3 +21,9 @@ pipeline-app/pipeline_app/**/__pycache__/
 pipeline-app/tests/__pycache__/
 pipeline-app/pipeline_app.egg-info/
 rgs-briefs/.superseded/
+
+# YouTube session cookies for yt-dlp auth (live credentials -- never commit)
+pipeline-app/cookies.txt
+
+# YouTube Data API key (never commit)
+pipeline-app/youtube_api_key.txt
