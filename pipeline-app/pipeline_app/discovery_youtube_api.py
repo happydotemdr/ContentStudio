@@ -177,3 +177,38 @@ def fetch_metadata(video_ids: list[str], key: str | None = None) -> dict[str, di
 def fetch_one(video_id: str, key: str | None = None) -> dict | None:
     """Single-video convenience wrapper. None if unavailable."""
     return fetch_metadata([video_id], key=key).get(video_id)
+
+
+def fetch_upload_dates(video_ids: list[str], key: str | None = None) -> dict[str, str]:
+    """{video_id: 'YYYY-MM-DD'} for the ids the API returns.
+
+    Lighter than fetch_metadata (part=snippet only) but the same 1 unit per 50
+    ids. Exists so enumerate_newest_first can establish a single global
+    ordering across the /videos and /shorts tabs, which are each newest-first
+    on their own but carry no dates in a --flat-playlist listing.
+    """
+    key = key or api_key()
+    if not key:
+        return {}
+
+    unique_ids = list(dict.fromkeys(v for v in video_ids if v))
+    out: dict[str, str] = {}
+
+    for start in range(0, len(unique_ids), MAX_IDS_PER_CALL):
+        batch = unique_ids[start:start + MAX_IDS_PER_CALL]
+        query = urllib.parse.urlencode({
+            "part": "snippet",
+            "id": ",".join(batch),
+            "key": key,
+            "maxResults": MAX_IDS_PER_CALL,
+        })
+        payload = _http_get_json(f"{API_URL}?{query}")
+        if payload is None:
+            continue
+        for item in payload.get("items") or []:
+            video_id = item.get("id")
+            published_at = ((item.get("snippet") or {}).get("publishedAt") or "")
+            if video_id and len(published_at) >= 10:
+                out[video_id] = published_at[:10]
+
+    return out

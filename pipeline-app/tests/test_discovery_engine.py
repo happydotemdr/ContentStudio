@@ -30,7 +30,7 @@ class FakeAdapter:
         self.peek_calls.append(video_id)
         return self._dates.get(video_id)
 
-    def download_item(self, repo_root, handle, item_id, title):
+    def download_item(self, repo_root, handle, item_id, title, content_type=None):
         self.downloaded_ids.append(item_id)
         return {"id": item_id, "ok": True, "published": self._dates.get(item_id)}
 
@@ -251,7 +251,7 @@ class SingleFakeAdapter:
         # boundary use Task 9's own FakeAdapter with an explicit `dates` dict.)
         return "2026-07-29"
 
-    def download_item(self, repo_root, handle, item_id, title):
+    def download_item(self, repo_root, handle, item_id, title, content_type=None):
         return {"id": item_id, "ok": True, "published": "2026-07-29"}
 
 
@@ -390,7 +390,7 @@ class SlowFakeAdapter(SingleFakeAdapter):
         super().__init__(*args, **kwargs)
         self._sleep_s = sleep_s
 
-    def download_item(self, repo_root, handle, item_id, title):
+    def download_item(self, repo_root, handle, item_id, title, content_type=None):
         time.sleep(self._sleep_s)
         return super().download_item(repo_root, handle, item_id, title)
 

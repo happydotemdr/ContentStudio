@@ -25,7 +25,8 @@ class PlatformAdapter(Protocol):
     def on_disk_ids(self, repo_root: Path, handle: str) -> set[str]: ...
     def enumerate_newest_first(self, handle: str, keyword_filter: str | None) -> list[dict]: ...
     def peek_upload_date(self, *args) -> str | None: ...
-    def download_item(self, repo_root: Path, handle: str, item_id: str, title: str) -> dict: ...
+    def download_item(self, repo_root: Path, handle: str, item_id: str, title: str,
+                      content_type: str | None = None) -> dict: ...
 
 
 def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _dt.datetime) -> list[dict]:
@@ -60,7 +61,8 @@ def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _
             if _dt.datetime.strptime(published, "%Y-%m-%d").replace(tzinfo=_dt.timezone.utc) < cutoff:
                 break
 
-        result = adapter.download_item(repo_root, handle, item_id, item["title"])
+        result = adapter.download_item(repo_root, handle, item_id, item["title"],
+                                       item.get("content_type"))
         if result.get("ok"):
             downloaded.append(result)
 
@@ -84,7 +86,8 @@ def process_handle_backfill(adapter: PlatformAdapter, repo_root: Path, handle_ro
         pub_date = _dt.datetime.strptime(published, "%Y-%m-%d").date()
         if pub_date < start_date or pub_date > end_date:
             continue
-        result = adapter.download_item(repo_root, handle, item_id, item["title"])
+        result = adapter.download_item(repo_root, handle, item_id, item["title"],
+                                       item.get("content_type"))
         if result.get("ok"):
             downloaded.append(result)
 
@@ -98,7 +101,8 @@ def process_handle_validate(adapter: PlatformAdapter, repo_root: Path, handle_ro
     if not enumerated:
         return {"ok": False, "item": None}
     newest = enumerated[0]
-    result = adapter.download_item(repo_root, handle, newest["id"], newest["title"])
+    result = adapter.download_item(repo_root, handle, newest["id"], newest["title"],
+                                   newest.get("content_type"))
     return {"ok": bool(result.get("ok")), "item": result if result.get("ok") else None}
 
 

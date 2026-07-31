@@ -48,19 +48,67 @@ def on_disk_ids(repo_root: Path, handle: str) -> set[str]:
     return {p.name.split("__", 1)[0] for p in directory.glob("*__*.md")}
 
 
-def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
-    url = f"https://www.youtube.com/{handle}/videos"
+# A channel's Shorts live on a separate tab from its long-form uploads, and the
+# two listings are DISJOINT -- /videos does not include Shorts. Measured on
+# 2026-07-31: @goodinside /videos=274, /shorts=603, overlap=0. Enumerating only
+# /videos made every Short on every channel invisible to discovery.
+_TABS = (("videos", "video"), ("shorts", "short"))
+
+
+def _enumerate_tab(handle: str, tab: str, content_type: str) -> list[dict]:
+    url = f"https://www.youtube.com/{handle}/{tab}"
     cmd = ["yt-dlp", "-J", "--flat-playlist", "--ignore-errors", *_cookie_args(), url]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0 or not proc.stdout.strip():
-        print(f"  ! yt-dlp enumerate failed for {handle}: {proc.stderr.strip()[:200]}", file=sys.stderr)
+        # A channel with no Shorts tab is normal, not an error -- only the
+        # /videos tab failing is worth reporting loudly.
+        if tab == "videos":
+            print(f"  ! yt-dlp enumerate failed for {handle}: {proc.stderr.strip()[:200]}",
+                  file=sys.stderr)
         return []
     data = json.loads(proc.stdout)
-    entries = data.get("entries") or []
-    items = [
-        {"id": e["id"], "title": e.get("title") or e["id"], "published": None}
-        for e in entries if e and e.get("id")
+    return [
+        {"id": e["id"], "title": e.get("title") or e["id"], "published": None,
+         "content_type": content_type}
+        for e in (data.get("entries") or []) if e and e.get("id")
     ]
+
+
+def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
+    """Every video AND Short for `handle`, merged into one newest-first list.
+
+    Ordering is load-bearing: process_handle breaks out of the walk on
+    consecutive-on-disk and on the date cutoff, so a list that is not globally
+    newest-first would silently stop before reaching the second tab's items.
+    Each tab is newest-first on its own but --flat-playlist carries no dates,
+    so dates are batched from the Data API (1 quota unit per 50 ids) to
+    establish a single order.
+    """
+    per_tab = {ct: _enumerate_tab(handle, tab, ct) for tab, ct in _TABS}
+    videos = per_tab["video"]
+    items = [i for tab_items in per_tab.values() for i in tab_items]
+
+    # Defensive: dedupe by id in case YouTube ever surfaces an item on both tabs.
+    seen: set[str] = set()
+    items = [i for i in items if not (i["id"] in seen or seen.add(i["id"]))]
+
+    dates = youtube_api.fetch_upload_dates([i["id"] for i in items])
+    if dates:
+        for item in items:
+            item["published"] = dates.get(item["id"])
+        # Undated items (deleted/private/API miss) sort last rather than
+        # masquerading as the newest.
+        items.sort(key=lambda i: i["published"] or "", reverse=True)
+    elif per_tab["short"]:
+        # Without dates there is no way to interleave two independently-ordered
+        # tabs, and returning them concatenated would break the newest-first
+        # contract process_handle relies on. Fall back to /videos alone --
+        # narrower, but correct -- and say so.
+        print(f"  ! no Data API dates available for {handle}: cannot order Shorts "
+              f"against videos, so {len(per_tab['short'])} Shorts are being skipped. "
+              f"Set YOUTUBE_API_KEY to include them.", file=sys.stderr)
+        items = videos
+
     if keyword_filter:
         items = [i for i in items if keyword_filter.lower() in i["title"].lower()]
     return items
@@ -150,7 +198,8 @@ def _fetch_transcript_fallback(video_id: str) -> str | None:
         return None
 
 
-def download_item(repo_root: Path, handle: str, video_id: str, title: str) -> dict:
+def download_item(repo_root: Path, handle: str, video_id: str, title: str,
+                  content_type: str | None = None) -> dict:
     out_dir = handle_dir(repo_root, "youtube", handle)
     out_dir.mkdir(parents=True, exist_ok=True)
     tmp_dir = repo_root / "output" / "brand-intel" / "youtube" / "_tmp"
@@ -216,6 +265,10 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str) -> di
         "url": url,
         "handle": handle,
         "channel": channel,
+        # "short" or "video" -- Shorts and long-form are different source
+        # material for this project, and the two live on separate channel
+        # tabs, so the distinction is recorded rather than inferred.
+        "content_type": content_type,
         "upload_date": upload_date or None,
         "duration_s": duration_s,
         "view_count": api_meta.get("view_count"),
