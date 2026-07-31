@@ -181,6 +181,18 @@ def test_render_md_file_returns_frontmatter_and_body(tmp_path):
     assert "<h1>Title</h1>" in result["body_html"]
 
 
+def test_render_md_file_renders_pipe_tables_as_html_table(tmp_path):
+    f = tmp_path / "table.md"
+    f.write_text(
+        "# Title\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n",
+        encoding="utf-8",
+    )
+    result = browse_service.render_md_file(f)
+    assert "<table>" in result["body_html"]
+    assert "<th>A</th>" in result["body_html"]
+    assert "<td>1</td>" in result["body_html"]
+
+
 def test_render_md_file_no_frontmatter(tmp_path):
     f = tmp_path / "plain.md"
     f.write_text("# Just a title\n", encoding="utf-8")

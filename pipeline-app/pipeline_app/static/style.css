@@ -69,7 +69,9 @@ button {
 button:hover { background: var(--bg-panel); box-shadow: 0 0 8px var(--accent-magenta); }
 
 table { border-collapse: collapse; color: var(--text); }
-th, td { text-align: left; padding: 0.25rem 0.75rem 0.25rem 0; vertical-align: top; }
+th, td { text-align: left; padding: 0.25rem 0.75rem; vertical-align: top; border: 1px solid var(--border); }
+th { border-bottom: 2px solid var(--accent-cyan); }
+tbody tr:nth-child(even) { background: var(--bg-panel); }
 
 .status {
   display: inline-block;

@@ -272,4 +272,7 @@ def render_md_file(path: Path) -> dict:
     if not isinstance(meta, dict):
         return {"error": "Frontmatter is not a key/value mapping."}
 
-    return {"frontmatter": meta, "body_html": markdown.markdown(body)}
+    return {
+        "frontmatter": meta,
+        "body_html": markdown.markdown(body, extensions=["tables"]),
+    }
