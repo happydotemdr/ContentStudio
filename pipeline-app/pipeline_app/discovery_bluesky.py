@@ -68,7 +68,12 @@ def peek_upload_date(item_id: str) -> str | None:
     return None  # normally dead code: enumerate_newest_first always populates 'published'
 
 
-def download_item(repo_root: Path, handle: str, rkey: str, title: str) -> dict:
+def download_item(repo_root: Path, handle: str, rkey: str, title: str,
+                  content_type: str | None = None) -> dict:
+    # content_type is part of the PlatformAdapter contract (YouTube uses it to
+    # distinguish Shorts from long-form). Bluesky posts have no such split, so
+    # it is accepted and ignored rather than omitted -- an adapter that cannot
+    # be called with the full signature breaks the engine at runtime.
     out_dir = handle_dir(repo_root, "bluesky", handle)
     out_dir.mkdir(parents=True, exist_ok=True)
 
