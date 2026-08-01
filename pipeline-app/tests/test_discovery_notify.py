@@ -256,3 +256,52 @@ def test_send_email_catches_non_2xx_response(monkeypatch):
 
     monkeypatch.setattr(discovery_notify.requests, "post", lambda *a, **k: FailingResponse())
     assert discovery_notify.send_email("subject", "body") is False
+
+
+def test_render_email_no_new_content():
+    summary = {"run_status": "completed", "has_issues": False, "channels": [], "errored": []}
+    result = discovery_notify.render_email(summary, "2026-08-01")
+    assert result["subject"] == "ContentStudio Discovery 2026-08-01: 0 new video(s)"
+    assert result["text"] == "No new content today."
+
+
+def test_render_email_with_headlines_and_bluesky_count():
+    summary = {
+        "run_status": "completed",
+        "has_issues": False,
+        "channels": [
+            {"name": "Some Channel", "headlines": ["Video One", "Video Two"], "count": 2},
+            {"name": "A Bluesky Handle", "headlines": [], "count": 3},
+        ],
+        "errored": [],
+    }
+    result = discovery_notify.render_email(summary, "2026-08-01")
+    assert result["subject"] == "ContentStudio Discovery 2026-08-01: 5 new video(s)"
+    assert "Some Channel" in result["text"]
+    assert "- Video One" in result["text"]
+    assert "- Video Two" in result["text"]
+    assert "A Bluesky Handle" in result["text"]
+    assert "3 new post(s)" in result["text"]
+
+
+def test_render_email_issue_prefixes_subject_and_lists_errors():
+    summary = {
+        "run_status": "completed_with_errors",
+        "has_issues": True,
+        "channels": [],
+        "errored": ["@dead-handle"],
+    }
+    result = discovery_notify.render_email(summary, "2026-08-01")
+    assert result["subject"].startswith("[ISSUE] ")
+    assert "Run status: completed_with_errors" in result["text"]
+    assert "Errors:" in result["text"]
+    assert "@dead-handle" in result["text"]
+
+
+def test_render_email_failed_run_states_status_even_with_empty_body():
+    # A failed run with no handle results at all must never silently render
+    # as "No new content today." under an [ISSUE] subject.
+    summary = {"run_status": "failed", "has_issues": True, "channels": [], "errored": []}
+    result = discovery_notify.render_email(summary, "2026-08-01")
+    assert result["subject"].startswith("[ISSUE] ")
+    assert "Run status: failed" in result["text"]

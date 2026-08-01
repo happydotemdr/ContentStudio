@@ -126,3 +126,40 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
         "channels": channels,
         "errored": errored,
     }
+
+
+def render_email(summary: dict, run_date: str) -> dict:
+    total = sum(c["count"] for c in summary["channels"])
+    subject = f"ContentStudio Discovery {run_date}: {total} new video(s)"
+    if summary["has_issues"]:
+        subject = f"[ISSUE] {subject}"
+
+    lines: list[str] = []
+    if summary["has_issues"]:
+        lines.append(f"Run status: {summary['run_status']}")
+        lines.append("")
+
+    for channel in summary["channels"]:
+        lines.append(channel["name"])
+        if channel["headlines"]:
+            for headline in channel["headlines"]:
+                lines.append(f"- {headline}")
+        else:
+            lines.append(f"- {channel['count']} new post(s)")
+        lines.append("")
+
+    if summary["errored"]:
+        lines.append("Errors:")
+        for name in summary["errored"]:
+            lines.append(f"- {name}")
+        lines.append("")
+
+    if not summary["channels"] and not summary["errored"]:
+        if summary["has_issues"]:
+            text = "\n".join(lines).rstrip() + "\n"
+        else:
+            text = "No new content today."
+    else:
+        text = "\n".join(lines).rstrip() + "\n"
+
+    return {"subject": subject, "text": text}
