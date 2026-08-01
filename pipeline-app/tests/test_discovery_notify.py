@@ -244,7 +244,7 @@ def test_send_email_posts_expected_payload(monkeypatch):
     assert result is True
     assert captured["url"] == discovery_notify.RESEND_API_URL
     assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert captured["json"]["to"] == [discovery_notify.RECIPIENT]
+    assert captured["json"]["to"] == discovery_notify.RECIPIENTS
     assert captured["json"]["from"] == discovery_notify.SENDER
     assert captured["json"]["subject"] == "Test Subject"
     assert captured["json"]["text"] == "Test body text"
