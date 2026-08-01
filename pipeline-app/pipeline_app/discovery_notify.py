@@ -23,11 +23,7 @@ RESEND_API_URL = "https://api.resend.com/emails"
 KEY_ENV_VAR = "RESEND_API_KEY"
 KEY_FILE = Path(__file__).resolve().parent.parent / "resend_api_key.txt"
 
-RECIPIENTS = [
-    "brian@happydotemdr.com",
-    "brian.j.waltonking@gmail.com",
-    "primo1313@gmail.com",
-]
+RECIPIENT = "brian@happydotemdr.com"
 # Resend's shared sandbox sender -- works with no domain verification. Once a
 # real sending domain is verified in the Resend dashboard, set
 # RESEND_FROM_ADDRESS in the environment to switch senders with no code change.
@@ -62,7 +58,7 @@ def send_email(subject: str, text: str) -> bool:
         response = requests.post(
             RESEND_API_URL,
             headers={"Authorization": f"Bearer {key}"},
-            json={"from": SENDER, "to": RECIPIENTS, "subject": subject, "text": text},
+            json={"from": SENDER, "to": [RECIPIENT], "subject": subject, "text": text},
             timeout=REQUEST_TIMEOUT_S,
         )
         response.raise_for_status()
