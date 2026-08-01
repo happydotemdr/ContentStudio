@@ -6,9 +6,11 @@ returns. See docs/superpowers/specs/2026-08-01-discovery-email-summary-design.md
 """
 from __future__ import annotations
 
+import datetime as _dt
 import os
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 import yaml
@@ -163,3 +165,13 @@ def render_email(summary: dict, run_date: str) -> dict:
         text = "\n".join(lines).rstrip() + "\n"
 
     return {"subject": subject, "text": text}
+
+
+def notify(conn, repo_root: Path, run_row_id: int) -> bool:
+    summary = build_summary(conn, repo_root, run_row_id)
+    run_row = db_mod.get_run(conn, run_row_id)
+    timezone_name = db_mod.get_settings(conn)["timezone"]
+    started_at = _dt.datetime.fromisoformat(run_row["started_at"])
+    run_date = started_at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
+    rendered = render_email(summary, run_date)
+    return send_email(rendered["subject"], rendered["text"])

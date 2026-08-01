@@ -305,3 +305,34 @@ def test_render_email_failed_run_states_status_even_with_empty_body():
     result = discovery_notify.render_email(summary, "2026-08-01")
     assert result["subject"].startswith("[ISSUE] ")
     assert "Run status: failed" in result["text"]
+
+
+def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T11:00:00+00:00")  # 06:00 America/Chicago (UTC-5)
+
+    calls = {}
+    monkeypatch.setattr(discovery_notify, "build_summary",
+                         lambda c, r, rid: (calls.setdefault("build_args", (c, r, rid)), {"fake": "summary"})[1])
+    monkeypatch.setattr(discovery_notify, "render_email",
+                         lambda summary, run_date: (calls.setdefault("render_args", (summary, run_date)), {"subject": "s", "text": "t"})[1])
+    monkeypatch.setattr(discovery_notify, "send_email",
+                         lambda subject, text: (calls.setdefault("send_args", (subject, text)), True)[1])
+
+    result = discovery_notify.notify(conn, repo_root, run_row_id)
+
+    assert result is True
+    assert calls["build_args"] == (conn, repo_root, run_row_id)
+    assert calls["render_args"] == ({"fake": "summary"}, "2026-08-01")
+    assert calls["send_args"] == ("s", "t")
+
+
+def test_notify_never_raises_when_build_summary_fails(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    monkeypatch.setattr(discovery_notify, "build_summary", lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    # notify() itself doesn't need to catch (the cron call site does, per Task 5),
+    # but build_summary/render_email/send_email must be the only things that can raise --
+    # this test documents that notify() doesn't add its own extra failure mode.
+    with pytest.raises(RuntimeError):
+        discovery_notify.notify(conn, repo_root, run_row_id)
