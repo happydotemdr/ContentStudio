@@ -113,6 +113,31 @@ def test_build_summary_excludes_file_with_no_fetched_at(notify_db):
     assert headlines == ["Good Video"]
 
 
+def test_build_summary_excludes_file_with_invalid_yaml_frontmatter(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    handle_id = _make_handle(conn)
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_youtube_video(repo_root, "@somechannel", "vid1", "Good Video", "2026-08-01T06:01:00+00:00")
+    # A file with a --- delimited block but genuinely invalid YAML inside it (unquoted value
+    # starting with a reserved indicator character) -- parse_frontmatter's yaml.safe_load call
+    # raises for this; build_summary must catch it and drop just this file, not crash the run.
+    from pipeline_app import discovery_paths
+    out_dir = discovery_paths.handle_dir(repo_root, "youtube", "@somechannel")
+    bad_text = (
+        "---\n"
+        "video_id: vid2\n"
+        "fetched_at: @not-quoted-and-invalid\n"
+        "---\n\n"
+        "# Broken Video\n"
+    )
+    (out_dir / "vid2__broken-yaml.md").write_text(bad_text, encoding="utf-8")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["channels"][0]["headlines"] == ["Good Video"]
+
+
 def test_build_summary_bluesky_handle_has_no_headlines_but_has_count(notify_db):
     conn, repo_root = notify_db
     run_row_id = _make_run(conn)

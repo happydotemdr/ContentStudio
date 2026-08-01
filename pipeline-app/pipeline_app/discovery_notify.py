@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import requests
+import yaml
 
 from pipeline_app import db as db_mod
 from pipeline_app import discovery_paths
@@ -75,7 +76,10 @@ def _youtube_headlines_for_handle(repo_root, platform_handle: str, started_at: s
             text = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        meta, body = artifacts.parse_frontmatter(text)
+        try:
+            meta, body = artifacts.parse_frontmatter(text)
+        except yaml.YAMLError:
+            continue
         fetched_at = meta.get("fetched_at")
         if not fetched_at or fetched_at < started_at:
             continue
