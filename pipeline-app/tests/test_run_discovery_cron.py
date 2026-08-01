@@ -73,3 +73,83 @@ def test_validate_handle_mode_passes_handle_id_through(monkeypatch, repo_root):
     assert exit_code == 0
     assert calls[0]["handle_id"] == 42
     assert calls[0]["mode"] == "validate_handle"
+
+
+def test_scheduled_due_run_calls_notify(monkeypatch, repo_root):
+    monkeypatch.setattr(cron, "_is_due_now", lambda repo_root_arg: True)
+    monkeypatch.setattr(cron, "run_discovery",
+                         lambda *a, **k: {"run_row_id": 1, "status": "completed"})
+    calls = []
+    monkeypatch.setattr(cron, "notify", lambda conn, repo_root_arg, run_row_id: calls.append(run_row_id) or True)
+
+    exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+
+    assert exit_code == 0
+    assert calls == [1]
+
+
+def test_scheduled_locked_run_does_not_call_notify(monkeypatch, repo_root):
+    monkeypatch.setattr(cron, "_is_due_now", lambda repo_root_arg: True)
+    monkeypatch.setattr(cron, "run_discovery",
+                         lambda *a, **k: {"run_row_id": 2, "status": "locked"})
+    calls = []
+    monkeypatch.setattr(cron, "notify", lambda *a, **k: calls.append(1) or True)
+
+    exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+
+    assert exit_code == 0
+    assert calls == []
+
+
+def test_scheduled_not_due_does_not_call_notify(monkeypatch, repo_root):
+    monkeypatch.setattr(cron, "_is_due_now", lambda repo_root_arg: False)
+    calls = []
+    monkeypatch.setattr(cron, "notify", lambda *a, **k: calls.append(1) or True)
+
+    exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+
+    assert exit_code == 0
+    assert calls == []
+
+
+def test_incremental_mode_does_not_call_notify(monkeypatch, repo_root):
+    monkeypatch.setattr(cron, "run_discovery",
+                         lambda *a, **k: {"run_row_id": 3, "status": "completed"})
+    calls = []
+    monkeypatch.setattr(cron, "notify", lambda *a, **k: calls.append(1) or True)
+
+    exit_code = cron.main(["--mode", "incremental", "--repo-root", str(repo_root)])
+
+    assert exit_code == 0
+    assert calls == []
+
+
+def test_backfill_mode_does_not_call_notify(monkeypatch, repo_root):
+    monkeypatch.setattr(cron, "run_discovery",
+                         lambda *a, **k: {"run_row_id": 4, "status": "completed"})
+    calls = []
+    monkeypatch.setattr(cron, "notify", lambda *a, **k: calls.append(1) or True)
+
+    exit_code = cron.main([
+        "--mode", "backfill", "--backfill-start", "2026-06-01", "--backfill-end", "2026-06-30",
+        "--repo-root", str(repo_root),
+    ])
+
+    assert exit_code == 0
+    assert calls == []
+
+
+def test_notify_exception_does_not_propagate_or_change_exit_code(monkeypatch, repo_root, capsys):
+    monkeypatch.setattr(cron, "_is_due_now", lambda repo_root_arg: True)
+    monkeypatch.setattr(cron, "run_discovery",
+                         lambda *a, **k: {"run_row_id": 5, "status": "completed"})
+
+    def raising_notify(*a, **k):
+        raise RuntimeError("resend is down")
+
+    monkeypatch.setattr(cron, "notify", raising_notify)
+
+    exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+
+    assert exit_code == 0
+    assert "discovery notification failed" in capsys.readouterr().err

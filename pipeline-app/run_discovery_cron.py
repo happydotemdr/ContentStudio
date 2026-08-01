@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import sys
 from pathlib import Path
 
 from pipeline_app import db
 from pipeline_app import discovery_bluesky, discovery_youtube
 from pipeline_app.discovery_engine import run_discovery
+from pipeline_app.discovery_notify import notify
 from pipeline_app.discovery_scheduling import is_due
 
 HERE = Path(__file__).resolve().parent
@@ -82,6 +84,12 @@ def main(argv: list[str] | None = None) -> int:
             handle_id=args.handle_id,
         )
         print(f"run {result['run_row_id']}: {result['status']}")
+
+        if args.mode == "scheduled" and result["status"] != "locked":
+            try:
+                notify(conn, repo_root, result["run_row_id"])
+            except Exception as exc:  # noqa: BLE001 - notification must never affect run status/exit code
+                print(f"discovery notification failed: {exc}", file=sys.stderr)
     finally:
         conn.close()
     return 0
