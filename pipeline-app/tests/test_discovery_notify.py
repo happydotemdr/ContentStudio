@@ -138,6 +138,31 @@ def test_build_summary_excludes_file_with_invalid_yaml_frontmatter(notify_db):
     assert summary["channels"][0]["headlines"] == ["Good Video"]
 
 
+def test_build_summary_excludes_file_with_non_dict_frontmatter(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    handle_id = _make_handle(conn)
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_youtube_video(repo_root, "@somechannel", "vid1", "Good Video", "2026-08-01T06:01:00+00:00")
+    # A file whose frontmatter block is syntactically valid YAML but does not parse to a
+    # mapping (e.g. a plain scalar string) -- yaml.safe_load succeeds so parse_frontmatter
+    # doesn't raise YAMLError, but meta.get("fetched_at") would raise AttributeError if not
+    # guarded. build_summary must catch this shape too and drop just this file.
+    from pipeline_app import discovery_paths
+    out_dir = discovery_paths.handle_dir(repo_root, "youtube", "@somechannel")
+    bad_text = (
+        "---\n"
+        "just some plain text, not a mapping\n"
+        "---\n\n"
+        "# Some Title\n"
+    )
+    (out_dir / "vid2__non-dict-yaml.md").write_text(bad_text, encoding="utf-8")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["channels"][0]["headlines"] == ["Good Video"]
+
+
 def test_build_summary_bluesky_handle_has_no_headlines_but_has_count(notify_db):
     conn, repo_root = notify_db
     run_row_id = _make_run(conn)
@@ -325,6 +350,28 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
     assert calls["build_args"] == (conn, repo_root, run_row_id)
     assert calls["render_args"] == ({"fake": "summary"}, "2026-08-01")
     assert calls["send_args"] == ("s", "t")
+
+
+def test_notify_end_to_end_uses_real_build_summary_and_render_email(monkeypatch, notify_db):
+    # Locks the real contract between build_summary and render_email by exercising notify()
+    # against the real DB/filesystem fixture, mocking only send_email.
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn)
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_youtube_video(repo_root, "@somechannel", "vid1", "Real Contract Video", "2026-08-01T06:01:00+00:00")
+
+    captured = {}
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text: (captured.setdefault("subject", subject), captured.setdefault("text", text), True)[-1],
+    )
+
+    result = discovery_notify.notify(conn, repo_root, run_row_id)
+
+    assert result is True
+    assert "Some Channel" in captured["text"]
+    assert "Real Contract Video" in captured["text"]
 
 
 def test_notify_never_raises_when_build_summary_fails(monkeypatch, notify_db):

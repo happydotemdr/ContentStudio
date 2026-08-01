@@ -82,6 +82,8 @@ def _youtube_headlines_for_handle(repo_root, platform_handle: str, started_at: s
             meta, body = artifacts.parse_frontmatter(text)
         except yaml.YAMLError:
             continue
+        if not isinstance(meta, dict):
+            continue
         fetched_at = meta.get("fetched_at")
         if not fetched_at or fetched_at < started_at:
             continue
