@@ -27,3 +27,6 @@ pipeline-app/cookies.txt
 
 # YouTube Data API key (never commit)
 pipeline-app/youtube_api_key.txt
+
+# Resend API key for discovery email notifications (never commit)
+pipeline-app/resend_api_key.txt
