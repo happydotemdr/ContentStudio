@@ -28,26 +28,35 @@ INTERMEDIATE_CRF_DRAFT = 28
 INTERMEDIATE_PRESET_FINAL = "veryfast"
 INTERMEDIATE_PRESET_DRAFT = "ultrafast"
 
-# Verified against the installed ffmpeg 9.0 binary with the h264 `trace_headers`
-# bitstream filter: the generic top-level `-colorspace`/`-color_primaries`/
-# `-color_trc` output options do NOT reliably reach libx264's VUI on this
-# build. `-colorspace bt709` alone lands (matrix_coefficients=1 in the
-# decoded SPS), but `-color_primaries bt709 -color_trc bt709` do not --
-# colour_primaries and transfer_characteristics come back `2` (Unspecified)
-# regardless of what is requested generically, confirmed by decoding the
-# muxed output with `ffmpeg -i out.mkv -c copy -bsf:v trace_headers -f null -`.
-# Routing colorprim/transfer/colormatrix through `-x264-params` does set them.
-# This is a real divergence from the plan, which specified the generic flags.
+# Tags the frame's colour metadata (primaries/transfer/matrix) before encode.
 #
-# `range=tv` inside the same -x264-params string does NOT work on this
-# libx264 core (r3223): it logs "Error parsing option 'range = tv'." and is
-# silently dropped, confirmed with the isolated key-by-key test above. It is
-# also unnecessary: the scale filter's `out_range=tv` (see _colour_scale)
-# already tags the AVFrame's color_range, and libx264 reads that frame field
-# automatically to set video_full_range_flag=0 -- verified correct via
-# trace_headers with no explicit range option at all. So range is omitted
-# here rather than passed as a parameter that errors on every render.
-_X264_PARAMS_BT709 = "colorprim=bt709:transfer=bt709:colormatrix=bt709"
+# Superseded a first attempt that used `-x264-params colorprim=:transfer=:
+# colormatrix=` as an encode-time flag instead of this filter. That attempt
+# was verified against the h264 `trace_headers` bitstream filter, which
+# showed the SPS VUI correctly carrying colour_primaries=1/transfer_
+# characteristics=1/matrix_coefficients=1 -- but `ffprobe -show_streams` on
+# the very same file reported color_primaries=unknown and color_transfer=
+# unknown (only color_space landed). That is decisive: ffprobe is what this
+# project's own QA gates on (design spec line 503; Task 13's colour_tagging
+# check and Task 15's e2e assertion both read ffmpeg.probe(), built on
+# ffprobe), so a tag only visible via a manual bitstream decode does not
+# satisfy the spec's own observable, and stage A's clips would fail the QA
+# gate for a defect this task's own report had wrongly marked closed.
+#
+# `setparams` fixes this at the frame-metadata level instead of the encoder
+# level: verified with `ffprobe -show_streams` on the resulting file --
+# color_space=bt709, color_primaries=bt709, color_transfer=bt709 all land,
+# and independently reconfirmed with trace_headers that the encoded SPS still
+# carries the correct VUI values. `-x264-params` is no longer used at all:
+# once setparams tags the frame before libx264 sees it, the encoder's own
+# automatic VUI generation (already responsible for out_range=tv on
+# _colour_scale landing correctly, see below) picks up colorspace, primaries
+# and transfer the same way -- there is nothing left for an encoder-side flag
+# to add, and dropping it also removes the `range=tv` parse error a prior
+# version of this constant carried (`-x264-params` rejects "range=tv" on this
+# libx264 core; `setparams` has no such key at all, so the question does not
+# arise here -- range remains solely the scale filter's `out_range=tv`).
+_SETPARAMS_BT709 = "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
 
 
 def conform_size(canvas: Canvas, shot_motion: Motion) -> tuple[int, int]:
@@ -131,6 +140,10 @@ def still_filters(
         # Immediately after the tagged conversion, so nothing downstream can
         # leave the frame in RGB and trigger a default BT.601 conversion later.
         f"format={INTERMEDIATE_PIX_FMT}",
+        # Stamps colour_primaries/color_trc/colorspace onto the frame itself
+        # so they survive into both the encoded bitstream and ffprobe's
+        # container-level report (see _SETPARAMS_BT709's docstring above).
+        _SETPARAMS_BT709,
     ]
     filters.extend(_whip_stack(whip_in, whip_out, total_frames, canvas))
     filters.append("setsar=1")
@@ -150,6 +163,7 @@ def clip_filters(
         f"fps={canvas.fps}",
         _colour_scale(canvas),
         f"format={INTERMEDIATE_PIX_FMT}",
+        _SETPARAMS_BT709,
     ]
     total_frames = round((shot.source_out - shot.source_in) * canvas.fps)
     filters.extend(_whip_stack(whip_in, whip_out, total_frames, canvas))
@@ -182,7 +196,16 @@ def shot_cache_key(
     ffmpeg_build: str,
     supersample: int,
     mode: str,
+    fps: int,
 ) -> str:
+    # v1's canvas width/height cannot vary (ruling: only 1080x1920 is
+    # implemented), so fps is the one live piece of `Canvas` that changes the
+    # render without changing anything else already in this key: editing
+    # spec.canvas.fps changes total_frames/hold_frames/the whip windows and
+    # every n-based motion expression, but none of shot/next_transition/
+    # source_digest/ffmpeg_build/supersample/mode would differ. Without fps
+    # here, re-rendering after an fps edit would report a false cache hit and
+    # silently keep serving a clip rendered at the old frame rate.
     return payload_digest(
         shot.model_dump(by_alias=True),
         next_transition.model_dump() if next_transition else None,
@@ -190,6 +213,7 @@ def shot_cache_key(
         ffmpeg_build,
         supersample,
         mode,
+        fps,
     )
 
 
@@ -220,7 +244,7 @@ def render_shot(
     key = f"shots/{index:03d}"
     digest = shot_cache_key(
         shot, next_transition, file_digest(source), ffmpeg.ffmpeg_version(),
-        supersample, mode,
+        supersample, mode, canvas.fps,
     )
     if manifest.is_fresh(key, digest, target):
         return target
@@ -260,7 +284,6 @@ def render_shot(
             "-fps_mode", "cfr", "-r", str(canvas.fps),
             "-c:v", "libx264", "-crf", str(crf), "-preset", preset,
             "-pix_fmt", INTERMEDIATE_PIX_FMT,
-            "-x264-params", _X264_PARAMS_BT709,
             "-an", str(target),
         ],
         log_path,

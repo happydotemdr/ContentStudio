@@ -154,6 +154,29 @@ def test_validate_rejects_clip_without_source_trim(tmp_path: Path):
     assert any("source_in" in e for e in validate_spec(spec))
 
 
+def test_validate_rejects_clip_source_window_that_does_not_match_the_timeline_slot(
+    tmp_path: Path,
+):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["kind"] = "clip"
+    payload["shots"][0]["source"] = "a.mp4"
+    payload["shots"][0]["source_in"] = 0.0
+    payload["shots"][0]["source_out"] = 2.0  # slot is 0.0-3.0s = 3s, window is 2s
+    spec, _ = load_spec(write(tmp_path, payload))
+    errors = validate_spec(spec)
+    assert any("B-01" in e and "source window" in e for e in errors)
+
+
+def test_validate_accepts_a_clip_source_window_matching_the_timeline_slot(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["kind"] = "clip"
+    payload["shots"][0]["source"] = "a.mp4"
+    payload["shots"][0]["source_in"] = 1.0
+    payload["shots"][0]["source_out"] = 4.0  # slot is 0.0-3.0s = 3s, window is 3s
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert not any("source window" in e for e in validate_spec(spec))
+
+
 def test_validate_rejects_whip_without_direction(tmp_path: Path):
     payload = json.loads(json.dumps(MINIMAL))
     payload["shots"][1]["transition_in"] = {"kind": "whip", "frames": 4}

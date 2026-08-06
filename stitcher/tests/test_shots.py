@@ -63,6 +63,33 @@ def test_render_shot_sets_framerate_on_a_still_input(tmp_path: Path, monkeypatch
     assert args.index("-framerate") < args.index("-i")
 
 
+def test_render_shot_encodes_with_libx264_and_tags_colour_via_the_filter_not_the_encoder(
+    tmp_path: Path, monkeypatch
+):
+    # Colour tagging is carried entirely by the setparams filter (see
+    # still_filters/clip_filters); this locks the encode-time argv so a later
+    # refactor can't silently reintroduce the generic -colorspace/
+    # -color_primaries/-color_trc flags (which don't reach ffprobe's report
+    # on the installed 9.0 build) or the -x264-params route (whose
+    # range=tv errors on this libx264 core).
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    ws = Workspace(root=tmp_path / "r", slug="demo", mode="final")
+    ws.ensure_dirs()
+    ws.asset("a.png").write_bytes(b"png")
+    captured: list[list[str]] = []
+    monkeypatch.setattr(sh.ffmpeg, "run", lambda args, log_path: captured.append(args) or "")
+    monkeypatch.setattr(sh.ffmpeg, "ffmpeg_version", lambda: "ffmpeg version 8.0.1")
+    sh.render_shot(spec, ws, 1, spec.shots[0], None, 4, "final",
+                   Manifest(ws.manifest_path), ws.log_path("t"), False)
+    args = captured[0]
+
+    assert args[args.index("-c:v") + 1] == "libx264"
+    assert "-crf" in args
+    assert "-preset" in args
+    for flag in ("-x264-params", "-colorspace", "-color_primaries", "-color_trc"):
+        assert flag not in args
+
+
 def test_still_filters_quote_every_animated_expression():
     filters = sh.still_filters(shot(), CANVAS, 4, 90, 0, None, None)
     animated = next(f for f in filters if "eval=frame" in f)
@@ -73,6 +100,19 @@ def test_still_filters_force_and_tag_bt709():
     joined = ";".join(sh.still_filters(shot(), CANVAS, 4, 90, 0, None, None))
     assert "out_color_matrix=bt709" in joined
     assert "out_range=tv" in joined
+
+
+def test_still_filters_and_clip_filters_stamp_frame_colour_with_setparams():
+    # ffprobe -- what the project's own QA gates on (Task 13/15) -- reads
+    # container-level colour fields, which `-x264-params` alone does not
+    # populate on the installed 9.0 build even though the encoded bitstream
+    # is correct; `setparams` on the frame is what makes both agree.
+    still_joined = ";".join(sh.still_filters(shot(), CANVAS, 4, 90, 0, None, None))
+    assert "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709" in still_joined
+
+    clip = shot(kind="clip", source="a.mp4", source_in=1.0, source_out=4.0)
+    clip_joined = ";".join(sh.clip_filters(clip, CANVAS, None, None))
+    assert "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709" in clip_joined
 
 
 def test_still_filters_use_a_fixed_size_crop():
@@ -120,23 +160,34 @@ def test_the_whip_never_pads_with_black():
 
 
 def test_cache_key_changes_when_the_successor_becomes_a_whip():
-    cut = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8", 4, "final")
+    cut = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8", 4, "final", 30)
     whip = sh.shot_cache_key(
-        shot(), Transition(kind="whip", direction="left"), "src", "ff8", 4, "final"
+        shot(), Transition(kind="whip", direction="left"), "src", "ff8", 4, "final", 30
     )
     assert cut != whip
 
 
 def test_cache_key_changes_with_the_ffmpeg_build():
-    a = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8.0", 4, "final")
-    b = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8.1", 4, "final")
+    a = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8.0", 4, "final", 30)
+    b = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8.1", 4, "final", 30)
     assert a != b
 
 
 def test_cache_key_changes_between_run_modes():
-    final = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8", 4, "final")
-    draft = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8", 1, "draft")
+    final = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8", 4, "final", 30)
+    draft = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8", 1, "draft", 30)
     assert final != draft
+
+
+def test_cache_key_changes_when_fps_changes():
+    # Canvas width/height cannot vary in v1, but fps can, and an fps edit
+    # changes total_frames/hold_frames/every n-based motion expression/the
+    # whip windows without touching shot, next_transition, source_digest,
+    # ffmpeg_build, supersample, or mode -- so fps must be its own input to
+    # the key or a re-render after an fps edit would falsely cache-hit.
+    at_30 = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8", 4, "final", 30)
+    at_60 = sh.shot_cache_key(shot(), Transition(kind="cut"), "src", "ff8", 4, "final", 60)
+    assert at_30 != at_60
 
 
 def test_render_shot_skips_the_encode_on_a_cache_hit(tmp_path: Path, monkeypatch):

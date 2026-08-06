@@ -281,6 +281,23 @@ def validate_spec(spec: RenderSpec) -> list[str]:
             errors.append(
                 f"shot {shot.id} is kind 'clip' and must declare source_in and source_out"
             )
+        elif shot.kind == "clip":
+            # Stage A trims a clip's source window but never re-times it (spec
+            # line 405; "no re-timing" is an explicit non-goal), so the source
+            # window duration must equal the shot's timeline slot duration
+            # exactly. If it doesn't, ffmpeg emits fewer/more frames than the
+            # timeline slot requests with no error, silently truncating the
+            # clip and misaligning the tail whip's frame-count gate and stage
+            # D's concat timing.
+            source_duration = shot.source_out - shot.source_in
+            slot_duration = shot.end - shot.start
+            if abs(source_duration - slot_duration) > 1e-6:
+                errors.append(
+                    f"shot {shot.id}: source window is {source_duration}s "
+                    f"(source_in={shot.source_in}, source_out={shot.source_out}) but "
+                    f"its timeline slot is {slot_duration}s ({shot.start}-{shot.end}s); "
+                    "stage A trims without re-timing, so these must match exactly"
+                )
         if shot.transition_in.kind == "whip" and shot.transition_in.direction is None:
             errors.append(
                 f"shot {shot.id} has a whip transition without a direction; "
