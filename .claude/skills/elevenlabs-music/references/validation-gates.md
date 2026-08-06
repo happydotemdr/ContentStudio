@@ -124,6 +124,10 @@ Check each item and report PASS or FINDING with the offending field and value qu
 9. PLAN IDENTITY. The composition_plan (or sections) embedded in this payload must be
    byte-identical to the section map Gate 1 validated — same chunk count, same duration_ms
    values, same style arrays, same order. Any divergence is a FINDING.
+10. STYLE ARRAY CAPS. Every chunk's or section's positive_styles / positive_local_styles and
+    negative_styles / negative_local_styles arrays, as they appear in this payload, must be
+    capped at 50 items each and English-only. Exceeding either cap, or any non-English token,
+    is a FINDING.
 
 DELIVERABLE FORMAT (hard limit ~1,500 tokens):
 - Findings: bulleted, each as "Item N — <the offending field and value> — <one-line why>"
