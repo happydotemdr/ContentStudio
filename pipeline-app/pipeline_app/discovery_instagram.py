@@ -133,7 +133,14 @@ def _normalize_row(row: dict) -> dict | None:
     if not post_id:
         return None
     published_raw = row.get("date_posted") or ""
-    published = published_raw[:10] if len(published_raw) >= 10 else None
+    published_candidate = published_raw[:10] if len(published_raw) >= 10 else None
+    published = None
+    if published_candidate is not None:
+        try:
+            _dt.datetime.strptime(published_candidate, "%Y-%m-%d")
+            published = published_candidate
+        except ValueError:
+            published = None
     if published is None:
         return None
     caption = (row.get("caption") or "").strip()

@@ -96,6 +96,12 @@ def test_normalize_row_returns_none_without_usable_date():
     assert ig._normalize_row(row) is None
 
 
+def test_normalize_row_returns_none_with_malformed_date():
+    """A date_posted value that is >= 10 chars but not valid YYYY-MM-DD should return None."""
+    row = {"post_id": "p1", "caption": "x", "date_posted": "01/08/2026 xx", "content_type": "post"}
+    assert ig._normalize_row(row) is None
+
+
 def test_normalize_row_empty_caption_still_normalizes():
     row = {"post_id": "p1", "caption": None, "date_posted": "2026-08-01T00:00:00Z", "content_type": "post"}
     normalized = ig._normalize_row(row)
