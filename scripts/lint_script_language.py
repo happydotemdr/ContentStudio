@@ -127,12 +127,36 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
 
 
 DASH_RE = re.compile(r"[–—]")
-# A semicolon is one written-register hit on its own. A parenthetical or
-# bracketed aside is flagged as a single unit -- "(again)" is one written
-# insertion, not two ("(" and ")" separately), so the two bracket
-# characters are matched together with their enclosed span rather than as
-# a bare `[;()\[\]]` character class (which would double-count every pair).
-WRITTEN_PUNCT_RE = re.compile(r"[;]|\([^()]*\)|\[[^\[\]]*\]")
+SEMICOLON_RE = re.compile(r";")
+
+
+def _bracket_spans(text: str, open_char: str, close_char: str) -> list[str]:
+    """One entry per top-level well-formed span, plus one per stray delimiter.
+
+    A balanced top-level span -- e.g. "(again)", or the whole outer span of
+    "(a (b) c)" -- yields ONE entry covering the full span; nested spans of
+    the same bracket type are absorbed into their enclosing span rather than
+    counted again. Any delimiter that never finds its match -- a stray close
+    with nothing open, or an open that is never closed -- yields its own
+    one-character entry. This is what keeps malformed input from silently
+    producing zero findings: a naive regex over a matched-pair pattern simply
+    fails to match "He signed (again" or "stray ] here" at all, so those
+    unconsumed characters must be swept up explicitly."""
+    entries: list[tuple[int, str]] = []
+    stack: list[int] = []
+    for i, ch in enumerate(text):
+        if ch == open_char:
+            stack.append(i)
+        elif ch == close_char:
+            if stack:
+                start = stack.pop()
+                if not stack:  # this close completed the outermost span
+                    entries.append((start, text[start : i + 1]))
+            else:
+                entries.append((i, ch))  # stray close, nothing open
+    entries.extend((i, open_char) for i in stack)  # opens never closed
+    entries.sort(key=lambda entry: entry[0])
+    return [snippet for _, snippet in entries]
 
 
 def check_punctuation(vo_lines: list[VOLine]) -> list[Finding]:
@@ -152,12 +176,15 @@ def check_punctuation(vo_lines: list[VOLine]) -> list[Finding]:
                     "a written parenthetical with no spoken realization",
                 )
             )
-        for match in WRITTEN_PUNCT_RE.finditer(vo.text):
+        snippets = [m.group(0) for m in SEMICOLON_RE.finditer(vo.text)]
+        snippets += _bracket_spans(vo.text, "(", ")")
+        snippets += _bracket_spans(vo.text, "[", "]")
+        for snippet in snippets:
             findings.append(
                 Finding(
                     "D2",
                     vo.beat,
-                    f"line {vo.line_number}: {match.group(0)!r} is written-register "
+                    f"line {vo.line_number}: {snippet!r} is written-register "
                     "punctuation in a spoken line",
                 )
             )

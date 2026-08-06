@@ -178,3 +178,22 @@ def test_a_verbatim_quote_card_in_prose_never_fires_d1():
     )
     lines, _ = parse_script(text)
     assert check_punctuation(lines) == []
+
+
+def test_d2_flags_unbalanced_open_paren():
+    lines, _ = parse_script('HOOK (0–3s | 4 words): "He signed (again"\n')
+    checks = [f.check for f in check_punctuation(lines)]
+    assert checks == ["D2"]
+
+
+def test_d2_flags_stray_closing_bracket():
+    lines, _ = parse_script('HOOK (0–3s | 3 words): "stray ] here"\n')
+    checks = [f.check for f in check_punctuation(lines)]
+    assert checks == ["D2"]
+
+
+def test_d2_flags_nested_parens_as_one_outer_span():
+    lines, _ = parse_script('HOOK (0–3s | 4 words): "nested (a (b) c)"\n')
+    findings = check_punctuation(lines)
+    assert [f.check for f in findings] == ["D2"]
+    assert "(a (b) c)" in findings[0].message
