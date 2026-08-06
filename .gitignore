@@ -30,3 +30,9 @@ pipeline-app/youtube_api_key.txt
 
 # Resend API key for discovery email notifications (never commit)
 pipeline-app/resend_api_key.txt
+
+# Automated asset stitcher workspaces — inputs, intermediates, and deliverables
+renders/
+
+# Superpowers SDD scratch directory (temporary working files)
+.superpowers/
