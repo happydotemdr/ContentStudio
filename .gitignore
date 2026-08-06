@@ -34,5 +34,11 @@ pipeline-app/resend_api_key.txt
 # Automated asset stitcher workspaces — inputs, intermediates, and deliverables
 renders/
 
+# Overlay golden images — generated locally per-machine by test_overlays.py,
+# not committed. Pillow's glyph rasterization varies across builds now that
+# the dependency pins are floors (ruling R2/R3), so a committed golden would
+# encode one machine's output and spuriously fail on another.
+stitcher/tests/fixtures/goldens/
+
 # Superpowers SDD scratch directory (temporary working files)
 .superpowers/
