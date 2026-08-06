@@ -252,11 +252,17 @@ them; exceeding `max_lines` after wrapping is a preflight failure, not a silent 
 - `ease` ∈ `linear` | `ease_in` | `ease_out` | `ease_in_out`.
 - `transition_in` ∈ `cut` | `whip`. A `whip` is specified as
   `{ "kind": "whip", "direction": "left"|"right"|"up"|"down", "frames": 4 }`, where `frames` is the
-  count **per side** — the outgoing shot's tail carries `frames` of blur-and-slide and the incoming
-  shot's head carries `frames` of the matching move, so the whole gesture spans `2 × frames`.
+  count **per side** — the outgoing shot's tail carries `frames` of the gesture and the incoming
+  shot's head carries `frames` of the matching one, so the whole thing spans `2 × frames`.
   `direction` is required and has no default; without it the two halves cannot be guaranteed to
-  match. Content revealed at the trailing edge during the slide is filled by edge-clamping the
-  frame, never by black.
+  match.
+
+  **The whip is a directional blur, with no translate.** A slide would drag un-rendered content in
+  at the trailing edge, and FFmpeg offers no edge-clamping pad; the workarounds — scaling the whole
+  shot up to manufacture margin, or splitting and re-concatenating the whip frames — either degrade
+  the entire shot or add a filter graph out of proportion to a four-frame gesture. The blur is
+  applied at a fixed radius gated to the whip's frames rather than ramped, because the filter that
+  can blur directionally cannot ramp per-frame (see the amendment note at the end of this document).
 
 ### `overlays[]`
 
@@ -501,7 +507,7 @@ One ffmpeg invocation: concat demuxer over the stage-A clips → overlay chain �
 | Loudnorm linearity | parse `loudnorm` pass 2 output | `normalization_type != "linear"` |
 | Duck depth | `ebur128` over identical windows on **`04b_bed_ducked.wav` vs. `04a_bed_conformed.wav`** | achieved gain > 1.5 dB from the intended envelope value |
 | Safe zone | overlay bbox JSON from stage B ⊆ `safe_zone` | any overlay's ink escapes the safe zone |
-| Timeline integrity | Σ shot frames vs. audio frames vs. container duration | mismatch exceeding one frame |
+| Timeline integrity | Σ shot frames vs. audio frames vs. container duration | mismatch exceeding the larger of one frame or 50 ms |
 | Placeholders | manifest | any placeholder present in **final** mode |
 | Contact sheet | one frame from each shot's midpoint | never fails; informational |
 
@@ -515,8 +521,9 @@ Three of these measurement choices are deliberate and load-bearing:
 - **True peak is measured on `06_mix_final.wav`, before AAC encoding.** AAC decode can overshoot the
   encoder's input by roughly 0.3–1 dB, so a mix correctly normalized to −1.5 dBTP would spuriously
   fail if measured on the master.
-- **Timeline integrity allows one frame of slack.** AAC priming and padding shift container duration
-  by roughly 20–45 ms; a zero-tolerance check would fail every correct render.
+- **Timeline integrity allows the larger of one frame or 50 ms of slack.** AAC priming and padding
+  shift container duration by roughly 20–45 ms — which at 30 fps exceeds a single 33 ms frame, so a
+  one-frame tolerance would intermittently fail correct renders.
 
 **Frame checksums are deliberately not used.** libx264 output varies by build and thread count, so a
 checksum would produce false failures rather than evidence. Probe, loudness, and bounds checks are
@@ -684,6 +691,28 @@ missing assets aborting in both modes). That deletes the capability's whole purp
 pacing and card legibility before spending Midjourney and ElevenLabs credits — and the "subsystem"
 is one function drawing a slate through the Pillow renderer that already exists. The real risk the
 review identified was cache poisoning, which is addressed by the mode-partitioned cache instead.
+
+### Third review pass (against the implementation plan)
+
+A fresh Fable 5 reviewer read `docs/superpowers/plans/2026-08-06-automated-asset-stitcher.md`
+against this spec and found nine issues that would have broken execution. Two required amending
+this document rather than only the plan:
+
+- **The whip lost its slide (§3).** The plan's first implementation used `boxblur` with per-frame
+  radius expressions — which cannot work, since `boxblur`'s radii are evaluated once at filter init
+  and their expressions cannot reference `n` or `t`. Rewriting it on `avgblur` (which takes separate
+  `sizeX`/`sizeY`, so it is genuinely directional) gated by `enable=` fixed the blur. The translate
+  was then dropped entirely: this spec had required edge-clamped fill, and FFmpeg has no
+  edge-clamping pad. A blur-only whip is the honest v1.
+- **Timeline slack was too tight (§4 stage F).** One frame is 33 ms at 30 fps, but this document's
+  own text puts AAC priming/padding at 20–45 ms — so the stated tolerance was narrower than the
+  error it exists to absorb, and would have flaked on correct renders.
+
+The remaining seven were plan-only defects: a still's `-loop 1` input defaulting to 25 fps so the
+Ken Burns move silently never completed; a missing `SUPERSAMPLE_*` import; and four tests that were
+broken exactly as printed (an illegal walrus in an `assert`, a mock that never wrote the file its
+test asserted on, a spec written into a directory that was never created, and a duck check that
+raised `ValueError` on the fixture it shipped with). All are corrected in the plan.
 
 **Reversed on review:** the whip transition, originally cut from v1. The review's framing — that v1
 would otherwise be unable to render its own canonical upstream artifact, which specifies a whip-out

@@ -20,7 +20,7 @@
 - **Canvas is 1080×1920 only** in v1. Other dimensions are rejected at validation (spec §8).
 - **Never `shell=True`.** All subprocess calls pass argv lists (spec §6).
 - **Never NVENC.** libx264 only, for reproducibility (spec §8).
-- **All filtergraphs go through `-filter_complex_script` files**, never inline `-filter_complex`, to avoid Windows `C:\` colon-escaping (spec §4 stage D).
+- **Any filtergraph that references a filesystem path goes through a `-filter_complex_script` file**, never inline, to avoid Windows `C:\` colon-escaping (spec §4 stage D). Path-free graphs (`-vf`/`-af` in stages A and C) may stay inline — the escaping hazard is paths, not filters.
 - **Every ffmpeg command is written to `logs/` before it executes** (spec §6).
 - **Time quantization applies to absolute boundaries, never durations.** Durations are derived by differencing quantized boundaries (spec §3).
 - **`bed.gain_db` and `bed.duck_db` are levels relative to the measured voice track**, not gains on the bed file and not absolute loudness (spec §3).
@@ -61,6 +61,7 @@ Dependency order (each task depends only on those before it): naming → spec �
 - Create: `stitcher/stitcher/__init__.py`
 - Create: `stitcher/stitcher/naming.py`
 - Create: `stitcher/tests/__init__.py`
+- Create: `stitcher/pytest.ini`
 - Test: `stitcher/tests/test_naming.py`
 - Modify: `.gitignore` (add `renders/`)
 
@@ -81,6 +82,16 @@ pytest==8.3.3
 ```
 
 `stitcher/stitcher/__init__.py` and `stitcher/tests/__init__.py` are both empty files.
+
+`stitcher/pytest.ini` — created **now**, not later, because every test module from Task 5 onward does `from tests.test_spec import MINIMAL, write`. Without `pythonpath`, that import only works under `python -m pytest` (which happens to put the cwd on `sys.path`) and breaks under a bare `pytest`:
+
+```ini
+[pytest]
+pythonpath = .
+testpaths = tests
+markers =
+    e2e: end-to-end render; needs a real ffmpeg on PATH
+```
 
 Append to the repo-root `.gitignore`:
 
@@ -361,7 +372,7 @@ Expected: PASS — 13 passed
 - [ ] **Step 6: Commit**
 
 ```bash
-git add stitcher/requirements.txt stitcher/stitcher/__init__.py stitcher/stitcher/naming.py stitcher/tests/__init__.py stitcher/tests/test_naming.py .gitignore
+git add stitcher/requirements.txt stitcher/pytest.ini stitcher/stitcher/__init__.py stitcher/stitcher/naming.py stitcher/tests/__init__.py stitcher/tests/test_naming.py .gitignore
 git commit -m "feat(stitcher): package scaffold and workspace naming"
 ```
 
@@ -956,7 +967,7 @@ git commit -m "feat(stitcher): render spec models, frame quantization, validatio
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `class FFmpegError(RuntimeError)`; `@dataclass ProbeResult` with fields `duration: float`, `width: int | None`, `height: int | None`, `fps: float | None`, `pix_fmt: str | None`, `video_codec: str | None`, `audio_codec: str | None`, `sample_rate: int | None`, `colorspace: str | None`, and properties `has_video: bool`, `has_audio: bool`; functions `run(args: list[str], log_path: Path) -> str` (returns stderr), `probe(path: Path) -> ProbeResult`, `ffmpeg_version() -> str`, `has_encoder(name: str) -> bool`, `measure_loudness(path: Path, log_path: Path) -> dict` returning keys `input_i`, `input_tp`, `input_lra`.
+- Produces: `class FFmpegError(RuntimeError)`; `@dataclass ProbeResult` with fields `duration: float`, `width: int | None`, `height: int | None`, `fps: float | None`, `pix_fmt: str | None`, `video_codec: str | None`, `audio_codec: str | None`, `sample_rate: int | None`, `colorspace: str | None`, `profile: str | None = None` (last, with a default, so positional construction in tests stays valid), and properties `has_video: bool`, `has_audio: bool`; functions `run(args: list[str], log_path: Path) -> str` (returns stderr), `probe(path: Path) -> ProbeResult`, `ffmpeg_version() -> str`, `has_encoder(name: str) -> bool`, `measure_loudness(path: Path, log_path: Path) -> dict` returning keys `input_i`, `input_tp`, `input_lra`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1105,6 +1116,8 @@ class ProbeResult:
     audio_codec: str | None
     sample_rate: int | None
     colorspace: str | None
+    # Last, with a default, so existing positional constructions stay valid.
+    profile: str | None = None
 
     @property
     def has_video(self) -> bool:
@@ -1173,6 +1186,7 @@ def probe(path: Path) -> ProbeResult:
         audio_codec=audio.get("codec_name") if audio else None,
         sample_rate=int(audio["sample_rate"]) if audio and audio.get("sample_rate") else None,
         colorspace=video.get("color_space") if video else None,
+        profile=video.get("profile") if video else None,
     )
 
 
@@ -2482,13 +2496,17 @@ git commit -m "feat(stitcher): Pillow overlay rasterization with measured bboxes
 
 **Interfaces:**
 - Consumes: `spec.Shot`, `spec.Canvas`, `spec.RenderSpec`, `spec.shot_frame_bounds`, `spec.quantize`; `motion.*`; `naming.Workspace`, `naming.SUPERSAMPLE_FINAL`, `naming.SUPERSAMPLE_DRAFT`; `cache.Manifest`, `cache.payload_digest`, `cache.file_digest`; `ffmpeg.run`, `ffmpeg.ffmpeg_version`; `overlays.render_placeholder`.
-- Produces: `WHIP_TRANSLATE_FRACTION: float = 0.2`; `WHIP_BLUR_MAX_PX: int = 40`; `conform_size(canvas: Canvas, motion: Motion) -> tuple[int, int]`; `still_filters(shot, canvas, supersample, total_frames, hold_frames, whip_in, whip_out) -> list[str]`; `clip_filters(shot, canvas, whip_in, whip_out) -> list[str]`; `whip_filters(direction: str, frames: int, total_frames: int, at_head: bool, canvas: Canvas) -> list[str]`; `shot_cache_key(shot, next_transition, source_digest, ffmpeg_build, supersample, mode) -> str`; `render_shot(spec, ws, index, shot, next_transition, supersample, mode, manifest, log_path, is_placeholder) -> Path`; `render_all(spec, ws, mode, manifest, log_path, missing_visual) -> list[Path]`.
+- Produces: `WHIP_BLUR_PX: int = 40`; `conform_size(canvas: Canvas, motion: Motion) -> tuple[int, int]`; `still_filters(shot, canvas, supersample, total_frames, hold_frames, whip_in, whip_out) -> list[str]`; `clip_filters(shot, canvas, whip_in, whip_out) -> list[str]`; `whip_filters(direction: str, frames: int, total_frames: int, at_head: bool, canvas: Canvas) -> list[str]`; `shot_cache_key(shot, next_transition, source_digest, ffmpeg_build, supersample, mode) -> str`; `render_shot(spec, ws, index, shot, next_transition, supersample, mode, manifest, log_path, is_placeholder) -> Path`; `render_all(spec, ws, mode, manifest, log_path, missing_visual) -> list[Path]`.
 
 **Three things this task must get right, all of them spec requirements rather than preferences:**
 
 1. **Conform before animating, at `canvas × z_max`.** Cover-fitting the source to `1080·z_max × 1920·z_max` means that at maximum zoom the animated scale is a pure `×S` supersample with no detail thrown away, while at zoom 1.0 it is a clean downscale. Conforming to the bare canvas first would discard source detail before the zoom ever used it.
 2. **Force and tag BT.709.** PNG sources are RGB, and swscale's default RGB→YUV conversion is BT.601 while players assume BT.709 for HD — a visible palette shift on exactly the colours the reference plan makes binding. Conversion carries `out_color_matrix=bt709:out_range=tv`, and the stream is tagged.
 3. **A shot's cache key includes its successor's `transition_in`.** A shot renders its own tail whip when the *next* shot's transition is a whip, so changing shot N+1 must invalidate shot N.
+
+**A note on how the whip is built, because the obvious approach does not work.** `boxblur` cannot ramp: its radii are evaluated once at filter init and their expressions cannot reference `n` or `t`, so a per-frame blur ramp is not expressible. `avgblur` is used instead — it takes separate `sizeX`/`sizeY`, which makes it genuinely *directional* rather than isotropic — and it is gated with `enable=` over the whip's frame window at a fixed radius. Across four frames a constant directional blur reads exactly like a ramped one.
+
+**v1's whip is a directional blur only, with no slide.** A translate would drag un-rendered content in at the trailing edge, and FFmpeg has no edge-clamping pad; the alternatives (scaling the whole shot up to create margin, or splitting and re-concatenating the whip frames) either degrade the entire shot or add a filter graph out of proportion to a four-frame gesture. This is a knowing simplification of the spec's "blur-and-slide" wording, recorded in the spec's own amendment note.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2526,12 +2544,36 @@ def test_conform_size_reserves_headroom_for_the_maximum_zoom():
 
 def test_still_filters_conform_then_animate_then_downscale():
     filters = sh.still_filters(shot(), CANVAS, 4, 90, 0, None, None)
-    joined = ";".join(filters)
     conform_index = next(i for i, f in enumerate(filters) if "force_original_aspect_ratio" in f)
     animate_index = next(i for i, f in enumerate(filters) if "eval=frame" in f)
-    assert conform_index < animate_index
-    assert filters[-1].startswith("format=")
-    assert "1080:1920" in joined
+    colour_index = next(i for i, f in enumerate(filters) if "out_color_matrix" in f)
+    format_index = next(i for i, f in enumerate(filters) if f.startswith("format="))
+    assert conform_index < animate_index < colour_index
+    assert format_index == colour_index + 1
+    assert "1080:1920" in ";".join(filters)
+
+
+def test_still_filters_carry_no_fps_filter_after_the_animated_stage():
+    # -framerate on the input already sets the rate; an fps filter here would
+    # rewrite frame numbering underneath the n-based expressions.
+    filters = sh.still_filters(shot(), CANVAS, 4, 90, 0, None, None)
+    assert not any(f.startswith("fps=") for f in filters)
+
+
+def test_render_shot_sets_framerate_on_a_still_input(tmp_path: Path, monkeypatch):
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    ws = Workspace(root=tmp_path / "r", slug="demo", mode="final")
+    ws.ensure_dirs()
+    ws.asset("a.png").write_bytes(b"png")
+    captured: list[list[str]] = []
+    monkeypatch.setattr(sh.ffmpeg, "run", lambda args, log_path: captured.append(args) or "")
+    monkeypatch.setattr(sh.ffmpeg, "ffmpeg_version", lambda: "ffmpeg version 8.0.1")
+    sh.render_shot(spec, ws, 1, spec.shots[0], None, 4, "final",
+                   Manifest(ws.manifest_path), ws.log_path("t"), False)
+    args = captured[0]
+    assert "-framerate" in args
+    assert args[args.index("-framerate") + 1] == "30"
+    assert args.index("-framerate") < args.index("-i")
 
 
 def test_still_filters_quote_every_animated_expression():
@@ -2560,21 +2602,34 @@ def test_clip_filters_trim_to_the_source_window_and_conform_fps():
     assert "fps=30" in joined
 
 
-def test_whip_filters_at_the_head_ramp_blur_down():
-    filters = sh.whip_filters("left", 4, 90, at_head=True, canvas=CANVAS)
-    joined = ";".join(filters)
-    assert "boxblur" in joined
-    assert "lt(n,4)" in joined
+def test_whip_at_the_head_is_gated_to_the_opening_frames():
+    joined = ";".join(sh.whip_filters("left", 4, 90, at_head=True, canvas=CANVAS))
+    assert "avgblur" in joined
+    assert "enable='lt(n,4)'" in joined
 
 
-def test_whip_filters_at_the_tail_ramp_blur_up_near_the_end():
-    filters = sh.whip_filters("left", 4, 90, at_head=False, canvas=CANVAS)
-    assert "gte(n,86)" in ";".join(filters)
+def test_whip_at_the_tail_is_gated_to_the_closing_frames():
+    joined = ";".join(sh.whip_filters("left", 4, 90, at_head=False, canvas=CANVAS))
+    assert "enable='gte(n,86)'" in joined
 
 
-def test_vertical_whip_translates_on_y_not_x():
+def test_a_horizontal_whip_blurs_on_x_not_y():
+    joined = ";".join(sh.whip_filters("left", 4, 90, at_head=True, canvas=CANVAS))
+    assert f"sizeX={sh.WHIP_BLUR_PX}" in joined
+    assert "sizeY=1" in joined
+
+
+def test_a_vertical_whip_blurs_on_y_not_x():
     joined = ";".join(sh.whip_filters("up", 4, 90, at_head=True, canvas=CANVAS))
-    assert "y='" in joined
+    assert f"sizeY={sh.WHIP_BLUR_PX}" in joined
+    assert "sizeX=1" in joined
+
+
+def test_the_whip_never_pads_with_black():
+    for direction in ("left", "right", "up", "down"):
+        joined = ";".join(sh.whip_filters(direction, 4, 90, True, CANVAS))
+        assert "pad=" not in joined
+        assert "color=black" not in joined
 
 
 def test_cache_key_changes_when_the_successor_becomes_a_whip():
@@ -2684,12 +2739,11 @@ from pathlib import Path
 
 from . import ffmpeg, motion
 from .cache import Manifest, file_digest, payload_digest
-from .naming import Workspace
+from .naming import SUPERSAMPLE_DRAFT, SUPERSAMPLE_FINAL, Workspace
 from .overlays import render_placeholder
 from .spec import Canvas, Motion, RenderSpec, Shot, Transition, shot_frame_bounds
 
-WHIP_TRANSLATE_FRACTION = 0.2
-WHIP_BLUR_MAX_PX = 40
+WHIP_BLUR_PX = 40
 
 INTERMEDIATE_PIX_FMT = "yuv444p"
 INTERMEDIATE_CRF_FINAL = 12
@@ -2721,45 +2775,29 @@ def _colour_scale(canvas: Canvas) -> str:
 def whip_filters(
     direction: str, frames: int, total_frames: int, at_head: bool, canvas: Canvas
 ) -> list[str]:
-    """Directional blur plus a short slide, over `frames` frames.
+    """A directional blur gated to the whip's frames.
 
-    Head whips ramp the effect down from full at frame 0; tail whips ramp it up
-    to full on the last frame. The slide is a fraction of the frame rather than
-    a full swipe, so there is always real content to translate into.
+    `avgblur` rather than `boxblur`, for two reasons: it takes separate
+    sizeX/sizeY so the blur is actually directional, and boxblur's radii are
+    evaluated once at init with expressions that cannot reference n or t, so a
+    per-frame ramp is not expressible there at all.
+
+    The effect is gated with `enable=` at a fixed radius rather than ramped.
+    Over four frames a constant directional blur is indistinguishable from a
+    ramped one, and it needs no per-frame expression support.
+
+    No slide: a translate would drag un-rendered content in at the trailing
+    edge, and FFmpeg has no edge-clamping pad. See this task's preamble.
     """
     if at_head:
         window = f"lt(n,{frames})"
-        progress = f"(1-n/{frames})"
     else:
-        start = max(0, total_frames - frames)
-        window = f"gte(n,{start})"
-        progress = f"((n-{start})/{frames})"
+        window = f"gte(n,{max(0, total_frames - frames)})"
 
-    blur = f"if({window},{WHIP_BLUR_MAX_PX}*{progress},0)"
     horizontal = direction in ("left", "right")
-    sign = -1 if direction in ("left", "up") else 1
-    span = int(
-        (canvas.width if horizontal else canvas.height) * WHIP_TRANSLATE_FRACTION
-    )
-    shift = f"if({window},{sign * span}*{progress},0)"
-
-    pad_x = span if horizontal else 0
-    pad_y = 0 if horizontal else span
-    filters = [
-        f"boxblur=lr='{blur}':lp=1:cr='{blur}':cp=1:eval=frame"
-        if horizontal
-        else f"boxblur=lr=0:lp=1:cr=0:cp=1:eval=frame",
-        f"pad={canvas.width + pad_x * 2}:{canvas.height + pad_y * 2}:{pad_x}:{pad_y}:color=black",
-    ]
-    if horizontal:
-        filters.append(
-            f"crop=w={canvas.width}:h={canvas.height}:x='{pad_x}+{shift}':y={pad_y}"
-        )
-    else:
-        filters.append(
-            f"crop=w={canvas.width}:h={canvas.height}:x={pad_x}:y='{pad_y}+{shift}'"
-        )
-    return filters
+    size_x = WHIP_BLUR_PX if horizontal else 1
+    size_y = 1 if horizontal else WHIP_BLUR_PX
+    return [f"avgblur=sizeX={size_x}:sizeY={size_y}:enable='{window}'"]
 
 
 def still_filters(
@@ -2780,22 +2818,29 @@ def still_filters(
         shot.motion, canvas, supersample, total_frames, hold_frames
     )
 
+    # No `fps` filter here: render_shot sets -framerate on the input, so the
+    # still already arrives at canvas.fps. An `fps` filter placed AFTER the
+    # n-based scale/crop would rewrite frame numbering underneath them and the
+    # move would silently never complete.
     filters = [
         f"scale={conform_w}:{conform_h}:force_original_aspect_ratio=increase:flags=lanczos",
         f"crop={conform_w}:{conform_h}",
         f"scale=w='{scale_w}':h='{scale_h}':eval=frame:flags=lanczos",
         f"crop=w={crop_w}:h={crop_h}:x='{crop_x}':y='{crop_y}'",
         _colour_scale(canvas),
-        f"fps={canvas.fps}",
+        # Immediately after the tagged conversion, so nothing downstream can
+        # leave the frame in RGB and trigger a default BT.601 conversion later.
+        f"format={INTERMEDIATE_PIX_FMT}",
     ]
     filters.extend(_whip_stack(whip_in, whip_out, total_frames, canvas))
-    filters.append(f"format={INTERMEDIATE_PIX_FMT}")
+    filters.append("setsar=1")
     return filters
 
 
 def clip_filters(
     shot: Shot, canvas: Canvas, whip_in: Transition | None, whip_out: Transition | None
 ) -> list[str]:
+    # `fps` must precede the whip, whose enable window counts frames.
     filters = [
         f"trim=start={shot.source_in}:end={shot.source_out}",
         "setpts=PTS-STARTPTS",
@@ -2804,11 +2849,11 @@ def clip_filters(
         f"crop={canvas.width}:{canvas.height}",
         f"fps={canvas.fps}",
         _colour_scale(canvas),
-        "setsar=1",
+        f"format={INTERMEDIATE_PIX_FMT}",
     ]
     total_frames = round((shot.source_out - shot.source_in) * canvas.fps)
     filters.extend(_whip_stack(whip_in, whip_out, total_frames, canvas))
-    filters.append(f"format={INTERMEDIATE_PIX_FMT}")
+    filters.append("setsar=1")
     return filters
 
 
@@ -2891,7 +2936,14 @@ def render_shot(
         filters = still_filters(
             shot, canvas, supersample, total_frames, hold_frames, whip_in, whip_out
         )
-        inputs = ["-loop", "1", "-t", f"{total_frames / canvas.fps:.6f}", "-i", str(source)]
+        # -framerate is mandatory: -loop 1 otherwise defaults the input to
+        # 25fps, so the n-based motion expressions (built against total_frames
+        # at canvas.fps) would only ever reach ~83% of the move before -t cut
+        # the input. Nothing downstream would catch it.
+        inputs = [
+            "-loop", "1", "-framerate", str(canvas.fps),
+            "-t", f"{total_frames / canvas.fps:.6f}", "-i", str(source),
+        ]
     else:
         filters = clip_filters(shot, canvas, whip_in, whip_out)
         inputs = ["-i", str(source)]
@@ -3050,8 +3102,11 @@ def test_window_mode_full_returns_to_the_baseline():
 def test_a_fade_in_ramps_up_from_silence_over_its_declared_length():
     fades = [Fade(at=3.0, kind="in", ms=300)]
     points = env.build_breakpoints(bed(fades=fades), [], runtime=10.0)
-    assert env.level_at(points, 3.0) == pytest.approx(env.SILENCE_DB + -8.0, abs=1.0)
+    # _level floors at SILENCE_DB, so the fade's start is exactly the floor
+    # rather than baseline + full attenuation.
+    assert env.level_at(points, 3.0) == pytest.approx(env.SILENCE_DB)
     assert env.level_at(points, 3.3) == pytest.approx(-8.0)
+    assert env.SILENCE_DB < env.level_at(points, 3.15) < -8.0
 
 
 def test_breakpoints_are_sorted_and_bounded_by_the_runtime():
@@ -3313,7 +3368,7 @@ PASS2_DYNAMIC = json.dumps(PASS2_DYNAMIC)
 
 def test_parse_loudnorm_json_finds_the_trailing_object():
     stderr = f"[Parsed_loudnorm_0 @ 0x1] \n{PASS1}\n"
-    assert parsed := au.parse_loudnorm_json(stderr)
+    parsed = au.parse_loudnorm_json(stderr)
     assert parsed["input_i"] == "-19.3"
 
 
@@ -3344,12 +3399,14 @@ def wire(monkeypatch, pass2: str = PASS2_LINEAR) -> list[list[str]]:
     def fake_run(args, log_path):
         calls.append(args)
         joined = " ".join(args)
+        # Every branch that names an output file must create it; pass 2 writes
+        # 06_mix_final.wav as well as reporting JSON.
+        if args[-1] != "-":
+            Path(args[-1]).write_bytes(b"wav")
         if "print_format=json" in joined and "measured_I" in joined:
             return f"[Parsed_loudnorm_0 @ 0x1]\n{pass2}\n"
         if "print_format=json" in joined:
             return f"[Parsed_loudnorm_0 @ 0x1]\n{PASS1}\n"
-        if args[-1] != "-":
-            Path(args[-1]).write_bytes(b"wav")
         return ""
 
     monkeypatch.setattr(au.ffmpeg, "run", fake_run)
@@ -3430,7 +3487,9 @@ def test_a_missing_bed_is_omitted_rather_than_faked_in_draft(spec, workspace, mo
 def test_a_missing_stem_with_duration_s_becomes_silence_in_draft(tmp_path, monkeypatch):
     payload = json.loads(json.dumps(MINIMAL))
     payload["audio"]["stems"][0]["duration_s"] = 2.875
-    spec, _ = load_spec(write(tmp_path / "s", payload))
+    spec_dir = tmp_path / "s"
+    spec_dir.mkdir()
+    spec, _ = load_spec(write(spec_dir, payload))
     ws = Workspace(root=tmp_path / "r", slug="demo", mode="draft")
     ws.ensure_dirs()
     ws.asset("bed.mp3").write_bytes(b"x")
@@ -4248,7 +4307,7 @@ git commit -m "feat(stitcher): stage E cover conform and caption sidecars"
 
 **Interfaces:**
 - Consumes: `spec.RenderSpec`, `spec.shot_frame_bounds`, `spec.runtime_seconds`; `naming.Workspace`; `ffmpeg.probe`, `ffmpeg.measure_loudness`, `ffmpeg.run`; `envelope.stem_spans`; `overlays.bbox_within`; `cache.Manifest`.
-- Produces: `LOUDNESS_TOLERANCE_LU: float = 1.0`; `DUCK_TOLERANCE_DB: float = 1.5`; `PASS: str = "pass"`, `FAIL: str = "fail"`, `UNAVAILABLE: str = "unavailable"`; `@dataclass Check` with fields `name: str`, `status: str`, `detail: str`; `overall_status(checks: list[Check]) -> str` returning `"pass" | "fail" | "incomplete"`; `measure_window(path: Path, start: float, duration: float, log_path: Path) -> float`; `verify(spec, ws, master, log_path) -> list[Check]`; `contact_sheet(spec, master, out_png, log_path) -> Path | None`; `write_reports(checks: list[Check], json_path: Path, md_path: Path) -> None`.
+- Produces: `LOUDNESS_TOLERANCE_LU: float = 1.0`; `DUCK_TOLERANCE_DB: float = 1.5`; `MIN_DUCK_WINDOW_S: float = 0.4`; `AAC_PADDING_SLACK_S: float = 0.05`; `PASS: str = "pass"`, `FAIL: str = "fail"`, `UNAVAILABLE: str = "unavailable"`; `@dataclass Check` with fields `name: str`, `status: str`, `detail: str`; `overall_status(checks: list[Check]) -> str` returning `"pass" | "fail" | "incomplete"`; `measure_window(path: Path, start: float, duration: float, log_path: Path) -> float`; `verify(spec, ws, master, log_path) -> list[Check]`; `contact_sheet(spec, master, out_png, log_path) -> Path | None`; `write_reports(checks: list[Check], json_path: Path, md_path: Path) -> None`.
 
 **Three measurement choices that are load-bearing, not stylistic (spec §4 stage F):**
 
@@ -4302,7 +4361,7 @@ from tests.test_spec import MINIMAL, write
 
 def good_probe(duration: float = 6.0) -> ProbeResult:
     return ProbeResult(duration, 1080, 1920, 30.0, "yuv420p", "h264",
-                       "aac", 48000, "bt709")
+                       "aac", 48000, "bt709", "High")
 
 
 @pytest.fixture
@@ -4311,6 +4370,9 @@ def ready(tmp_path: Path):
     ws.ensure_dirs()
     master = ws.master_path
     master.write_bytes(b"mp4")
+    # _check_duck probes the stem files to learn their durations.
+    for name in ("vo.wav", "bed.mp3"):
+        ws.asset(name).write_bytes(b"x")
     ws.audio_step("06", "mix_final").write_bytes(b"wav")
     ws.audio_step("04a", "bed_conformed").write_bytes(b"wav")
     ws.audio_step("04b", "bed_ducked").write_bytes(b"wav")
@@ -4352,6 +4414,19 @@ def test_a_conforming_render_passes_every_check(ready, tmp_path, monkeypatch):
     wire(monkeypatch)
     checks = vf.verify(spec, ws, master, ws.log_path("t"))
     assert vf.overall_status(checks) == "pass"
+
+
+def test_a_wrong_h264_profile_fails_container_conformance(ready, tmp_path, monkeypatch):
+    ws, master = ready
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch)
+    monkeypatch.setattr(
+        vf.ffmpeg, "probe",
+        lambda path: ProbeResult(6.0, 1080, 1920, 30.0, "yuv420p", "h264",
+                                 "aac", 48000, "bt709", "Baseline"),
+    )
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "container") == vf.FAIL
 
 
 def test_wrong_resolution_fails_container_conformance(ready, tmp_path, monkeypatch):
@@ -4541,6 +4616,7 @@ from .spec import RenderSpec, runtime_seconds, shot_frame_bounds
 LOUDNESS_TOLERANCE_LU = 1.0
 DUCK_TOLERANCE_DB = 1.5
 MIN_DUCK_WINDOW_S = 0.4
+AAC_PADDING_SLACK_S = 0.05
 
 PASS = "pass"
 FAIL = "fail"
@@ -4586,6 +4662,8 @@ def _check_container(spec: RenderSpec, probed: ffmpeg.ProbeResult) -> Check:
         problems.append(f"pix_fmt {probed.pix_fmt}")
     if probed.video_codec != "h264":
         problems.append(f"video codec {probed.video_codec}")
+    if probed.profile and probed.profile.lower() != spec.delivery.profile.lower():
+        problems.append(f"profile {probed.profile}")
     detail = (
         f"{probed.width}x{probed.height} @ {probed.fps}fps, {probed.pix_fmt}, "
         f"{probed.video_codec}"
@@ -4626,8 +4704,15 @@ def _check_duck(spec: RenderSpec, ws: Workspace, log_path: Path) -> Check:
         if source.is_file():
             durations[stem.file] = ffmpeg.probe(source).duration
 
+    try:
+        spans = envelope.stem_spans(spec.audio.stems, durations)
+    except ValueError as exc:
+        # A stem whose file is gone and which declares no duration_s: report
+        # rather than crash the whole verification pass.
+        return Check("duck_depth", UNAVAILABLE, f"stem durations unknown: {exc}")
+
     measured: list[float] = []
-    for start, end in envelope.stem_spans(spec.audio.stems, durations):
+    for start, end in spans:
         window_start = start + attack
         window_length = end - window_start
         if window_length < MIN_DUCK_WINDOW_S:
@@ -4750,12 +4835,14 @@ def verify(
 
     total_frames = shot_frame_bounds(spec)[-1][1]
     expected_seconds = total_frames / spec.canvas.fps
-    slack = 1.0 / spec.canvas.fps
+    # One frame is 33ms at 30fps, but AAC priming/padding can shift container
+    # duration by up to ~45ms — so the floor is whichever is larger.
+    slack = max(1.0 / spec.canvas.fps, AAC_PADDING_SLACK_S)
     timeline_ok = abs(probed.duration - expected_seconds) <= slack
     checks.append(Check(
         "timeline_integrity", PASS if timeline_ok else FAIL,
         f"container {probed.duration:.3f}s against {expected_seconds:.3f}s "
-        f"({total_frames} frames), slack one frame",
+        f"({total_frames} frames), slack {slack * 1000:.0f}ms",
     ))
 
     checks.append(_check_placeholders(ws))
@@ -4889,7 +4976,7 @@ from tests.test_spec import MINIMAL, write
 def workspace(tmp_path: Path) -> Workspace:
     ws = Workspace(root=tmp_path / "renders", slug="demo", mode="final")
     ws.ensure_dirs()
-    write(ws.base, MINIMAL).rename(ws.spec_path)
+    ws.spec_path.write_text(json.dumps(MINIMAL), encoding="utf-8")
     for name in ("a.png", "b.png", "cover.png", "vo.wav", "bed.mp3"):
         ws.asset(name).write_bytes(b"x")
     return ws
@@ -5330,9 +5417,11 @@ git commit -m "feat(stitcher): CLI orchestration, QA-gated promotion, cache-hit 
 
 **Files:**
 - Create: `stitcher/tests/fixtures/make_fixture.py`
+- Create: `stitcher/tests/fixtures/__init__.py` (empty — `test_e2e.py` imports `tests.fixtures.make_fixture`)
 - Create: `stitcher/tests/test_e2e.py`
-- Create: `stitcher/pytest.ini`
 - Create: `stitcher/README.md`
+
+`pytest.ini` already exists from Task 1, including the `e2e` marker.
 
 **Interfaces:**
 - Consumes: everything.
@@ -5460,13 +5549,7 @@ def build(root: Path) -> Path:
 
 - [ ] **Step 2: Write the end-to-end test**
 
-`stitcher/pytest.ini`:
-
-```ini
-[pytest]
-markers =
-    e2e: end-to-end render; needs a real ffmpeg on PATH
-```
+Create an empty `stitcher/tests/fixtures/__init__.py` so `make_fixture` is importable as a module.
 
 `stitcher/tests/test_e2e.py`:
 
@@ -5647,7 +5730,7 @@ Expected: PASS — every test in the project
 - [ ] **Step 6: Commit**
 
 ```bash
-git add stitcher/tests/fixtures/make_fixture.py stitcher/tests/test_e2e.py stitcher/pytest.ini stitcher/README.md
+git add stitcher/tests/fixtures/__init__.py stitcher/tests/fixtures/make_fixture.py stitcher/tests/test_e2e.py stitcher/README.md
 git commit -m "test(stitcher): end-to-end fixture render gated by the QA report"
 ```
 
