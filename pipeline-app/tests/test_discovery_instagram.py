@@ -166,3 +166,52 @@ def test_enumerate_newest_first_propagates_timeout(monkeypatch):
     monkeypatch.setattr(ig, "_run_collection_job", raise_timeout)
     with pytest.raises(ig.BrightDataJobTimeout):
         ig.enumerate_newest_first("somehandle", keyword_filter=None)
+
+
+def test_on_disk_ids_empty_when_directory_missing(tmp_path):
+    assert ig.on_disk_ids(tmp_path, "somehandle") == set()
+
+
+def test_on_disk_ids_reads_stems_of_md_files(tmp_path):
+    out_dir = tmp_path / "output" / "brand-intel" / "instagram" / "somehandle"
+    out_dir.mkdir(parents=True)
+    (out_dir / "p1.md").write_text("x", encoding="utf-8")
+    (out_dir / "p2.md").write_text("x", encoding="utf-8")
+    assert ig.on_disk_ids(tmp_path, "somehandle") == {"p1", "p2"}
+
+
+def test_peek_upload_date_always_none():
+    assert ig.peek_upload_date("anything") is None
+
+
+def test_download_item_writes_frontmatter_and_caption_from_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [_raw_row("p1", "2026-08-01", caption="the caption")])
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+
+    result = ig.download_item(tmp_path, "somehandle", "p1", "the caption", content_type="post")
+
+    assert result == {"id": "p1", "ok": True, "published": "2026-08-01"}
+    out_path = tmp_path / "output" / "brand-intel" / "instagram" / "somehandle" / "p1.md"
+    text = out_path.read_text(encoding="utf-8")
+    assert "post_id: p1" in text
+    assert "content_type: post" in text
+    # yaml.safe_dump (used by artifacts.render_frontmatter) quotes date-like
+    # strings -- this is NOT "published: 2026-08-01", it's single-quoted.
+    assert "published: '2026-08-01'" in text
+    assert "the caption" in text
+    assert not out_path.with_name("p1.md.tmp").exists()
+
+
+def test_download_item_empty_caption_writes_placeholder(tmp_path, monkeypatch):
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [_raw_row("p1", "2026-08-01", caption="")])
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    ig.download_item(tmp_path, "somehandle", "p1", "p1")
+    out_path = tmp_path / "output" / "brand-intel" / "instagram" / "somehandle" / "p1.md"
+    assert "(empty)" in out_path.read_text(encoding="utf-8")
+
+
+def test_download_item_raises_on_cache_miss(tmp_path, monkeypatch):
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [_raw_row("p1", "2026-08-01")])
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    with pytest.raises(KeyError):
+        ig.download_item(tmp_path, "somehandle", "not_in_cache", "title")

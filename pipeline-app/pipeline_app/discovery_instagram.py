@@ -189,3 +189,52 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
         {"id": i["id"], "title": i["title"], "published": i["published"], "content_type": i["content_type"]}
         for i in items
     ]
+
+
+def on_disk_ids(repo_root: Path, handle: str) -> set[str]:
+    directory = handle_dir(repo_root, "instagram", handle)
+    if not directory.exists():
+        return set()
+    return {p.stem for p in directory.glob("*.md")}
+
+
+def peek_upload_date(item_id: str) -> str | None:
+    # Dead code by design: enumerate_newest_first only ever returns items
+    # with a normalized 'published' date (Task 3/4), so process_handle's
+    # `item.get("published") or adapter.peek_upload_date(item_id)` never
+    # falls through to this -- same as discovery_bluesky.peek_upload_date.
+    return None
+
+
+def download_item(repo_root: Path, handle: str, item_id: str, title: str,
+                  content_type: str | None = None) -> dict:
+    # A missing handle or item_id here is a programming error (every engine
+    # call path calls enumerate_newest_first for this handle in this process
+    # before calling download_item) -- KeyError propagates to the per-handle
+    # error path in discovery_engine.py rather than being caught here, so it
+    # surfaces as a normal 'error' result instead of failing silently.
+    cached = _ENUMERATE_CACHE[handle][item_id]
+
+    out_dir = handle_dir(repo_root, "instagram", handle)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fetched_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    meta = {
+        "post_id": cached["id"],
+        "url": cached["url"],
+        "handle": handle,
+        "content_type": cached["content_type"],
+        "published": cached["published"],
+        "like_count": cached["like_count"],
+        "comment_count": cached["comment_count"],
+        "fetched_at": fetched_at,
+    }
+    body = cached["caption"] or "(empty)"
+
+    dest = out_dir / f"{item_id}.md"
+    # Write-temp-then-rename, same as discovery_youtube.download_item and
+    # discovery_bluesky.download_item: an interrupted write must never leave
+    # a truncated file at a path on_disk_ids() would treat as already-captured.
+    tmp_dest = dest.with_name(dest.name + ".tmp")
+    tmp_dest.write_text(artifacts.render_frontmatter(meta, body), encoding="utf-8")
+    tmp_dest.replace(dest)
+    return {"id": item_id, "ok": True, "published": cached["published"]}
