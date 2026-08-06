@@ -40,8 +40,7 @@ GitHub skill reference states it "cannot be used with `prompt`" `[T]`. `respect_
 default `true`, **and this only meaningfully governs `music_v1` plans** — confirmed today: for
 `music_v2`, chunk (section) durations "are always enforced" regardless of this flag `[T]`. Also
 `finetune_id`, `store_for_inpainting` (default `false`), `sign_with_c2pa` (default `false`,
-applicable to mp3 files only) — schema fields, no marker needed. Query param `output_format`,
-default `auto`.
+applicable to mp3 files only) `[T]`. Query param `output_format`, default `auto`.
 
 `POST /v1/music/detailed` — same body plus `with_timestamps`; multipart response carrying the
 resolved plan and `song_metadata`. Confirmed today via the GitHub skill reference, the fuller
@@ -137,10 +136,10 @@ confirmed; the design brief's "costs no credits" claim remains a hypothesis. **N
 today:** the cookbook page states plainly that "the Eleven Music API is only available to paid
 users" `[T]` — this is a plan-tier gate, not evidence about per-call pricing, and does not resolve
 whether plan creation specifically is free. **Assume every compose call is billed until proven
-otherwise** `[I]`. Seed: confirmed today, "providing the same seed with the same parameters can
-help achieve **more consistent** results" `[T]` — **never present seed as determinism**; treat any
-stronger reproducibility claim (e.g. that results are unaffected by system updates) as carried
-from the original 2026-08-06 pass rather than independently re-quoted today (see §7).
+otherwise** `[I]`. Seed: confirmed today, verbatim from the compose API reference page: "Providing
+the same seed with the same parameters can help achieve more consistent results, but exact
+reproducibility is not guaranteed and outputs may change across system updates" `[T]` — **never
+present seed as determinism.**
 
 ---
 
@@ -175,23 +174,25 @@ inference the corpus does not make — and it is **contingent on terms nobody ha
 | `respect_sections_durations` nuance: default `true`, but for `music_v2` chunk durations are always enforced regardless | Confirmed today — new detail beyond the original design brief |
 | Eleven Music API is paid-users-only | Confirmed today via the cookbook page — new fact, not in the original design brief |
 | `bad_composition_plan` error (copyrighted styles in a plan) | Confirmed today via the GitHub skill reference — new fact, not in the original design brief |
+| Seed non-determinism disclaimer, in full: "...can help achieve more consistent results, but exact reproducibility is not guaranteed and outputs may change across system updates" | Confirmed today verbatim, in full, on the compose API reference page — including the system-updates clause |
 
 ### Corrected — the supplied design brief was wrong
 
 1. **Chunks are the `music_v2` composition plan, not an inpainting-only shape.** Confirmed
    today, with the added nuance that `chunks[]` can mix ordinary generation chunks with
    `AudioRefChunk` inpainting/reference chunks in the same plan — it does both, not one or the
-   other.
+   other `[T]`.
 2. **Plan-mode instrumental is `negative_styles`, not `lines: []`**, and `music_v2` has no
    `lines` field at all. Confirmed today via the composition-plans how-to guide's own chunk
-   examples.
+   examples `[T]`.
 3. **Seed is a consistency aid, not determinism** — the brief's "instrumental vs. determinism
-   conflict" is largely dissolved. Confirmed today in shorter form ("more consistent results");
-   the fuller non-determinism disclaimer (behavior may shift across system updates) was part of
-   the original 2026-08-06 pass and was not independently re-quoted verbatim from today's five
-   fetches, but nothing contradicts it.
+   conflict" is largely dissolved. Confirmed today **in full**, verbatim, on the compose API
+   reference page: "Providing the same seed with the same parameters can help achieve more
+   consistent results, but exact reproducibility is not guaranteed and outputs may change across
+   system updates." The complete disclaimer, including the system-updates clause, was on the page
+   fetched today — not merely carried forward from an earlier pass `[T]`.
 4. **The 3,000–120,000 ms ceiling was marked unverified but is on the schema page for both
-   shapes** — confirmed today for both `v1` sections and `v2` chunks.
+   shapes** — confirmed today for both `v1` sections and `v2` chunks `[T]`.
 
 ### Could not verify `[T-unverified]`
 
