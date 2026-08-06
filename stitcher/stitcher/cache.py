@@ -30,20 +30,33 @@ def file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _safe_json_default(obj: object) -> str:
+    """Convert objects that can safely be part of a cache key.
+
+    json.dumps calls this for any value it cannot serialize natively,
+    at any depth (including nested in lists/dicts). Only primitives, lists,
+    dicts, and Path objects are deterministic and safe to cache. Anything
+    else raises TypeError.
+    """
+    if isinstance(obj, Path):
+        return str(obj)
+    # Reject sets, frozensets, arbitrary objects, and anything else
+    raise TypeError(
+        f"payload_digest cannot serialize {type(obj).__name__} objects "
+        f"(found {obj!r}); pass only primitives, lists, dicts, and Paths"
+    )
+
+
 def payload_digest(*parts: object) -> str:
     """SHA-256 over a JSON rendering of the parts, in the order given.
 
-    Raises TypeError if any part is a set or frozenset, as their string
-    representation depends on process-specific hash randomization.
+    Accepts only deterministic types: primitives, lists, dicts, and pathlib.Path.
+    Raises TypeError if any part contains a set, frozenset, or unrecognized type
+    at any nesting depth.
     """
-    # Check for sets/frozensets which are non-deterministic
-    for i, part in enumerate(parts):
-        if isinstance(part, (set, frozenset)):
-            raise TypeError(
-                f"payload_digest does not accept sets or frozensets (part {i} is {type(part).__name__})"
-            )
-
-    blob = json.dumps(parts, sort_keys=True, default=str, separators=(",", ":"))
+    blob = json.dumps(
+        parts, sort_keys=True, default=_safe_json_default, separators=(",", ":")
+    )
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 

@@ -95,3 +95,59 @@ def test_loading_a_non_dict_json_manifest_yields_an_empty_one(tmp_path: Path):
     path.write_text("[1, 2, 3]")
     manifest = Manifest.load(path)
     assert manifest.get("anything") is None
+
+
+def test_payload_digest_rejects_sets_nested_in_lists():
+    """Nested sets in lists are also non-deterministic and must be rejected."""
+    try:
+        payload_digest([1, {2, 3}])
+        assert False, "Should have raised TypeError for nested set in list"
+    except TypeError as e:
+        assert "set" in str(e).lower()
+
+
+def test_payload_digest_rejects_sets_nested_in_dicts():
+    """Nested sets in dicts are also non-deterministic and must be rejected."""
+    try:
+        payload_digest({"key": {1, 2, 3}})
+        assert False, "Should have raised TypeError for nested set in dict"
+    except TypeError as e:
+        assert "set" in str(e).lower()
+
+
+def test_payload_digest_rejects_arbitrary_objects():
+    """Arbitrary objects with no custom __repr__ are non-deterministic and must be rejected."""
+    class UnknownObject:
+        pass
+
+    try:
+        payload_digest(UnknownObject())
+        assert False, "Should have raised TypeError for arbitrary object"
+    except TypeError as e:
+        assert "unknownobject" in str(e).lower()
+
+
+def test_payload_digest_accepts_path_objects():
+    """Path objects should be serializable and deterministic."""
+    p1 = Path("/tmp/test.txt")
+    p2 = Path("/tmp/test.txt")
+    digest1 = payload_digest(p1)
+    digest2 = payload_digest(p2)
+    assert digest1 == digest2, "Same Path should produce same digest"
+
+    # Different paths should produce different digests
+    p3 = Path("/tmp/other.txt")
+    digest3 = payload_digest(p3)
+    assert digest1 != digest3, "Different Paths should produce different digests"
+
+
+def test_payload_digest_accepts_paths_in_nested_structures():
+    """Path objects nested in lists and dicts should be serializable."""
+    p = Path("/tmp/test.txt")
+    digest1 = payload_digest([p, "data"])
+    digest2 = payload_digest([p, "data"])
+    assert digest1 == digest2, "Paths in lists should be deterministic"
+
+    digest3 = payload_digest({"path": p, "name": "test"})
+    digest4 = payload_digest({"path": p, "name": "test"})
+    assert digest3 == digest4, "Paths in dicts should be deterministic"
