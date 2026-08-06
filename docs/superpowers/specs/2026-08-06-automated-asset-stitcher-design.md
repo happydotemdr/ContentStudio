@@ -100,12 +100,15 @@ No other runtime dependencies. `pytest` for tests.
 python -m stitcher validate <path-to-spec>      # schema + internal consistency only, no assets needed
 python -m stitcher render <slug> --mode final   # strict; default
 python -m stitcher render <slug> --mode draft   # placeholders permitted, fast encode
+python -m stitcher render <slug> --force        # mint a new version even on a total cache hit
 python -m stitcher verify <slug> [--version NN] # re-run stage F against an existing output
 python -m stitcher clean <slug> [--mode MODE]   # delete work/, keep out/ and logs/
 ```
 
-`render` exits 0 on success, 1 on preflight failure, 2 on render failure, 3 on QA failure (the
-output file exists but does not meet spec). `validate` exits 0 or 1.
+Exit codes, shared by `render` and `verify`: **0** success, **1** preflight or validation failure,
+**2** render failure, **3** QA failure (the file exists in `work/` but does not meet spec), **4**
+verification incomplete (`verify` could not run every check because `work/` was cleaned — §4 stage
+F). `validate` exits 0 or 1.
 
 ---
 
@@ -138,10 +141,12 @@ renders/
           01_vo-child.wav
           02_vo-nar-01.wav
           03_vo_assembled.wav
-          04_bed_ducked.wav
+          04a_bed_conformed.wav             # baseline gain, no envelope — stage F reference
+          04b_bed_ducked.wav
           05_mix_pre-loudnorm.wav
           06_mix_final.wav
           loudnorm_pass1.json
+        master.mp4                          # stage D output, promoted to out/ only on QA pass
         concat.txt
         graph_assemble.txt                  # the -filter_complex_script file, kept
         manifest.json                       # stage -> input hash -> artifact
@@ -172,11 +177,13 @@ renders/
    because `out/` is where versions live.
 4. **`work/` is partitioned by run mode.** `work/draft/` and `work/final/` never share artifacts or
    a manifest. A cached draft placeholder must never be able to satisfy a final-mode cache lookup.
-5. **`out/` is version-stamped and never overwritten.** `_vNN_` bumps on every successful final
-   render, so a re-render after a fix cannot silently clobber a reviewed output. The version is
-   determined by scanning existing `out/` filenames and incrementing the maximum. **Draft outputs are
-   not versioned** — they write `<slug>_draft_1080x1920.mp4` and are overwritten on every draft run,
-   because a draft is a disposable look, not a reviewable artifact.
+5. **`out/` is version-stamped and never overwritten, and a version is allocated only on QA pass.**
+   Stage D always renders to `work/<mode>/master.mp4`; stage F verifies it; only on a clean pass is
+   it promoted into `out/` as `_vNN_`, with `NN` one above the highest already there. A QA-failed
+   render leaves the file in `work/` and writes its report to `logs/`, so failures never consume a
+   version number and `out/` contains only outputs that actually met spec. **Draft outputs are not
+   versioned** — they write `<slug>_draft_1080x1920.mp4` and are overwritten every draft run, because
+   a draft is a disposable look, not a reviewable artifact.
 6. **`work/` and `logs/` are safe to delete at any time**; `assets/`, `render-spec.json`, and `out/`
    are not.
 
@@ -204,6 +211,7 @@ from them so external tools can validate without importing Python.
 | `shots` | array | Timeline, ordered. |
 | `overlays` | array | Burned-in text. |
 | `captions` | array | Spoken lines for the sidecars. |
+| `captions_style` | string | Name of the style in `styles` used for the `.ass` sidecar. |
 | `audio` | object | Stems, bed, sfx, loudness targets. |
 | `cover` | object | Supplied cover asset plus its overlays. |
 | `delivery` | object | Encoder settings. |
@@ -242,8 +250,13 @@ them; exceeding `max_lines` after wrapping is a preflight failure, not a silent 
   margin. This expresses every move in the reference assembly plan.
 - `hold_s` delays the move's start, for "static-to-slow push".
 - `ease` ∈ `linear` | `ease_in` | `ease_out` | `ease_in_out`.
-- `transition_in` ∈ `cut` | `whip`. `whip` is a 4-frame directional blur-and-slide into the incoming
-  shot; the outgoing shot's tail carries the matching blur.
+- `transition_in` ∈ `cut` | `whip`. A `whip` is specified as
+  `{ "kind": "whip", "direction": "left"|"right"|"up"|"down", "frames": 4 }`, where `frames` is the
+  count **per side** — the outgoing shot's tail carries `frames` of blur-and-slide and the incoming
+  shot's head carries `frames` of the matching move, so the whole gesture spans `2 × frames`.
+  `direction` is required and has no default; without it the two halves cannot be guaranteed to
+  match. Content revealed at the trailing edge during the slide is filled by edge-clamping the
+  frame, never by black.
 
 ### `overlays[]`
 
@@ -274,11 +287,12 @@ validated for monotonic non-overlapping times but is otherwise not cross-checked
 
 ```jsonc
 {
-  "stems": [ { "id": "vo-child", "file": "vo_child_00_hook.wav", "at": 0.0, "gain_db": 0.0 } ],
+  "stems": [ { "id": "vo-child", "file": "vo_child_00_hook.wav",
+               "at": 0.0, "gain_db": 0.0, "duration_s": 2.875 } ],
   "bed": {
-    "file": "music_bed.mp3", "gain_db": -18.0, "duck_db": -22.0,
+    "file": "music_bed.mp3", "gain_db": -8.0, "duck_db": -22.0,
     "duck_attack_ms": 120, "duck_release_ms": 400,
-    "windows": [ { "in": 0.0, "out": 3.0, "mode": "out", "level_db": null },
+    "windows": [ { "in": 0.0,  "out": 3.0,  "mode": "out",    "level_db": null },
                  { "in": 17.0, "out": 26.0, "mode": "ducked", "level_db": -26.0 } ],
     "fades": [ { "at": 3.0, "kind": "in", "ms": 300 } ]
   },
@@ -289,14 +303,33 @@ validated for monotonic non-overlapping times but is otherwise not cross-checked
 
 - `stems[].gain_db` is what makes the ±1 LU speaker-handoff match expressible. Without it the
   hardest audio move in the reference plan has nowhere to live.
-- `bed.windows[].mode` ∈ `out` | `ducked` | `full`, with an optional `level_db` override so a
-  multi-movement music arc is expressible rather than just duck-on/duck-off.
-- **`gain_db` and `duck_db` are both absolute bed levels, not deltas.** `gain_db` is the bed's level
-  when no stem is sounding; `duck_db` is its level while a stem is sounding. In the example above the
-  bed sits at −18 dB and drops to −22 dB under voice. `windows[].level_db`, where present, overrides
-  both for that window.
-- `duck_db` is **intent**. The module computes a deterministic gain envelope from the stem spans to
-  achieve it (see §4, stage C). Stage F measures the achieved delta.
+- `stems[].duration_s` is **optional and used only in draft mode**, to synthesize silence for a stem
+  whose file does not exist yet. It is ignored when the file is present (the file's real duration
+  wins) and is never required in final mode.
+- **`bed.gain_db` and `bed.duck_db` are levels relative to the assembled voice track**, not gains on
+  the bed file and not absolute loudness values. `duck_db: -22` means *the bed sits 22 dB below the
+  voice while any stem is sounding*; `gain_db: -8` means it sits 8 dB below the voice when no stem is
+  sounding. Stage C establishes the reference by measuring `03_vo_assembled.wav`'s integrated
+  loudness, then solves for the bed gain that lands each level.
+
+  This is the only reading consistent with the reference corpus, which states the figure both ways
+  and glosses them as equivalent: *"keep background music around −21 to −22 dB, ducked under
+  vocals"* and *"music bed sits ~15–20 dB below the voice — this is the same instruction as the
+  −22 dB duck above, restated as a relative level."* A gain applied to a bed file of unknown inherent
+  loudness would make the number mean nothing; voice-relative makes it mean exactly what the corpus
+  says.
+- `bed.windows[].mode` ∈ `out` | `ducked` | `full`, with an optional `level_db` override (also
+  voice-relative) so a multi-movement music arc is expressible rather than just duck-on/duck-off.
+- **Precedence is window > duck > baseline.** An explicit window governs its span outright,
+  regardless of whether a stem is sounding underneath it — which is what makes the reference plan's
+  "bed held out entirely for 0–3s while the child speaks" expressible. Outside any window, the bed
+  sits at `duck_db` while a stem sounds and `gain_db` otherwise. **Overlapping windows are rejected
+  at validation**, so precedence among windows never arises.
+- `duck_attack_ms` / `duck_release_ms` are **ramp durations, and the attack ramp completes at stem
+  onset** — the bed is already down when the voice arrives, rather than ducking after the first
+  syllable. Release begins at stem offset.
+- `duck_db` is **intent**. The module computes a deterministic gain envelope to achieve it (§4 stage
+  C), and stage F measures the achieved bed-vs-voice delta (§4 stage F).
 
 ### `cover` and `delivery`
 
@@ -328,7 +361,12 @@ Rejected at `validate` time, before any asset is touched:
   its enum — reported as *"not implemented in v1"* where the value is a known future feature, rather
   than silently substituting a default.
 - Text that cannot fit `max_lines` at `max_width_px` in the declared font.
-- `source_in`/`source_out` absent on a `kind: "clip"` shot whose source is longer than the beat.
+- `source_in`/`source_out` absent on any `kind: "clip"` shot. Whether they fall inside the source's
+  real duration is a **preflight** check (§6), not a validation check — `validate` probes no assets,
+  so it can only require the fields' presence.
+- Overlapping `bed.windows` entries.
+- A `whip` transition without a `direction`.
+- `captions_style` naming a style that does not exist in `styles`.
 
 ---
 
@@ -343,12 +381,20 @@ Conforms every source to one profile, because the concat demuxer requires identi
 `pix_fmt`, timebase, SAR, and frame rate: `canvas.fps` via `-fps_mode cfr`, SAR 1:1, BT.709 tagged.
 Kling clips commonly arrive at 24 or 25 fps and must be conformed here.
 
-**Stills** get their motion by **supersampling**: the source is scaled so the *narrowest crop window
-the move will use* is at least 3.5 × 1080 px wide, the crop is animated across frames at that
-working resolution, and each frame is downscaled to 1080×1920 with lanczos. Both `zoompan` and
-`crop` quantize position to integer pixels; supersampling is what turns that quantization into
-sub-pixel motion at output scale, and it is the operative fix regardless of which filter performs
-the move.
+**Stills** get their motion by **supersampling**. The source is first scaled so that the *narrowest
+crop window the move will use* — i.e. the most zoomed-in frame — is at least 3.5 × 1080 px wide.
+Sizing off the narrowest window floors the supersample factor at 3.5× for the entire move rather
+than only at its start.
+
+The move itself is `scale=eval=frame` feeding a **fixed-size** `crop`, in that order. This
+combination is mandatory, not a preference: `crop`'s `w`/`h` are evaluated once at init and cannot
+animate, so a zoom must come from animating the *scale* while the crop window stays a constant size
+and only its `x`/`y` track the anchor. Attempting to animate `crop`'s dimensions silently produces a
+static frame size.
+
+Each frame is then downscaled to 1080×1920 with lanczos. Both `zoompan` and `crop` quantize position
+to integer pixels; supersampling is what turns that quantization into sub-pixel motion at output
+scale (at 3.5× the residual is ~0.29 output px, invisible under lanczos).
 
 **Clips** are trimmed to `source_in`/`source_out` and conformed identically.
 
@@ -386,14 +432,23 @@ and accent spans in `accent`, apply `stroke_px`/`stroke_color`.
 
 1. Each stem is gain-adjusted by `gain_db` → `01_…`, `02_…`.
 2. Stems are placed at absolute times (`adelay`) and summed (`amix`) → `03_vo_assembled.wav`.
-3. The bed is trimmed/looped to runtime, then a **computed gain envelope** is applied →
-   `04_bed_ducked.wav`. The envelope is derived from the stem spans: baseline `gain_db`, `duck_db`
-   during any span where a stem is sounding, per-window `mode`/`level_db` overrides, and `fades`,
-   with `duck_attack_ms`/`duck_release_ms` shaping the transitions.
-4. SFX are placed and summed with the above → `05_mix_pre-loudnorm.wav`.
-5. `loudnorm` pass 1 (analysis) → `loudnorm_pass1.json`.
-6. `loudnorm` pass 2 with measured values, `linear=true`, followed by an explicit
+   Its integrated loudness is then measured with `ebur128` — this is the **voice reference** every
+   bed level is expressed against.
+3. The bed is trimmed or looped to runtime and gain-shifted so its integrated loudness sits
+   `gain_db` below the voice reference → `04a_bed_conformed.wav`. **No envelope yet.**
+4. The **computed gain envelope** is applied → `04b_bed_ducked.wav`. The envelope is a piecewise
+   function over the runtime: explicit `windows` first, then `duck_db` across any span where a stem
+   is sounding, then `gain_db` everywhere else (precedence per §3), with `duck_attack_ms` /
+   `duck_release_ms` ramps and `fades` shaping the transitions. Because every stem's placement and
+   duration are known before rendering, this envelope is fully determined ahead of time.
+5. SFX are placed, gain-adjusted, and summed with the above → `05_mix_pre-loudnorm.wav`.
+6. `loudnorm` pass 1 (analysis) → `loudnorm_pass1.json`, retained in `work/` so `verify` can
+   re-check linearity later.
+7. `loudnorm` pass 2 with measured values, `linear=true`, followed by an explicit
    `aresample=48000` → `06_mix_final.wav`.
+
+`04a_bed_conformed.wav` exists solely so stage F can measure the envelope in isolation — see stage
+F's duck-depth check for why comparing ducked-vs-unducked is the only sound method.
 
 Two things this stage must assert rather than assume:
 
@@ -408,10 +463,10 @@ program-dependent, so `duck_db: -22` could never be honored exactly and its meas
 flaky. Because every stem's placement is pre-authored, the exact ducking schedule is known ahead of
 time. An envelope is smaller, deterministic, and verifiable.
 
-### Stage D — assemble → `out/<slug>_vNN_1080x1920.mp4`
+### Stage D — assemble → `work/<mode>/master.mp4`
 
 One ffmpeg invocation: concat demuxer over the stage-A clips → overlay chain → mux
-`06_mix_final.wav` → final encode.
+`06_mix_final.wav` → final encode. The result stays in `work/` until stage F passes it (§2 rule 5).
 
 - Overlay gating is `enable='gte(t,IN)*lt(t,OUT)'`. **`between(t,a,b)` is inclusive at both ends**,
   which would render adjacent cards (one ending at 2.0, the next starting at 2.0) simultaneously for
@@ -430,7 +485,9 @@ One ffmpeg invocation: concat demuxer over the stage-A clips → overlay chain �
 - **Cover:** conform `cover.source` to 1080×1920, composite its named overlays, write PNG. One
   output, 9:16 only — a 16:9 thumbnail variant is deferred, because there is no unambiguous way to
   derive a 16:9 crop from a 9:16 composition without a crop rectangle the spec does not carry.
-- **Captions:** render `captions[]` to `.srt` and to `.ass` (styled from `styles.card`).
+- **Captions:** render `captions[]` to `.srt` and to `.ass`, styled from the style named by
+  `captions_style` (a top-level spec field). It is not hardcoded to `styles.card`, since nothing
+  requires a spec to define a style by that name.
 
 ### Stage F — verify → `out/<slug>_vNN_qa.{json,md}`
 
@@ -440,23 +497,37 @@ One ffmpeg invocation: concat demuxer over the stage-A clips → overlay chain �
 | Color tagging | `ffprobe` | colorspace/primaries/trc ≠ bt709 |
 | Audio conformance | `ffprobe` | codec ≠ AAC-LC or rate ≠ 48000 |
 | Integrated loudness | `ebur128` on the master | > 1.0 LU from `integrated_lufs` |
-| True peak | `ebur128` on the master | exceeds `true_peak_dbtp` |
+| True peak | `ebur128` on **`06_mix_final.wav`**, not the master | exceeds `true_peak_dbtp` |
 | Loudnorm linearity | parse `loudnorm` pass 2 output | `normalization_type != "linear"` |
-| Duck depth | `ebur128` windowed on `04_bed_ducked.wav`, inside vs. outside voice spans | achieved level > 1.5 dB from `duck_db` (measurement tolerance; the envelope itself is exact) |
+| Duck depth | `ebur128` over identical windows on **`04b_bed_ducked.wav` vs. `04a_bed_conformed.wav`** | achieved gain > 1.5 dB from the intended envelope value |
 | Safe zone | overlay bbox JSON from stage B ⊆ `safe_zone` | any overlay's ink escapes the safe zone |
-| Timeline integrity | Σ shot frames vs. audio frames vs. container duration | any mismatch |
+| Timeline integrity | Σ shot frames vs. audio frames vs. container duration | mismatch exceeding one frame |
 | Placeholders | manifest | any placeholder present in **final** mode |
 | Contact sheet | one frame from each shot's midpoint | never fails; informational |
 
-Duck depth is measured on `04_bed_ducked.wav` rather than the master because once voice and bed are
-summed they cannot be separated. That intermediate is retained specifically for this check.
+Three of these measurement choices are deliberate and load-bearing:
+
+- **Duck depth compares the ducked bed against the *conformed* bed over identical windows**, not the
+  ducked bed inside-voice against outside-voice. The naive comparison measures the envelope *plus
+  the music's own dynamics*, which routinely swing more than 1.5 dB on real material and would
+  false-fail a correct render. Differencing the two bed intermediates isolates exactly the gain the
+  envelope applied. Attack and release ramp regions are excluded from the measurement windows.
+- **True peak is measured on `06_mix_final.wav`, before AAC encoding.** AAC decode can overshoot the
+  encoder's input by roughly 0.3–1 dB, so a mix correctly normalized to −1.5 dBTP would spuriously
+  fail if measured on the master.
+- **Timeline integrity allows one frame of slack.** AAC priming and padding shift container duration
+  by roughly 20–45 ms; a zero-tolerance check would fail every correct render.
 
 **Frame checksums are deliberately not used.** libx264 output varies by build and thread count, so a
 checksum would produce false failures rather than evidence. Probe, loudness, and bounds checks are
 the verification surface.
 
-`qa.json` is the machine-readable record; `qa.md` is the human summary. Stage F exits non-zero on
-any hard failure — the output file still exists, but the run is not reported as successful.
+`qa.json` is the machine-readable record; `qa.md` is the human summary.
+
+**`verify` on a workspace whose `work/` has been cleaned runs a degraded check set.** Duck depth,
+safe zone, loudnorm linearity, and placeholder detection all depend on `work/` artifacts. When those
+are absent, each is reported as `unavailable` — never as passed — and `verify` exits 4 to distinguish
+"could not fully verify" from "verified and failed."
 
 ---
 
@@ -474,6 +545,12 @@ the `work/draft` ÷ `work/final` split.
 Practical effect: changing one card's copy re-runs stages B, D, E, F and leaves the 15 shot clips
 untouched.
 
+**A total cache hit does not mint a new version.** If every stage hits cache *and* an existing
+`out/` version was produced from an identical manifest, `render` reports "no changes; `vNN` is
+current" and exits 0 without re-encoding or allocating a version. `--force` overrides this and mints
+a new version anyway. Without this rule, re-running `render` would quietly fill `out/` with
+byte-identical files under climbing version numbers.
+
 ---
 
 ## 6. Failure handling
@@ -485,11 +562,20 @@ rather than the first:
 - Every referenced asset exists and probes cleanly.
 - `source_in`/`source_out` fall inside the source's real duration.
 - Every referenced font file loads.
-- ffmpeg and ffprobe are present, are 8.x, and have libx264 and libass.
+- ffmpeg and ffprobe are present, are 8.x, and have libx264. **libass is not required** — ASS
+  burn-in was rejected in favor of Pillow compositing, and the `.ass` sidecar is text written by
+  Python, never rendered by the module.
 - The longest path the run will generate is ≤ 255 characters.
 
 In **final** mode any preflight failure aborts and nothing renders. In **draft** mode a missing
 *asset* becomes a placeholder; every *spec* error still aborts.
+
+**Draft placeholders cover visual assets and audio stems, but by different rules.** A missing image
+or clip becomes a magenta slate of the shot's own duration, which the spec already knows. A missing
+audio stem has no known duration — durations come from files — so it can be synthesized as silence
+**only if that stem declares `duration_s`**; without it, the run aborts even in draft mode, naming
+the stem and the missing field. A missing music bed or SFX file is simply omitted in draft, and
+listed as omitted in the QA report.
 
 Every ffmpeg command line is written to `logs/<timestamp>_<mode>.log` **before** it executes, so a
 failure hands you a pasteable command rather than a traceback wrapping a subprocess error. Non-zero
@@ -512,10 +598,17 @@ lists; `shell=True` is never used.
 - Text layout — wrapping, hard breaks, accent-span parsing, `max_lines` overflow.
 
 **Golden-image tests:** `overlays.py` renders each fixture card and is compared against a committed
-PNG within tolerance. Catches font, padding, and accent-parsing regressions.
+PNG. Catches font, padding, and accent-parsing regressions. Three provisions keep these from
+becoming brittle busywork, and all three are required rather than optional: `Pillow` and its bundled
+freetype are **pinned to exact versions** in `requirements.txt` (glyph rasterization shifts between
+builds); "within tolerance" means a **stated RMSE threshold**, not visual similarity; and these
+tests are marked Windows-only, because font rasterization is not portable.
 
 **Filtergraph snapshot tests:** build the graph string for a fixture spec and diff against a
-committed golden. Catches accidental changes without rendering anything.
+committed golden. Catches accidental changes without rendering anything. **Absolute paths are
+tokenized before diffing** (`<WORK>`, `<ASSETS>`, `<FONT>`) — an untokenized golden embeds one
+machine's `C:\Users\…` paths and fails on every other machine, including the same machine under a
+different workspace root.
 
 **One end-to-end fixture:** a 6-second, 3-shot spec over tiny generated assets (solid-color PNGs,
 sine WAVs) committed under `tests/fixtures/`. Fast enough to run on every change, and **its
@@ -595,3 +688,34 @@ review identified was cache poisoning, which is addressed by the mode-partitione
 **Reversed on review:** the whip transition, originally cut from v1. The review's framing — that v1
 would otherwise be unable to render its own canonical upstream artifact, which specifies a whip-out
 at 45 s — is correct, and the implementation is small. It is in v1.
+
+### Second review pass
+
+A second Fable 5 pass was run against this written document, checking both whether the first pass's
+corrections had landed *correctly* and reviewing the roughly half of the spec it had never seen.
+Every first-pass correction verified as landed except one, and that one was broken by an edit made
+during the author's own self-review rather than by the original write-up:
+
+- **Ducking semantics were incoherent and are now fixed (§3 audio, §4 stage C, §4 stage F).** The
+  self-review had redefined `gain_db`/`duck_db` as "absolute bed levels," which is meaningless for a
+  gain applied to a bed file of unknown inherent loudness — and the accompanying example (−18 → −22)
+  implied a 4 dB duck where the corpus calls for the bed to sit 15–20 dB below the voice. Both are
+  now defined as **levels relative to the measured voice track**, which is the only reading
+  consistent with the corpus stating the figure both ways and glossing them as equivalent. The QA
+  check reverted to measuring a bed-vs-voice relationship rather than an absolute level.
+- **The Ken Burns mechanism was named (§4 stage A).** "The crop is animated across frames" is not
+  implementable: `crop`'s `w`/`h` are evaluated once at init. The spec now mandates
+  `scale=eval=frame` feeding a fixed-size `crop`, which is the only arrangement that produces a zoom.
+
+Also corrected: the duck-depth check compared ducked-vs-unducked *voice spans*, which measures the
+music's own dynamics and would false-fail real material — it now differences the two bed
+intermediates; true peak moved off the master to pre-AAC, where it is not distorted by codec
+overshoot; timeline integrity gained one frame of slack for AAC priming/padding; a leftover libass
+preflight requirement was dropped (nothing uses it); version allocation moved to QA-pass-only,
+resolving a contradiction between §2 rule 5 and stage D; `validate`'s `source_in` rule was split so
+it no longer requires probing assets it is defined as not touching; the whip gained a required
+`direction` and an explicit per-side frame count; the `.ass` sidecar style became a spec field
+rather than a hardcoded `styles.card`; draft-mode audio placeholders were specified; total-cache-hit
+behavior was specified; and the golden-image and filtergraph-snapshot tests gained the three
+provisions (pinned Pillow/freetype, a numeric RMSE threshold, tokenized paths) without which they
+would have been brittle busywork.
