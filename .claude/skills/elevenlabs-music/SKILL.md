@@ -72,11 +72,26 @@ default you assumed** — never choose silently.
 
 ### Stage A — Bed profile
 
-Consume the Bed Arc + timed script. In pipeline mode the arc is already decided — **accept it and
-do not re-litigate it.** Emit a reusable **Bed Profile Card** (mirror `elevenlabs-audio`'s Voice
-Profile Card pattern) the user can paste back later to skip straight to Stage C. The card carries:
-use case, global positive styles, global negative styles incl. the vocal guard, energy band, and the
-arc's movement names.
+Consume the Bed Arc + timed script. When a `music-brief` Bed Arc is supplied, its output contract
+has five named sections, and each feeds a specific downstream piece — read `music-brief`'s section,
+don't re-derive what it already says `[I]`:
+
+| `music-brief` section | Feeds |
+|---|---|
+| `## Bed arc` | The movement names, their beat ranges (s), and intended feeling — the Bed Profile Card's movement names, and Stage B's beat→chunk mapping source table |
+| `## Hook hold-out` | The fade-in timestamp Stage B's chunk arithmetic starts from (`composition-plans.md`'s beat→chunk method) |
+| `## Tone-contradiction check` | The per-beat tone data Gate 1's arc-vs-voiceover-brief tone check reads |
+| `## Deferred to elevenlabs-music` | The gaps (BPM, key, genre, instrumentation) the corpus doesn't cover and this skill must fill itself, in `prompt-craft.md`'s arc-to-style-vocabulary translation |
+| `## Downstream` | Confirms this skill is the next stage — no data to extract, just the handoff pointer |
+
+This mapping only applies when a Bed Arc is on the table. **In standalone mode there is no
+`music-brief` upstream at all** — derive the bed profile directly from the job brief instead, and
+skip the table above entirely `[I]`.
+
+In pipeline mode the arc is already decided — **accept it and do not re-litigate it.** Emit a
+reusable **Bed Profile Card** (mirror `elevenlabs-audio`'s Voice Profile Card pattern) the user can
+paste back later to skip straight to Stage C. The card carries: use case, global positive styles,
+global negative styles incl. the vocal guard, energy band, and the arc's movement names.
 
 ### Stage B — Section map
 
