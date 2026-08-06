@@ -297,3 +297,70 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
                 )
             )
     return findings
+
+
+GATE_E_RE = re.compile(r"^\s*Gate E\b[^:]*:\s*(\S.*)$", re.MULTILINE)
+
+
+def check_gate_e_reported(text: str) -> list[Finding]:
+    """D6 -- the honesty lock.
+
+    This cannot prove Gate E ran; a skill that skipped it can still write
+    `Gate E: pass`. It raises the cost of the omission from silent to
+    deliberate, and no further. See the spec's "Known limits"."""
+    if GATE_E_RE.search(text):
+        return []
+    return [
+        Finding(
+            "D6",
+            None,
+            "no well-formed `Gate E: <result>` line in the artifact -- "
+            "a gate that was not reported is a gate that was not run",
+        )
+    ]
+
+
+def lint(vo_lines: list[VOLine], text: str, parse_findings: list[Finding] | None = None) -> list[Finding]:
+    """Run every Gate D check, in check order."""
+    return [
+        *(parse_findings or []),
+        *check_punctuation(vo_lines),
+        *check_vocabulary(vo_lines),
+        *check_pace(vo_lines),
+        *check_gate_e_reported(text),
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="lint_script_language",
+        description="Gate D -- read-aloud lint for ContentStudio Short scripts.",
+    )
+    parser.add_argument("script", type=Path, help="path to an emitted Short script (.md)")
+    args = parser.parse_args(argv)
+
+    text = args.script.read_text(encoding="utf-8")
+    vo_lines, parse_findings = parse_script(text)
+    if not vo_lines:
+        print(f"Gate D: no voiceover lines parsed from {args.script}. Check the script format.")
+        return 2
+
+    findings = lint(vo_lines, text, parse_findings)
+    blocking = [f for f in findings if f.kind != "skipped"]
+    skipped = [f for f in findings if f.kind == "skipped"]
+
+    for finding in skipped:
+        print(f"  [skipped] {finding.beat or 'script'}: {finding.message}")
+
+    if not blocking:
+        print(f"Gate D: PASS -- {len(vo_lines)} voiceover lines, 0 findings.")
+        return 0
+
+    print(f"Gate D: FAIL -- {len(vo_lines)} voiceover lines, {len(blocking)} finding(s).")
+    for finding in blocking:
+        print(f"  [{finding.check}] {finding.beat or 'script'}: {finding.message}")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

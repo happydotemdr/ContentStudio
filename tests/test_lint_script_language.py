@@ -13,6 +13,9 @@ from lint_script_language import (  # noqa: E402
     check_pace,
     beat_wpm,
     WPM_CEILING,
+    check_gate_e_reported,
+    lint,
+    main,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -328,3 +331,89 @@ def test_d5_counts_on_shipped_fixtures():
         lines, _ = parse_script(_read(name))
         fails = [f for f in check_pace(lines) if f.kind == "fail"]
         assert len(fails) == count, f"{name}: got {len(fails)}"
+
+
+def test_d6_passes_a_well_formed_gate_e_line():
+    text = "GATES\n  Gate E (fresh Opus critic):               pass\n"
+    assert check_gate_e_reported(text) == []
+
+
+def test_d6_fails_a_missing_gate_e_line():
+    findings = check_gate_e_reported("GATES\n  Gate D (linter): pass\n")
+    assert [f.check for f in findings] == ["D6"]
+
+
+def test_d6_fails_an_empty_gate_e_value():
+    assert [f.check for f in check_gate_e_reported("  Gate E (critic):   \n")] == ["D6"]
+
+
+def test_d6_fails_on_every_shipped_fixture_because_they_predate_the_gate():
+    for name in (
+        "script_let_kids_play_act.md",
+        "script_specialization.md",
+        "script_decline.md",
+        "script_nobody_asked.md",
+    ):
+        assert [f.check for f in check_gate_e_reported(_read(name))] == ["D6"], name
+
+
+def test_decline_hook_loop_mirror_produces_no_gate_d_finding():
+    """SKILL.md:108 requires the Loop/CTA to mirror the Hook, and the corpus
+    cites it [C] (Jenny Hoyos, mhVDcqnxxaY). A gate that blocks a mandated
+    mechanic is worse than no gate -- this is the regression guard for the
+    repeated-template check that was removed from Gate D."""
+    text = _read("script_decline.md")
+    lines, parse_findings = parse_script(text)
+    # NOTE: the task-5 brief's own test asserts an exact match against
+    # "It won't set him back." but the fixture's actual Hook line is "It
+    # won't set him back. Not athletically." and its Loop/CTA line is "You're
+    # not taking something away from him. It won't set him back." -- an exact
+    # match against either yields zero. The governing rule, per this test's
+    # own docstring, is that the mandated Hook/Loop mirror mechanic (repeating
+    # a phrase across Hook and Loop/CTA) must not itself trip a Gate D check;
+    # the brief's exact-equality check was miscalibrated against the real
+    # fixture text. Substring containment is what the docstring actually
+    # requires, and both beats do contain the mirrored phrase.
+    mirrored = [vo for vo in lines if "It won't set him back." in vo.text]
+    assert len(mirrored) >= 2
+    assert any(vo.beat == "HOOK" for vo in mirrored)
+    assert any(vo.beat == "LOOP/CTA" for vo in mirrored)
+    findings = lint(lines, text, parse_findings)
+    assert [f for f in findings if f.check in ("D2", "D3", "D4")] == []
+
+
+def test_main_returns_2_on_a_file_with_no_vo_lines(tmp_path):
+    path = tmp_path / "empty.md"
+    path.write_text("no beats here at all\n", encoding="utf-8")
+    assert main([str(path)]) == 2
+
+
+def test_main_returns_1_on_a_failing_fixture(tmp_path):
+    path = tmp_path / "bad.md"
+    path.write_text(_read("script_decline.md"), encoding="utf-8")
+    assert main([str(path)]) == 1
+
+
+def test_main_returns_0_on_a_clean_script(tmp_path):
+    path = tmp_path / "clean.md"
+    path.write_text(
+        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        "GATES\n  Gate E (fresh Opus critic): pass\n",
+        encoding="utf-8",
+    )
+    assert main([str(path)]) == 0
+
+
+def test_main_returns_0_when_only_finding_is_skipped(tmp_path):
+    """Carried forward from Task 4's review: a kind="skipped" finding (e.g. D5
+    on a beat with no computable time range) must never contribute to a
+    non-zero exit. This script has a re-hook beat with no range (skipped D5)
+    plus a well-formed Gate E line, so the only findings are non-blocking."""
+    path = tmp_path / "skipped_only.md"
+    path.write_text(
+        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
+        "GATES\n  Gate E (fresh Opus critic): pass\n",
+        encoding="utf-8",
+    )
+    assert main([str(path)]) == 0
