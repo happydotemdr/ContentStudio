@@ -4,6 +4,11 @@
 **Status:** approved (design); implementation plan not yet written
 **Scope:** one spec covering three subsystems — the ladder engine and render console, the
 cross-project Style Library and `styleboard` stage, and the slot syntax with late binding.
+Implemented as **two strictly ordered plans**; see §12.
+
+**Revision:** amended 2026-08-06 after an adversarial review. Corrections are marked inline
+where they overturn an earlier claim, rather than being silently rewritten — the largest was a
+false `[I]`→`[C]` provenance upgrade in §4.1.
 
 ---
 
@@ -71,7 +76,7 @@ Attribution matters here, because these numbers gate spend: **draft 0.4 was veri
 `midjourney-prompting/references/v82-model-delta.md`, verified 2026-07-26. **Upscale Subtle
 and Upscale Creative costs were not verified at all** and are unknown. `gpu_costs.yaml` must
 therefore carry a per-entry `verified_on` date, and the upscale entries ship flagged
-`unverified` so the console labels their estimates as such until someone checks (§13).
+`unverified` so the console labels their estimates as such until someone checks (§14).
 
 ## 3. Decisions
 
@@ -84,7 +89,7 @@ therefore carry a per-entry `verified_on` date, and the upscale entries ship fla
 | D5 | Draft probes derived deterministically from the dense prompt | The sheet stays the single source of truth. Derivation is re-runnable and hand-overridable per asset. |
 | D6 | Cost estimate + ledger + soft per-project ceiling | Nothing auto-generates, so runaway spend is structurally impossible. What remains is visibility and self-discipline. |
 | D7 | Niji 7 allowed as an explicit per-world opt-in | Real stylistic range for illustrative worlds, gated behind a deliberate choice that states the V8.2 trade-off. |
-| D8 | One spec covering all three subsystems | The end-to-end workflow is the deliverable; the ladder engine is shared substrate that both consumers need. |
+| D8 | One spec, two ordered implementation plans | The end-to-end workflow is the deliverable and the three subsystems are too coupled to design separately; but the contract changes must land before the console is built against them (§12). |
 
 ## 4. Architecture
 
@@ -122,10 +127,35 @@ without migration.
 entry, and flagging any world with no entry as a discovery request. `visual` consumes the
 world lock instead of deciding it.
 
-The dual-register world-lock rules are corpus-derived. They **move wholesale into
-`shorts-styleboard` with their `[C]` citations intact** — a relocation, not a rewrite. No new
-unsourced normative lines are created by the split, preserving the anti-generic guarantee in
-`CLAUDE.md`.
+**Provenance of what moves — stated correctly.** An earlier draft of this spec claimed the
+world-lock rules are corpus-derived and move "with their `[C]` citations intact." That is
+false, and the correction matters in a repo whose central rule is that an unmarked normative
+line is a bug. `visual-prompts/SKILL.md` says twice, explicitly, that the register system, its
+shot-class taxonomy, and the arc-first sequencing discipline are **this skill's own
+operational design `[I]`** — "the corpus has nothing to say about pairing a present-day
+register with a source-era register." There are no `[C]` citations on these rules to preserve.
+
+What actually moves is `[I]` material, and it must arrive in `shorts-styleboard` still marked
+`[I]`, with the same explicit disclaimer that the corpus does not back it. The `[T]` Midjourney
+parameter bands the register files cite move with their verification dates. Nothing may be
+silently upgraded to `[C]` by the relocation — that would be exactly the failure mode
+`CLAUDE.md`'s anti-generic guarantee exists to prevent.
+
+**Existing projects require a DB backfill.** `project_service.create_project` materializes
+stage rows once, at project creation. Projects created before this change will have no
+`styleboard` row, and `state_machine.stages_to_unlock` requires *all* declared dependencies to
+be approved — so `visual` could never unlock for them. A migration must insert a `styleboard`
+row for every existing project whose brand scope includes it, at status `approved` with a
+synthetic artifact carrying that project's world lock lifted from its existing visual sheet
+(or at `ready` for projects that never reached `visual`). Untested against real projects, this
+silently wedges every prior run.
+
+**Stage templates are in scope and were omitted.** `prompt_builder.render_kickoff_prompt`
+requires one template per stage id, so `pipeline-app/stage_templates/styleboard.md` must be
+created. Separately, `stage_templates/visual.md` currently renders `{{ input_file }}` —
+singular, the *first* upstream only. With two dependencies, the styleboard artifact would be
+hashed into `visual`'s frontmatter and never shown to the model. `visual.md` must be rewritten
+to iterate `{{ input_files }}`, naming each upstream by stage.
 
 ### 4.2 Data model
 
@@ -186,16 +216,25 @@ Four rungs, identical for every asset and for style discovery.
 
 | Rung | Prompt used | Result | Cost (fast minutes) |
 |---|---|---|---|
-| 1 · Draft | derived probe + `--draft --c 25 --weird 0` | 24 images @ 512px | 0.4 |
-| 2 · Lock | dense prompt + `--sref` harvested from the winning draft | one full-res candidate per flagged draft | 0.8 SD / 1.3 HD each |
+| 1 · Draft | derived probe + bound `{style:…}` + `--draft --c 25 --weird 0` | 24 images @ 512px | 0.4 |
+| 2 · Lock | dense prompt + bound `{style:…}` (+ `{char:…}` if any) | one full-res candidate per flagged draft | 0.8 SD / 1.3 HD each |
 | 3 · Upscale | the selected lock, Subtle or Creative | final-resolution image | unverified — see §2 |
 | 4 · Capture | — | filed into `visuals/` and `edit-ready/` | 0 |
 
+**Asset rendering and discovery take their style from different places — do not conflate
+them.** In *asset* rendering (this section) the style code comes from the Library binding
+resolved at generate time (§6.2), and it is present from **rung 1 onward** — drafting
+off-style would make flagging worthless, since you would be choosing compositions under an
+aesthetic the final render won't have. Harvesting a code from a winning draft is the
+*discovery* flow (§6) and happens only there. An earlier draft of this spec described rung 2
+as using "`--sref` harvested from the winning draft," which described discovery while
+appearing in the asset ladder.
+
 **Rung 2 is a fresh submission, not Midjourney's Vary button.** This is the only path that
-lets the dense prompt, the real `--sref`, and `--oref` enter — none of which can ride along on
-a draft. It matches `midjourney-prompting`'s Phase 2 exactly, so it rests on verified guidance
-rather than inferred UI behaviour. A human who prefers Vary for a given shot records the
-result identically; the console does not require either route.
+lets the dense prompt and `--oref` enter — neither of which can ride along on a draft. It
+matches `midjourney-prompting`'s Phase 2 structure, so it rests on documented guidance rather
+than inferred UI behaviour. A human who prefers Vary for a given shot records the result
+identically; the console does not require either route.
 
 **`--oref` enters only at rung 2, and announces its cost.** Binding a character reference
 shows, in the confirm dialog: incompatible with Draft and Fast Mode, incompatible with `--q 4`,
@@ -212,9 +251,14 @@ otherwise would make the ledger fiction.
 
 The generate control is therefore **"Copy prompt & mark launched"**: one click copies the
 resolved string to the clipboard and opens a `ladder_run` at `awaiting_capture`, debiting the
-estimate immediately. A **"didn't run"** action voids the row and refunds the estimate. Actual
-minutes are reconciled when images land. Every ledger row records whether its cost is
-`estimated` or `reconciled`; an estimate is never displayed as a fact.
+estimate immediately. A **"didn't run"** action voids the row and refunds the estimate.
+
+Image arrival **confirms a run happened; it carries no cost data.** Ingest therefore cannot
+reconcile an estimate into an actual — the only source of actual minutes is the human entering
+them from Midjourney's usage page (§8.3). An earlier draft claimed "actual minutes are
+reconciled when images land," which overstated what ingest can observe. Every ledger row
+records whether its cost is `estimated` or `reconciled`, and the project total shows both
+figures separately rather than one blended number that would read as measured.
 
 ### 5.2 Asset states
 
@@ -279,6 +323,14 @@ Characters use `{char:<name>}` → `--oref <url> --ow <n>`.
 The token expands to the **entire flag group, not a bare value.** That is what keeps the sheet
 ignorant of which mechanism a world uses, and is what makes re-locking a Short's whole look a
 single binding change with no sheet regeneration.
+
+**Token position is part of the contract, not a detail.** `lint_prompt_sheet.py`'s
+`prompt_body` / `prompt_flags` split a prompt at the **first occurrence of `" --"`**. A
+`{style:…}` token does not begin with `--`, so placing it *before* the first real flag would
+drop it into the prompt *body*, breaking C13's requirement that the body end with `No Text.`
+Slots therefore **must appear after at least one literal flag** — in practice after `--ar`,
+which every sheet emits first. Gate C enforces the position rather than leaving it to
+convention.
 
 ### 6.3 Probe derivation (D5)
 
@@ -366,21 +418,62 @@ A per-step drop zone is always available as a fallback path.
 | Ledger drift | Reconcile view accepts actual minutes from Midjourney's usage page as a manual adjustment — the reason `spend_ledger.ladder_run_id` is nullable. |
 | DB lost or corrupted | Rebuild command re-scans `Generated Assets/<run_id>/` and reconstructs rows from disk. |
 
-## 9. Gate C changes
+## 9. Sheet format and Gate C changes
 
-`scripts/lint_prompt_sheet.py` gains four checks:
+**This is a sheet-format change with a linter change attached, not a linter change alone.** An
+earlier draft scoped it as four edits to `scripts/lint_prompt_sheet.py`; three of the four
+require the emitted-sheet contract in
+`.claude/skills/visual-prompts/references/prompt-sheet-format.md` to change first. That file
+currently mandates "the **two** `--sref` codes" literally in `WHOLE-SHORT SETUP` (that file's
+§7, not this document's) — a
+direct contradiction of slots — and explicitly places the cover outside the parser.
 
-1. Accept `{style:…}` and `{char:…}` as valid flag-position tokens.
-2. Require every referenced slot to be declared in the sheet's `WORLD LOCK` block. Declaration
-   keys follow the block's existing `^\s+[a-z][a-z0-9_]*:\s*value$` shape that
-   `WORLD_ENTRY_RE` already matches, named `slot_<name>` — so `{style:register_a}` requires a
-   `slot_register_a:` line naming the Library entry label it binds to, and `{char:coach}`
-   requires `slot_char_coach:`. No parser change is needed for the block itself.
-3. Parse the `COVER / THUMBNAIL` prompt as a first-class asset. `parse_sheet()` currently
-   matches only `### Shot` headings and walks past the cover, so the cover has never been
-   linted.
+### 9.1 Sheet format changes
+
+- `WHOLE-SHORT SETUP` stops mandating two literal `--sref` codes and instead names the two
+  **slots** the sheet uses.
+- The sheet **stops emitting `WORLD LOCK` entirely.** It moves to the styleboard artifact
+  (§4.1), which becomes its single source of truth. Two copies with no sync rule would be
+  worse than the fake codes this work exists to remove.
+- Slot declarations (`slot_register_a:`, `slot_char_coach:`) live in the styleboard artifact's
+  world-lock block, in the existing `^\s+[a-z][a-z0-9_]*:\s*value$` shape that
+  `WORLD_ENTRY_RE` already matches — so that regex is reused unchanged against a different
+  file.
+- The `COVER / THUMBNAIL` section gains a parseable heading carrying the same
+  register/class/scale/height fields a shot has.
+
+### 9.2 Gate C changes
+
+1. Accept `{style:…}` and `{char:…}` as valid flag-position tokens, **and enforce that they
+   appear after at least one literal flag** (§6.2).
+2. Require every referenced slot to be declared — now read from the styleboard artifact rather
+   than the sheet. Gate C therefore takes a second input path; C8's world-lock field checks
+   (`register_a_sport`, signature objects) move to reading that artifact too.
+3. Lint the cover as a first-class asset. **It must be excluded from C1–C7**, the
+   adjacency/scale/register-balance checks — appending it to the shot list would corrupt every
+   one of them, since the cover is a packaging frame with no position in the arc. The
+   "cover = reuse the Hook still, no separate generation" branch must also be handled, and
+   skipped rather than failed.
 4. **Reject any `--sref` value that is not numeric, a URL, or `random`.** This makes
    `SREF-RGS-A-DL01` impossible to reintroduce — the exact defect that motivated this work.
+5. **Require every shot to carry a style mechanism at all** — a literal `--sref`/`--p`, or a
+   `{style:…}` slot. Without this, checks 1 and 4 together still pass a sheet that simply has
+   no style reference anywhere, leaving the underlying defect class alive.
+
+### 9.3 Skill and reference files in scope
+
+The split touches more than the two `SKILL.md` files. All of these must be updated together or
+the pipeline's self-description goes stale:
+
+- `visual-prompts/SKILL.md` — frontmatter `description` currently leads with world-locking.
+- `visual-prompts/references/visual-registers.md` — §3/§4 (the two-code rule), §7.
+- `visual-prompts/references/prompt-sheet-format.md` — §7, per §9.1 above.
+- `visual-prompts/references/worked-example.md` — emits literal codes.
+- `midjourney-prompting/SKILL.md` — the harvest-and-substitute Phase 2 flow, which now
+  describes discovery only.
+- `tests/fixtures/passing_sheet.md` — contains a literal `--sref 1122334455`.
+- `CLAUDE.md`, `README.md`, and every skill description saying "six skills" — the pipeline
+  becomes seven stages.
 
 ## 10. Module layout
 
@@ -397,10 +490,20 @@ pipeline_app/ingest_matcher.py      filename -> ladder_run scoring
 pipeline_app/library_service.py     worlds and style_entries CRUD
 pipeline_app/routes/studio.py       per-project console
 pipeline_app/routes/library.py      cross-project Library
+pipeline_app/sheet_parser.py        path-anchored shim over scripts/lint_prompt_sheet.py
 ```
 
-The console imports `parse_sheet()` from `scripts/lint_prompt_sheet.py` rather than growing a
-second parser for the same format.
+The console reuses `parse_sheet()` from the repo-root `scripts/lint_prompt_sheet.py` rather
+than growing a second parser for the same format — but **a plain `from scripts.lint_prompt_sheet
+import parse_sheet` will not work.** Two packages named `scripts` exist, both with
+`__init__.py`: the repo root's and `pipeline-app/scripts/`. Existing tests already resolve
+`from scripts import …` to the pipeline-app one
+(`pipeline-app/tests/test_migrate_handles.py`), so the import would silently bind to the wrong
+package depending on `sys.path` order.
+
+Resolution: load it by explicit path via `importlib.util.spec_from_file_location`, anchored on
+`repo_root` (already carried on `app.state`), in a single `sheet_parser.py` shim that the rest
+of the console imports from. One place to change if the packages are ever renamed.
 
 ## 11. Testing
 
@@ -408,12 +511,23 @@ Follows the existing pytest + `tmp_path` + temporary-DB pattern in `pipeline-app
 
 **Fixtures must be committed, not read from `runs/`.** `runs/` is git-ignored, so a suite that
 reads `runs/do-less-20260728-190724/03-visual/artifact.v1.md` directly would pass on this
-machine and fail everywhere else. The sheet is copied once into
-`pipeline-app/tests/fixtures/do_less_visual_sheet.md` and committed, along with a small set of
-real Midjourney output filenames in `pipeline-app/tests/fixtures/mj_filenames.txt`. Tests read
-only from `tests/fixtures/`.
+machine and fail everywhere else. Tests read only from `pipeline-app/tests/fixtures/`.
 
-**Unit, table-driven, using the committed `do-less` prompts as fixtures:**
+**Two sheet fixtures are needed, and they are not interchangeable.** The `do-less` sheet is in
+the **old** format — literal `--sref SREF-RGS-A-DL01`, no slots, `WORLD LOCK` inline. It is the
+right fixture for the matcher (real prompt prose) and for the Gate C **regression** asserting
+the fake code now fails. It is the wrong fixture for the ladder walkthrough: it has no slots,
+so no asset ever reaches `blocked`, and its "resolved" prompt would contain the very fake code
+this system exists to eliminate.
+
+- `tests/fixtures/do_less_visual_sheet_legacy.md` — the real sheet, verbatim, for matcher and
+  Gate C regression tests.
+- `tests/fixtures/slotted_visual_sheet.md` + `tests/fixtures/slotted_styleboard.md` — a
+  hand-written new-format pair, for slot resolution, blocked-state, and the ladder integration
+  walkthrough.
+- `tests/fixtures/mj_filenames.txt` — real Midjourney output filenames for matcher scoring.
+
+**Unit, table-driven:**
 - probe derivation from dense prompts;
 - slot expansion across all four entry kinds, including the Niji 7 variant;
 - cost estimation including the `--oref`→V7 2× penalty and `--q` multipliers;
@@ -425,13 +539,37 @@ only from `tests/fixtures/`.
 **Ladder state machine:** rung transitions, void-and-refund, ceiling warn versus typed
 confirm, per-click sanity guard.
 
-**Integration:** build a render project from the committed
-`tests/fixtures/do_less_visual_sheet.md`, walk one asset through all four rungs against a fake
-watch directory, and assert files land at the expected paths and the ledger balances.
+**Integration:** build a render project from the committed `tests/fixtures/slotted_visual_sheet.md`
+plus its styleboard pair, walk one asset through all four rungs against a fake watch
+directory, and assert files land at the expected paths and the ledger balances.
+
+**Migration:** a test that a project created under the old topology (no `styleboard` row) is
+backfilled correctly and that `visual` can still unlock afterwards (§4.1). This is the failure
+that would wedge every existing run, so it is not optional coverage.
 
 No test can reach Midjourney, because no code path in the application can.
 
-## 12. Out of scope
+## 12. Implementation ordering
+
+One design spec, but **two implementation plans, strictly ordered.** The coupling that
+justified a single spec (slots ↔ Gate C ↔ styleboard) does not make this a single plan: the
+first block changes the artifact contract every other skill consumes, and the second is a
+seven-table, nine-module application feature.
+
+**Plan A — contract and topology.** The `styleboard` stage and skill, the world-lock
+relocation with `[I]` markers preserved (§4.1), the sheet-format changes and the five Gate C
+checks (§9), the stage templates, the DB backfill for existing projects, and the skill/doc
+updates in §9.3. Ends with the existing test suite green and a new-format sheet passing
+Gate C.
+
+**Plan B — console and ladder.** The seven tables, the nine modules, both routes, ingest,
+and the spend ledger (§4.2, §5, §7, §8, §10).
+
+Plan A must land first. Building the console against a sheet format that is about to change
+would mean writing the slot resolver twice, and the backfill in Plan A is what keeps existing
+projects usable throughout.
+
+## 13. Out of scope
 
 - Any call to Midjourney, official or third-party (D1). The `Renderer` seam exists so this can
   change without redesign; it is not exercised.
@@ -440,7 +578,7 @@ No test can reach Midjourney, because no code path in the application can.
 - Automatic upload of moodboard image sets to Midjourney (§6.1) — the human uploads and pastes
   the code back.
 
-## 13. Facts to re-verify before implementation
+## 14. Facts to re-verify before implementation
 
 Every `[T]` fact in §2 was verified 2026-08-06 against public sources and Midjourney's
 documentation. The following change fastest and should be re-checked when implementation
