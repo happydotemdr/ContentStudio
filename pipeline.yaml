@@ -24,6 +24,12 @@ stages:
     specialist_mode: auto
     dir_prefix: "03"
     depends_on: [scripting]
+  - id: music
+    skill: music-brief
+    specialist: elevenlabs-music
+    specialist_mode: manual
+    dir_prefix: "03"
+    depends_on: [scripting, voiceover]
   - id: assembly
     skill: shorts-assembly
     dir_prefix: "04"
