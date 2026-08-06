@@ -542,6 +542,27 @@ def test_c16_runs_as_part_of_lint():
     assert any(f.check == "C16" for f in lint(shots, world))
 
 
+def test_c16_rejects_second_value_in_a_stacked_sref():
+    """Midjourney supports stacking a second code onto --sref (`--sref A B`); the
+    second value must be checked exactly like the first, not silently skipped."""
+    shot = _shot(
+        "a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --sref 2481950736 SREF-INVENTED-02"
+    )
+    findings = check_style_reference([shot])
+    assert [f.check for f in findings] == ["C16"]
+    assert "SREF-INVENTED-02" in findings[0].message
+
+
+def test_c16_ignores_a_following_flag_as_an_sref_value():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --sref 2481950736 --s 95")
+    assert check_style_reference([shot]) == []
+
+
+def test_c16_does_not_crash_on_sref_with_no_value():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --sref")
+    assert check_style_reference([shot]) == []
+
+
 def test_c16_fires_on_the_real_legacy_sheet():
     """The do-less sheet shipped with two invented codes. Gate C must now reject it."""
     text = (FIXTURES / "legacy_do_less_sheet.md").read_text(encoding="utf-8")

@@ -482,7 +482,7 @@ def check_format(shots: list[Shot]) -> list[Finding]:
     return findings
 
 
-SREF_FLAG_RE = re.compile(r"--sref\s+(\S+)")
+SREF_FLAG_RE = re.compile(r"--sref((?:\s+(?!--)\S+)+)")
 STYLE_SLOT_RE = re.compile(r"\{style:([a-z][a-z0-9_]*)\}")
 CHAR_SLOT_RE = re.compile(r"\{char:([a-z][a-z0-9_]*)\}")
 VALID_SREF_VALUE_RE = re.compile(r"^(?:\d+|random|https?://\S+)$")
@@ -493,29 +493,32 @@ def check_style_reference(shots: list[Shot]) -> list[Finding]:
 
     Sheets have shipped with invented placeholders (`--sref SREF-RGS-A-DL01`) that
     cannot be pasted into Midjourney. A style code is a number, a URL, or the literal
-    `random`; anything else means no code was ever harvested.
+    `random`; anything else means no code was ever harvested. Midjourney also supports
+    stacking a second code onto an existing --sref (`--sref A B`) -- every space-separated
+    value up to the next flag is checked, not just the first.
     """
     findings: list[Finding] = []
     for shot in shots:
-        for value in SREF_FLAG_RE.findall(prompt_flags(shot)):
-            if STYLE_SLOT_RE.fullmatch(value) or CHAR_SLOT_RE.fullmatch(value):
-                findings.append(
-                    Finding(
-                        "C16",
-                        shot.index,
-                        f"slot {value} used as an --sref value; a slot expands to the "
-                        "entire flag group, so write it on its own, not after --sref",
+        for stack in SREF_FLAG_RE.findall(prompt_flags(shot)):
+            for value in stack.split():
+                if STYLE_SLOT_RE.fullmatch(value) or CHAR_SLOT_RE.fullmatch(value):
+                    findings.append(
+                        Finding(
+                            "C16",
+                            shot.index,
+                            f"slot {value} used as an --sref value; a slot expands to the "
+                            "entire flag group, so write it on its own, not after --sref",
+                        )
                     )
-                )
-            elif not VALID_SREF_VALUE_RE.match(value):
-                findings.append(
-                    Finding(
-                        "C16",
-                        shot.index,
-                        f"--sref value {value!r} is not a numeric code, a URL, or 'random'. "
-                        "A placeholder here means no real style code was ever harvested.",
+                elif not VALID_SREF_VALUE_RE.match(value):
+                    findings.append(
+                        Finding(
+                            "C16",
+                            shot.index,
+                            f"--sref value {value!r} is not a numeric code, a URL, or 'random'. "
+                            "A placeholder here means no real style code was ever harvested.",
+                        )
                     )
-                )
     return findings
 
 
