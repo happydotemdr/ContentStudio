@@ -194,6 +194,13 @@ def test_validate_rejects_overlapping_bed_windows(tmp_path: Path):
     assert any("overlap" in e for e in validate_spec(spec))
 
 
+def test_validate_rejects_an_empty_stems_list(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["audio"]["stems"] = []
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert any("no audio stems" in e for e in validate_spec(spec))
+
+
 def test_validate_rejects_unknown_captions_style(tmp_path: Path):
     payload = json.loads(json.dumps(MINIMAL))
     payload["captions_style"] = "nope"

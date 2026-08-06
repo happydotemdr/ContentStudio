@@ -327,6 +327,14 @@ def validate_spec(spec: RenderSpec) -> list[str]:
         if caption.end > runtime or caption.start < 0:
             errors.append(f"caption at {caption.start}s falls outside the runtime 0-{runtime}s")
 
+    if not spec.audio.stems:
+        errors.append(
+            "the spec declares no audio stems; at least one voice stem is "
+            "required -- stage C's entire dB model (bed gain_db/duck_db) is "
+            "relative to the measured voice track, so there is no reference "
+            "level to be relative to without one"
+        )
+
     if spec.audio.bed:
         windows = sorted(spec.audio.bed.windows, key=lambda w: w.start)
         for previous, window in zip(windows, windows[1:]):
