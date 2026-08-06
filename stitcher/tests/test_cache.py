@@ -52,3 +52,46 @@ def test_manifest_round_trips_through_disk(tmp_path: Path):
 def test_loading_a_missing_manifest_yields_an_empty_one(tmp_path: Path):
     manifest = Manifest.load(tmp_path / "absent.json")
     assert manifest.get("anything") is None
+
+
+def test_payload_digest_rejects_sets():
+    """Sets are non-deterministic and must be rejected."""
+    try:
+        payload_digest({"a", "b", "c"})
+        assert False, "Should have raised TypeError"
+    except TypeError as e:
+        assert "set" in str(e).lower()
+
+
+def test_payload_digest_rejects_frozensets():
+    """Frozensets are also non-deterministic and must be rejected."""
+    try:
+        payload_digest(frozenset([1, 2, 3]))
+        assert False, "Should have raised TypeError"
+    except TypeError as e:
+        assert "frozenset" in str(e).lower()
+
+
+def test_payload_digest_parts_are_separated():
+    """Different logical inputs must produce different digests."""
+    # Concatenation without separation could collide:
+    # ("ab", "c") and ("a", "bc") should differ
+    digest1 = payload_digest("ab", "c")
+    digest2 = payload_digest("a", "bc")
+    assert digest1 != digest2, "Parts must be properly separated in digest"
+
+
+def test_loading_a_corrupt_manifest_yields_an_empty_one(tmp_path: Path):
+    """A manifest with invalid JSON should degrade to empty, not raise."""
+    path = tmp_path / "corrupt.json"
+    path.write_text("{not valid json")
+    manifest = Manifest.load(path)
+    assert manifest.get("anything") is None
+
+
+def test_loading_a_non_dict_json_manifest_yields_an_empty_one(tmp_path: Path):
+    """A manifest that is valid JSON but not a dict should degrade to empty."""
+    path = tmp_path / "non_dict.json"
+    path.write_text("[1, 2, 3]")
+    manifest = Manifest.load(path)
+    assert manifest.get("anything") is None

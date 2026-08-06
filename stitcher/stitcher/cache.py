@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 
 _CHUNK = 1 << 20
@@ -29,7 +31,18 @@ def file_digest(path: Path) -> str:
 
 
 def payload_digest(*parts: object) -> str:
-    """SHA-256 over a JSON rendering of the parts, in the order given."""
+    """SHA-256 over a JSON rendering of the parts, in the order given.
+
+    Raises TypeError if any part is a set or frozenset, as their string
+    representation depends on process-specific hash randomization.
+    """
+    # Check for sets/frozensets which are non-deterministic
+    for i, part in enumerate(parts):
+        if isinstance(part, (set, frozenset)):
+            raise TypeError(
+                f"payload_digest does not accept sets or frozensets (part {i} is {type(part).__name__})"
+            )
+
     blob = json.dumps(parts, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -43,9 +56,22 @@ class Manifest:
 
     @classmethod
     def load(cls, path: Path) -> "Manifest":
+        """Load manifest from disk, degrading gracefully on errors.
+
+        Returns an empty Manifest if the file is missing, unreadable, contains
+        invalid JSON, or contains valid JSON that is not a dict. This ensures
+        a corrupted manifest does not brick the workspace.
+        """
         if not path.exists():
             return cls(path)
-        return cls(path, json.loads(path.read_text(encoding="utf-8")))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return cls(path)
+            return cls(path, data)
+        except (json.JSONDecodeError, TypeError, OSError, UnicodeDecodeError):
+            # Corrupt, unreadable, or invalid manifest: return empty
+            return cls(path)
 
     def get(self, key: str) -> str | None:
         return self._entries.get(key)
@@ -58,10 +84,29 @@ class Manifest:
         return self._entries.get(key) == digest and artifact.exists()
 
     def save(self) -> None:
+        """Save manifest to disk atomically.
+
+        Writes to a temporary file in the same directory, then replaces the
+        target atomically to ensure a crash mid-write does not corrupt the manifest.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(self._entries, indent=2, sort_keys=True), encoding="utf-8"
+        content = json.dumps(self._entries, indent=2, sort_keys=True)
+
+        # Write to temp file in the same directory for atomic replace
+        fd, temp_path = tempfile.mkstemp(
+            dir=self.path.parent, prefix=".manifest.tmp.", suffix=".json"
         )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(temp_path, self.path)
+        except Exception:
+            # Clean up temp file if something goes wrong
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
 
     def as_dict(self) -> dict[str, str]:
         return dict(self._entries)
