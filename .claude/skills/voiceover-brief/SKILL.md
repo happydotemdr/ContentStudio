@@ -7,9 +7,9 @@ description: Turns a shot-ready faceless-YouTube-Shorts script into an ElevenLab
 
 Produces an **ElevenLabs voiceover production brief** from a shot-ready script: which voice
 and why, the settings to dial in, how to reformat the script text for TTS, and the loudness
-target for the mix. This is a stage of ContentStudio's seven-skill pipeline, sitting
-alongside `visual-prompts` and `music-brief` as one of the parallel stages that follow
-`shorts-scripting`.
+target for the mix. This is a stage of ContentStudio's seven-skill pipeline, running in
+parallel with `visual-prompts` after `shorts-scripting`; `music-brief` runs after this skill
+and consumes its tone-per-beat call.
 
 - **Upstream input:** the shot-ready, timed script from `shorts-scripting`.
 - **Downstream:** feeds `shorts-assembly`, alongside `visual-prompts`'s prompt sheet, and its
