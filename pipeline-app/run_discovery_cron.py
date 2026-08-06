@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from pipeline_app import db
-from pipeline_app import discovery_bluesky, discovery_youtube
+from pipeline_app import discovery_bluesky, discovery_instagram, discovery_youtube
 from pipeline_app.discovery_engine import run_discovery
 from pipeline_app.discovery_notify import notify
 from pipeline_app.discovery_scheduling import is_due
@@ -29,7 +29,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def build_adapters():
-    return {"youtube": discovery_youtube, "bluesky": discovery_bluesky}
+    return {"youtube": discovery_youtube, "bluesky": discovery_bluesky, "instagram": discovery_instagram}
 
 
 def _is_due_now(conn) -> bool:
