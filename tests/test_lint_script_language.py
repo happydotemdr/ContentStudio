@@ -8,6 +8,7 @@ from lint_script_language import (  # noqa: E402
     Finding,
     parse_script,
     word_count,
+    check_punctuation,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -97,3 +98,83 @@ def test_beat_heading_with_no_quoted_line_anywhere_is_partial_parse():
     _, findings = parse_script(text)
     assert [f.kind for f in findings] == ["partial-parse"]
     assert findings[0].beat == "HOOK"
+
+
+def test_d1_flags_em_dash_in_vo_line():
+    lines, _ = parse_script(
+        'HOOK (0–3s | 9 words): "An activity done for a result — constrained labor."\n'
+    )
+    findings = check_punctuation(lines)
+    assert [f.check for f in findings] == ["D1"]
+
+
+def test_d1_flags_en_dash_in_vo_line():
+    lines, _ = parse_script('HOOK (0–3s | 5 words): "It won\'t – set him back."\n')
+    assert [f.check for f in check_punctuation(lines)] == ["D1"]
+
+
+def test_d1_ignores_the_en_dash_in_the_beat_heading():
+    lines, _ = parse_script('HOOK (0–3s | 5 words): "It won\'t set him back."\n')
+    assert check_punctuation(lines) == []
+
+
+def test_d1_allows_hyphens():
+    lines, _ = parse_script('HOOK (0–3s | 6 words): "Multi-sport players had longer careers."\n')
+    assert check_punctuation(lines) == []
+
+
+def test_d2_flags_semicolons_and_brackets():
+    lines, _ = parse_script(
+        'HOOK (0–3s | 8 words): "He signed; then he quit (again)."\n'
+    )
+    checks = sorted(f.check for f in check_punctuation(lines))
+    assert checks == ["D2", "D2"]
+
+
+def test_d1_counts_on_shipped_fixtures():
+    expected = {
+        "script_let_kids_play_act.md": 4,
+        "script_specialization.md": 1,
+        "script_decline.md": 2,
+        "script_nobody_asked.md": 0,
+    }
+    for name, count in expected.items():
+        lines, _ = parse_script(_read(name))
+        d1 = [f for f in check_punctuation(lines) if f.check == "D1"]
+        assert len(d1) == count, f"{name}: got {len(d1)}"
+
+
+def test_d2_is_clean_on_every_shipped_fixture():
+    for name in (
+        "script_let_kids_play_act.md",
+        "script_specialization.md",
+        "script_decline.md",
+        "script_nobody_asked.md",
+    ):
+        lines, _ = parse_script(_read(name))
+        assert [f for f in check_punctuation(lines) if f.check == "D2"] == [], name
+
+
+def test_scope_containment_prose_and_notes_never_fire_d1():
+    """The check most likely to regress into noise.
+
+    A shipped script's prose, Delivery notes, quote cards, and on-screen plates
+    are written English and legitimately full of em-dashes. Only the quoted
+    spoken text is in scope. script_nobody_asked.md has dozens of em-dashes in
+    its prose and exactly zero in its voiceover lines -- if D1 ever fires on it,
+    the parser has leaked out of the VO lines."""
+    text = _read("script_nobody_asked.md")
+    assert text.count("—") > 20, "fixture no longer exercises the containment case"
+    lines, _ = parse_script(text)
+    assert [f for f in check_punctuation(lines) if f.check == "D1"] == []
+
+
+def test_a_verbatim_quote_card_in_prose_never_fires_d1():
+    text = (
+        "### The one quote card, verbatim\n\n"
+        "> \"it becomes constrained labor when the consequences are outside\"\n"
+        "> — John Dewey, *Democracy and Education*, 1916\n\n"
+        'HOOK (0–3s | 5 words): "It will not set him back."\n'
+    )
+    lines, _ = parse_script(text)
+    assert check_punctuation(lines) == []

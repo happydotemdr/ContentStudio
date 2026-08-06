@@ -124,3 +124,41 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
 
     close_label()
     return vo_lines, findings
+
+
+DASH_RE = re.compile(r"[–—]")
+# A semicolon is one written-register hit on its own. A parenthetical or
+# bracketed aside is flagged as a single unit -- "(again)" is one written
+# insertion, not two ("(" and ")" separately), so the two bracket
+# characters are matched together with their enclosed span rather than as
+# a bare `[;()\[\]]` character class (which would double-count every pair).
+WRITTEN_PUNCT_RE = re.compile(r"[;]|\([^()]*\)|\[[^\[\]]*\]")
+
+
+def check_punctuation(vo_lines: list[VOLine]) -> list[Finding]:
+    """D1-D2: punctuation that exists only in written English.
+
+    Scoped to the quoted spoken text, never the heading -- every beat heading
+    carries an en-dash inside its own `(0–3s | N words)` range, which is not
+    something anyone speaks aloud and not something to flag."""
+    findings: list[Finding] = []
+    for vo in vo_lines:
+        if DASH_RE.search(vo.text):
+            findings.append(
+                Finding(
+                    "D1",
+                    vo.beat,
+                    f"line {vo.line_number}: em/en-dash in a spoken line -- "
+                    "a written parenthetical with no spoken realization",
+                )
+            )
+        for match in WRITTEN_PUNCT_RE.finditer(vo.text):
+            findings.append(
+                Finding(
+                    "D2",
+                    vo.beat,
+                    f"line {vo.line_number}: {match.group(0)!r} is written-register "
+                    "punctuation in a spoken line",
+                )
+            )
+    return findings
