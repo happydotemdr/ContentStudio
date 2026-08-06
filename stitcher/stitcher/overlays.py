@@ -25,7 +25,11 @@ Line = list[Run]
 
 
 class TextOverflowError(ValueError):
-    """Text could not be laid out within the style's max_lines (spec line 369)."""
+    """Text could not be laid out within the style's box (spec line 369):
+    either wrapping needed more than max_lines lines, or a single token (no
+    space to break on -- a hashtag, URL, or un-spaced accent span) is wider
+    than max_width_px on its own and would render outside the declared box.
+    """
 
 
 @dataclass(frozen=True)
@@ -118,6 +122,19 @@ def render_overlay(
     font = ImageFont.truetype(style.font_file, style.size_px)
     lines = wrap_lines(parse_accent(text), font, style.max_width_px)
 
+    # wrap_lines only breaks *between* tokens, so a single token with no
+    # space to break on (a hashtag, URL, or un-spaced accent span) that is
+    # itself wider than max_width_px is placed on its own line unchecked --
+    # it must be caught here, or it renders wider than the declared box with
+    # no error and no signal (spec line 369).
+    line_widths = [_measure(font, _line_text(line)) for line in lines]
+    for line, line_w in zip(lines, line_widths):
+        if line_w > style.max_width_px:
+            raise TextOverflowError(
+                f"line {_line_text(line)!r} is {line_w}px wide but "
+                f"max_width_px is {style.max_width_px}: {text!r}"
+            )
+
     if len(lines) > style.max_lines:
         raise TextOverflowError(
             f"text wraps to {len(lines)} lines at {style.max_width_px}px but "
@@ -125,7 +142,7 @@ def render_overlay(
         )
 
     line_h = int(style.size_px * style.line_spacing)
-    block_w = max((_measure(font, _line_text(line)) for line in lines), default=0)
+    block_w = max(line_widths, default=0)
     block_h = line_h * len(lines)
     pad_x, pad_y = style.padding_px
 

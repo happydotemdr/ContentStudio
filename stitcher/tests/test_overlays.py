@@ -21,6 +21,20 @@ windows_only = pytest.mark.skipif(
     sys.platform != "win32", reason="glyph rasterization is not portable"
 )
 
+# The overlong-single-token overflow test doesn't need Inter's specific
+# metrics -- it only needs *some* real font where one word is wider than a
+# tiny max_width_px, which is true of any real font. So, unlike every other
+# font-dependent test above (Inter-only, by design -- see
+# tests/fixtures/fonts/README.md), it falls back to a system font the same
+# way Task 15's e2e fixture does, so the fix is actually exercised on a
+# machine that lacks Inter-Bold.ttf instead of shipping unverified.
+_OVERFLOW_FONT_CANDIDATES = [FONT_PATH, Path("C:/Windows/Fonts/arialbd.ttf")]
+_OVERFLOW_FONT = next((p for p in _OVERFLOW_FONT_CANDIDATES if p.is_file()), None)
+requires_any_font = pytest.mark.skipif(
+    _OVERFLOW_FONT is None,
+    reason="no usable font found (tried Inter-Bold.ttf, arialbd.ttf)",
+)
+
 
 def style(**overrides) -> Style:
     base = dict(
@@ -130,6 +144,23 @@ def test_text_exceeding_max_lines_raises_rather_than_overflowing(tmp_path: Path)
             "one two three four five six seven eight nine ten eleven twelve",
             style(max_width_px=300, max_lines=2), CANVAS, "center", (0, 0),
             tmp_path / "card.png",
+        )
+
+
+@requires_any_font
+def test_a_single_overlong_token_raises_rather_than_overflowing(tmp_path: Path):
+    """wrap_lines cannot break a token with no internal space (a hashtag, a
+    URL, an un-spaced accent span) -- it places the whole token on its own
+    line even when that token alone is wider than max_width_px. Without a
+    per-line width check, render_overlay would silently emit ink wider than
+    the declared box (only line *count* was checked, never line *width*).
+    max_width_px=50 is small enough that any real font overflows it with a
+    long word, so this doesn't depend on Inter's specific metrics."""
+    with pytest.raises(ov.TextOverflowError):
+        ov.render_overlay(
+            "SUPERCALIFRAGILISTICEXPIALIDOCIOUS",
+            style(font_file=str(_OVERFLOW_FONT), max_width_px=50, max_lines=4),
+            CANVAS, "center", (0, 0), tmp_path / "card.png",
         )
 
 
