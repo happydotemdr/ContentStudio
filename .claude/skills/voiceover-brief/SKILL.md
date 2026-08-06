@@ -7,11 +7,14 @@ description: Turns a shot-ready faceless-YouTube-Shorts script into an ElevenLab
 
 Produces an **ElevenLabs voiceover production brief** from a shot-ready script: which voice
 and why, the settings to dial in, how to reformat the script text for TTS, and the loudness
-target for the mix. This is skill #3 of ContentStudio's six-skill pipeline.
+target for the mix. This is a stage of ContentStudio's seven-skill pipeline, running in
+parallel with `visual-prompts` after `shorts-scripting`; `music-brief` runs after this skill
+and consumes its tone-per-beat call.
 
 - **Upstream input:** the shot-ready, timed script from `shorts-scripting`.
-- **Downstream:** feeds `shorts-assembly` (skill #5), alongside `visual-prompts`'s prompt sheet.
-  This skill does not touch visuals — that's `visual-prompts`'s job, run in parallel.
+- **Downstream:** feeds `shorts-assembly`, alongside `visual-prompts`'s prompt sheet, and its
+  tone-per-beat call feeds `music-brief`. This skill does not touch visuals — that's
+  `visual-prompts`'s job, run in parallel.
 - **Downstream specialist:** `elevenlabs-audio`. This skill produces the *creative* brief — which
   voice and why, the tone per beat, the content type, and the −14 LUFS mix target. It stops at the
   brief. When the user needs the **executable ElevenLabs configuration** — model routing, the
@@ -23,6 +26,13 @@ target for the mix. This is skill #3 of ContentStudio's six-skill pipeline.
 
   **Loudness, ducking, and the music mix stay here** — `elevenlabs-audio` explicitly defers to
   `references/production-and-loudness.md` and must not duplicate or contradict it.
+
+  **Bed generation is downstream too.** Loudness, ducking and the music mix stay here
+  (`references/production-and-loudness.md`) — but *designing and sourcing the bed itself* does not.
+  The bed's emotional arc, its hook hold-out and the tone-contradiction check belong to
+  `music-brief`; the Eleven Music prompt, composition plan and API payload belong to
+  `elevenlabs-music`. Hand the tone-per-beat call down and let them own that layer, exactly as this
+  skill does with `elevenlabs-audio`.
 
 ## Corpus grounding — read before writing any rule
 

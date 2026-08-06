@@ -1,6 +1,6 @@
 ---
 name: rgs-grounding
-description: Use when producing RaisingGoodSports content and a Short's script, hooks, or visual direction needs to be grounded in a specific historical thinker AND a specific youth-sports research finding — before writing a script for a RaisingGoodSports topic, when asked to "ground this Short," "find the thinker and research for this," "pair a thinker with research for this idea," or when starting the RaisingGoodSports content pipeline before shorts-ideation. Brand-specific to RaisingGoodSports only — not for the six generic ContentStudio pipeline skills' brands.
+description: Use when producing RaisingGoodSports content and a Short's script, hooks, or visual direction needs to be grounded in a specific historical thinker AND a specific youth-sports research finding — before writing a script for a RaisingGoodSports topic, when asked to "ground this Short," "find the thinker and research for this," "pair a thinker with research for this idea," or when starting the RaisingGoodSports content pipeline before shorts-ideation. Brand-specific to RaisingGoodSports only — not for the seven generic ContentStudio pipeline skills' brands.
 ---
 
 # RGS Grounding

@@ -14,8 +14,9 @@ single credit is spent.
 **Standalone.** Any audio job, ContentStudio-related or not: an audiobook chapter, a conversational
 agent, an ad read, a game character, a podcast intro. Run the full four-stage workflow from Stage A.
 
-**Pipeline (ContentStudio Shorts).** `voiceover-brief` (skill #3 of the six-skill pipeline) hands
-down the corpus-grounded **creative** call: voice character, tone per beat, content type, and the
+**Pipeline (ContentStudio Shorts).** `voiceover-brief` (a stage of ContentStudio's seven-skill
+pipeline, following `shorts-scripting`) hands down the corpus-grounded **creative** call: voice
+character, tone per beat, content type, and the
 −14 LUFS mix target. **Accept that call and do not re-litigate it.** Your job is to convert it into
 a working configuration. Enter at Stage B with the voice and tone already decided.
 

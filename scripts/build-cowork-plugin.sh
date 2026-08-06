@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Package the .claude/skills/* skills as a Cowork plugin: the six pipeline
-# skills plus the two tool-specialist skills (elevenlabs-audio, midjourney-prompting).
+# Package the .claude/skills/* skills as a Cowork plugin: the seven pipeline
+# skills plus the three tool-specialist skills (elevenlabs-audio, midjourney-prompting,
+# elevenlabs-music).
 #
 # .claude/skills/ is the single source of truth. This script copies it into
 # cowork-plugin/skills/, writes a plugin.json manifest, and zips the result
@@ -30,7 +31,7 @@ cat > "$PLUGIN_DIR/.claude-plugin/plugin.json" <<'JSON'
 {
   "name": "content-studio",
   "version": "0.1.0",
-  "description": "Six atomic, corpus-grounded skills taking a faceless-YouTube-Shorts idea from concept through a produced Short to multi-surface post copy, plus two tool-specialist skills (Midjourney V8.2 prompting, ElevenLabs audio) usable standalone or as pipeline downstreams.",
+  "description": "Seven atomic, corpus-grounded skills taking a faceless-YouTube-Shorts idea from concept through a produced Short to multi-surface post copy, plus three tool-specialist skills (Midjourney V8.2 prompting, ElevenLabs audio, ElevenLabs Music) usable standalone or as pipeline downstreams.",
   "author": { "name": "ContentStudio" }
 }
 JSON
@@ -38,13 +39,14 @@ JSON
 cat > "$PLUGIN_DIR/README.md" <<'MD'
 # ContentStudio (Cowork plugin)
 
-Six atomic skills for producing faceless YouTube Shorts, chained by hand:
-shorts-ideation -> shorts-scripting -> {voiceover-brief, visual-prompts} -> shorts-assembly -> social-repurpose.
+Seven atomic skills for producing faceless YouTube Shorts, chained by hand:
+shorts-ideation -> shorts-scripting -> {voiceover-brief, visual-prompts} -> music-brief -> shorts-assembly -> social-repurpose.
 
-Plus two tool-specialist skills, each usable standalone for any job in its tool
+Plus three tool-specialist skills, each usable standalone for any job in its tool
 and also the downstream specialist for one pipeline stage:
   midjourney-prompting  <- visual-prompts delegates every still prompt to it
   elevenlabs-audio      <- voiceover-brief delegates the executable config to it
+  elevenlabs-music      <- music-brief delegates the executable config to it
 
 Every normative rule in these skills traces to a specific corpus finding
 ([C]/[I]/[T] markers) — see the parent ContentStudio repo's CLAUDE.md and
