@@ -62,7 +62,7 @@ Each skill's `SKILL.md` states its own upstream input and downstream next stage.
 | `voiceover-brief` | Script → voice spec | the script | ElevenLabs voiceover production brief |
 | `visual-prompts` | Script → visual prompts | the script | dual-register prompt sheet (present-day photographic + source-era painterly), copy-paste ready, Gate C linted |
 | `music-brief` | Script + voice spec → bed arc | the script + voiceover brief | bed arc (movements, hook hold-out, tone-contradiction check) |
-| `shorts-assembly` | Script + assets → edit plan | script + voiceover brief + prompt sheet | assembly/edit plan |
+| `shorts-assembly` | Script + assets → edit plan | script + voiceover brief + prompt sheet (+ optional bed arc) | assembly/edit plan |
 | `social-repurpose` | Finished Short → post copy | the finished Short + its script/packaging | multi-surface post copy (YouTube + cross-platform) |
 
 Each skill's `references/` holds the distilled corpus rules for that stage, with
@@ -81,7 +81,7 @@ specialist for one pipeline stage. None is built from the corpus:
 | `midjourney-prompting` | Midjourney | Any image job | `visual-prompts` owns beat mapping; this skill writes the prompts |
 | `elevenlabs-music` | Eleven Music | Any music job — podcast bed, ad, game loop, trailer cue | `music-brief` hands down the bed arc; this skill emits the prompt, composition plan and payload |
 
-The boundary is the same in both cases: **the pipeline skill owns the creative
+The boundary is the same in all three cases: **the pipeline skill owns the creative
 call, the specialist owns the executable output.** The specialist accepts the
 creative call and does not re-litigate it.
 

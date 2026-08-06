@@ -153,8 +153,10 @@ curl -X POST "https://api.elevenlabs.io/v1/music/plan" \
   movements in question; master at full runtime, full chunk set, full-fidelity `output_format`
   `[I]`. This mirrors `elevenlabs-audio`'s draft/master discipline; nothing about it is Eleven
   Music-specific documentation.
-- **`bad_prompt` recovery:** catch the error, read `detail.data.prompt_suggestion`, retry with it
-  `[T]` — see `prompt-craft.md` for the full recovery path and the field-path caveat.
+- **`bad_prompt` recovery:** catch the error and retry with the vendor's suggested replacement
+  prompt `[T]` — read from `detail.data.prompt_suggestion` `[T-unverified]` (the field path itself
+  was not independently re-observed in today's fetches; see `prompt-craft.md` for the full
+  recovery path and the field-path caveat).
 - **Off-length handling:** `respect_sections_durations` defaults to `true` `[T]`. If a render
   still comes back off-length, fix the **plan arithmetic** — recheck the chunk `duration_ms` sum
   against the declared runtime — and **never rate-stretch the audio to force it to fit**, because

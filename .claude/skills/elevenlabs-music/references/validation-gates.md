@@ -33,8 +33,12 @@ you. Do not fix anything; report.
 
 TARGET MODEL: <music_v1 | music_v2>
 PLAN SHAPE: <sections | chunks>
-DECLARED TOTAL RUNTIME (seconds): <value>
+DECLARED AUDIO-EMITTING RUNTIME (seconds): <value — script end minus fade-in start; excludes
+  any hold-out>
+HOLD-OUT (seconds, or "none"): <value>
 VOICEOVER BRIEF TONE PER BEAT: <the tone call, beat by beat, or "none supplied">
+BED ARC TONE-CONTRADICTION CHECK: <the Bed Arc's own declared MISMATCH rows with their stated
+  rationale, beat by beat, or "none declared">
 
 SECTION MAP:
 ---
@@ -43,8 +47,10 @@ SECTION MAP:
 
 Check each item and report PASS or FINDING with the offending value quoted:
 
-1. DURATION SUM. The duration_ms values must sum to exactly the declared total runtime
-   (in milliseconds). Show your arithmetic. Any mismatch is a FINDING.
+1. DURATION SUM. The duration_ms values must sum to exactly the declared audio-emitting
+   runtime (in milliseconds) — the span the plan actually covers, script end minus fade-in
+   start. This total excludes any declared hold-out. Show your arithmetic. Any mismatch is a
+   FINDING.
 2. PER-CHUNK BOUNDS. Every duration_ms must be between 3,000 and 120,000 inclusive. Any
    value outside that range is a FINDING.
 3. PLAN SIZE. A composition plan supports at most 30 chunks/sections, with a total duration
@@ -62,9 +68,13 @@ Check each item and report PASS or FINDING with the offending value quoted:
    English-only. Exceeding either is a FINDING.
 8. TONE CONTRADICTION. Compare each section's intended feeling against the voiceover brief's
    tone for the same beat. Any section whose feeling contradicts the spoken tone at that beat
-   is a FINDING — report it even if the contradiction looks deliberate.
-9. COVERAGE. Every beat in the declared runtime must be accounted for, either by a chunk or
-   by an explicitly stated hold-out. An unexplained gap is a FINDING.
+   is a FINDING — UNLESS the supplied Bed Arc's own tone-contradiction check already declares
+   that beat a MISMATCH with a stated rationale, in which case it is a declared, upstream-owned
+   call and is not a FINDING. An undeclared contradiction — one the Bed Arc's tone-contradiction
+   check is silent on — is still a FINDING.
+9. COVERAGE. The declared hold-out plus the declared audio-emitting runtime must together
+   account for every beat of the full script — each beat is covered by either a chunk or the
+   stated hold-out, with no beat falling in neither. An unexplained gap is a FINDING.
 10. MODEL/SHAPE MATCH. A chunks[] plan requires model_id music_v2. A sections[] plan is the
     music_v1 shape. A mismatch between the declared model and the plan shape is a FINDING.
 

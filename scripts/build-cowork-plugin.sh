@@ -40,7 +40,7 @@ cat > "$PLUGIN_DIR/README.md" <<'MD'
 # ContentStudio (Cowork plugin)
 
 Seven atomic skills for producing faceless YouTube Shorts, chained by hand:
-shorts-ideation -> shorts-scripting -> {voiceover-brief, visual-prompts, music-brief} -> shorts-assembly -> social-repurpose.
+shorts-ideation -> shorts-scripting -> {voiceover-brief, visual-prompts} -> music-brief -> shorts-assembly -> social-repurpose.
 
 Plus three tool-specialist skills, each usable standalone for any job in its tool
 and also the downstream specialist for one pipeline stage:

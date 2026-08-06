@@ -96,7 +96,8 @@ global negative styles incl. the vocal guard, energy band, and the arc's movemen
 ### Stage B — Section map
 
 **This is the stage that earns the whole skill.** Read `references/composition-plans.md`. Map
-script beats → plan chunks; `duration_ms` must sum to the exact runtime; every chunk within
+script beats → plan chunks; `duration_ms` must sum to the exact **audio-emitting runtime**
+(script end minus fade-in start — excludes any hold-out); every chunk within
 **3,000–120,000 ms** `[T]`; **≤30 chunks, total 3s–10min** `[T]`. Assign per-chunk
 `positive_styles`/`negative_styles` and `context_adherence`. A beat longer than 120s splits across
 chunks; a beat under 3s **merges with its neighbour** and the merge is stated, not silent. The hook
@@ -117,9 +118,12 @@ artifacts: the UI prompt body, the composition-plan JSON, and the API request pa
 
 Read `references/api-payload.md` §cost. Explore on the plan-creation endpoint before composing;
 seed re-rolls for consistency (**never presented as reproducibility** `[T]`); draft → master;
-`bad_prompt` recovery via `detail.data.prompt_suggestion`; off-length handling via
-`respect_sections_durations`. **Assume every compose call is billed** `[I]` — the "plan creation is
-free" claim is `[T-unverified]`.
+`bad_prompt` recovery via the response's suggested replacement prompt `[T]` (read from the
+response's suggestion field — `[T-unverified]` field path, see `references/prompt-craft.md`);
+off-length handling is fixing the **plan arithmetic** — for the default `music_v2` chunk path,
+`respect_sections_durations` is a no-op, since chunk durations are always enforced regardless of
+the flag `[T]`; the flag only meaningfully governs a `music_v1` plan. **Assume every compose call
+is billed** `[I]` — the "plan creation is free" claim is `[T-unverified]`.
 
 **→ Gate 3 (a spend authorization: `AUTHORIZED` / `BLOCKED`, not a correctness check).**
 
@@ -127,7 +131,7 @@ free" claim is `[T-unverified]`.
 
 Each gate dispatches a **fresh `general-purpose` agent** that has not seen your authoring rationale,
 so it checks the artifact rather than rubber-stamping the reasoning. The verbatim dispatch prompts
-and full checklists are in `references/validation-gates.md` (Task 4) — use them as written; each
+and full checklists are in `references/validation-gates.md` — use them as written; each
 already embeds the repo's sub-agent output contract.
 
 | Gate | Fires | Checks |
@@ -160,7 +164,8 @@ BED PROFILE
 
 SECTION MAP
   | # | beat | start–end (s) | duration_ms | positive_styles | negative_styles | context_adherence |
-  Sum: [arithmetic shown] = [runtime]
+  Sum: [arithmetic shown] = [audio-emitting runtime — script end minus fade-in start; excludes
+  any hold-out, which is stated separately]
 
 UI PROMPT
   [the prompt body to paste into the elevenlabs.io Music app, verbatim and self-contained]
@@ -219,5 +224,5 @@ starting point, never a fact.
 - `references/prompt-craft.md` — the UI prompt body, Include/Exclude Styles, the copyright guard and
   its recovery path, and the arc-to-style-vocabulary translation table.
 - `references/api-payload.md` — the endpoint, full parameter surface, JSON/curl templates, and the
-  cost section this skill's Stage D reads (Task 4).
-- `references/validation-gates.md` — the three verbatim fresh-agent dispatch prompts (Task 4).
+  cost section this skill's Stage D reads.
+- `references/validation-gates.md` — the three verbatim fresh-agent dispatch prompts.

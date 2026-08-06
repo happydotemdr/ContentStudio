@@ -54,14 +54,16 @@ built against:
 - **Narrowing to quiet gravity** `[I]` under the re-hook and the 17–26s quote card.
 - **Opening to relief from 38s** `[I]` through the Loop/CTA.
 
-Note that source brief's own rule that the bed tracks the **emotional** arc, not the visual
-register — a bed scored to visual cuts (register changes, shot changes) turns a narrative device
-into a cutaway segment `[C] (Kallaway, i7upRL4H1FM)`. Movement boundaries are set by where the
-*feeling* changes, not by where the picture changes.
+Note that source brief's own rule (`rgs-briefs/2026-07-28-nobody-asked-the-kid-assembly.md` §4,
+rule 3 — not §9) that the bed tracks the **emotional** arc, not the visual register `[I]` — a bed
+scored to visual cuts (register changes, shot changes) turns a narrative device into a cutaway
+segment `[I]`, an inference built on the corpus's narrower finding that music must match the
+words' tone, never contradict it `[C] (Kallaway, i7upRL4H1FM)`. Movement boundaries are set by
+where the *feeling* changes, not by where the picture changes.
 
 ## Gaps to flag honestly
 
 `[I]` The corpus has **zero findings on AI music generation**, and no finding at all on BPM, key,
 genre, or instrumentation for a Shorts bed. Where a user asks for any of these, say the gap exists
-and hand the question to `elevenlabs-music`, which is vendor-grounded — do not invent a
+and hand the question to `elevenlabs-music`, which owns this layer — do not invent a
 confident-sounding tempo, key, or genre to fill the silence.
