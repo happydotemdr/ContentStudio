@@ -1,7 +1,7 @@
 # CLAUDE.md — ContentStudio
 
 Standalone local project. Turns a faceless-YouTube-Shorts idea into a produced Short
-plus repurposed cross-post copy, using six atomic Claude Code skills — with every
+plus repurposed cross-post copy, using seven atomic Claude Code skills — with every
 normative recommendation traced back to a specific real-world corpus, never generic
 content-creation advice.
 
@@ -50,7 +50,7 @@ RaisingGoodSports-only `rgs-grounding` and `rgs-pairing-review` skills (see
 `.claude/skills/rgs-grounding/` and `.claude/skills/rgs-pairing-review/`) — the general-interest
 roster entry remains unused by any skill. See `README.md`'s scope note for the full picture.
 
-### The six skills (`.claude/skills/`)
+### The seven skills (`.claude/skills/`)
 
 One atomic skill per production stage, chained by hand (no orchestrator/meta-skill).
 Each skill's `SKILL.md` states its own upstream input and downstream next stage.
@@ -61,6 +61,7 @@ Each skill's `SKILL.md` states its own upstream input and downstream next stage.
 | `shorts-scripting` | Concept → script | the concept brief | shot-ready script with timing |
 | `voiceover-brief` | Script → voice spec | the script | ElevenLabs voiceover production brief |
 | `visual-prompts` | Script → visual prompts | the script | dual-register prompt sheet (present-day photographic + source-era painterly), copy-paste ready, Gate C linted |
+| `music-brief` | Script + voice spec → bed arc | the script + voiceover brief | bed arc (movements, hook hold-out, tone-contradiction check) |
 | `shorts-assembly` | Script + assets → edit plan | script + voiceover brief + prompt sheet | assembly/edit plan |
 | `social-repurpose` | Finished Short → post copy | the finished Short + its script/packaging | multi-surface post copy (YouTube + cross-platform) |
 
@@ -70,14 +71,15 @@ detail lives in `references/`.
 
 ### Tool-specialist skills (not corpus-derived — read this before editing them)
 
-Two skills sit **beside** the six-stage pipeline rather than inside it. Each is
+Three skills sit **beside** the seven-stage pipeline rather than inside it. Each is
 usable standalone for any job in its tool, and each is also the downstream
-specialist for one pipeline stage. Neither is built from the corpus:
+specialist for one pipeline stage. None is built from the corpus:
 
 | Skill | Tool | Standalone use | Pipeline role |
 |---|---|---|---|
 | `elevenlabs-audio` | ElevenLabs | Any audio job — audiobook, agent, ad, dialogue | `voiceover-brief` hands down the creative call; this skill emits the executable configuration |
 | `midjourney-prompting` | Midjourney | Any image job | `visual-prompts` owns beat mapping; this skill writes the prompts |
+| `elevenlabs-music` | Eleven Music | Any music job — podcast bed, ad, game loop, trailer cue | `music-brief` hands down the bed arc; this skill emits the prompt, composition plan and payload |
 
 The boundary is the same in both cases: **the pipeline skill owns the creative
 call, the specialist owns the executable output.** The specialist accepts the
@@ -89,7 +91,8 @@ corpus — for `elevenlabs-audio`, `docs/elevenlabs-production-runbook.md`
 `.claude/skills/midjourney-prompting/references/v82-model-delta.md` (verified
 2026-07-26 against `docs.midjourney.com`), which layers over the corpus's own
 `docs/midjourney-prompting-guide.md` §1a and is the tie-breaker where the two
-disagree. Because vendor facts go stale and vendor-adjacent
+disagree; for `elevenlabs-music`, `docs/elevenlabs-music-runbook.md` (verified
+2026-08-06). Because vendor facts go stale and vendor-adjacent
 "runbooks" are often wrong, these skills add one marker to the standard three:
 
 - **`[T-unverified]`** — asserted by a supplied source but **not** confirmed
@@ -99,13 +102,15 @@ disagree. Because vendor facts go stale and vendor-adjacent
 The enterprise runbook that seeded `elevenlabs-audio` was **wrong in eight
 places** — see `docs/elevenlabs-production-runbook.md` §10 for the full
 verification log. The V8.2 runbook that seeded `midjourney-prompting` was
-**wrong in six** — see that skill's `references/v82-model-delta.md`. Treat
-plausible-sounding vendor facts with the same suspicion, and re-verify before
-extending these skills.
+**wrong in six** — see that skill's `references/v82-model-delta.md`. The
+Eleven Music design brief that seeded `elevenlabs-music` was **wrong in
+two** — see `docs/elevenlabs-music-runbook.md` §7. Treat plausible-sounding
+vendor facts with the same suspicion, and re-verify before extending these
+skills.
 
 ## Anti-generic guarantee (read before editing any skill)
 
-The corpus is the **only** knowledge source for the six pipeline skills. Do not
+The corpus is the **only** knowledge source for the seven pipeline skills. Do not
 fall back on general "content creation best practices" — if the corpus doesn't
 cover something, the skill must say so and flag it, not silently substitute
 generic advice. When editing or extending a skill: every new normative line needs
@@ -155,7 +160,7 @@ bash scripts/build-cowork-plugin.sh
 
 This copies `.claude/skills/` into `cowork-plugin/skills/`, writes
 `cowork-plugin/.claude-plugin/plugin.json`, and zips the result to
-`dist/content-studio.plugin`. Load that `.plugin` file in Cowork to install all six
+`dist/content-studio.plugin`. Load that `.plugin` file in Cowork to install all seven
 skills there. `.claude/skills/` is the single source of truth — never hand-edit
 `cowork-plugin/skills/`; re-run the build script instead.
 

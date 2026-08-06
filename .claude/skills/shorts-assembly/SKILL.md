@@ -5,7 +5,7 @@ description: Turns a faceless-YouTube-Shorts script plus its voiceover brief and
 
 # Shorts Assembly
 
-Produces the **edit plan** for one Short: the fifth of six atomic ContentStudio skills. It does not touch ideation, scripting, voice, or visual-asset generation — those are separate skills. It does not write post copy — that is `social-repurpose`, next.
+Produces the **edit plan** for one Short: the stage of ContentStudio's seven-skill pipeline that follows `shorts-scripting`, `voiceover-brief`, `visual-prompts`, and `music-brief`, and precedes `social-repurpose`. It does not touch ideation, scripting, voice, or visual-asset generation — those are separate skills. It does not write post copy — that is `social-repurpose`, next.
 
 ## Pipeline position
 

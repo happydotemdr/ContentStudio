@@ -9,7 +9,7 @@ Every corpus is fetched fresh from its public source (or, for youth-sports,
 copied from a local checkout — see the note in that section). The downloaded
 texts land in a git-ignored `output/` folder and are never committed.
 
-**Scope note:** ContentStudio's six generic shorts-production skills (see the
+**Scope note:** ContentStudio's seven generic shorts-production skills (see the
 top-level `CLAUDE.md`) are built entirely from the **Brand-intel / headless
 YouTube** row below — the `docs/` guides and `output/brand-intel/`. Two
 **tool-specialist** skills sit alongside them — `elevenlabs-audio` and
