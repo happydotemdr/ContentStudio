@@ -9,6 +9,29 @@ from stitcher.naming import Workspace
 from stitcher.spec import load_spec
 from tests.test_spec import MINIMAL, write
 
+# Real, loadable fonts for the font-load check (design spec line 571: "every
+# referenced font file loads" -- existence alone is not enough, see
+# _check_fonts). No font fixture is checked into this repo yet, so we fall
+# back to system fonts the same way the plan's Task 15 e2e fixture does
+# (docs/superpowers/plans/2026-08-06-automated-asset-stitcher.md, find_font).
+# Tests that need a real, working font are skipped if none is found; tests
+# that only need a font path to exist-but-be-corrupt do not depend on this.
+_FONT_CANDIDATES = [
+    Path("C:/Windows/Fonts/arialbd.ttf"),
+    Path("C:/Windows/Fonts/arial.ttf"),
+]
+
+
+def _find_font() -> Path | None:
+    return next((p for p in _FONT_CANDIDATES if p.is_file()), None)
+
+
+REAL_FONT = _find_font()
+
+requires_font = pytest.mark.skipif(
+    REAL_FONT is None, reason="no usable system font found (tried arialbd.ttf, arial.ttf)"
+)
+
 
 def still(duration: float = 0.0) -> ProbeResult:
     return ProbeResult(duration, 1080, 1920, None, "rgba", "png", None, None, None)
@@ -42,10 +65,10 @@ def load(tmp_path: Path, payload: dict):
 
 @pytest.fixture
 def spec_and_font(tmp_path: Path, ready):
+    if REAL_FONT is None:
+        pytest.skip("no usable system font found (tried arialbd.ttf, arial.ttf)")
     payload = json.loads(json.dumps(MINIMAL))
-    font = tmp_path / "Inter-Bold.ttf"
-    font.write_bytes(b"font")
-    payload["styles"]["card"]["font_file"] = str(font)
+    payload["styles"]["card"]["font_file"] = str(REAL_FONT)
     (tmp_path / "spec").mkdir(exist_ok=True)
     return load(tmp_path, payload), ready
 
@@ -92,11 +115,10 @@ def test_draft_mode_aborts_on_a_missing_stem_without_duration_s(spec_and_font, m
     assert any("duration_s" in e for e in report.errors)
 
 
+@requires_font
 def test_draft_mode_allows_a_missing_stem_that_declares_duration_s(tmp_path, ready, monkeypatch):
     payload = json.loads(json.dumps(MINIMAL))
-    font = tmp_path / "Inter-Bold.ttf"
-    font.write_bytes(b"font")
-    payload["styles"]["card"]["font_file"] = str(font)
+    payload["styles"]["card"]["font_file"] = str(REAL_FONT)
     payload["audio"]["stems"][0]["duration_s"] = 2.875
     (tmp_path / "spec").mkdir(exist_ok=True)
     spec = load(tmp_path, payload)
@@ -107,11 +129,10 @@ def test_draft_mode_allows_a_missing_stem_that_declares_duration_s(tmp_path, rea
     assert report.errors == []
 
 
+@requires_font
 def test_source_trim_outside_the_real_duration_is_a_preflight_error(tmp_path, ready, monkeypatch):
     payload = json.loads(json.dumps(MINIMAL))
-    font = tmp_path / "Inter-Bold.ttf"
-    font.write_bytes(b"font")
-    payload["styles"]["card"]["font_file"] = str(font)
+    payload["styles"]["card"]["font_file"] = str(REAL_FONT)
     payload["shots"][0].update(
         {"kind": "clip", "source": "a.mp4", "source_in": 0.0, "source_out": 9.0}
     )
@@ -123,6 +144,34 @@ def test_source_trim_outside_the_real_duration_is_a_preflight_error(tmp_path, re
     assert any("source_out" in e and "5.0" in e for e in report.errors)
 
 
+@requires_font
+def test_an_unprobeable_clip_source_is_reported_not_raised(tmp_path, ready, monkeypatch):
+    """Important-1 fix (task-5 review): a present-but-corrupt clip source used
+    to reach an unguarded second ffmpeg.probe() call in _check_visual_assets,
+    letting FFmpegError propagate straight out of run_preflight instead of
+    being recorded -- defeating the "report every problem, never crash"
+    contract this module exists for. run_preflight must return a report
+    containing the error, not raise.
+    """
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["styles"]["card"]["font_file"] = str(REAL_FONT)
+    payload["shots"][0].update(
+        {"kind": "clip", "source": "a.mp4", "source_in": 0.0, "source_out": 9.0}
+    )
+    (tmp_path / "spec").mkdir(exist_ok=True)
+    spec = load(tmp_path, payload)
+    ready.asset("a.mp4").write_bytes(b"x")
+
+    def probe_corrupt(path):
+        if Path(path).name == "a.mp4":
+            raise pf.ffmpeg.FFmpegError(f"ffprobe failed on {path}: corrupt container")
+        return still()
+
+    monkeypatch.setattr(pf.ffmpeg, "probe", probe_corrupt)
+    report = pf.run_preflight(spec, ready, "final")  # must not raise
+    assert any("a.mp4" in e for e in report.errors)
+
+
 def test_a_missing_font_file_is_an_error(tmp_path, ready, monkeypatch):
     payload = json.loads(json.dumps(MINIMAL))
     payload["styles"]["card"]["font_file"] = str(tmp_path / "absent.ttf")
@@ -131,6 +180,24 @@ def test_a_missing_font_file_is_an_error(tmp_path, ready, monkeypatch):
     monkeypatch.setattr(pf.ffmpeg, "probe", lambda path: still())
     report = pf.run_preflight(spec, ready, "final")
     assert any("absent.ttf" in e for e in report.errors)
+
+
+def test_a_corrupt_font_file_is_an_error(tmp_path, ready, monkeypatch):
+    """Important-2 fix (task-5 review): a font file that exists but fails to
+    load must be reported as an error -- existence alone is not "loads"
+    (design spec line 571). Uses garbage bytes rather than a real font, so
+    this test needs no @requires_font guard: Pillow rejects the four-byte
+    payload on any platform.
+    """
+    payload = json.loads(json.dumps(MINIMAL))
+    garbage = tmp_path / "corrupt.ttf"
+    garbage.write_bytes(b"not a real font")
+    payload["styles"]["card"]["font_file"] = str(garbage)
+    (tmp_path / "spec").mkdir(exist_ok=True)
+    spec = load(tmp_path, payload)
+    monkeypatch.setattr(pf.ffmpeg, "probe", lambda path: still())
+    report = pf.run_preflight(spec, ready, "final")
+    assert any("corrupt.ttf" in e for e in report.errors)
 
 
 def test_missing_libx264_is_an_error(spec_and_font, monkeypatch):
@@ -165,15 +232,14 @@ def test_a_pre_8x_ffmpeg_is_an_error(spec_and_font, monkeypatch):
     assert any("8" in e for e in report.errors)
 
 
+@requires_font
 def test_slug_not_matching_the_workspace_directory_is_an_error(tmp_path, ready, monkeypatch):
     """Controller-directed addition (rulings.md, not in the brief): design spec §3/§6
     require the spec's slug to match the containing directory name. Task 2's
     validate_spec(spec) is pure and has no directory to check against, so the check
     lives here, where both spec.slug and ws.slug are available."""
     payload = json.loads(json.dumps(MINIMAL))
-    font = tmp_path / "Inter-Bold.ttf"
-    font.write_bytes(b"font")
-    payload["styles"]["card"]["font_file"] = str(font)
+    payload["styles"]["card"]["font_file"] = str(REAL_FONT)
     payload["slug"] = "not-demo"
     (tmp_path / "spec").mkdir(exist_ok=True)
     spec = load(tmp_path, payload)

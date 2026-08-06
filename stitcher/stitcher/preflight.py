@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from PIL import ImageFont
+
 from . import ffmpeg
 from .naming import MAX_PATH_LEN, Workspace
 from .spec import RenderSpec, runtime_seconds, validate_spec
@@ -86,10 +88,24 @@ def _check_paths(spec: RenderSpec, ws: Workspace, report: PreflightReport) -> No
 
 
 def _check_fonts(spec: RenderSpec, report: PreflightReport) -> None:
+    """Design spec line 571: "Every referenced font file loads." Existence is
+    not loading -- a truncated or corrupt font must be caught here, not during
+    glyph rendering. PIL.ImageFont.truetype is the same call Task 7's renderer
+    uses, so preflight and the renderer agree on what "loadable" means.
+    """
     for name, style in spec.styles.items():
-        if not Path(style.font_file).is_file():
+        path = Path(style.font_file)
+        if not path.is_file():
             report.errors.append(
                 f"style {name!r} references a font file that does not exist: {style.font_file}"
+            )
+            continue
+        try:
+            ImageFont.truetype(str(path), style.size_px)
+        except Exception as exc:
+            report.errors.append(
+                f"style {name!r} references a font file that failed to load: "
+                f"{style.font_file} ({exc})"
             )
 
 
@@ -100,6 +116,13 @@ def _check_visual_assets(
     if spec.cover:
         sources.add(spec.cover.source)
 
+    # Each present source is probed at most once. The clip-specific checks
+    # below reuse this ProbeResult instead of probing the same file again --
+    # a second, unguarded probe() call would let FFmpegError propagate out of
+    # run_preflight for a present-but-corrupt clip, defeating the "report
+    # every problem, never crash" contract this module exists for.
+    probed: dict[str, ffmpeg.ProbeResult] = {}
+
     for source in sorted(sources):
         path = ws.asset(source)
         if not path.is_file():
@@ -109,21 +132,22 @@ def _check_visual_assets(
                 report.errors.append(f"asset not found: {path}")
             continue
         try:
-            ffmpeg.probe(path)
+            probed[source] = ffmpeg.probe(path)
         except ffmpeg.FFmpegError as exc:
             report.errors.append(f"asset {source} could not be probed: {exc}")
 
     for shot in spec.shots:
         if shot.kind != "clip" or shot.source in report.missing_visual:
             continue
-        path = ws.asset(shot.source)
-        if not path.is_file():
+        result = probed.get(shot.source)
+        if result is None:
+            # Either missing (handled above) or failed to probe (error
+            # already recorded above); nothing further to check here.
             continue
-        probed = ffmpeg.probe(path)
-        if shot.source_out is not None and shot.source_out > probed.duration + 1e-6:
+        if shot.source_out is not None and shot.source_out > result.duration + 1e-6:
             report.errors.append(
                 f"shot {shot.id}: source_out {shot.source_out}s exceeds the real duration "
-                f"of {shot.source} ({probed.duration}s)"
+                f"of {shot.source} ({result.duration}s)"
             )
         if shot.source_in is not None and shot.source_in < 0:
             report.errors.append(f"shot {shot.id}: source_in must not be negative")
