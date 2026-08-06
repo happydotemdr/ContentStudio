@@ -18,6 +18,7 @@ from lint_prompt_sheet import (  # noqa: E402
     check_prompt_quality,
     check_format,
     check_vocabulary,
+    check_style_reference,
     lint,
     main,
 )
@@ -500,3 +501,52 @@ def test_worked_example_uses_all_three_register_b_shot_classes():
     shots, _ = lint_fixture("worked_example_sheet.md")
     classes = {s.shot_class for s in shots if s.register == "B"}
     assert classes == {"FIGURE", "WORLD", "ARTIFACT"}
+
+
+def _shot(prompt: str, index: int = 1, register: str = "A") -> Shot:
+    """A minimal Shot carrying only what flag-level checks read."""
+    return Shot(
+        index=index,
+        beat="Hook (0–3s)",
+        register=register,
+        shot_class="DETAIL",
+        scale="MACRO",
+        camera_height="LOW",
+        prompt=prompt,
+        prompt_line_count=1,
+    )
+
+
+def test_c16_rejects_invented_sref_placeholder():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --sref SREF-RGS-A-DL01")
+    findings = check_style_reference([shot])
+    assert [f.check for f in findings] == ["C16"]
+    assert "SREF-RGS-A-DL01" in findings[0].message
+
+
+def test_c16_accepts_numeric_url_and_random_sref():
+    for value in ("1122334455", "https://cdn.midjourney.com/a1b2.png", "random"):
+        shot = _shot(f"a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --sref {value}")
+        assert check_style_reference([shot]) == []
+
+
+def test_c16_rejects_slot_used_as_an_sref_value():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --sref {style:register_a}")
+    findings = check_style_reference([shot])
+    assert [f.check for f in findings] == ["C16"]
+    assert "entire flag group" in findings[0].message
+
+
+def test_c16_runs_as_part_of_lint():
+    shots, world = parse_sheet(SHEET.replace("--s 95", "--s 95 --sref NOT-A-CODE"))
+    assert any(f.check == "C16" for f in lint(shots, world))
+
+
+def test_c16_fires_on_the_real_legacy_sheet():
+    """The do-less sheet shipped with two invented codes. Gate C must now reject it."""
+    text = (FIXTURES / "legacy_do_less_sheet.md").read_text(encoding="utf-8")
+    shots, _world = parse_sheet(text)
+    findings = check_style_reference(shots)
+    assert findings, "the legacy sheet's placeholder codes must be rejected"
+    assert all(f.check == "C16" for f in findings)
+    assert any("SREF-RGS-A-DL01" in f.message for f in findings)
