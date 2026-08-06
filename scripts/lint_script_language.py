@@ -195,3 +195,57 @@ def check_punctuation(vo_lines: list[VOLine]) -> list[Finding]:
                 )
             )
     return findings
+
+
+# Carried forward verbatim from the corpus's own no-list
+# [C] (Romayroh, ErCV5czVK1g) via
+# .claude/skills/shorts-scripting/references/script-intelligence-and-delivery.md
+FINGERPRINT_PHRASES = (
+    "it's important to note",
+    "it is important to note",
+    "some may argue",
+)
+BUZZWORDS = (
+    "delve", "delves", "delving",
+    "leverage", "leverages", "leveraged", "leveraging",
+    "comprehensive", "comprehensively",
+    "robust", "robustly",
+    "holistic", "holistically",
+)
+BUZZWORD_RE = re.compile(r"\b(" + "|".join(BUZZWORDS) + r")\b", re.IGNORECASE)
+
+# Tokens a text-to-speech voice cannot render as speech. These belong on an
+# on-screen citation plate, never in a voiceover line.
+UNSPEAKABLE = (
+    (re.compile(r"&"), "ampersand"),
+    (re.compile(r"§"), "section sign"),
+    (re.compile(r"\b\w+\s*=\s*\d"), "an inline statistic like n=142"),
+    (re.compile(r"\d+\(\d+\):\d+"), "a journal citation string"),
+)
+
+
+def check_vocabulary(vo_lines: list[VOLine]) -> list[Finding]:
+    """D3-D4: the corpus buzzword no-list, and tokens TTS cannot speak."""
+    findings: list[Finding] = []
+    for vo in vo_lines:
+        lowered = vo.text.lower()
+        for phrase in FINGERPRINT_PHRASES:
+            if phrase in lowered:
+                findings.append(
+                    Finding("D3", vo.beat, f"line {vo.line_number}: AI-fingerprint phrase {phrase!r}")
+                )
+        for match in BUZZWORD_RE.finditer(vo.text):
+            findings.append(
+                Finding("D3", vo.beat, f"line {vo.line_number}: buzzword {match.group(0)!r}")
+            )
+        for pattern, label in UNSPEAKABLE:
+            if pattern.search(vo.text):
+                findings.append(
+                    Finding(
+                        "D4",
+                        vo.beat,
+                        f"line {vo.line_number}: {label} in a spoken line -- "
+                        "belongs on an on-screen plate",
+                    )
+                )
+    return findings

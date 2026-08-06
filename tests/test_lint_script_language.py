@@ -9,6 +9,7 @@ from lint_script_language import (  # noqa: E402
     parse_script,
     word_count,
     check_punctuation,
+    check_vocabulary,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -222,3 +223,45 @@ def test_d2_reports_semicolon_and_parenthetical_separately_when_nested():
             "line 1: '(guilty; wow)' is written-register punctuation in a spoken line",
         ),
     ]
+
+
+def test_d3_flags_fingerprint_phrases():
+    lines, _ = parse_script(
+        'HOOK (0–3s | 9 words): "It\'s important to note that some may argue otherwise."\n'
+    )
+    assert sorted(f.check for f in check_vocabulary(lines)) == ["D3", "D3"]
+
+
+def test_d3_flags_buzzwords_and_their_inflections():
+    lines, _ = parse_script(
+        'HOOK (0–3s | 8 words): "We leveraged a comprehensive and robust approach."\n'
+    )
+    assert len([f for f in check_vocabulary(lines) if f.check == "D3"]) == 3
+
+
+def test_d3_does_not_flag_hackfort_the_surname():
+    lines, _ = parse_script('HOOK (0–3s | 5 words): "Côté, Lidor and Hackfort reported."\n')
+    assert check_vocabulary(lines) == []
+
+
+def test_d4_flags_unspeakable_tokens():
+    lines, _ = parse_script(
+        'HOOK (0–3s | 7 words): "The study had n=142 kids & 37 coaches."\n'
+    )
+    assert len([f for f in check_vocabulary(lines) if f.check == "D4"]) == 2
+
+
+def test_d4_flags_a_journal_citation_string():
+    lines, _ = parse_script('HOOK (0–3s | 4 words): "See 12(3):424–433 for details."\n')
+    assert [f.check for f in check_vocabulary(lines) if f.check == "D4"] == ["D4"]
+
+
+def test_d3_and_d4_are_clean_on_every_shipped_fixture():
+    for name in (
+        "script_let_kids_play_act.md",
+        "script_specialization.md",
+        "script_decline.md",
+        "script_nobody_asked.md",
+    ):
+        lines, _ = parse_script(_read(name))
+        assert check_vocabulary(lines) == [], name
