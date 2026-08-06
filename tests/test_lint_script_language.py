@@ -10,6 +10,9 @@ from lint_script_language import (  # noqa: E402
     word_count,
     check_punctuation,
     check_vocabulary,
+    check_pace,
+    beat_wpm,
+    WPM_CEILING,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -265,3 +268,63 @@ def test_d3_and_d4_are_clean_on_every_shipped_fixture():
     ):
         lines, _ = parse_script(_read(name))
         assert check_vocabulary(lines) == [], name
+
+
+def test_d5_flags_an_over_stuffed_beat():
+    lines, _ = parse_script(
+        'HOOK (0–3s | 13 words): "Why would a federal proposal count your kid registration app '
+        'as youth sports?"\n'
+    )
+    findings = [f for f in check_pace(lines) if f.kind == "fail"]
+    assert [f.check for f in findings] == ["D5"]
+    assert "260" in findings[0].message
+
+
+def test_d5_does_not_flag_an_under_running_beat():
+    lines, _ = parse_script('LOOP/CTA (38–45s | 12 words): "You are not taking something away."\n')
+    assert [f for f in check_pace(lines) if f.kind == "fail"] == []
+
+
+def test_d5_tolerance_passes_a_beat_at_171_wpm():
+    # 20 words in 7s = 171.4 wpm -- the Dewey sub-beat, "within rounding".
+    #
+    # NOTE: the task-4 brief's own quoted spoken text for this beat is only
+    # 16 words ("Dewey named this in 1916 an activity done for a result
+    # outside itself is constrained labor.") despite its heading claiming
+    # "20 words" -- 16/7*60 ~= 137 wpm, which would make the very assertion
+    # below (`beat_wpm(lines[0]) > 170`) fail. word_count() counts the real
+    # quoted text, not the heading's claim (see word_count's docstring and
+    # test_word_count_ignores_standalone_dashes above for the same
+    # heading-vs-body discipline). Per the task-4 brief's own instructions
+    # for this exact contradiction, the spoken text below has been lengthened
+    # to genuinely contain 20 words so the heading and the body agree, and so
+    # the beat genuinely computes to ~171.4 wpm -- just over the 170 ceiling
+    # and inside the +/-2 tolerance. The assertions, the beat range (21-28s),
+    # the ceiling, and the tolerance are all unchanged from the brief.
+    text = (
+        'BUILD/VALUE (21–28s | 20 words): "Dewey named this back in 1916 as an activity done for a '
+        'result that is outside itself and constrained labor."\n'
+    )
+    lines, _ = parse_script(text)
+    assert beat_wpm(lines[0]) > 170
+    assert [f for f in check_pace(lines) if f.kind == "fail"] == []
+
+
+def test_d5_skips_a_beat_with_no_range_and_says_so():
+    lines, _ = parse_script('[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n')
+    findings = check_pace(lines)
+    assert [f.kind for f in findings] == ["skipped"]
+    assert findings[0].check == "D5"
+
+
+def test_d5_counts_on_shipped_fixtures():
+    expected = {
+        "script_let_kids_play_act.md": 1,
+        "script_specialization.md": 2,
+        "script_decline.md": 0,
+        "script_nobody_asked.md": 0,
+    }
+    for name, count in expected.items():
+        lines, _ = parse_script(_read(name))
+        fails = [f for f in check_pace(lines) if f.kind == "fail"]
+        assert len(fails) == count, f"{name}: got {len(fails)}"

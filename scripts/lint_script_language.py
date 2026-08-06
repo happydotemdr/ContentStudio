@@ -249,3 +249,51 @@ def check_vocabulary(vo_lines: list[VOLine]) -> list[Finding]:
                     )
                 )
     return findings
+
+
+WPM_CEILING = 170
+WPM_TOLERANCE = 2
+
+
+def beat_wpm(vo: VOLine) -> float | None:
+    """Words per minute implied by this beat, or None if it carries no range."""
+    if vo.start_s is None or vo.end_s is None:
+        return None
+    duration = vo.end_s - vo.start_s
+    if duration <= 0:
+        return None
+    return word_count(vo.text) / duration * 60
+
+
+def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
+    """D5: a ceiling, not a band.
+
+    Under-running is a legitimate authorial choice -- the corpus asks for
+    breathing room so a key word lands [C] (Kallaway, ZM3elcBE48I), and shipped
+    scripts run a Loop/CTA at ~103 wpm on purpose. Over-running is a production
+    failure: the line cannot be spoken in its seconds, and the bad timing
+    propagates into voiceover-brief and shorts-assembly unchallenged."""
+    limit = WPM_CEILING + WPM_TOLERANCE
+    findings: list[Finding] = []
+    for vo in vo_lines:
+        wpm = beat_wpm(vo)
+        if wpm is None:
+            findings.append(
+                Finding(
+                    "D5",
+                    vo.beat,
+                    f"line {vo.line_number}: no computable time range; pace unchecked",
+                    kind="skipped",
+                )
+            )
+            continue
+        if wpm > limit:
+            findings.append(
+                Finding(
+                    "D5",
+                    vo.beat,
+                    f"line {vo.line_number}: {wpm:.0f} wpm exceeds the {WPM_CEILING} ceiling "
+                    f"(+{WPM_TOLERANCE} tolerance) -- more words than fit in the beat",
+                )
+            )
+    return findings
