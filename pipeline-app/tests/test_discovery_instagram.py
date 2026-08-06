@@ -107,3 +107,62 @@ def test_normalize_row_empty_caption_still_normalizes():
     normalized = ig._normalize_row(row)
     assert normalized["caption"] == ""
     assert normalized["title"] == "p1"  # falls back to id when caption is empty
+
+
+def _raw_row(post_id, date, caption="hello", content_type="post"):
+    return {"post_id": post_id, "caption": caption, "date_posted": f"{date}T00:00:00Z",
+            "content_type": content_type, "url": f"https://instagram.com/p/{post_id}",
+            "likes": 1, "num_comments": 1}
+
+
+def test_enumerate_newest_first_sorts_newest_first(monkeypatch):
+    raw = [_raw_row("old", "2026-07-01"), _raw_row("new", "2026-08-01"), _raw_row("mid", "2026-07-15")]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    items = ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    assert [i["id"] for i in items] == ["new", "mid", "old"]
+
+
+def test_enumerate_newest_first_caps_at_max_items_per_run(monkeypatch):
+    raw = [_raw_row(f"p{i}", "2026-08-01") for i in range(25)]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    monkeypatch.setattr(ig, "MAX_ITEMS_PER_RUN", 10)
+    items = ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    assert len(items) == 10
+
+
+def test_enumerate_newest_first_drops_undated_and_idless_rows(monkeypatch):
+    raw = [_raw_row("good", "2026-08-01"), {"caption": "no id"}, {"post_id": "no_date", "caption": "x", "date_posted": ""}]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    items = ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    assert [i["id"] for i in items] == ["good"]
+
+
+def test_enumerate_newest_first_applies_keyword_filter_to_caption(monkeypatch):
+    raw = [_raw_row("a", "2026-08-01", caption="talks about gardens"), _raw_row("b", "2026-08-01", caption="talks about cars")]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    items = ig.enumerate_newest_first("somehandle", keyword_filter="garden")
+    assert [i["id"] for i in items] == ["a"]
+
+
+def test_enumerate_newest_first_populates_cache_for_download_item(monkeypatch):
+    raw = [_raw_row("p1", "2026-08-01", caption="full caption text")]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    assert ig._ENUMERATE_CACHE["somehandle"]["p1"]["caption"] == "full caption text"
+
+
+def test_enumerate_newest_first_overwrites_previous_cache_entry(monkeypatch):
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [_raw_row("old_batch", "2026-07-01")])
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [_raw_row("new_batch", "2026-08-01")])
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    assert "old_batch" not in ig._ENUMERATE_CACHE["somehandle"]
+    assert "new_batch" in ig._ENUMERATE_CACHE["somehandle"]
+
+
+def test_enumerate_newest_first_propagates_timeout(monkeypatch):
+    def raise_timeout(handle):
+        raise ig.BrightDataJobTimeout("timed out")
+    monkeypatch.setattr(ig, "_run_collection_job", raise_timeout)
+    with pytest.raises(ig.BrightDataJobTimeout):
+        ig.enumerate_newest_first("somehandle", keyword_filter=None)

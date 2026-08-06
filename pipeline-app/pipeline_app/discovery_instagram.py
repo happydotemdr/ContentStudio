@@ -154,3 +154,38 @@ def _normalize_row(row: dict) -> dict | None:
         "like_count": row.get("likes"),
         "comment_count": row.get("num_comments"),
     }
+
+
+# handle -> item_id -> normalized row. Populated by enumerate_newest_first,
+# read by download_item. Per-process, per-run cache -- see the design doc's
+# "Cache concurrency" section for the documented, accepted race with
+# validate_handle mode.
+_ENUMERATE_CACHE: dict[str, dict[str, dict]] = {}
+
+
+def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
+    raw_rows = _run_collection_job(handle)  # raises BrightDataJobTimeout/Failed -- never swallowed here
+    normalized = [_normalize_row(r) for r in raw_rows]
+    dropped = sum(1 for n in normalized if n is None)
+    if dropped:
+        print(f"  ! {dropped} Bright Data row(s) for {handle} dropped (missing id or unusable date)",
+              file=sys.stderr)
+    normalized = [n for n in normalized if n is not None]
+    normalized.sort(key=lambda n: n["published"], reverse=True)
+    # Client-side backstop cap, independent of whether Bright Data's trigger
+    # actually honors num_of_posts (see Task 2's comment) -- bounds cost
+    # regardless of that unverified assumption.
+    normalized = normalized[:MAX_ITEMS_PER_RUN]
+
+    # Overwrite, not merge: a fresh successful enumerate replaces whatever
+    # this handle's cache held before, so download_item never reads a stale
+    # id from a previous run in the same process.
+    _ENUMERATE_CACHE[handle] = {n["id"]: n for n in normalized}
+
+    items = normalized
+    if keyword_filter:
+        items = [i for i in items if keyword_filter.lower() in i["caption"].lower()]
+    return [
+        {"id": i["id"], "title": i["title"], "published": i["published"], "content_type": i["content_type"]}
+        for i in items
+    ]
