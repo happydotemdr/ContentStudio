@@ -128,6 +128,13 @@ Check each item and report PASS or FINDING with the offending field and value qu
     negative_styles / negative_local_styles arrays, as they appear in this payload, must be
     capped at 50 items each and English-only. Exceeding either cap, or any non-English token,
     is a FINDING.
+11. MODEL/SHAPE MATCH (PAYLOAD). The model_id actually present in this payload must match the
+    plan shape actually present in this same payload: a body containing chunks[] must declare
+    model_id music_v2; a body containing sections[] must declare music_v1 (or omit model_id,
+    which silently defaults to music_v1 — see item 1). Check the payload itself, not the
+    section map Gate 1 saw — the payload is a separate artifact and can drift from the map it
+    was built from. Any mismatch between the payload's declared model_id and its own plan
+    shape is a FINDING.
 
 DELIVERABLE FORMAT (hard limit ~1,500 tokens):
 - Findings: bulleted, each as "Item N — <the offending field and value> — <one-line why>"
