@@ -15,7 +15,7 @@
 - `POLL_TIMEOUT_S = 300` (5 minutes), `POLL_INTERVAL_S = 5` — bounded polling; a job that hasn't reached `ready`/`failed` by the timeout raises rather than returning an empty result.
 - Publish dates MUST be truncated to `YYYY-MM-DD` before being returned from `enumerate_newest_first` — `discovery_engine.py` does a strict `strptime(published, "%Y-%m-%d")` and an unnormalized value crashes it.
 - A poll timeout or a job reporting `failed` status MUST raise an exception from `enumerate_newest_first`, never return `[]` — an empty list reads as "handle posted nothing new" (`no_new_content`, a *healthy* status) or, in `validate_handle` mode, permanently excludes the handle. Only a successfully-completed job with zero usable rows returns `[]`.
-- Backfill mode is unsupported for Instagram — `discovery_engine.py` gains a `BACKFILL_SUPPORTED_PLATFORMS = {"youtube", "bluesky"}` guard so a backfill run skips Instagram handles without calling the adapter at all.
+- Backfill mode is unsupported for Instagram — `discovery_engine.py` gains a `BACKFILL_SUPPORTED_PLATFORMS = {"youtube", "bluesky"}` guard so a backfill run skips Instagram handles without calling the adapter at all. The skipped handle is recorded with a distinct `"skipped"` status (not `"no_new_content"`) — per the design's gap-1 principle, a non-result must never be indistinguishable from a healthy "nothing new today" result.
 - Bright Data raw response field names used below (`post_id`, `caption`, `date_posted`, `content_type`, `url`, `likes`, `num_comments`) are this design's best-available assumption, not confirmed against a live Bright Data response — flagged `[T-unverified, 2026-08-06]` in the design doc. `_normalize_row` (Task 3) is the single place that would need updating if the real schema differs.
 
 ---
@@ -24,7 +24,7 @@
 
 - **Create** `pipeline-app/pipeline_app/discovery_instagram.py` — the adapter: credentials, Bright Data job cycle, row normalization, and the four `PlatformAdapter` functions.
 - **Create** `pipeline-app/tests/test_discovery_instagram.py` — unit tests against a fake HTTP layer, no real network calls.
-- **Modify** `pipeline-app/pipeline_app/discovery_engine.py` — add `BACKFILL_SUPPORTED_PLATFORMS` and a guard in `_process_one_handle`.
+- **Modify** `pipeline-app/pipeline_app/discovery_engine.py` — add `BACKFILL_SUPPORTED_PLATFORMS` and a guard in `run_discovery`'s per-handle loop that records a `"skipped"` status.
 - **Modify** `pipeline-app/tests/test_discovery_engine.py` — one new test covering the backfill guard.
 - **Modify** `pipeline-app/run_discovery_cron.py` — register the new adapter in `build_adapters()`.
 - **Modify** `pipeline-app/pipeline_app/templates/discovery_handles.html` — add the Instagram `<option>`.
@@ -99,6 +99,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -499,7 +500,12 @@ _ENUMERATE_CACHE: dict[str, dict[str, dict]] = {}
 
 def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
     raw_rows = _run_collection_job(handle)  # raises BrightDataJobTimeout/Failed -- never swallowed here
-    normalized = [n for n in (_normalize_row(r) for r in raw_rows) if n is not None]
+    normalized = [_normalize_row(r) for r in raw_rows]
+    dropped = sum(1 for n in normalized if n is None)
+    if dropped:
+        print(f"  ! {dropped} Bright Data row(s) for {handle} dropped (missing id or unusable date)",
+              file=sys.stderr)
+    normalized = [n for n in normalized if n is not None]
     normalized.sort(key=lambda n: n["published"], reverse=True)
     # Client-side backstop cap, independent of whether Bright Data's trigger
     # actually honors num_of_posts (see Task 2's comment) -- bounds cost
@@ -575,7 +581,9 @@ def test_download_item_writes_frontmatter_and_caption_from_cache(tmp_path, monke
     text = out_path.read_text(encoding="utf-8")
     assert "post_id: p1" in text
     assert "content_type: post" in text
-    assert "published: 2026-08-01" in text
+    # yaml.safe_dump (used by artifacts.render_frontmatter) quotes date-like
+    # strings -- this is NOT "published: 2026-08-01", it's single-quoted.
+    assert "published: '2026-08-01'" in text
     assert "the caption" in text
     assert not out_path.with_name("p1.md.tmp").exists()
 
@@ -671,12 +679,12 @@ git commit -m "feat(discovery): complete Instagram adapter (on_disk_ids, peek_up
 ### Task 6: Backfill guard in discovery_engine.py
 
 **Files:**
-- Modify: `pipeline-app/pipeline_app/discovery_engine.py:184-192` (the `_process_one_handle` function)
+- Modify: `pipeline-app/pipeline_app/discovery_engine.py:184-192` (`_process_one_handle`, left unchanged) and `discovery_engine.py:301-332` (`run_discovery`'s per-handle loop)
 - Test: `pipeline-app/tests/test_discovery_engine.py`
 
 **Interfaces:**
 - Produces: `BACKFILL_SUPPORTED_PLATFORMS: set[str]` (module-level constant in `discovery_engine.py`).
-- Note: the original design doc proposed this guard at the `run_discovery_cron.py` CLI layer. Planning found that's architecturally wrong — backfill mode processes *all* included handles across *all* platforms in a single `run_discovery` call (see `discovery_engine.py:305-306`'s `db_mod.list_handles(conn, included_only=True)`), not one handle at a time, so there is no single "target handle" at the CLI entry point to gate. The guard belongs in `_process_one_handle`, which already dispatches per-handle inside the loop.
+- Note: the design doc originally proposed this guard at the `run_discovery_cron.py` CLI layer. Planning found that's architecturally wrong — backfill mode processes *all* included handles across *all* platforms in a single `run_discovery` call (see `discovery_engine.py:305-306`'s `db_mod.list_handles(conn, included_only=True)`), not one handle at a time, so there is no single "target handle" at the CLI entry point to gate. A second revision (this one) also moves the guard out of `_process_one_handle` and into `run_discovery`'s per-handle loop directly — that's the one place that already decides each handle's recorded `status` string, and a skipped handle needs its own distinct status (`"skipped"`), not the `"ok"`/`"no_new_content"` computed from `_process_one_handle`'s return value. Recording a skip as `"no_new_content"` would reintroduce a milder version of gap 1 (a non-result reading as a healthy result) — the whole reason `enumerate_newest_first` was changed to raise instead of returning `[]` on failure.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -707,18 +715,18 @@ def test_backfill_skips_unsupported_platform_without_calling_adapter(engine_conn
     assert result["status"] == "completed"
     results = db.list_run_handle_results(engine_conn, result["run_row_id"])
     assert len(results) == 1
-    assert results[0]["status"] == "no_new_content"
+    assert results[0]["status"] == "skipped"
     assert results[0]["items_downloaded"] == 0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd pipeline-app && python -m pytest tests/test_discovery_engine.py -v -k backfill_skips_unsupported`
-Expected: FAIL — the `ExplodingAdapter`'s `AssertionError` propagates and is caught by `run_discovery`'s per-handle `except Exception`, so `results[0]["status"] == "error"`, not `"no_new_content"` as asserted.
+Expected: FAIL — the `ExplodingAdapter`'s `AssertionError` propagates (nothing currently short-circuits before `_process_one_handle` calls the adapter), is caught by `run_discovery`'s per-handle `except Exception`, and `results[0]["status"] == "error"`, not `"skipped"` as asserted.
 
-- [ ] **Step 3: Add the guard**
+- [ ] **Step 3: Add the constant**
 
-In `pipeline-app/pipeline_app/discovery_engine.py`, add the constant near the top of the file (after the existing `NEW_HANDLE_UNDATED_STOP_GRACE` constant, around line 21):
+In `pipeline-app/pipeline_app/discovery_engine.py`, add this near the top of the file (after the existing `NEW_HANDLE_UNDATED_STOP_GRACE` constant, around line 21):
 
 ```python
 # Platforms whose adapter can serve process_handle_backfill's date-ranged
@@ -730,33 +738,46 @@ In `pipeline-app/pipeline_app/discovery_engine.py`, add the constant near the to
 BACKFILL_SUPPORTED_PLATFORMS = {"youtube", "bluesky"}
 ```
 
-Then modify `_process_one_handle` (currently at line 184):
+Leave `_process_one_handle` (currently at line 184) exactly as it is — the guard goes in the caller, not here.
+
+- [ ] **Step 4: Add the guard in run_discovery's per-handle loop**
+
+In `pipeline-app/pipeline_app/discovery_engine.py`, find the per-handle `for` loop inside `run_discovery` (currently lines 306-324):
 
 ```python
-def _process_one_handle(adapters, repo_root, handle_row, mode, backfill_start, backfill_end, now):
-    adapter = adapters[handle_row["platform"]]
-    if mode == "backfill":
-        if handle_row["platform"] not in BACKFILL_SUPPORTED_PLATFORMS:
-            print(f"  ! backfill not supported for platform '{handle_row['platform']}' "
-                  f"(handle {handle_row['handle']}) -- skipping, no adapter call made",
-                  file=sys.stderr)
-            return []
-        return process_handle_backfill(
-            adapter, repo_root, handle_row,
-            start_date=_dt.datetime.strptime(backfill_start, "%Y-%m-%d").date(),
-            end_date=_dt.datetime.strptime(backfill_end, "%Y-%m-%d").date(),
-        )
-    return process_handle(adapter, repo_root, handle_row, now=now)
+        for handle_row in handles:
+            try:
+                downloaded = _process_one_handle(adapters, repo_root, handle_row, mode, backfill_start, backfill_end, now)
 ```
 
-(`sys` is already imported in this file.)
+Change it to check the backfill-support guard first, before calling `_process_one_handle` at all:
 
-- [ ] **Step 4: Run tests to verify they pass**
+```python
+        for handle_row in handles:
+            try:
+                if mode == "backfill" and handle_row["platform"] not in BACKFILL_SUPPORTED_PLATFORMS:
+                    print(f"  ! backfill not supported for platform '{handle_row['platform']}' "
+                          f"(handle {handle_row['handle']}) -- skipping, no adapter call made",
+                          file=sys.stderr)
+                    status = "skipped"
+                    db_mod.record_handle_result(conn, run_row_id, handle_row["id"], status, 0)
+                    handle_results.append({
+                        "handle": handle_row["handle"], "platform": handle_row["platform"],
+                        "cohort": handle_row["cohort"], "status": status, "items_downloaded": 0,
+                        "last_seen_published_at": None, "error_message": None,
+                    })
+                    continue
+                downloaded = _process_one_handle(adapters, repo_root, handle_row, mode, backfill_start, backfill_end, now)
+```
+
+The rest of the `try` block (the `published_dates = [...]` line through the end of the `except Exception` handler) is unchanged — leave it exactly as it is; the `continue` above skips it only for the guarded case. `sys` is already imported in this file.
+
+- [ ] **Step 5: Run tests to verify they pass**
 
 Run: `cd pipeline-app && python -m pytest tests/test_discovery_engine.py -v`
 Expected: PASS (all tests, including the new one)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add pipeline-app/pipeline_app/discovery_engine.py pipeline-app/tests/test_discovery_engine.py
@@ -770,30 +791,20 @@ git commit -m "feat(discovery): skip backfill for platforms the adapter can't se
 **Files:**
 - Modify: `pipeline-app/run_discovery_cron.py:22-32`
 - Modify: `pipeline-app/pipeline_app/templates/discovery_handles.html:34-35`
-- Test: `pipeline-app/tests/test_run_discovery_cron.py` (create if it doesn't already exist — check first)
+- Modify: `pipeline-app/tests/test_run_discovery_cron.py` — **this file already exists** (14 tests as of this plan, importing `run_discovery_cron as cron` directly, no `sys.path.insert` — pytest is run via `python -m pytest` from `pipeline-app/`, which puts that directory on `sys.path` itself). Append the new test to it; do not create or overwrite it.
 
 **Interfaces:**
 - Consumes: `discovery_instagram` module (Tasks 1-5), `build_adapters() -> dict[str, PlatformAdapter]` (existing function in `run_discovery_cron.py`).
 - Produces: `build_adapters()` now includes `"instagram": discovery_instagram`.
 
-- [ ] **Step 1: Check for an existing adapters test**
+- [ ] **Step 1: Append a new test to the existing file**
 
-Run: `cd pipeline-app && python -m pytest tests/ -k build_adapters -v`
-
-If a test already exists and fails after Step 3 below in the expected way, use it. If none exists, write one:
+Open `pipeline-app/tests/test_run_discovery_cron.py` and add this test, matching the file's existing import style (`import run_discovery_cron as cron` at the top — do not add a second import or a `sys.path.insert`):
 
 ```python
-# pipeline-app/tests/test_run_discovery_cron.py (create if absent)
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from run_discovery_cron import build_adapters
-
-
+# append to pipeline-app/tests/test_run_discovery_cron.py
 def test_build_adapters_includes_all_three_platforms():
-    adapters = build_adapters()
+    adapters = cron.build_adapters()
     assert set(adapters.keys()) == {"youtube", "bluesky", "instagram"}
 ```
 
