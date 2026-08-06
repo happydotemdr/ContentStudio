@@ -165,3 +165,8 @@ def test_notify_exception_does_not_propagate_or_change_exit_code(monkeypatch, re
 
     assert exit_code == 0
     assert "discovery notification failed" in capsys.readouterr().err
+
+
+def test_build_adapters_includes_all_three_platforms():
+    adapters = cron.build_adapters()
+    assert set(adapters.keys()) == {"youtube", "bluesky", "instagram"}

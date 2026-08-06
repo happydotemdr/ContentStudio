@@ -20,6 +20,14 @@ EXISTING_HANDLE_STOP_GRACE = 3
 # undated is_new items instead.
 NEW_HANDLE_UNDATED_STOP_GRACE = 5
 
+# Platforms whose adapter can serve process_handle_backfill's date-ranged
+# fetch. Instagram's adapter only ever fetches the newest MAX_ITEMS_PER_RUN
+# items (see discovery_instagram.py / the design doc's "Backfill support"),
+# so a backfill request for it would trigger a paid Bright Data job and
+# silently return nothing for any window older than that cutoff -- rejected
+# here before the adapter is ever called.
+BACKFILL_SUPPORTED_PLATFORMS = {"youtube", "bluesky"}
+
 
 class PlatformAdapter(Protocol):
     def on_disk_ids(self, repo_root: Path, handle: str) -> set[str]: ...
@@ -305,6 +313,18 @@ def run_discovery(
         handles = db_mod.list_handles(conn, included_only=True)
         for handle_row in handles:
             try:
+                if mode == "backfill" and handle_row["platform"] not in BACKFILL_SUPPORTED_PLATFORMS:
+                    print(f"  ! backfill not supported for platform '{handle_row['platform']}' "
+                          f"(handle {handle_row['handle']}) -- skipping, no adapter call made",
+                          file=sys.stderr)
+                    status = "skipped"
+                    db_mod.record_handle_result(conn, run_row_id, handle_row["id"], status, 0)
+                    handle_results.append({
+                        "handle": handle_row["handle"], "platform": handle_row["platform"],
+                        "cohort": handle_row["cohort"], "status": status, "items_downloaded": 0,
+                        "last_seen_published_at": None, "error_message": None,
+                    })
+                    continue
                 downloaded = _process_one_handle(adapters, repo_root, handle_row, mode, backfill_start, backfill_end, now)
                 # Not every downloaded item is guaranteed to carry a date (a
                 # YouTube item whose info.json write failed reports

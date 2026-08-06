@@ -465,3 +465,31 @@ def test_run_discovery_manual_trigger_does_not_update_last_scheduled_run_date(en
 
     assert result["status"] == "completed"
     assert db.get_settings(engine_conn)["last_scheduled_run_date"] is None
+
+
+def test_backfill_skips_unsupported_platform_without_calling_adapter(engine_conn, tmp_path):
+    db.create_handle(engine_conn, "instagram", "@ig_handle", "IG", "guru", None, now_iso())
+
+    class ExplodingAdapter:
+        def on_disk_ids(self, repo_root, handle):
+            raise AssertionError("must not be called for a backfill-unsupported platform")
+
+        def enumerate_newest_first(self, handle, keyword_filter):
+            raise AssertionError("must not be called for a backfill-unsupported platform")
+
+        def peek_upload_date(self, item_id):
+            raise AssertionError("must not be called for a backfill-unsupported platform")
+
+        def download_item(self, repo_root, handle, item_id, title, content_type=None):
+            raise AssertionError("must not be called for a backfill-unsupported platform")
+
+    result = run_discovery(
+        engine_conn, tmp_path, {"instagram": ExplodingAdapter()},
+        trigger="manual", mode="backfill",
+        backfill_start="2026-06-01", backfill_end="2026-06-30",
+    )
+    assert result["status"] == "completed"
+    results = db.list_run_handle_results(engine_conn, result["run_row_id"])
+    assert len(results) == 1
+    assert results[0]["status"] == "skipped"
+    assert results[0]["items_downloaded"] == 0
