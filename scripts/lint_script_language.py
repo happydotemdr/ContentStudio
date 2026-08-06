@@ -176,6 +176,12 @@ def check_punctuation(vo_lines: list[VOLine]) -> list[Finding]:
                     "a written parenthetical with no spoken realization",
                 )
             )
+        # Semicolons and bracket spans are scanned independently, by design.
+        # D2's rule is "no semicolons, parentheticals, or bracketed asides" --
+        # three distinct clauses. A semicolon that happens to sit inside a
+        # parenthetical, e.g. "(guilty; wow)", violates two of them at once,
+        # and fixing the line means removing both constructs -- so it is
+        # deliberately reported as two findings, not deduplicated into one.
         snippets = [m.group(0) for m in SEMICOLON_RE.finditer(vo.text)]
         snippets += _bracket_spans(vo.text, "(", ")")
         snippets += _bracket_spans(vo.text, "[", "]")

@@ -197,3 +197,28 @@ def test_d2_flags_nested_parens_as_one_outer_span():
     findings = check_punctuation(lines)
     assert [f.check for f in findings] == ["D2"]
     assert "(a (b) c)" in findings[0].message
+
+
+def test_d2_reports_semicolon_and_parenthetical_separately_when_nested():
+    """A semicolon nested inside a parenthetical, e.g. "(guilty; wow)",
+    violates two distinct clauses of the D2 rule at once -- "no semicolons"
+    and "no parentheticals" -- and an author fixing the line has to remove
+    both constructs. This is deliberate: semicolons and bracket spans are
+    scanned independently, so overlapping/nested text is reported once per
+    clause it violates rather than deduplicated into a single finding. This
+    pins that behavior against silent drift (e.g. an editor "optimizing" the
+    scan into one combined pass that only flags the outer span)."""
+    lines, _ = parse_script('HOOK (0–3s | 3 words): "settled (guilty; wow)"\n')
+    findings = check_punctuation(lines)
+    assert findings == [
+        Finding(
+            "D2",
+            "HOOK",
+            "line 1: ';' is written-register punctuation in a spoken line",
+        ),
+        Finding(
+            "D2",
+            "HOOK",
+            "line 1: '(guilty; wow)' is written-register punctuation in a spoken line",
+        ),
+    ]
