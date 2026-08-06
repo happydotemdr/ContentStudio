@@ -24,6 +24,13 @@ target for the mix. This is skill #3 of ContentStudio's six-skill pipeline.
   **Loudness, ducking, and the music mix stay here** — `elevenlabs-audio` explicitly defers to
   `references/production-and-loudness.md` and must not duplicate or contradict it.
 
+  **Bed generation is downstream too.** Loudness, ducking and the music mix stay here
+  (`references/production-and-loudness.md`) — but *designing and sourcing the bed itself* does not.
+  The bed's emotional arc, its hook hold-out and the tone-contradiction check belong to
+  `music-brief`; the Eleven Music prompt, composition plan and API payload belong to
+  `elevenlabs-music`. Hand the tone-per-beat call down and let them own that layer, exactly as this
+  skill does with `elevenlabs-audio`.
+
 ## Corpus grounding — read before writing any rule
 
 Every normative line in this skill and its `references/` carries a marker, copied verbatim from
