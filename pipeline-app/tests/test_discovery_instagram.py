@@ -28,25 +28,32 @@ def test_api_key_none_when_unconfigured(monkeypatch, tmp_path):
 import pytest
 
 
+def _fake_key(monkeypatch, value="test-key"):
+    monkeypatch.setattr(ig, "api_key", lambda: value)
+
+
 def test_run_collection_job_returns_results_on_ready(monkeypatch):
-    monkeypatch.setattr(ig, "_trigger_job", lambda handle: "job1")
-    monkeypatch.setattr(ig, "_poll_job_status", lambda job_id: "ready")
-    monkeypatch.setattr(ig, "_fetch_job_results", lambda job_id: [{"post_id": "p1"}])
+    _fake_key(monkeypatch)
+    monkeypatch.setattr(ig, "_trigger_job", lambda handle, key: "job1")
+    monkeypatch.setattr(ig, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(ig, "_fetch_job_results", lambda job_id, key: [{"post_id": "p1"}])
     monkeypatch.setattr(ig.time, "sleep", lambda s: None)
     assert ig._run_collection_job("somehandle") == [{"post_id": "p1"}]
 
 
 def test_run_collection_job_raises_on_failed_status(monkeypatch):
-    monkeypatch.setattr(ig, "_trigger_job", lambda handle: "job1")
-    monkeypatch.setattr(ig, "_poll_job_status", lambda job_id: "failed")
+    _fake_key(monkeypatch)
+    monkeypatch.setattr(ig, "_trigger_job", lambda handle, key: "job1")
+    monkeypatch.setattr(ig, "_poll_job_status", lambda job_id, key: "failed")
     monkeypatch.setattr(ig.time, "sleep", lambda s: None)
     with pytest.raises(ig.BrightDataJobFailed):
         ig._run_collection_job("somehandle")
 
 
 def test_run_collection_job_raises_on_timeout(monkeypatch):
-    monkeypatch.setattr(ig, "_trigger_job", lambda handle: "job1")
-    monkeypatch.setattr(ig, "_poll_job_status", lambda job_id: "running")  # never ready
+    _fake_key(monkeypatch)
+    monkeypatch.setattr(ig, "_trigger_job", lambda handle, key: "job1")
+    monkeypatch.setattr(ig, "_poll_job_status", lambda job_id, key: "running")  # never ready
     monkeypatch.setattr(ig.time, "sleep", lambda s: None)
     # Force the deadline to have already passed on the very first check.
     monkeypatch.setattr(ig.time, "monotonic", lambda: 10_000.0)
@@ -56,12 +63,110 @@ def test_run_collection_job_raises_on_timeout(monkeypatch):
 
 
 def test_run_collection_job_polls_until_ready(monkeypatch):
+    _fake_key(monkeypatch)
     statuses = iter(["running", "running", "ready"])
-    monkeypatch.setattr(ig, "_trigger_job", lambda handle: "job1")
-    monkeypatch.setattr(ig, "_poll_job_status", lambda job_id: next(statuses))
-    monkeypatch.setattr(ig, "_fetch_job_results", lambda job_id: [{"post_id": "p1"}])
+    monkeypatch.setattr(ig, "_trigger_job", lambda handle, key: "job1")
+    monkeypatch.setattr(ig, "_poll_job_status", lambda job_id, key: next(statuses))
+    monkeypatch.setattr(ig, "_fetch_job_results", lambda job_id, key: [{"post_id": "p1"}])
     monkeypatch.setattr(ig.time, "sleep", lambda s: None)
     assert ig._run_collection_job("somehandle") == [{"post_id": "p1"}]
+
+
+def test_run_collection_job_raises_clear_error_when_key_missing(monkeypatch):
+    monkeypatch.setattr(ig, "api_key", lambda: None)
+
+    def _fail_if_called(handle, key):
+        raise AssertionError("_trigger_job must not be called when the API key is missing")
+
+    monkeypatch.setattr(ig, "_trigger_job", _fail_if_called)
+    with pytest.raises(RuntimeError, match="Bright Data API key not configured"):
+        ig._run_collection_job("somehandle")
+
+
+def test_enumerate_newest_first_ready_with_empty_results_returns_empty_list(monkeypatch):
+    _fake_key(monkeypatch)
+    monkeypatch.setattr(ig, "_trigger_job", lambda handle, key: "job1")
+    monkeypatch.setattr(ig, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(ig, "_fetch_job_results", lambda job_id, key: [])
+    monkeypatch.setattr(ig.time, "sleep", lambda s: None)
+    assert ig.enumerate_newest_first("somehandle", keyword_filter=None) == []
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+def test_trigger_job_posts_expected_request_and_returns_snapshot_id(monkeypatch):
+    monkeypatch.setattr(ig, "DATASET_ID", "gd_real_dataset_id")
+    captured = {}
+
+    def fake_post(url, params=None, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["params"] = params
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _FakeResponse({"snapshot_id": "snap123"})
+
+    monkeypatch.setattr(ig.requests, "post", fake_post)
+    result = ig._trigger_job("somehandle", "the-key")
+
+    assert result == "snap123"
+    assert captured["url"] == f"{ig.BRIGHTDATA_API_BASE}/trigger"
+    assert captured["params"]["dataset_id"] == ig.DATASET_ID
+    assert captured["headers"]["Authorization"] == "Bearer the-key"
+    assert captured["json"][0]["num_of_posts"] == ig.MAX_ITEMS_PER_RUN
+
+
+def test_trigger_job_raises_when_dataset_id_still_placeholder(monkeypatch):
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("requests.post must not be called when DATASET_ID is a placeholder")
+
+    monkeypatch.setattr(ig.requests, "post", _fail_if_called)
+    assert ig.DATASET_ID.startswith("gd_REPLACE")
+    with pytest.raises(RuntimeError, match="DATASET_ID is still a placeholder"):
+        ig._trigger_job("somehandle", "the-key")
+
+
+def test_poll_job_status_gets_expected_request_and_returns_status(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        return _FakeResponse({"status": "ready"})
+
+    monkeypatch.setattr(ig.requests, "get", fake_get)
+    result = ig._poll_job_status("job1", "the-key")
+
+    assert result == "ready"
+    assert captured["url"] == f"{ig.BRIGHTDATA_API_BASE}/progress/job1"
+    assert captured["headers"]["Authorization"] == "Bearer the-key"
+
+
+def test_fetch_job_results_gets_expected_request_and_returns_payload(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["params"] = params
+        captured["headers"] = headers
+        return _FakeResponse([{"post_id": "p1"}])
+
+    monkeypatch.setattr(ig.requests, "get", fake_get)
+    result = ig._fetch_job_results("job1", "the-key")
+
+    assert result == [{"post_id": "p1"}]
+    assert captured["url"] == f"{ig.BRIGHTDATA_API_BASE}/snapshot/job1"
+    assert captured["params"] == {"format": "json"}
+    assert captured["headers"]["Authorization"] == "Bearer the-key"
 
 
 def test_normalize_row_truncates_date_to_yyyy_mm_dd():

@@ -66,12 +66,18 @@ class BrightDataJobFailed(Exception):
     """A Bright Data collection job reported status 'failed'."""
 
 
-def _trigger_job(handle: str) -> str:
+def _trigger_job(handle: str, key: str) -> str:
+    if DATASET_ID.startswith("gd_REPLACE"):
+        raise RuntimeError(
+            "Instagram adapter DATASET_ID is still a placeholder -- provision the "
+            "Bright Data Instagram Posts Scraper API product and set the real "
+            "dataset id in discovery_instagram.py"
+        )
     profile_url = f"https://www.instagram.com/{handle.lstrip('@')}/"
     response = requests.post(
         f"{BRIGHTDATA_API_BASE}/trigger",
         params={"dataset_id": DATASET_ID, "include_errors": "true"},
-        headers={"Authorization": f"Bearer {api_key()}"},
+        headers={"Authorization": f"Bearer {key}"},
         # num_of_posts as a request-time limit is this design's best-available
         # assumption about Bright Data's trigger API -- UNVERIFIED, see the
         # design doc's "Verification needed before implementation". If the API
@@ -84,21 +90,21 @@ def _trigger_job(handle: str) -> str:
     return response.json()["snapshot_id"]
 
 
-def _poll_job_status(job_id: str) -> str:
+def _poll_job_status(job_id: str, key: str) -> str:
     response = requests.get(
         f"{BRIGHTDATA_API_BASE}/progress/{job_id}",
-        headers={"Authorization": f"Bearer {api_key()}"},
+        headers={"Authorization": f"Bearer {key}"},
         timeout=REQUEST_TIMEOUT_S,
     )
     response.raise_for_status()
     return response.json()["status"]
 
 
-def _fetch_job_results(job_id: str) -> list[dict]:
+def _fetch_job_results(job_id: str, key: str) -> list[dict]:
     response = requests.get(
         f"{BRIGHTDATA_API_BASE}/snapshot/{job_id}",
         params={"format": "json"},
-        headers={"Authorization": f"Bearer {api_key()}"},
+        headers={"Authorization": f"Bearer {key}"},
         timeout=REQUEST_TIMEOUT_S,
     )
     response.raise_for_status()
@@ -106,12 +112,18 @@ def _fetch_job_results(job_id: str) -> list[dict]:
 
 
 def _run_collection_job(handle: str) -> list[dict]:
-    job_id = _trigger_job(handle)
+    key = api_key()
+    if key is None:
+        raise RuntimeError(
+            "Bright Data API key not configured "
+            f"(set {KEY_ENV_VAR} or {KEY_FILE.name})"
+        )
+    job_id = _trigger_job(handle, key)
     deadline = time.monotonic() + POLL_TIMEOUT_S
     while True:
-        status = _poll_job_status(job_id)
+        status = _poll_job_status(job_id, key)
         if status == "ready":
-            return _fetch_job_results(job_id)
+            return _fetch_job_results(job_id, key)
         if status == "failed":
             raise BrightDataJobFailed(f"Bright Data job {job_id} for {handle} failed")
         if time.monotonic() >= deadline:
