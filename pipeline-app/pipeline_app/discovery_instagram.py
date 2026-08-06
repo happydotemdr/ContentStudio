@@ -119,3 +119,31 @@ def _run_collection_job(handle: str) -> list[dict]:
                 f"Bright Data job {job_id} for {handle} timed out after {POLL_TIMEOUT_S}s"
             )
         time.sleep(POLL_INTERVAL_S)
+
+
+def _normalize_row(row: dict) -> dict | None:
+    """Maps one raw Bright Data Instagram row into the shape this adapter
+    works with internally. Field names (post_id, caption, date_posted,
+    content_type, url, likes, num_comments) are this design's best-available
+    assumption about Bright Data's response schema -- UNVERIFIED, see the
+    design doc's "Verification needed before implementation". This is the
+    single place to update if the real schema differs.
+    """
+    post_id = row.get("post_id")
+    if not post_id:
+        return None
+    published_raw = row.get("date_posted") or ""
+    published = published_raw[:10] if len(published_raw) >= 10 else None
+    if published is None:
+        return None
+    caption = (row.get("caption") or "").strip()
+    return {
+        "id": post_id,
+        "title": caption[:60] if caption else post_id,
+        "published": published,
+        "content_type": row.get("content_type") or "post",
+        "caption": caption,
+        "url": row.get("url") or "",
+        "like_count": row.get("likes"),
+        "comment_count": row.get("num_comments"),
+    }
