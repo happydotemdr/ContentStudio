@@ -304,10 +304,59 @@ def test_draft_mode_warns_that_a_non_high_profile_cannot_be_honoured(
 
 
 def test_the_path_gate_samples_the_longest_deliverable(ready):
-    """out_contact_sheet's suffix is 10 characters longer than out_qa_json's,
-    so sampling the latter let a workspace pass this gate and then fail while
-    writing the contact sheet -- which happens after promotion."""
+    """out_contact_sheet's suffix is longer than out_qa_json's, so sampling
+    the latter let a workspace pass this gate and then fail while writing the
+    contact sheet -- which happens after promotion."""
     assert len(str(ready.out_contact_sheet(99))) > len(str(ready.out_qa_json(99)))
+
+
+@requires_font
+def test_the_path_gate_samples_the_true_maximum_including_the_cover(
+    tmp_path, ready, monkeypatch
+):
+    """A prior version of the gate hard-coded out_contact_sheet as "the
+    longest deliverable" -- that guess was wrong, since out_cover's suffix
+    (_cover_1080x1920.png) is longer still, and it silently under-sampled the
+    gate. A single short-id shot and no overlays keep the work-artifact
+    candidates (shot clips live under the deeper work/<mode>/shots/ tree)
+    unambiguously shorter than any deliverable, isolating the comparison to
+    the deliverable set the fix actually changed. Set MAX_PATH_LEN strictly
+    between the longest of every other candidate the gate samples and
+    out_cover's length: only a gate that takes the true maximum over the
+    full deliverable set -- not one hand-picked deliverable -- still catches
+    this."""
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["styles"]["card"]["font_file"] = str(REAL_FONT)
+    payload["shots"] = [{
+        "n": 1, "id": "s", "beat": "a", "in": 0.0, "out": 3.0, "source": "a.png",
+        "kind": "still", "motion": {"kind": "none"}, "transition_in": {"kind": "cut"},
+    }]
+    payload["overlays"] = []
+    payload["captions"] = []
+    (tmp_path / "spec").mkdir(exist_ok=True)
+    spec = load(tmp_path, payload)
+    monkeypatch.setattr(pf.ffmpeg, "probe", lambda path: still())
+
+    version = 99
+    others = [
+        ready.manifest_path,
+        ready.graph_path,
+        ready.master_path,
+        ready.shot_clip(1, "s", "a"),
+        ready.out_master(version),
+        ready.out_srt(version),
+        ready.out_ass(version),
+        ready.out_qa_json(version),
+        ready.out_qa_md(version),
+        ready.out_contact_sheet(version),
+    ]
+    others_max = max(len(str(p)) for p in others)
+    cover_len = len(str(ready.out_cover(version)))
+    assert cover_len > others_max
+
+    monkeypatch.setattr(pf, "MAX_PATH_LEN", others_max)
+    report = pf.run_preflight(spec, ready, "final")
+    assert any("path" in e.lower() for e in report.errors)
 
 
 @requires_font

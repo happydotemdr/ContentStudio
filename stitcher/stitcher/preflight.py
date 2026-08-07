@@ -71,18 +71,34 @@ def _check_slug(spec: RenderSpec, ws: Workspace, report: PreflightReport) -> Non
         )
 
 
-def _check_paths(spec: RenderSpec, ws: Workspace, report: PreflightReport) -> None:
+def _check_paths(spec: RenderSpec, ws: Workspace, mode: str, report: PreflightReport) -> None:
     candidates = [ws.manifest_path, ws.graph_path, ws.master_path]
     for index, shot in enumerate(spec.shots, start=1):
         candidates.append(ws.shot_clip(index, shot.id, shot.beat))
     for index, overlay in enumerate(spec.overlays, start=1):
         candidates.append(ws.overlay_png(index, overlay.id, overlay.text))
-    # The LONGEST deliverable, not just any deliverable: out_contact_sheet's
-    # suffix is 10 characters longer than out_qa_json's, so sampling the
-    # latter let a workspace pass this gate and then fail while writing the
-    # contact sheet -- which happens after promotion. Version 99 stands in for
-    # the widest version number the naming scheme formats.
-    candidates.append(ws.out_contact_sheet(99))
+    # Sample every deliverable the naming scheme can produce and take the
+    # true max, rather than hard-coding a guess at which one is longest. A
+    # prior version hard-coded out_contact_sheet as "the longest
+    # deliverable" -- that guess was wrong (out_cover's suffix is longer
+    # still) and silently under-sampled the gate, letting a workspace pass
+    # preflight and then fail while writing the cover, after promotion.
+    # Computing the max over the full deliverable set means a future
+    # filename change cannot cause this gate to drift out of date again.
+    # Version 99 stands in for the widest version number the naming scheme
+    # formats; draft workspaces are unversioned (naming.py's out_stem), so
+    # mirror the real "None if mode == 'draft'" resolution used at render
+    # time (cli.py) rather than always sampling a versioned stem.
+    version = None if mode == "draft" else 99
+    candidates += [
+        ws.out_master(version),
+        ws.out_cover(version),
+        ws.out_srt(version),
+        ws.out_ass(version),
+        ws.out_qa_json(version),
+        ws.out_qa_md(version),
+        ws.out_contact_sheet(version),
+    ]
 
     longest = max(candidates, key=lambda p: len(str(p)))
     if len(str(longest)) > MAX_PATH_LEN:
@@ -282,7 +298,7 @@ def run_preflight(spec: RenderSpec, ws: Workspace, mode: str) -> PreflightReport
 
     _check_slug(spec, ws, report)
     _check_tools(report)
-    _check_paths(spec, ws, report)
+    _check_paths(spec, ws, mode, report)
     fonts = _check_fonts(spec, report)
     _check_text_fit(spec, fonts, report)
     _check_visual_assets(spec, ws, mode, report)
