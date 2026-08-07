@@ -153,6 +153,27 @@ def assemble(
     crf = DRAFT_CRF if mode == "draft" else delivery.crf
     preset = DRAFT_PRESET if mode == "draft" else delivery.preset
 
+    # Draft-mode profile fix (surfaced only by the e2e run against the real
+    # binary -- no unit test exercises a real encode). `-preset ultrafast`
+    # sets cabac=0/8x8dct=0/bframes=0, and libx264's `-profile:v <name>` can
+    # only ever CONSTRAIN the actual feature set down to that profile, never
+    # force weaker preset defaults back up to it: with `-preset ultrafast
+    # -profile:v high` alone, the muxed SPS still reported "Constrained
+    # Baseline" (verified on the installed 9.0 binary), because
+    # cabac=0/8x8dct=0/bframes=0 already satisfy Baseline and x264 signals
+    # whatever profile the *actual* encode needs, not the name that was
+    # requested. Design §4 stage D says draft mode overrides only
+    # `delivery.crf`/`delivery.preset` and "every other delivery setting is
+    # honored so a draft still exercises the real conformance path" -- which
+    # includes `delivery.profile`. Re-enabling cabac and the 8x8 transform
+    # via `-x264-params` restores that: confirmed on the same binary that
+    # adding only this flag to the same ultrafast command makes ffprobe
+    # report `profile=High`. This is safe for any configured profile, not
+    # just "high": `-profile:v` is parsed after `-x264-params` and its
+    # `x264_param_apply_profile` step constrains features back down for
+    # "main" or "baseline" regardless of what was set here.
+    profile_args = ["-x264-params", "cabac=1:8x8dct=1"] if mode == "draft" else []
+
     ffmpeg.run(
         [
             "ffmpeg", "-hide_banner", "-y", *inputs,
@@ -160,6 +181,7 @@ def assemble(
             "-map", "[vout]", "-map", f"{audio_index}:a",
             "-c:v", delivery.codec, "-crf", str(crf), "-preset", preset,
             "-profile:v", delivery.profile, "-pix_fmt", delivery.pix_fmt,
+            *profile_args,
             "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
             "-fps_mode", "cfr", "-r", str(spec.canvas.fps),
             "-c:a", delivery.audio_codec, "-b:a", delivery.audio_bitrate,
