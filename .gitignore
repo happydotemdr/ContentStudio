@@ -21,6 +21,7 @@ pipeline-app/pipeline_app/**/__pycache__/
 pipeline-app/tests/__pycache__/
 pipeline-app/pipeline_app.egg-info/
 rgs-briefs/.superseded/
+pipeline-app/.uvicorn-local.log
 
 # Rendered Midjourney assets for each Short — large binaries, local only.
 # Untracked but previously un-ignored, so a stray `git add .` would have committed them.
