@@ -39,18 +39,25 @@ Every reference file in `references/` marks each rule:
   structural technique), carry that flag through into the script's delivery
   notes — don't quietly launder a medium-confidence pattern into a
   stated-with-certainty rule.
-- **`[I]`** industry practice — used for four things in this skill: the
+- **`[I]`** industry practice — used for five things in this skill: the
   150–170 wpm narration-pace assumption, the re-hook's specific ~15s
   placement (the underlying re-hook *cadence* is `[C]`; the exact timestamp is
   this skill's own synthesis — see `references/beat-timing-model.md`), the
   requirement of at least one concrete proof beat inside Build/Value (the
   corpus's proof-density cadence is stated for long-form; compressing it into
   a single Shorts-scale beat is this skill's adaptation — see
-  `references/retention-loops-and-structure.md`), and the "Optional input: a
+  `references/retention-loops-and-structure.md`), the "Optional input: a
   companion grounding artifact" section below (an interface convention, not a
-  corpus claim).
+  corpus claim), and the read-aloud gates' mechanism — Gate D's D2/D4/D6, the
+  fresh-critic dispatch, and the no-touch annotation vocabulary
+  (`references/read-aloud-gates.md`).
 - **`[T]`** — not used by this skill; tool/policy facts belong to
   `voiceover-brief` and `visual-prompts`.
+- **`[S]`** script-baseline — derived from an observed failure in this repo's
+  own shipped output, cited by file and beat in
+  `docs/script-language-baseline.md`. Used only by the read-aloud gates. **An
+  `[S]` rule that cannot name a real shipped line violating it is a bug — mark
+  it `[I]` instead.**
 
 If a concept brief needs something the corpus doesn't cover (e.g. genre-specific
 hook phrasing, a topic this corpus never touches), say so explicitly in the
@@ -112,9 +119,16 @@ If no companion artifact is provided, this section doesn't apply — script norm
    watching": if there's a specific related Short/video to point to, name it
    in the output contract's `Next-video bridge` field even though the VO line
    itself stays on the mirrored hook (`references/endings-and-ctas.md`).
-9. **Run the humanize pass.** Vary sentence length, cut any AI-fingerprint
-   phrase or buzzword, fact-check any specific claim
-   (`references/script-intelligence-and-delivery.md`).
+9. **Run Gate D, then Gate E.** Gate D is the deterministic linter
+   (`scripts/lint_script_language.py`) — run it directly in standalone mode; in
+   app-driven mode record `deferred — app-run`, because the app runs it. Gate E
+   dispatches a fresh Opus critic that has not seen your authoring rationale.
+   **A failing gate blocks emission** until resolved or explicitly overridden,
+   and a Gate E finding may be resolved by defending the line in writing rather
+   than changing it. Fact-check any specific claim while you are here
+   (`references/script-intelligence-and-delivery.md`). Full rules, the verbatim
+   dispatch prompt, and the no-touch annotation vocabulary are in
+   `references/read-aloud-gates.md` — read it before running either gate.
 10. **Add a one-line visual note per beat** — plain language describing what's
     on screen, not a rendered image/video prompt (that's `visual-prompts`'
     job). Flag any beat carrying a spoken statistic or list so it's rendered
@@ -165,6 +179,10 @@ Next-video bridge: <name a specific related Short/video to point to (pinned
   silently blank; the corpus treats skipping it as a strongly-supported miss>
 Total word count: ~N words (150–170 wpm)
 
+GATES
+  Gate D (scripts/lint_script_language.py): <pass | N findings | deferred — app-run>
+  Gate E (fresh Opus critic):               <pass | N findings | N defended | overridden: reason>
+
 Visual notes (for visual-prompts downstream):
   Hook: <one line>
   Setup: <one line>
@@ -174,7 +192,9 @@ Visual notes (for visual-prompts downstream):
   Loop/CTA: <one line>
 
 Delivery notes: <muted-friendly check, medium-confidence flags used (if any),
-  humanize-pass confirmation, and — only if a companion grounding artifact was used — its
+  the written defence of any Gate E finding resolved by the defend path (its [C]
+  citation or its binding constraint — this is where a defence is recorded, and
+  the GATES block's "N defended" counts them), and — only if a companion grounding artifact was used — its
   citation markers verbatim (e.g. [THINKER: ...], [RESEARCH: ...]) for each citation actually
   used in the script, plus its "constraints that survive to publish" line,
   copied verbatim>
@@ -211,6 +231,10 @@ your first script if this is a new session.
 - `references/beat-timing-model.md` — the standard-band table lives above in
   this file; this reference adds only the word-rate `[I]`-reasoning, the
   20–30s compressed band, and the re-hook-timing `[I]` caveat in full.
+- `references/read-aloud-gates.md` — Gates D and E in full: the six Gate D
+  checks with their `[C]`/`[I]`/`[S]` provenance, the two-mode run rule, Gate
+  E's verbatim dispatch prompt, the no-touch annotation vocabulary, and the
+  three resolution paths. Read it before running either gate.
 - `references/worked-example.md` — a complete concept-brief-to-script run with
   inline citations.
 
