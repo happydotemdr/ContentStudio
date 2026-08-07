@@ -1,5 +1,5 @@
 {
-  "$comment": "Generated from the pydantic models in stitcher/stitcher/spec.py (design spec section 3). Do not edit by hand: run `python -m stitcher.spec` to regenerate. tests/test_spec.py fails if this file drifts from the models.",
+  "$comment": "Generated from the pydantic models in stitcher/stitcher/spec.py (design spec section 3). Do not edit by hand: run `cd stitcher && python -m stitcher.spec` to regenerate. tests/test_spec.py fails if this file drifts from the models, or if an upgraded pydantic changes how it emits schemas; regenerating is the fix in both cases.",
   "$defs": {
     "Audio": {
       "additionalProperties": false,

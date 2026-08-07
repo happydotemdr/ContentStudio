@@ -312,6 +312,10 @@ def test_unsupported_transition_names_v1(tmp_path: Path):
 
 # --- the generated JSON Schema (design spec section 3) --------------------
 
+# The one-line fix for every failure in this section, quoted verbatim in the
+# assertion messages and in stitcher/README.md so the three never disagree.
+REGENERATE_SCHEMA_CMD = "cd stitcher && python -m stitcher.spec"
+
 
 def test_the_committed_json_schema_matches_the_models():
     """Spec §3: "Pydantic v2 models are the source of truth;
@@ -323,15 +327,51 @@ def test_the_committed_json_schema_matches_the_models():
     Python" -- which means it can rot. This test is the thing that stops it:
     it fails the suite the moment a model changes without the file being
     regenerated, and names the command that fixes it.
+
+    THE OTHER WAY THIS FAILS. Under R2 the dependency pins are floors
+    (`pydantic>=2.9`), so a pydantic upgrade that changes how schemas are
+    emitted -- a new keyword, a renamed `$defs` entry, a different
+    representation of a constraint -- also fails this test, on a day nobody
+    touched spec.py. That is the CORRECT signal, not a false alarm: the
+    committed file really has stopped describing what this build validates,
+    and external tools really would be checking against yesterday's schema.
+    So the test is not weakened to tolerate it. Instead the failure says
+    exactly what to run, and distinguishes a content change from a
+    formatting-only one, so a maintainer who did not touch a model can see
+    in one line that an upgrade moved the schema under them.
     """
     from stitcher.spec import SCHEMA_PATH, schema_json
 
     assert SCHEMA_PATH.is_file(), (
-        f"{SCHEMA_PATH} is missing; generate it with `python -m stitcher.spec`"
+        f"{SCHEMA_PATH} is missing; generate it with `{REGENERATE_SCHEMA_CMD}`"
     )
-    assert SCHEMA_PATH.read_text(encoding="utf-8") == schema_json(), (
-        f"{SCHEMA_PATH} has drifted from the pydantic models in spec.py. "
-        "Regenerate it with `python -m stitcher.spec` and commit the result."
+
+    committed = SCHEMA_PATH.read_text(encoding="utf-8")
+    generated = schema_json()
+    if committed == generated:
+        return
+
+    # Byte equality is still what the test enforces -- the formatting is
+    # entirely ours (json.dumps, sorted keys, 2-space, trailing LF), so
+    # loosening to parsed equality would let the committed file drift out of
+    # canonical form for no benefit. Parsing only classifies the failure.
+    try:
+        same_content = json.loads(committed) == json.loads(generated)
+    except json.JSONDecodeError:
+        same_content = False
+    kind = (
+        "the FORMATTING differs but the schema content is identical"
+        if same_content
+        else "the schema CONTENT differs from what the models now emit"
+    )
+    raise AssertionError(
+        f"{SCHEMA_PATH} has drifted from the pydantic models in spec.py: {kind}.\n"
+        f"Fix it with exactly this, from the repo root, and commit the result:\n\n"
+        f"    {REGENERATE_SCHEMA_CMD}\n\n"
+        "If you did not change a model, an upgraded pydantic changed how it "
+        "emits schemas (requirements.txt pins floors, not exact versions). "
+        "Regenerating is still the right fix: the committed file is what "
+        "external validators use, and it has to describe this build."
     )
 
 
