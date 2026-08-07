@@ -19,6 +19,7 @@ from lint_prompt_sheet import (  # noqa: E402
     check_format,
     check_vocabulary,
     check_style_reference,
+    check_style_mechanism,
     lint,
     main,
 )
@@ -31,6 +32,8 @@ WORLD LOCK
   register_a_venue: municipal club soccer complex
   register_a_signature_objects: goal net, corner flag, painted touchline
   register_b_thinker: Plutarch
+  slot_register_a: rgs-present-soccer-a
+  slot_register_b: rgs-sourceera-painterly-b
 
 PER-SHOT PROMPTS
 
@@ -38,14 +41,14 @@ PER-SHOT PROMPTS
 Changes vs. previous: opening frame.
 
 ```text
-documentary sports photography, a strap being pulled tight, on cropped winter turf, No Text. --ar 9:16 --raw --s 95
+documentary sports photography, a strap being pulled tight, on cropped winter turf, No Text. --ar 9:16 --raw --s 95 {style:register_a}
 ```
 
 ### Shot 2 — Setup (3–8s) · Register B · WORLD · XWIDE · EYE
 Changes vs. previous: register switch to the source era.
 
 ```text
-luminous oil painting on aged linen, a colonnade at dawn, olive branches beyond, No Text. --ar 9:16 --s 520
+luminous oil painting on aged linen, a colonnade at dawn, olive branches beyond, No Text. --ar 9:16 --s 520 {style:register_b}
 ```
 """
 
@@ -70,7 +73,7 @@ def test_parse_sheet_reads_shot_metadata():
 def test_parse_sheet_reads_prompt_text():
     shots, _ = parse_sheet(SHEET)
     assert shots[0].prompt.startswith("documentary sports photography,")
-    assert shots[0].prompt.endswith("--ar 9:16 --raw --s 95")
+    assert shots[0].prompt.endswith("--ar 9:16 --raw --s 95 {style:register_a}")
 
 
 def test_parse_sheet_reads_world_lock():
@@ -86,7 +89,7 @@ def test_signature_objects_splits_on_commas():
 
 def test_prompt_body_and_flags_split_at_first_flag():
     shots, _ = parse_sheet(SHEET)
-    assert prompt_flags(shots[0]) == "--ar 9:16 --raw --s 95"
+    assert prompt_flags(shots[0]) == "--ar 9:16 --raw --s 95 {style:register_a}"
     assert "--ar" not in prompt_body(shots[0])
     assert prompt_body(shots[0]).endswith("No Text.")
 
@@ -571,3 +574,23 @@ def test_c16_fires_on_the_real_legacy_sheet():
     assert findings, "the legacy sheet's placeholder codes must be rejected"
     assert all(f.check == "C16" for f in findings)
     assert any("SREF-RGS-A-DL01" in f.message for f in findings)
+
+
+def test_c17_fires_when_a_shot_has_no_style_mechanism():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95")
+    findings = check_style_mechanism([shot])
+    assert [f.check for f in findings] == ["C17"]
+
+
+def test_c17_accepts_literal_sref_moodboard_or_slot():
+    for flags in ("--sref 1122334455", "--p m72678", "{style:register_a}"):
+        shot = _shot(f"a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {flags}")
+        assert check_style_mechanism([shot]) == []
+
+
+def test_c17_exempts_plate_shots():
+    shot = _shot(
+        "a flat teal gradient ground, no people, No Text. --ar 9:16 --s 200",
+        register="PLATE",
+    )
+    assert check_style_mechanism([shot]) == []

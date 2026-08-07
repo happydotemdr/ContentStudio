@@ -522,6 +522,41 @@ def check_style_reference(shots: list[Shot]) -> list[Finding]:
     return findings
 
 
+MOODBOARD_FLAG_RE = re.compile(r"--p\b")
+
+
+def check_style_mechanism(shots: list[Shot]) -> list[Finding]:
+    """C17: every non-PLATE shot carries some style mechanism.
+
+    C16 rejects a bad code but says nothing about a shot with no code at all, which is
+    the same defect one step removed: the shot renders in whatever default aesthetic
+    the model picks, and the Short stops reading as one look.
+
+    PLATE shots are exempt — they are subject-free background plates with no register
+    look to lock (visual-registers.md §5).
+    """
+    findings: list[Finding] = []
+    for shot in shots:
+        if shot.register == "PLATE":
+            continue
+        flags = prompt_flags(shot)
+        has_mechanism = (
+            "--sref" in flags
+            or MOODBOARD_FLAG_RE.search(flags) is not None
+            or STYLE_SLOT_RE.search(flags) is not None
+        )
+        if not has_mechanism:
+            findings.append(
+                Finding(
+                    "C17",
+                    shot.index,
+                    "no style mechanism in the parameter block; every non-PLATE shot needs "
+                    "a literal --sref/--p or a {style:...} slot, or it renders off-look",
+                )
+            )
+    return findings
+
+
 def lint(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
     """Run every Gate C check, in check order."""
     return [
@@ -531,6 +566,7 @@ def lint(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
         *check_prompt_quality(shots),
         *check_format(shots),
         *check_style_reference(shots),
+        *check_style_mechanism(shots),
         *check_vocabulary(shots),
     ]
 
