@@ -125,30 +125,37 @@ class Workspace:
 
     # --- deliverables ----------------------------------------------------
 
-    def out_master(self, version: int) -> Path:
-        return self.out_dir / f"{self.slug}_v{version:02d}_1080x1920.mp4"
+    def out_stem(self, version: int | None) -> str:
+        """Filename stem for one run. None means draft, which is unversioned."""
+        return f"{self.slug}_draft" if version is None else f"{self.slug}_v{version:02d}"
 
-    def out_cover(self, version: int) -> Path:
-        return self.out_dir / f"{self.slug}_v{version:02d}_cover_1080x1920.png"
+    def deliverable(self, suffix: str, version: int | None) -> Path:
+        return self.out_dir / f"{self.out_stem(version)}{suffix}"
 
-    def out_srt(self, version: int) -> Path:
-        return self.out_dir / f"{self.slug}_v{version:02d}.srt"
+    def out_master(self, version: int | None) -> Path:
+        return self.deliverable("_1080x1920.mp4", version)
 
-    def out_ass(self, version: int) -> Path:
-        return self.out_dir / f"{self.slug}_v{version:02d}.ass"
+    def out_cover(self, version: int | None) -> Path:
+        return self.deliverable("_cover_1080x1920.png", version)
 
-    def out_qa_json(self, version: int) -> Path:
-        return self.out_dir / f"{self.slug}_v{version:02d}_qa.json"
+    def out_srt(self, version: int | None) -> Path:
+        return self.deliverable(".srt", version)
 
-    def out_qa_md(self, version: int) -> Path:
-        return self.out_dir / f"{self.slug}_v{version:02d}_qa.md"
+    def out_ass(self, version: int | None) -> Path:
+        return self.deliverable(".ass", version)
 
-    def out_contact_sheet(self, version: int) -> Path:
-        return self.out_dir / f"{self.slug}_v{version:02d}_contact-sheet.png"
+    def out_qa_json(self, version: int | None) -> Path:
+        return self.deliverable("_qa.json", version)
+
+    def out_qa_md(self, version: int | None) -> Path:
+        return self.deliverable("_qa.md", version)
+
+    def out_contact_sheet(self, version: int | None) -> Path:
+        return self.deliverable("_contact-sheet.png", version)
 
     def draft_master(self) -> Path:
         """Drafts are disposable and never consume a version number."""
-        return self.out_dir / f"{self.slug}_draft_1080x1920.mp4"
+        return self.out_master(None)
 
     def next_version(self) -> int:
         """One above the highest version already promoted into out/."""

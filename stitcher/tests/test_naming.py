@@ -81,3 +81,17 @@ def test_draft_master_is_not_versioned(ws: Workspace):
 def test_master_path_lives_in_work_not_out(ws: Workspace):
     assert ws.master_path.parent == ws.work_dir
     assert ws.master_path.name == "master.mp4"
+
+
+def test_out_stem_distinguishes_versioned_from_draft(ws: Workspace):
+    assert ws.out_stem(3) == "nobody-asked-the-kid_v03"
+    assert ws.out_stem(None) == "nobody-asked-the-kid_draft"
+
+
+def test_every_deliverable_shares_one_stem(ws: Workspace):
+    for version in (3, None):
+        stem = ws.out_stem(version)
+        for path in (ws.out_master(version), ws.out_cover(version), ws.out_srt(version),
+                     ws.out_ass(version), ws.out_qa_json(version), ws.out_qa_md(version),
+                     ws.out_contact_sheet(version)):
+            assert path.name.startswith(stem)
