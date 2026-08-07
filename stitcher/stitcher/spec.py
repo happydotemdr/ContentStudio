@@ -320,6 +320,20 @@ def validate_spec(spec: RenderSpec) -> list[str]:
                     f"its timeline slot is {slot_duration}s ({shot.start}-{shot.end}s); "
                     "stage A trims without re-timing, so these must match exactly"
                 )
+        if shot.kind == "clip" and shot.motion.kind != "none":
+            # shots.clip_filters never reads shot.motion at all -- the Ken
+            # Burns scale/crop pair is built only by still_filters -- so a
+            # clip authoring push_in rendered motionless with no error, no
+            # warning and no QA signal. That is precisely the "subtly wrong
+            # video" goal 5 exists to prevent, and §3 already rejects
+            # unimplemented values ("not implemented in v1") rather than
+            # dropping them, so this is rejected the same way.
+            errors.append(
+                f"shot {shot.id}: motion.kind {shot.motion.kind!r} on a kind 'clip' "
+                "shot is not implemented in v1; stage A's clip path applies no "
+                "motion, so it would render motionless. Set motion.kind to 'none', "
+                "or use kind 'still'"
+            )
         if shot.motion.amount_pct < 0:
             # Unreachable through load_spec, which rejects it at the field
             # (Motion.amount_pct has ge=0). Kept as a second gate for any spec

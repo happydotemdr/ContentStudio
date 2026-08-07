@@ -193,6 +193,42 @@ def test_validate_accepts_a_clip_source_window_matching_the_timeline_slot(tmp_pa
     assert not any("source window" in e for e in validate_spec(spec))
 
 
+def test_validate_rejects_motion_on_a_clip_shot(tmp_path: Path):
+    """shots.clip_filters never reads shot.motion -- the Ken Burns scale/crop
+    pair is built only by still_filters -- so a clip authoring push_in used to
+    render motionless with no error, no warning and no QA signal. That is the
+    "subtly wrong video" goal 5 exists to prevent, and §3 rejects
+    unimplemented values rather than dropping them."""
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["kind"] = "clip"
+    payload["shots"][0]["source"] = "a.mp4"
+    payload["shots"][0]["source_in"] = 0.0
+    payload["shots"][0]["source_out"] = 3.0
+    payload["shots"][0]["motion"] = {"kind": "push_in", "amount_pct": 12}
+    spec, _ = load_spec(write(tmp_path, payload))
+    errors = validate_spec(spec)
+    assert any("B-01" in e and "push_in" in e and "not implemented in v1" in e
+               for e in errors), errors
+
+
+def test_a_clip_shot_with_no_motion_is_accepted(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["kind"] = "clip"
+    payload["shots"][0]["source"] = "a.mp4"
+    payload["shots"][0]["source_in"] = 0.0
+    payload["shots"][0]["source_out"] = 3.0
+    payload["shots"][0]["motion"] = {"kind": "none"}
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert not any("motion" in e for e in validate_spec(spec))
+
+
+def test_motion_on_a_still_shot_is_untouched_by_the_clip_rule(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["motion"] = {"kind": "push_in", "amount_pct": 12}
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert not any("motion" in e for e in validate_spec(spec))
+
+
 def test_a_negative_motion_amount_is_rejected_at_load(tmp_path: Path):
     """A negative zoom shrinks the animated `scale` below the fixed `crop`
     that follows it. Probed against the installed 9.0 binary with stage A's
