@@ -308,3 +308,56 @@ def test_unsupported_transition_names_v1(tmp_path: Path):
     payload["shots"][1]["transition_in"] = {"kind": "dissolve"}
     with pytest.raises(ValueError, match="not implemented in v1"):
         load_spec(write(tmp_path, payload))
+
+
+# --- the generated JSON Schema (design spec section 3) --------------------
+
+
+def test_the_committed_json_schema_matches_the_models():
+    """Spec §3: "Pydantic v2 models are the source of truth;
+    stitcher/schema/render-spec.schema.json is generated from them so external
+    tools can validate without importing Python."
+
+    The file is committed rather than generated on demand -- a file that only
+    exists after a Python run does not deliver "validate without importing
+    Python" -- which means it can rot. This test is the thing that stops it:
+    it fails the suite the moment a model changes without the file being
+    regenerated, and names the command that fixes it.
+    """
+    from stitcher.spec import SCHEMA_PATH, schema_json
+
+    assert SCHEMA_PATH.is_file(), (
+        f"{SCHEMA_PATH} is missing; generate it with `python -m stitcher.spec`"
+    )
+    assert SCHEMA_PATH.read_text(encoding="utf-8") == schema_json(), (
+        f"{SCHEMA_PATH} has drifted from the pydantic models in spec.py. "
+        "Regenerate it with `python -m stitcher.spec` and commit the result."
+    )
+
+
+def test_the_generated_schema_publishes_the_external_in_out_keys():
+    """The file describes render-spec.json as written on disk, whose keys are
+    `in`/`out` -- not the Python attributes `start`/`end`, which only exist
+    because `in` is a reserved word. Publishing the attribute names would
+    make every external validator reject every real spec."""
+    from stitcher.spec import render_spec_schema
+
+    schema = render_spec_schema()
+    for model in ("Shot", "Overlay", "Caption", "BedWindow"):
+        properties = schema["$defs"][model]["properties"]
+        assert "in" in properties and "out" in properties, model
+        assert "start" not in properties and "end" not in properties, model
+    assert "in" in schema["$defs"]["Shot"]["required"]
+    assert "out" in schema["$defs"]["Shot"]["required"]
+
+
+def test_the_generated_schema_is_a_usable_json_schema_document():
+    from stitcher.spec import SCHEMA_PATH
+
+    document = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert document["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert document["type"] == "object"
+    # extra="forbid" on every model has to survive into the published schema,
+    # or an external validator would silently accept keys load_spec rejects.
+    assert document["additionalProperties"] is False
+    assert set(MINIMAL) <= set(document["properties"])

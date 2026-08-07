@@ -50,6 +50,25 @@ renders/<slug>/
 A version is allocated only on a QA pass. A failed render leaves its master in
 `work/` and its report in `logs/`, so `out/` contains only outputs that met spec.
 
+## JSON Schema
+
+`schema/render-spec.schema.json` describes `render-spec.json` for external
+tools that cannot import Python (design spec §3). Its keys are the on-disk
+ones — `in`/`out`, not the Python attributes `start`/`end`.
+
+The pydantic models in `stitcher/spec.py` remain the source of truth; the file
+is **generated** from them and committed. After changing a model, regenerate
+and commit it:
+
+```bash
+cd stitcher && python -m stitcher.spec
+```
+
+`tests/test_spec.py` fails if the committed file has drifted from the models,
+so it cannot rot silently. It is committed rather than produced on demand
+because a file that only exists after a Python run does not deliver
+"validate without importing Python".
+
 ## Tests
 
 ```bash
