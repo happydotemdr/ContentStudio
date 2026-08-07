@@ -11,8 +11,13 @@ from tests.test_spec import MINIMAL, write
 
 
 def good_probe(duration: float = 6.0) -> ProbeResult:
+    # color_primaries/color_transfer supplied explicitly (not left to
+    # ProbeResult's default): colour_tagging gates on all three fields
+    # together, and a "conforming render" fixture must actually measure
+    # bt709 on all three rather than benefit from a passing default (review
+    # round 1 finding on task-13).
     return ProbeResult(duration, 1080, 1920, 30.0, "yuv420p", "h264",
-                       "aac", 48000, "bt709", "High")
+                       "aac", 48000, "bt709", "High", "bt709", "bt709")
 
 
 @pytest.fixture
@@ -99,6 +104,31 @@ def test_missing_bt709_tagging_fails_the_colour_check(ready, tmp_path, monkeypat
     monkeypatch.setattr(
         vf.ffmpeg, "probe",
         lambda path: ProbeResult(6.0, 1080, 1920, 30.0, "yuv420p", "h264", "aac", 48000, "bt601"),
+    )
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "colour_tagging") == vf.FAIL
+
+
+def test_unmeasured_colour_primaries_or_transfer_is_not_silently_a_pass(ready, tmp_path, monkeypatch):
+    # A ProbeResult constructed without the two new colour fields (as every
+    # ProbeResult built before this task existed necessarily was) must not
+    # report colour_tagging = pass -- that would mean two of three required
+    # fields passed without anything having measured them (review round 1
+    # finding on task-13). This is FAIL, not UNAVAILABLE: verify() only ever
+    # reaches this check after successfully probing the master file, so
+    # "colour_primaries/color_transfer read back None" is not "we could not
+    # measure it" -- it is a genuine, actionable measurement: the file was
+    # probed and the tags are absent, exactly as a real render encoded with
+    # output-level colour flags instead of a frame-tagging filter measures
+    # (see task-13-report.md's empirical finding). UNAVAILABLE is reserved
+    # for checks whose data source (a separate, deletable work/ artifact)
+    # is missing outright, which is not the case here.
+    ws, master = ready
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch)
+    monkeypatch.setattr(
+        vf.ffmpeg, "probe",
+        lambda path: ProbeResult(6.0, 1080, 1920, 30.0, "yuv420p", "h264", "aac", 48000, "bt709"),
     )
     checks = vf.verify(spec, ws, master, ws.log_path("t"))
     assert status_of(checks, "colour_tagging") == vf.FAIL
