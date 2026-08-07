@@ -1,12 +1,13 @@
 import json
+import math
 from pathlib import Path
 
 import pytest
 
-from stitcher import verify as vf
+from stitcher import envelope, verify as vf
 from stitcher.ffmpeg import ProbeResult
 from stitcher.naming import Workspace
-from stitcher.spec import load_spec
+from stitcher.spec import load_spec, runtime_seconds
 from tests.test_spec import MINIMAL, write
 
 
@@ -199,6 +200,138 @@ def test_duck_depth_outside_tolerance_fails(ready, tmp_path, monkeypatch):
     wire(monkeypatch, duck_delta=-6.0)   # expected -14 dB, measured -6 dB
     checks = vf.verify(spec, ws, master, ws.log_path("t"))
     assert status_of(checks, "duck_depth") == vf.FAIL
+
+
+# --- bed windows and fades (design spec §3 "precedence is window > duck") ---
+#
+# The fixture below simulates a CORRECT render: the ducked file is exactly the
+# conformed file with stage C's own shifted envelope applied. Any spec whose
+# envelope is not a flat duck_db plateau therefore proves whether verify
+# derives its expectation from the same envelope stage C rendered, or from the
+# constant duck_db - gain_db (which is only right when no window or fade
+# covers the voice).
+
+
+def correct_render(monkeypatch, spec, base_db=-30.0):
+    """measure_window that reports the levels a correct stage C would produce.
+
+    The ducked reading is the ENERGY AVERAGE of the envelope across whatever
+    window verify asks for, which is what ebur128 would report for a
+    constant-level bed modulated by that envelope -- not the envelope's value
+    at a single instant. That distinction is the whole point: a check that
+    measures one window spanning two envelope levels cannot compare it to
+    either level, so this fixture only reports a clean number when verify
+    asks about a window the envelope actually holds flat.
+    """
+    bed = spec.audio.bed
+    spans = envelope.stem_spans(
+        spec.audio.stems, {stem.file: 6.0 for stem in spec.audio.stems}
+    )
+    points = envelope.build_breakpoints(bed, spans, runtime_seconds(spec))
+    shifted = [envelope.Breakpoint(p.t, p.db - bed.gain_db) for p in points]
+
+    def fake_window(path, start, duration, log_path):
+        if "04b" not in str(path):
+            return base_db
+        steps = 400
+        energy = sum(
+            10 ** (envelope.level_at(shifted, start + duration * (i + 0.5) / steps) / 10)
+            for i in range(steps)
+        )
+        return base_db + 10 * math.log10(energy / steps)
+
+    monkeypatch.setattr(vf, "measure_window", fake_window)
+
+
+def with_window(**window) -> dict:
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["audio"]["bed"]["windows"] = [window]
+    return payload
+
+
+def test_a_bed_window_over_a_voice_span_is_expected_at_the_window_level(
+    ready, tmp_path, monkeypatch
+):
+    """A `level_db` window sitting over the voice makes the envelope -30 dB
+    (voice-relative) there, not duck_db. Verify must expect the window's level;
+    against the old constant expectation this is an 8 dB error and a false FAIL
+    on a correct render."""
+    ws, master = ready
+    spec, _ = load_spec(
+        write(tmp_path, with_window(**{"in": 0.0, "out": 3.0, "mode": "ducked",
+                                       "level_db": -30.0}))
+    )
+    wire(monkeypatch)
+    correct_render(monkeypatch, spec)
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "duck_depth") == vf.PASS
+
+
+def test_a_mode_out_window_over_a_voice_span_measures_the_rest_of_the_span(
+    ready, tmp_path, monkeypatch
+):
+    """The design spec's own canonical case: "bed held out entirely for 0-3s
+    while the child speaks". The held-out region cannot be measured (ebur128
+    floors at -70), so it is skipped rather than compared -- but the ducked
+    remainder of the same span still is."""
+    ws, master = ready
+    spec, _ = load_spec(
+        write(tmp_path, with_window(**{"in": 0.0, "out": 3.0, "mode": "out",
+                                       "level_db": None}))
+    )
+    wire(monkeypatch)
+    correct_render(monkeypatch, spec)
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    duck = next(c for c in checks if c.name == "duck_depth")
+    assert duck.status == vf.PASS, duck.detail
+    assert "-14.0" in duck.detail
+
+
+def test_a_window_that_silences_the_whole_span_is_unavailable_not_a_pass(
+    ready, tmp_path, monkeypatch
+):
+    """Nothing measurable is left, so the check must say so rather than assert
+    a depth it never measured."""
+    ws, master = ready
+    spec, _ = load_spec(
+        write(tmp_path, with_window(**{"in": 0.0, "out": 6.0, "mode": "out",
+                                       "level_db": None}))
+    )
+    wire(monkeypatch)
+    correct_render(monkeypatch, spec)
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "duck_depth") == vf.UNAVAILABLE
+
+
+def test_a_windowed_bed_that_is_actually_wrong_still_fails(ready, tmp_path, monkeypatch):
+    """The envelope-derived expectation must not be vacuous: a ducked file that
+    ignored the window (it applied plain duck_db throughout) is a real defect
+    and must still FAIL."""
+    ws, master = ready
+    spec, _ = load_spec(
+        write(tmp_path, with_window(**{"in": 0.0, "out": 3.0, "mode": "ducked",
+                                       "level_db": -30.0}))
+    )
+    wire(monkeypatch, duck_delta=-14.0)  # plain duck_db everywhere, window ignored
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "duck_depth") == vf.FAIL
+
+
+def test_a_fade_across_the_voice_span_is_not_compared_against_a_flat_level(
+    ready, tmp_path, monkeypatch
+):
+    """A fade makes the envelope a ramp; an integrated measurement over a ramp
+    cannot be compared to any single expected value, so the ramp is excluded
+    the way the attack/release ramps already are."""
+    ws, master = ready
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["audio"]["bed"]["fades"] = [{"at": 0.0, "kind": "in", "ms": 4000}]
+    spec, _ = load_spec(write(tmp_path, payload))
+    wire(monkeypatch)
+    correct_render(monkeypatch, spec)
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    duck = next(c for c in checks if c.name == "duck_depth")
+    assert duck.status in (vf.PASS, vf.UNAVAILABLE), duck.detail
 
 
 def test_an_overlay_escaping_the_safe_zone_fails(ready, tmp_path, monkeypatch):

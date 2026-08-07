@@ -18,7 +18,9 @@ stage F):
    verified empirically against the real 9.0 binary that an ebur128 window
    below its ~400ms gating block reports a meaningless "I: -70.0 LUFS" floor
    rather than a real measurement, so a sub-400ms window would silently
-   corrupt the comparison rather than just being imprecise.
+   corrupt the comparison rather than just being imprecise. What each window
+   is compared AGAINST comes from the same shifted breakpoints stage C
+   rendered, never from the constant duck_db - gain_db -- see duck_windows().
 2. True peak is measured on 06_mix_final.wav, before AAC encoding, not on
    the master. AAC decode can overshoot its input by 0.3-1 dB, so a mix
    correctly normalized to -1.5 dBTP would spuriously fail if measured on
@@ -50,6 +52,20 @@ LOUDNESS_TOLERANCE_LU = 1.0
 DUCK_TOLERANCE_DB = 1.5
 MIN_DUCK_WINDOW_S = 0.4
 AAC_PADDING_SLACK_S = 0.05
+
+# ebur128 reports a flat "I: -70.0 LUFS" for anything at or below its gating
+# floor, so a window the envelope pushes down there yields no measurement at
+# all -- not a small one. The margin keeps a window that merely approaches the
+# floor out of the comparison too, since its reading is already dominated by
+# the floor rather than by the envelope.
+EBUR128_FLOOR_DB = -70.0
+FLOOR_MARGIN_DB = 10.0
+
+# How flat a sub-window must be, end to end, for a single expected value to be
+# comparable against one integrated measurement of it. A fade (or any other
+# ramp) crossing a voice span exceeds this and is excluded, exactly as the
+# duck's own attack/release ramps already are.
+FLAT_ENVELOPE_TOLERANCE_DB = 0.5
 
 PASS = "pass"
 FAIL = "fail"
@@ -147,6 +163,45 @@ def _check_colour_tagging(probed: ffmpeg.ProbeResult) -> Check:
     )
 
 
+def duck_windows(
+    shifted: list[envelope.Breakpoint],
+    spans: list[tuple[float, float]],
+    attack: float,
+) -> list[tuple[float, float, float]]:
+    """(start, length, expected_db) for every comparable sub-window.
+
+    The expectation is read off the SAME shifted breakpoints stage C rendered
+    (audio.py `_build_bed`), never off the constant `duck_db - gain_db`. Those
+    two agree only when nothing but the duck is acting: design spec §3 gives an
+    explicit `bed.windows` entry precedence over the duck outright ("bed held
+    out entirely for 0-3s while the child speaks"), and `bed.fades` attenuate
+    on top of whatever is underneath. Against the constant, either of those
+    turns a perfectly correct render into a duck_depth FAIL -- for the spec's
+    own canonical example, by roughly 48 dB.
+
+    Each voice span is therefore cut at every breakpoint that falls inside it,
+    so each sub-window is one linear segment of the envelope, and only the
+    segments the envelope holds flat across their whole length are kept: an
+    integrated measurement of a ramp is not comparable to any single value.
+    The duck's own attack ramp is excluded the same way it always was, by
+    starting the first sub-window at `span start + attack`.
+    """
+    edges = sorted({point.t for point in shifted})
+    windows: list[tuple[float, float, float]] = []
+    for start, end in spans:
+        first = start + attack
+        cuts = [first] + [t for t in edges if first < t < end] + [end]
+        for left, right in zip(cuts, cuts[1:]):
+            if right - left < MIN_DUCK_WINDOW_S:
+                continue
+            low = envelope.level_at(shifted, left)
+            high = envelope.level_at(shifted, right)
+            if abs(high - low) > FLAT_ENVELOPE_TOLERANCE_DB:
+                continue
+            windows.append((left, right - left, (low + high) / 2))
+    return windows
+
+
 def _check_duck(spec: RenderSpec, ws: Workspace, log_path: Path) -> Check:
     conformed = ws.audio_step("04a", "bed_conformed")
     ducked = ws.audio_step("04b", "bed_ducked")
@@ -157,7 +212,6 @@ def _check_duck(spec: RenderSpec, ws: Workspace, log_path: Path) -> Check:
                      "bed intermediates absent; run with an intact work/ directory")
 
     bed = spec.audio.bed
-    expected = bed.duck_db - bed.gain_db
     attack = bed.duck_attack_ms / 1000.0
 
     durations = {stem.file: stem.duration_s for stem in spec.audio.stems
@@ -174,27 +228,46 @@ def _check_duck(spec: RenderSpec, ws: Workspace, log_path: Path) -> Check:
         # rather than crash the whole verification pass.
         return Check("duck_depth", UNAVAILABLE, f"stem durations unknown: {exc}")
 
-    measured: list[float] = []
-    for start, end in spans:
-        window_start = start + attack
-        window_length = end - window_start
-        if window_length < MIN_DUCK_WINDOW_S:
+    points = envelope.build_breakpoints(bed, spans, runtime_seconds(spec))
+    shifted = [
+        envelope.Breakpoint(point.t, point.db - bed.gain_db) for point in points
+    ]
+
+    worst: tuple[float, float] | None = None   # (expected, measured)
+    unmeasurable = 0
+    for start, length, expected in duck_windows(shifted, spans, attack):
+        # A window the envelope silences (design spec's `mode: "out"`) is not
+        # a window that measures -100 dB; it is a window ebur128 cannot report
+        # on at all. Skipping it is the only honest reading -- comparing the
+        # floor against the expectation would fail every correct hold-out.
+        if expected + bed.gain_db <= envelope.SILENCE_DB + 1.0:
+            unmeasurable += 1
             continue
-        measured.append(
-            measure_window(ducked, window_start, window_length, log_path)
-            - measure_window(conformed, window_start, window_length, log_path)
+        base = measure_window(conformed, start, length, log_path)
+        if base + expected <= EBUR128_FLOOR_DB + FLOOR_MARGIN_DB:
+            unmeasurable += 1
+            continue
+        measured = measure_window(ducked, start, length, log_path) - base
+        if worst is None or abs(measured - expected) > abs(worst[1] - worst[0]):
+            worst = (expected, measured)
+
+    if worst is None:
+        detail = (
+            f"{unmeasurable} window(s) sit at or below ebur128's "
+            f"{EBUR128_FLOOR_DB:.0f} dB floor and nothing else is long enough "
+            "to measure outside the ramps"
+            if unmeasurable
+            else "no voice span long enough to measure outside the ramps"
         )
+        return Check("duck_depth", UNAVAILABLE, detail)
 
-    if not measured:
-        return Check("duck_depth", UNAVAILABLE,
-                     "no voice span long enough to measure outside the ramps")
-
-    worst = max(measured, key=lambda value: abs(value - expected))
-    ok = abs(worst - expected) <= DUCK_TOLERANCE_DB
+    expected, measured = worst
+    ok = abs(measured - expected) <= DUCK_TOLERANCE_DB
+    skipped = f", {unmeasurable} window(s) below the measurement floor" if unmeasurable else ""
     return Check(
         "duck_depth", PASS if ok else FAIL,
-        f"expected {expected:.1f} dB, worst measured {worst:.1f} dB "
-        f"(tolerance {DUCK_TOLERANCE_DB} dB)",
+        f"expected {expected:.1f} dB, worst measured {measured:.1f} dB "
+        f"(tolerance {DUCK_TOLERANCE_DB} dB){skipped}",
     )
 
 
