@@ -711,6 +711,47 @@ def test_lint_cover_catches_a_bad_cover_sref():
     assert any(f.check == "C16" for f in findings)
 
 
+TWO_COVER_BLOCKS = COVER_BLOCK + "\n" + COVER_BLOCK.replace("HUMAN-COST", "DETAIL")
+
+
+def test_c19_fires_when_multiple_cover_blocks_are_present():
+    """A stale draft cover left behind next to the real one must not be silently
+    dropped -- parse_cover only ever returns the first match, so the second block
+    is otherwise invisible to Gate C."""
+    findings = check_cover_present(TWO_COVER_BLOCKS)
+    assert [f.check for f in findings] == ["C19"]
+    assert "2 '### Cover" in findings[0].message
+    assert "exactly one cover decision" in findings[0].message
+
+
+def test_declares_cover_reuse_ignores_a_match_inside_a_fenced_prompt():
+    """A 'Cover = Hook' line inside a ```text prompt fence is prompt content, not a
+    declaration, and must not silently satisfy C19."""
+    text = (
+        "PER-SHOT PROMPTS\n\n"
+        "### Shot 1 — Hook (0–3s) · Register A · DETAIL · MACRO · LOW\n\n"
+        "```text\n"
+        "Cover = Hook shaped shadow falling across the pitch, No Text. --ar 9:16\n"
+        "```\n"
+    )
+    assert declares_cover_reuse(text) is False
+    findings = check_cover_present(text)
+    assert [f.check for f in findings] == ["C19"]
+    assert "no cover decision" in findings[0].message
+
+
+def test_main_labels_a_cover_finding_as_cover_not_shot_0_or_sheet(tmp_path, capsys):
+    bad_cover = COVER_BLOCK.replace("{style:register_a}", "--sref SREF-RGS-A-DL01")
+    sheet = tmp_path / "sheet.md"
+    sheet.write_text(SHEET + "\n" + bad_cover, encoding="utf-8")
+
+    code = main([str(sheet)])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "[C16] cover: " in out
+    assert "[C16] shot 0:" not in out
+
+
 STYLEBOARD = """\
 === STYLEBOARD — demo ===
 

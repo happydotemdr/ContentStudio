@@ -101,15 +101,23 @@ COVER_HEADING_RE = re.compile(
     r"^###\s+Cover\s+—\s+(.+?)\s+·\s+Register\s+(A|B|PLATE)"
     r"\s+·\s+([A-Z-]+)\s+·\s+([A-Z-]+)\s+·\s+([A-Z]+)\s*$"
 )
-COVER_REUSE_RE = re.compile(r"^\s*Cover\s*=\s*Hook\b", re.IGNORECASE | re.MULTILINE)
+# Matched per-line (see declares_cover_reuse), not with re.search over the whole
+# document -- a document-wide search would also match this text sitting inside a
+# ```text prompt fence or in unrelated prose, silently satisfying C19 with no real
+# cover decision made.
+COVER_REUSE_RE = re.compile(r"^\s*Cover\s*=\s*Hook\b", re.IGNORECASE)
 
 
 def parse_cover(text: str) -> Shot | None:
     """The dedicated cover prompt, as a Shot with index 0, or None.
 
     None means either 'the cover reuses the Hook still' (a legitimate branch — see
-    declares_cover_reuse) or 'no cover block at all' (C19). Index 0 keeps the cover
-    distinguishable from every real shot in a finding message.
+    declares_cover_reuse), 'no cover block at all' (C19), or 'more than one cover
+    block' -- that last case is deliberately surfaced by check_cover_present, not
+    here: parse_cover's return type stays Shot | None so lint_cover and every
+    existing caller are unaffected, and only the first block is ever linted for
+    format/density/style. Index 0 keeps the cover distinguishable from every real
+    shot in a finding message.
     """
     lines = text.splitlines()
     for i, line in enumerate(lines):
@@ -132,26 +140,68 @@ def parse_cover(text: str) -> Shot | None:
     return None
 
 
+def _count_cover_headings(text: str) -> int:
+    """How many '### Cover — ...' lines the sheet carries, stale drafts included."""
+    return sum(1 for line in text.splitlines() if COVER_HEADING_RE.match(line))
+
+
 def declares_cover_reuse(text: str) -> bool:
-    return COVER_REUSE_RE.search(text) is not None
+    """True if the sheet states, outside any prompt fence, that the cover reuses the Hook.
+
+    Scans line by line and skips anything between a ```text open fence and its
+    close, so a stray 'Cover = Hook...' sitting inside a pasted prompt body (i.e.
+    describing imagery, not declaring a decision) can't satisfy C19. Deliberately
+    NOT confined to a 'COVER / THUMBNAIL' section header: the line is a fixed,
+    specific declaration string ('Cover = Hook...') that nothing else in the sheet
+    format would produce by accident, and Task 6's fixture carries it at the top
+    level with no such section wrapping it.
+    """
+    in_fence = False
+    for line in text.splitlines():
+        if OPEN_FENCE_RE.match(line):
+            in_fence = True
+            continue
+        if CLOSE_FENCE_RE.match(line):
+            in_fence = False
+            continue
+        if in_fence:
+            continue
+        if COVER_REUSE_RE.match(line):
+            return True
+    return False
 
 
 def check_cover_present(text: str) -> list[Finding]:
-    """C19: the cover decision is stated, never silently omitted.
+    """C19: the cover decision is stated, never silently omitted -- and stated once.
 
     prompt-sheet-format.md §7 already requires this of every emitted sheet `[I]`; until
-    now nothing enforced it.
+    now nothing enforced it. A sheet with two '### Cover — ...' headings (a stale draft
+    left behind plus the real one) has parse_cover silently linting only the first and
+    leaving the second invisible to Gate C, so that ambiguity is reported here rather
+    than resolved silently.
     """
+    findings: list[Finding] = []
+    heading_count = _count_cover_headings(text)
+    if heading_count > 1:
+        findings.append(
+            Finding(
+                "C19",
+                None,
+                f"{heading_count} '### Cover — ...' blocks found; a sheet must state "
+                "exactly one cover decision. Remove the stale draft.",
+            )
+        )
     if parse_cover(text) is not None or declares_cover_reuse(text):
-        return []
-    return [
+        return findings
+    findings.append(
         Finding(
             "C19",
             None,
             "no cover decision: emit a '### Cover — ...' block, or state "
             "'Cover = Hook beat still #1' explicitly",
         )
-    ]
+    )
+    return findings
 
 
 def lint_cover(cover: Shot, world: dict[str, str]) -> list[Finding]:
@@ -767,7 +817,12 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Gate C: FAIL — {len(shots)} shots, {len(findings)} finding(s).")
     for finding in findings:
-        where = f"shot {finding.shot_index}" if finding.shot_index else "sheet"
+        if finding.shot_index is None:
+            where = "sheet"
+        elif finding.shot_index == 0:
+            where = "cover"
+        else:
+            where = f"shot {finding.shot_index}"
         print(f"  [{finding.check}] {where}: {finding.message}")
     return 1
 
