@@ -72,7 +72,7 @@ detail lives in `references/`.
 
 ### Tool-specialist skills (not corpus-derived — read this before editing them)
 
-Three skills sit **beside** the eight-stage pipeline rather than inside it. Each is
+Three skills sit **beside** the eight-skill pipeline rather than inside it. Each is
 usable standalone for any job in its tool, and each is also the downstream
 specialist for one pipeline stage. None is built from the corpus:
 
