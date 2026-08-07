@@ -335,7 +335,7 @@ async def test_scripting_turn_records_gate_results_in_frontmatter(conn, tmp_path
     monkeypatch.setattr(
         turn_service.gates,
         "run_gates_for_stage",
-        lambda root, sid, path: [{
+        lambda root, sid, path, upstream: [{
             "name": "gate_d_script_language",
             "status": "fail",
             "findings": [{"check": "D1", "beat": "HOOK", "message": "em-dash", "kind": "fail"}],

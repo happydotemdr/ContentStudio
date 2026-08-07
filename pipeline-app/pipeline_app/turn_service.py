@@ -131,12 +131,16 @@ async def run_stage_turn(
 
     raw_output_path = stage_dir / "raw_output.md"
     upstream_stage_defs = [s for s in all_stage_defs if s.id in stage_def.depends_on]
-    upstream_paths = [
-        p for p in (
-            artifacts.latest_artifact_path(run_dir / stage_dir_name(up))
-            for up in upstream_stage_defs
-        ) if p is not None
-    ]
+    # Keyed by stage id, not just a list: a gate may need one specific upstream
+    # artifact (Gate C needs the styleboard's world lock), and positional
+    # recovery from the list would break the moment an upstream has no artifact
+    # yet and drops out of it.
+    upstream_by_stage: dict[str, Path] = {}
+    for up in upstream_stage_defs:
+        path = artifacts.latest_artifact_path(run_dir / stage_dir_name(up))
+        if path is not None:
+            upstream_by_stage[up.id] = path
+    upstream_paths = list(upstream_by_stage.values())
 
     is_first_turn = stage_row["claude_session_id"] is None
     if is_first_turn:
@@ -231,7 +235,9 @@ async def run_stage_turn(
         {"path": _relpath(p, run_dir), "sha256": artifacts.compute_sha256(p)}
         for p in upstream_paths
     ]
-    gate_results = gates.run_gates_for_stage(repo_root, stage_def.id, raw_output_path)
+    gate_results = gates.run_gates_for_stage(
+        repo_root, stage_def.id, raw_output_path, upstream_by_stage
+    )
     body = raw_output_path.read_text(encoding="utf-8")
     meta = {
         "schema_version": 1,

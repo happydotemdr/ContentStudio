@@ -78,7 +78,7 @@ def test_unparseable_script_is_an_error_not_a_pass(tmp_path):
 
 
 def test_a_linter_that_raises_is_an_error_not_a_pass(tmp_path, monkeypatch):
-    def boom(_repo_root, _path):
+    def boom(_repo_root, _path, _upstream):
         raise RuntimeError("linter exploded")
 
     monkeypatch.setitem(gates.GATE_REGISTRY, "scripting", [("gate_boom", boom)])
@@ -97,3 +97,77 @@ def test_unregistered_stage_returns_no_results(tmp_path):
     path = tmp_path / "raw_output.md"
     path.write_text("anything\n", encoding="utf-8")
     assert gates.run_gates_for_stage(REPO_ROOT, "ideation", path) == []
+
+
+# --- Gate C: the world lock lives in the styleboard, not the sheet -----------
+#
+# visual-prompts/SKILL.md instructs the skill NOT to re-emit the WORLD LOCK
+# block into its sheet, so a post-styleboard-split sheet carries no world lock
+# of its own. A gate that parsed only the sheet resolved an empty world and
+# fired C8 on every Register A shot plus C18 on every slot token -- blocking
+# approval on every correctly-authored sheet. These tests pin the sheet and the
+# styleboard as two separate inputs, exactly as the CLI's --styleboard does.
+
+FIXTURES = REPO_ROOT / "tests" / "fixtures"
+
+
+def _visual_gate(sheet: Path, upstream: dict[str, Path] | None = None) -> dict:
+    results = gates.run_gates_for_stage(REPO_ROOT, "visual", sheet, upstream)
+    assert len(results) == 1
+    return results[0]
+
+
+def test_visual_gate_reads_the_world_lock_from_the_styleboard():
+    result = _visual_gate(
+        FIXTURES / "passing_sheet.md",
+        {"styleboard": FIXTURES / "passing_styleboard.md"},
+    )
+    assert result["status"] == "pass", result["findings"]
+    assert result["findings"] == []
+
+
+def test_visual_gate_without_a_styleboard_uses_a_legacy_sheets_own_world_lock():
+    """A pre-split sheet still carries its own WORLD LOCK block. With no
+    styleboard upstream, that block is the world -- so C8 must not fire for a
+    missing sport. (The sheet still fails on C16's placeholder --sref codes;
+    that is the point of C16 and is asserted separately below.)"""
+    result = _visual_gate(FIXTURES / "legacy_do_less_sheet.md")
+    checks = {f["check"] for f in result["findings"]}
+    assert "C8" not in checks, result["findings"]
+
+
+def test_visual_gate_errors_when_the_styleboard_has_no_recoverable_world_lock(tmp_path):
+    """backfill_styleboard_rows writes an honest "not recoverable" styleboard
+    for a project that completed `visual` before the stage existed. Linting a
+    sheet against an empty world would report a wall of C8/C18 findings that
+    name the wrong problem. Fail closed, and say which artifact is empty."""
+    styleboard = tmp_path / "artifact.v1.md"
+    styleboard.write_text(
+        "=== STYLEBOARD — legacy (backfilled) ===\n\n"
+        "WORLD LOCK\n  not recoverable — no block could be lifted.\n",
+        encoding="utf-8",
+    )
+    result = _visual_gate(
+        FIXTURES / "passing_sheet.md", {"styleboard": styleboard}
+    )
+    assert result["status"] == "error"
+    assert "WORLD LOCK" in result["findings"][0]["message"]
+
+
+def test_visual_gate_enforces_the_cover_lint():
+    """C19 and the cover checks are part of the CLI's Gate C. An app-side gate
+    that called lint() without them was a materially weaker gate wearing the
+    same name."""
+    result = _visual_gate(FIXTURES / "legacy_do_less_sheet.md")
+    assert result["status"] == "fail"
+    assert "C19" in {f["check"] for f in result["findings"]}
+
+
+def test_visual_gate_rejects_placeholder_sref_codes():
+    """C16 fires once per shot carrying an invented placeholder code. The
+    fixture is a two-shot excerpt of the pre-split do-less sheet, whose real
+    15-shot original trips C16 fourteen times."""
+    result = _visual_gate(FIXTURES / "legacy_do_less_sheet.md")
+    c16 = [f for f in result["findings"] if f["check"] == "C16"]
+    assert len(c16) == 2, [f["message"] for f in c16]
+    assert all("SREF-RGS-" in f["message"] for f in c16)
