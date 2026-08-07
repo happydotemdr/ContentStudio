@@ -106,6 +106,8 @@ WORLD LOCK
   register_b_artifacts:          [2-3 period objects]
   register_b_figure_archetype:   [role and dress; never a likeness]
   motif:                         [the grounding brief's motif, rendered in BOTH registers]
+  slot_register_a:               [Library entry label bound to Register A]
+  slot_register_b:               [Library entry label bound to Register B]
 ```
 
 Filled-in RaisingGoodSports example:
@@ -125,7 +127,16 @@ WORLD LOCK
   register_b_figure_archetype:   an unnamed tutor, plain wool himation, face turned into shadow
   motif:                         a watering can — modern plastic in Register A, terracotta vessel in
                                   Register B
+  slot_register_a:               rgs-present-soccer-a
+  slot_register_b:               rgs-sourceera-painterly-b
 ```
+
+**Slot declarations `[I]`.** Every `{style:…}` or `{char:…}` token a downstream prompt
+sheet uses must be declared here as a `slot_<name>:` line whose value names the Style
+Library entry it binds to. Gate C's **C18** rejects an undeclared slot. The literal
+`--sref` code is deliberately *not* written here — it is resolved at generate time from
+the Library, so re-locking a Short's look is one binding change rather than a sheet
+regeneration.
 
 ## 8. Choosing the sport `[I]`
 
