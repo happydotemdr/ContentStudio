@@ -14,17 +14,22 @@ double-pay for the same posts.
 from __future__ import annotations
 
 import datetime as _dt
-import os
 import sys
-import time
+import time  # noqa: F401 -- kept so tests can monkeypatch ig.time.sleep/monotonic
 from pathlib import Path
 
-import requests
+import requests  # noqa: F401 -- kept so tests can monkeypatch ig.requests.post/get
 
-from pipeline_app import artifacts
+from pipeline_app import artifacts, brightdata_job
 from pipeline_app.discovery_paths import handle_dir
 
-BRIGHTDATA_API_BASE = "https://api.brightdata.com/datasets/v3"
+BRIGHTDATA_API_BASE = brightdata_job.BRIGHTDATA_API_BASE
+REQUEST_TIMEOUT_S = brightdata_job.REQUEST_TIMEOUT_S
+
+# Re-exported so `pytest.raises(discovery_instagram.BrightDataJobFailed)` keeps
+# working and callers need not know the exceptions moved.
+BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
+BrightDataJobFailed = brightdata_job.BrightDataJobFailed
 
 # Key lookup order: env var first (works for the scheduled task, which
 # inherits the User environment), then a gitignored file for convenience --
@@ -39,32 +44,16 @@ KEY_FILE = Path(__file__).resolve().parent.parent / "brightdata_api_key.txt"
 # modes; the type/discover_by query params below are what select between them.
 DATASET_ID = "gd_lk5ns7kz21pck8jpis"
 
-REQUEST_TIMEOUT_S = 30
-
 
 def api_key() -> str | None:
-    """The Bright Data API token, or None if not configured."""
-    env_key = os.environ.get(KEY_ENV_VAR, "").strip()
-    if env_key:
-        return env_key
-    if KEY_FILE.exists():
-        file_key = KEY_FILE.read_text(encoding="utf-8").strip()
-        if file_key:
-            return file_key
-    return None
+    """The Bright Data API token, or None if not configured. Reads this
+    module's KEY_ENV_VAR/KEY_FILE at call time so tests can patch them."""
+    return brightdata_job.read_key(KEY_ENV_VAR, KEY_FILE)
 
 
 MAX_ITEMS_PER_RUN = 10
 POLL_TIMEOUT_S = 300
 POLL_INTERVAL_S = 5
-
-
-class BrightDataJobTimeout(Exception):
-    """A Bright Data collection job did not reach 'ready' within POLL_TIMEOUT_S."""
-
-
-class BrightDataJobFailed(Exception):
-    """A Bright Data collection job reported status 'failed'."""
 
 
 def _trigger_job(handle: str, key: str) -> str:
@@ -75,10 +64,10 @@ def _trigger_job(handle: str, key: str) -> str:
             "dataset id in discovery_instagram.py"
         )
     profile_url = f"https://www.instagram.com/{handle.lstrip('@')}/"
-    response = requests.post(
-        f"{BRIGHTDATA_API_BASE}/trigger",
-        params={
-            "dataset_id": DATASET_ID,
+    return brightdata_job.trigger(
+        BRIGHTDATA_API_BASE,
+        DATASET_ID,
+        {
             # This is a *discovery* job -- "find this profile's newest posts".
             # Without type/discover_by, Bright Data reads the input url as a
             # single post page to collect, which is the wrong product mode for
@@ -91,46 +80,23 @@ def _trigger_job(handle: str, key: str) -> str:
             "include_errors": "true",
             "notify": "false",
         },
-        headers={"Authorization": f"Bearer {key}"},
-        # Bare-array body is /trigger's documented shape. The dashboard's
-        # {"input": [...], "limit_per_input": null} object form belongs to the
-        # synchronous /scrape endpoint, which this adapter deliberately does
-        # not use -- a discovery job takes minutes and would hang an HTTP call.
-        # Empty start_date/end_date/post_type mirror the dashboard's "no
-        # filter" example rows: unfiltered returns posts and Reels together,
-        # which is what this pipeline wants.
-        json=[{
+        [{
             "url": profile_url,
             "num_of_posts": MAX_ITEMS_PER_RUN,
             "start_date": "",
             "end_date": "",
             "post_type": "",
         }],
-        timeout=REQUEST_TIMEOUT_S,
+        key,
     )
-    response.raise_for_status()
-    return response.json()["snapshot_id"]
 
 
 def _poll_job_status(job_id: str, key: str) -> str:
-    response = requests.get(
-        f"{BRIGHTDATA_API_BASE}/progress/{job_id}",
-        headers={"Authorization": f"Bearer {key}"},
-        timeout=REQUEST_TIMEOUT_S,
-    )
-    response.raise_for_status()
-    return response.json()["status"]
+    return brightdata_job.poll_status(BRIGHTDATA_API_BASE, job_id, key)
 
 
 def _fetch_job_results(job_id: str, key: str) -> list[dict]:
-    response = requests.get(
-        f"{BRIGHTDATA_API_BASE}/snapshot/{job_id}",
-        params={"format": "json"},
-        headers={"Authorization": f"Bearer {key}"},
-        timeout=REQUEST_TIMEOUT_S,
-    )
-    response.raise_for_status()
-    return response.json()
+    return brightdata_job.fetch_results(BRIGHTDATA_API_BASE, job_id, key)
 
 
 def _run_collection_job(handle: str) -> list[dict]:
@@ -140,19 +106,17 @@ def _run_collection_job(handle: str) -> list[dict]:
             "Bright Data API key not configured "
             f"(set {KEY_ENV_VAR} or {KEY_FILE.name})"
         )
-    job_id = _trigger_job(handle, key)
-    deadline = time.monotonic() + POLL_TIMEOUT_S
-    while True:
-        status = _poll_job_status(job_id, key)
-        if status == "ready":
-            return _fetch_job_results(job_id, key)
-        if status == "failed":
-            raise BrightDataJobFailed(f"Bright Data job {job_id} for {handle} failed")
-        if time.monotonic() >= deadline:
-            raise BrightDataJobTimeout(
-                f"Bright Data job {job_id} for {handle} timed out after {POLL_TIMEOUT_S}s"
-            )
-        time.sleep(POLL_INTERVAL_S)
+    # The three lambdas resolve _trigger_job/_poll_job_status/_fetch_job_results
+    # through module globals when they run, which is what keeps the existing
+    # monkeypatch-based tests working after the extraction.
+    return brightdata_job.await_results(
+        trigger_fn=lambda: _trigger_job(handle, key),
+        poll_fn=lambda job_id: _poll_job_status(job_id, key),
+        fetch_fn=lambda job_id: _fetch_job_results(job_id, key),
+        label=f"for {handle}",
+        poll_timeout_s=POLL_TIMEOUT_S,
+        poll_interval_s=POLL_INTERVAL_S,
+    )
 
 
 def _parse_published(raw: str | None) -> str | None:
