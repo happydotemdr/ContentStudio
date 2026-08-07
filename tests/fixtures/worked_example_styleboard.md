@@ -14,3 +14,10 @@ WORLD LOCK
   motif:                         a watering can, modern plastic in Register A and a terracotta vessel in Register B
   slot_register_a:               rgs-present-soccer-a
   slot_register_b:               rgs-sourceera-painterly-b
+
+BINDINGS
+  slot_register_a: rgs-present-soccer-a — present-day club-soccer photographic look, harvested this Short via Style Creator.
+  slot_register_b: rgs-sourceera-painterly-b — fixed channel-level painterly signature, harvested once and reused unchanged on every Short.
+
+DISCOVERY REQUESTS
+  none
