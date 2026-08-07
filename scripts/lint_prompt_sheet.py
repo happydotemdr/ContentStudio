@@ -86,6 +86,17 @@ def parse_sheet(text: str) -> tuple[list[Shot], dict[str, str]]:
     return shots, world
 
 
+def parse_world_lock(text: str) -> dict[str, str]:
+    """The WORLD LOCK block from any file that carries one.
+
+    After the styleboard split the block lives in the styleboard artifact rather than
+    the prompt sheet, but the block's syntax is identical in both, so parse_sheet's
+    world-lock walk is reused rather than duplicated.
+    """
+    _shots, world = parse_sheet(text)
+    return world
+
+
 def _read_fenced_prompt(lines: list[str], start: int) -> tuple[list[str], int]:
     """Read the next ```text fence after `start`. Returns (non-empty lines, index after it)."""
     i = start
@@ -577,9 +588,22 @@ def main(argv: list[str] | None = None) -> int:
         description="Gate C — shot-variety lint for ContentStudio visual prompt sheets.",
     )
     parser.add_argument("sheet", type=Path, help="path to an emitted prompt sheet (.md)")
+    parser.add_argument(
+        "--styleboard",
+        type=Path,
+        default=None,
+        help="path to the styleboard artifact holding the WORLD LOCK block. Omit for a "
+             "legacy sheet that still carries its own block.",
+    )
     args = parser.parse_args(argv)
 
-    shots, world = parse_sheet(args.sheet.read_text(encoding="utf-8"))
+    sheet_text = args.sheet.read_text(encoding="utf-8")
+    shots, sheet_world = parse_sheet(sheet_text)
+    if args.styleboard is not None:
+        world = parse_world_lock(args.styleboard.read_text(encoding="utf-8"))
+    else:
+        world = sheet_world
+
     if not shots:
         print(f"Gate C: no shots parsed from {args.sheet}. Check the sheet format.")
         return 2

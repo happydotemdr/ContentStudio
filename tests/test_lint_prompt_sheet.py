@@ -7,6 +7,7 @@ from lint_prompt_sheet import (  # noqa: E402
     Shot,
     Finding,
     parse_sheet,
+    parse_world_lock,
     prompt_body,
     prompt_flags,
     body_clauses,
@@ -594,3 +595,57 @@ def test_c17_exempts_plate_shots():
         register="PLATE",
     )
     assert check_style_mechanism([shot]) == []
+
+
+STYLEBOARD = """\
+=== STYLEBOARD — demo ===
+
+WORLD LOCK
+  register_a_sport: club soccer
+  register_a_venue: municipal club soccer complex
+  register_a_signature_objects: goal net, corner flag, painted touchline
+  register_b_thinker: Plutarch
+  slot_register_a: rgs-present-soccer-a
+  slot_register_b: rgs-sourceera-painterly-b
+"""
+
+
+def test_parse_world_lock_reads_a_styleboard_artifact():
+    world = parse_world_lock(STYLEBOARD)
+    assert world["register_a_sport"] == "club soccer"
+    assert world["slot_register_a"] == "rgs-present-soccer-a"
+
+
+def test_main_resolves_the_world_lock_from_the_styleboard_flag(tmp_path, capsys):
+    sheet = tmp_path / "sheet.md"
+    # A sheet with NO world lock of its own — the new format.
+    sheet.write_text(SHEET.split("WORLD LOCK")[0] + SHEET.split("PER-SHOT PROMPTS")[1],
+                     encoding="utf-8")
+    styleboard = tmp_path / "styleboard.md"
+    styleboard.write_text(STYLEBOARD, encoding="utf-8")
+
+    code = main([str(sheet), "--styleboard", str(styleboard)])
+    out = capsys.readouterr().out
+    assert "declares no register_a_sport" not in out, (
+        "the sport must resolve from the styleboard, not go missing"
+    )
+    assert code in (0, 1)
+
+
+def test_main_falls_back_to_the_sheets_own_world_lock(tmp_path, capsys):
+    sheet = tmp_path / "sheet.md"
+    sheet.write_text(SHEET, encoding="utf-8")
+    main([str(sheet)])
+    assert "declares no register_a_sport" not in capsys.readouterr().out
+
+
+def test_main_reports_a_missing_world_lock_when_no_styleboard_is_given(tmp_path, capsys):
+    """Control for the two tests above: without --styleboard, a sheet stripped of its own
+    WORLD LOCK block must resolve to an empty world dict, and C8 must say so. Without this
+    control, the two tests above would still pass even if --styleboard silently did nothing."""
+    sheet = tmp_path / "sheet.md"
+    sheet.write_text(SHEET.split("WORLD LOCK")[0] + SHEET.split("PER-SHOT PROMPTS")[1],
+                     encoding="utf-8")
+
+    main([str(sheet)])
+    assert "declares no register_a_sport" in capsys.readouterr().out
