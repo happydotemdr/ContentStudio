@@ -306,7 +306,7 @@ OVERLAY COPY HANDOFF
 VALIDATION
   Gate A (midjourney-prompting syntax lint): [pass/fail]
   Gate B (upstream visual-quality check, if applicable): [pass/fail]
-  Gate C (scripts/lint_prompt_sheet.py):     [pass/fail — see below]
+  Gate C (scripts/lint_prompt_sheet.py):     [pass/fail/deferred — app-run — see below]
 ```
 
 Write each row's still prompt to stand alone — Midjourney does not carry context between separate jobs
@@ -314,17 +314,24 @@ Write each row's still prompt to stand alone — Midjourney does not carry conte
 intended. An i2v prompt is the one exception that's *allowed* to depend on another row — it explicitly
 names its source still as the start frame, per `references/image-to-video.md`.
 
-**Before emitting the sheet, run Gate C — this is mandatory, not optional:**
+**Before emitting the sheet, run Gate C — this is mandatory, not optional.**
+
+**Standalone** (you were not given an output path by the pipeline app):
 
 ```bash
 python scripts/lint_prompt_sheet.py <path-to-sheet.md>
 ```
 
-**A failing gate blocks emission.** Exit 0 is the only outcome that allows handing the sheet downstream;
-exit 1 (findings) or exit 2 (nothing parsed — almost always a format error, see
-`references/prompt-sheet-format.md`) means fix the sheet and re-run, not report it as done anyway. Never
-state or record Gate C as "passed" without having actually run it and observed exit 0 `[I]`
-(`references/visual-arc.md` §9).
+Record the observed result.
+
+**App-driven** (a `pipeline-app` turn gave you an output path): a pipeline turn
+cannot shell out — `Bash` is denied — so record `Gate C: deferred — app-run`.
+The app runs `scripts/lint_prompt_sheet.py` over your output after the turn and
+blocks approval on its findings. `[I]`
+
+Never state or record Gate C as "passed" without having actually run it and
+observed exit 0 `[I]`. `deferred — app-run` is the honest value when you could
+not run it; it is not a pass and must not be written as one.
 
 ## Corpus coverage note (state this to the user if asked how solid these rules are)
 

@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import AsyncIterator
 
-from pipeline_app import artifacts, cli_runner, db as db_mod, prompt_builder
+from pipeline_app import artifacts, cli_runner, db as db_mod, gates, prompt_builder
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
 from pipeline_app.state_machine import StageStatus, is_locked_or_running, is_stale
 
@@ -231,6 +231,7 @@ async def run_stage_turn(
         {"path": _relpath(p, run_dir), "sha256": artifacts.compute_sha256(p)}
         for p in upstream_paths
     ]
+    gate_results = gates.run_gates_for_stage(repo_root, stage_def.id, raw_output_path)
     body = raw_output_path.read_text(encoding="utf-8")
     meta = {
         "schema_version": 1,
@@ -242,6 +243,7 @@ async def run_stage_turn(
         "finalized_at": None,
         "supersedes": f"artifact.v{version - 1}.md" if version > 1 else None,
         "depends_on": depends_on,
+        "gates": gate_results,
     }
     artifacts.write_artifact(stage_dir, version, meta, body)
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.AWAITING_REVIEW.value)

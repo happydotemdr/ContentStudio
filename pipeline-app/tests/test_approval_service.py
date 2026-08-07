@@ -249,7 +249,15 @@ async def test_regenerating_an_approved_stage_marks_approved_dependent_stale(con
     await _drain(turn_service.run_stage_turn(
         conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1", STAGES[1], STAGES, "",
     ))
-    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+    # The fake turn's body ("script body") is not real script-language-gate
+    # input, so gate_d_script_language errors on it (no VO lines to parse) --
+    # exactly the fail-closed behavior Task 9 requires. This test is about
+    # staleness propagation, not gate content, so it overrides the block
+    # rather than fabricating a gate-passing script body.
+    approve_stage(
+        conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+        override_reason="test fixture body is not real script-language-gate input",
+    )
 
     # Regenerate ideation -> v2
     monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _fake_stream(events, raw_output, "v2 body"))
@@ -264,3 +272,189 @@ async def test_regenerating_an_approved_stage_marks_approved_dependent_stale(con
 
     scripting_stage = db.get_stage(conn, project_id, "scripting")
     assert scripting_stage["status"] == StageStatus.STALE.value
+
+
+def _seed_scripting_awaiting_review(conn, tmp_path: Path) -> tuple[int, Path, Path]:
+    project_id = db.create_project(conn, "gate-1", "gate", "generic", "2026-08-06T00:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "approved")
+    db.create_stage_row(conn, project_id, "scripting", "awaiting_review")
+    run_dir = tmp_path / "runs" / "gate-1"
+    stage_dir = run_dir / "02-scripting"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    return project_id, run_dir, stage_dir
+
+
+def _write_artifact_with_gates(stage_dir: Path, status: str) -> Path:
+    meta = {
+        "schema_version": 1, "run_id": "r1", "stage": "shorts-scripting", "version": 1,
+        "status": "draft", "created_at": "2026-08-06T00:00:00+00:00", "finalized_at": None,
+        "supersedes": None, "depends_on": [],
+        "gates": [{
+            "name": "gate_d_script_language", "status": status,
+            "findings": [{"check": "D1", "beat": "HOOK", "message": "em-dash", "kind": "fail"}],
+        }],
+    }
+    return artifacts.write_artifact(stage_dir, 1, meta, "body")
+
+
+def test_approve_raises_on_a_failing_gate_without_an_override(conn, tmp_path):
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "fail")
+    with pytest.raises(ValueError, match="gate"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+
+def test_approve_raises_on_an_errored_gate_without_an_override(conn, tmp_path):
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "error")
+    with pytest.raises(ValueError, match="gate"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+
+def test_approve_succeeds_with_an_override_and_records_the_reason(conn, tmp_path):
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "fail")
+    approve_stage(
+        conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+        override_reason="dash is inside a verbatim 1886 quote",
+    )
+    meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert meta["status"] == "final"
+    assert meta["gate_override_reason"] == "dash is inside a verbatim 1886 quote"
+    assert meta["gates"][0]["status"] == "fail"  # the record is not rewritten
+
+
+def test_approve_succeeds_normally_on_a_passing_gate(conn, tmp_path):
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "pass")
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+    assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.APPROVED.value
+
+
+def test_override_on_already_final_artifact_records_reason_without_rewriting_gates(conn, tmp_path):
+    """Finding 3: re-approving an artifact that is ALREADY stamped final (the
+    stale-stage re-approve path stage.html encourages) must still record a
+    supplied override reason. approve_stage skips stamp_final entirely on
+    this path to avoid churning finalized_at/sha256 on a no-op re-approve --
+    but that must not silently drop a real override reason supplied on THIS
+    call. The gates entry and finalized_at must stay untouched: an override
+    says a human accepted the finding, not that the finding was rewritten
+    away or that anything else changed."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "fail")
+    meta, body = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    meta["status"] = "final"
+    meta["finalized_at"] = "2026-08-01T00:00:00+00:00"
+    path.write_text(artifacts.render_frontmatter(meta, body), encoding="utf-8")
+
+    approve_stage(
+        conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+        override_reason="re-approving a stale stage; dash is inside a verbatim quote",
+    )
+
+    meta_after, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert meta_after["gate_override_reason"] == (
+        "re-approving a stale stage; dash is inside a verbatim quote"
+    )
+    assert meta_after["finalized_at"] == "2026-08-01T00:00:00+00:00"  # untouched, no churn
+    assert meta_after["status"] == "final"
+    assert meta_after["gates"][0]["status"] == "fail"  # the record is not rewritten
+
+
+def _write_artifact_without_gates(stage_dir: Path) -> Path:
+    """The pre-existing-artifact shape: minted before this stage had gates, or
+    by a path that forgot to run them. No `gates` key at all."""
+    meta = {
+        "schema_version": 1, "run_id": "r1", "stage": "shorts-scripting", "version": 1,
+        "status": "draft", "created_at": "2026-08-06T00:00:00+00:00", "finalized_at": None,
+        "supersedes": None, "depends_on": [],
+    }
+    return artifacts.write_artifact(stage_dir, 1, meta, "body")
+
+
+def test_approve_raises_when_a_registered_gate_has_no_recorded_result(conn, tmp_path):
+    """Finding 3: approval read `meta.get("gates") or []` and never consulted
+    GATE_REGISTRY, so an artifact with NO gates key produced an empty failing
+    list and approved silently -- a stage with a registered gate approved with
+    no gate having run. Closing the hand-edit route that minted such artifacts
+    fixed the instance, not the class: any scripting artifact minted before
+    this branch and still sitting at awaiting_review takes the same path.
+    A registered gate with no result must block exactly as a failing one."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_without_gates(stage_dir)
+    with pytest.raises(ValueError, match="gate"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+
+def test_the_never_ran_message_is_distinguishable_from_a_failure(conn, tmp_path):
+    """"The gate failed" and "the gate never ran" are different facts and lead
+    to different fixes. Both block; the message must say which happened."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_without_gates(stage_dir)
+    with pytest.raises(ValueError) as excinfo:
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+    assert "never ran" in str(excinfo.value)
+    assert "gate_d_script_language" in str(excinfo.value)
+
+
+def test_a_gates_key_holding_some_other_gate_does_not_satisfy_the_registry(conn, tmp_path):
+    """A `gates` list is not a checklist tick: it has to carry a result for the
+    gate that is actually registered for this stage, by name."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    meta = {
+        "schema_version": 1, "stage": "shorts-scripting", "version": 1, "status": "draft",
+        "gates": [{"name": "gate_c_prompt_sheet", "status": "pass", "findings": []}],
+    }
+    artifacts.write_artifact(stage_dir, 1, meta, "body")
+    with pytest.raises(ValueError, match="never ran"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+
+def test_an_override_releases_a_gate_that_never_ran(conn, tmp_path):
+    """The override path works on a missing result exactly as on a failing one
+    -- it is the single documented release valve, and a pre-existing artifact
+    must not become unapprovable."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_without_gates(stage_dir)
+    approve_stage(
+        conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+        override_reason="artifact predates Gate D; script verified by hand",
+    )
+    assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.APPROVED.value
+    meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert meta["gate_override_reason"] == "artifact predates Gate D; script verified by hand"
+
+
+def test_a_stage_with_no_registered_gates_still_approves_without_an_override(conn, tmp_path):
+    """The registry check must only bind stages that actually have gates.
+    `ideation` has none, so an artifact with no `gates` key is complete, not
+    missing anything."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-08-06T00:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "awaiting_review")
+    db.create_stage_row(conn, project_id, "scripting", "locked")
+    run_dir = tmp_path / "runs" / "abc-1"
+    artifacts.write_artifact(
+        run_dir / "01-ideation", 1, {"status": "draft", "stage": "shorts-ideation"}, "body"
+    )
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
+    assert db.get_stage(conn, project_id, "ideation")["status"] == StageStatus.APPROVED.value
+
+
+def test_reapproving_an_already_final_artifact_with_blank_override_does_not_record_one(conn, tmp_path):
+    """The companion case to the test above: an already-final artifact
+    re-approved with NO override reason (None, same as a blank form field
+    after the route's .strip() or None) must not gain a
+    gate_override_reason key at all -- record_gate_override must only be
+    called when a reason is actually supplied."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "pass")
+    meta, body = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    meta["status"] = "final"
+    meta["finalized_at"] = "2026-08-01T00:00:00+00:00"
+    path.write_text(artifacts.render_frontmatter(meta, body), encoding="utf-8")
+
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+    meta_after, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert "gate_override_reason" not in meta_after
+    assert meta_after["finalized_at"] == "2026-08-01T00:00:00+00:00"
