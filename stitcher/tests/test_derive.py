@@ -80,13 +80,14 @@ def test_write_ass_escapes_newlines_as_hard_breaks(tmp_path: Path):
     assert "one\\Ntwo" in body
 
 
-def test_write_ass_escapes_braces_and_backslashes(tmp_path: Path):
-    # Unescaped `{...}` is parsed as an ASS override block and silently
-    # dropped from the rendered text; an unescaped `\` can accidentally
-    # start a recognised escape sequence. Both must survive as literal text.
+def test_write_ass_escapes_braces_but_leaves_a_literal_backslash_alone(tmp_path: Path):
+    # Unescaped `{...}` is parsed by libass as an override block and
+    # silently dropped from the rendered text, so braces must be escaped.
+    # A literal `\` must NOT be doubled: libass never collapses `\\` back
+    # to `\`, so doubling would render two backslashes instead of one.
     multi = [Caption.model_validate({"in": 0.0, "out": 1.0, "text": "a{b}c\\d"})]
     body = dv.write_ass(multi, a_style(), CANVAS, tmp_path / "c.ass").read_text("utf-8")
-    assert "a\\{b\\}c\\\\d" in body
+    assert "a\\{b\\}c\\d" in body
 
 
 def test_write_srt_and_write_ass_use_lf_line_endings_and_no_bom(tmp_path: Path):
@@ -148,7 +149,7 @@ def test_render_cover_raises_when_a_named_overlay_png_is_missing(tmp_path: Path)
     ws.ensure_dirs()
     Image.new("RGB", (1080, 1920), (0, 0, 0)).save(ws.asset("cover.png"))
 
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError):
         dv.render_cover(spec, ws, {}, ws.out_cover(1))
 
 

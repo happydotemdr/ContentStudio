@@ -16,16 +16,23 @@ YouTube's uploader, etc.) accept bare LF; a BOM is the more common breakage
 the more load-bearing choice of the two.
 
 Escaping (`.ass` only — `.srt` is plain text and needs none): caption text
-may contain `{`, `}`, or `\`, all of which are meaningful to the ASS format.
-An unescaped `{...}` run is parsed as an override block and silently
-vanishes from the rendered text; an unescaped `\` can accidentally start a
-recognised escape (`\N`, `\n`, `\h`) if followed by the right letter. Both
-are escaped by prefixing a backslash — `\` -> `\\`, `{` -> `\{`, `}` -> `\}`
-— in that order, so a literal backslash in the source text is doubled before
-any brace-escaping backslashes are added, and doubled again ahead of the
-`\N` this module injects for embedded newlines. A caption is a sidecar, not
-a burn-in target (no libass dependency here), but a well-formed sidecar
-should not be able to eat itself.
+may contain `{` or `}`, both meaningful to the ASS format. An unescaped
+`{...}` run is parsed as an override block and silently vanishes from the
+rendered text, so both are escaped by prefixing a backslash: `{` -> `\{`,
+`}` -> `\}`. A literal `\` in caption text is left alone — traced against
+libass's real parser (`ass_get_next_char` in `ass_parse.c`), a backslash is
+only special-cased when immediately followed by `N`, `n`, `h`, `{`, or `}`;
+any other backslash is emitted as a literal character, and — critically —
+there is no rule anywhere in the parser that collapses a doubled `\\` back
+to one `\`. Doubling a caption's backslash would therefore render two
+visible backslashes instead of one, which is strictly worse than the
+(rare, format-inherent) case this module cannot fully solve: a caption
+whose literal text happens to contain a backslash immediately followed by
+`N`, `n`, or `h` will still be read by libass as a control sequence. That
+ambiguity is a limitation of the ASS text format itself — it has no escape
+for "this backslash is really just a backslash" — not a defect in this
+module. A caption is a sidecar, not a burn-in target (no libass dependency
+here), but a well-formed sidecar should not be able to eat itself.
 """
 
 from __future__ import annotations
@@ -79,14 +86,15 @@ def _ass_colour(hex_value: str) -> str:
 
 
 def _ass_escape(text: str) -> str:
-    """Escape `\\`, `{`, `}`, then turn embedded newlines into `\\N` hard breaks.
+    """Escape `{`/`}` (ASS override-block delimiters), then turn embedded
+    newlines into `\\N` hard breaks.
 
-    Order matters: backslashes in the source text are doubled first so the
-    brace-escaping backslashes (and the `\\N` line-break marker) added below
-    are never themselves mistaken for user text and re-escaped.
+    A literal `\\` in the caption text is deliberately left untouched —
+    libass never collapses a doubled backslash back to one, so doubling it
+    here would render two backslashes instead of one. See the module
+    docstring for the full reasoning.
     """
-    escaped = text.replace("\\", "\\\\")
-    escaped = escaped.replace("{", "\\{").replace("}", "\\}")
+    escaped = text.replace("{", "\\{").replace("}", "\\}")
     return escaped.replace("\n", "\\N")
 
 
@@ -155,7 +163,7 @@ def render_cover(
 
     for name in spec.cover.overlays:
         if name not in overlay_pngs:
-            raise KeyError(
+            raise ValueError(
                 f"cover names overlay {name!r} but no rendered PNG was supplied for it"
             )
         with Image.open(overlay_pngs[name]) as layer:
