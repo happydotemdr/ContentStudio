@@ -91,3 +91,44 @@ def test_backfilled_project_can_unlock_visual(conn, tmp_path):
     rows = db_mod.list_stages(conn, pid)
     approved = {r["stage_id"] for r in rows if r["status"] == "approved"}
     assert "visual" in stages_to_unlock(STAGE_DEFS, approved)
+
+
+def test_backfill_writes_synthetic_artifact_when_past_visual_with_no_recoverable_world_lock(
+    conn, tmp_path
+):
+    """A project that finished visual but has nothing liftable must still get an
+    artifact behind its approved styleboard row -- approve_stage's invariant applies
+    to rows this migration creates too, not just ones a human approves by hand."""
+    pid = _legacy_project(conn, tmp_path, "legacy-6", "approved")  # no sheet written
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    row = db_mod.get_stage(conn, pid, "styleboard")
+    assert row["status"] == "approved"
+
+    written = tmp_path / "runs" / "legacy-6" / "02b-styleboard" / "artifact.v1.md"
+    assert written.exists()
+    assert "not recoverable" in written.read_text(encoding="utf-8")
+
+
+def test_backfill_skips_a_broken_legacy_project_without_blocking_others(conn, tmp_path):
+    """One project with an unreadable/malformed legacy artifact must not crash the
+    whole migration (and therefore app startup) -- it should be skipped, and every
+    other project still gets backfilled."""
+    pid_bad = _legacy_project(conn, tmp_path, "legacy-bad", "approved")
+    bad_sheet = tmp_path / "runs" / "legacy-bad" / "03-visual" / "artifact.v1.md"
+    bad_sheet.write_text(
+        "---\nschema_version: 1\nstatus: 'unterminated\n---\n\nWORLD LOCK\n  x: y\n",
+        encoding="utf-8",
+    )
+    pid_good = _legacy_project(conn, tmp_path, "legacy-good", "locked")
+
+    touched = backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    assert touched == [pid_good]
+    assert db_mod.get_stage(conn, pid_bad, "styleboard") is None
+    assert db_mod.get_stage(conn, pid_good, "styleboard") is not None
+
+    # Nothing was committed for the broken project, so a later startup retries it
+    # cleanly rather than skipping it forever or leaving orphaned state.
+    touched_again = backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+    assert touched_again == []

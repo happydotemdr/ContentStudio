@@ -8,7 +8,10 @@ were already on disk.
 import datetime
 import re
 import sqlite3
+import sys
 from pathlib import Path
+
+import yaml
 
 from pipeline_app import artifacts, db as db_mod
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
@@ -25,6 +28,15 @@ _PAST_VISUAL = {
     StageStatus.STALE.value,
     StageStatus.NO_ARTIFACT.value,
 }
+
+# Reading and parsing a legacy project's artifact off disk is the one part of this
+# migration touching data this code doesn't control -- a hand-edited file, a partial
+# write from a crashed prior run, a permissions problem. These are the exception
+# categories that kind of damage actually raises. Deliberately NOT catching
+# everything: a bug in this module's own logic (AttributeError, KeyError, a bad
+# sqlite3 call) should still crash startup loudly rather than be silently skipped
+# per-project.
+_PER_PROJECT_RECOVERABLE = (OSError, UnicodeDecodeError, yaml.YAMLError)
 
 
 def extract_world_lock_block(text: str) -> str | None:
@@ -48,6 +60,104 @@ def extract_world_lock_block(text: str) -> str | None:
     return None
 
 
+def _write_synthetic_artifact(
+    stage_dir: Path, run_id: str, stage_def: StageDef, now: str, body: str
+) -> None:
+    artifacts.write_artifact(
+        stage_dir,
+        1,
+        {
+            "schema_version": 1,
+            "run_id": run_id,
+            "stage": stage_def.skill,
+            "version": 1,
+            "status": "final",
+            "created_at": now,
+            "finalized_at": now,
+            "supersedes": None,
+            "depends_on": [],
+            "backfilled": True,
+        },
+        body,
+    )
+
+
+def _backfill_one_project(
+    conn: sqlite3.Connection,
+    repo_root: Path,
+    stage_def: StageDef,
+    visual_def: StageDef | None,
+    project: sqlite3.Row,
+    now: str,
+) -> None:
+    project_id = project["id"]
+    run_dir = repo_root / "runs" / project["run_id"]
+    world_block = None
+    if visual_def is not None:
+        visual_latest = artifacts.latest_artifact_path(run_dir / stage_dir_name(visual_def))
+        if visual_latest is not None:
+            _meta, body = artifacts.parse_frontmatter(
+                visual_latest.read_text(encoding="utf-8")
+            )
+            world_block = extract_world_lock_block(body)
+
+    visual_row = db_mod.get_stage(conn, project_id, "visual")
+    got_past_visual = visual_row is not None and visual_row["status"] in _PAST_VISUAL
+
+    if world_block is not None:
+        _write_synthetic_artifact(
+            run_dir / stage_dir_name(stage_def),
+            project["run_id"],
+            stage_def,
+            now,
+            f"=== STYLEBOARD — {project['run_id']} (backfilled) ===\n\n"
+            f"{world_block}\n\n"
+            "BINDINGS\n"
+            "  none — this styleboard was reconstructed from an existing prompt sheet's\n"
+            "  WORLD LOCK block. Its shots carry literal --sref codes, not slots.\n\n"
+            "DISCOVERY REQUESTS\n"
+            "  none\n",
+        )
+        status = StageStatus.APPROVED.value
+    elif got_past_visual:
+        # Past visual but no liftable world lock: still approve rather than wedge a
+        # project that is already finished -- but back that approval with an honest
+        # synthetic artifact instead of an empty stage dir. approve_stage's own
+        # invariant (approval_service.py) is that every approved stage resolves to a
+        # real artifact; a migration must not create the one row in the whole app
+        # that violates it.
+        _write_synthetic_artifact(
+            run_dir / stage_dir_name(stage_def),
+            project["run_id"],
+            stage_def,
+            now,
+            f"=== STYLEBOARD — {project['run_id']} (backfilled) ===\n\n"
+            "WORLD LOCK\n"
+            "  not recoverable — this project completed visual before styleboard existed\n"
+            "  as a stage, and no WORLD LOCK block could be found in its visual prompt\n"
+            "  sheet to lift verbatim. Nothing was reconstructed; there is no world lock\n"
+            "  on record for this project.\n\n"
+            "BINDINGS\n"
+            "  none — no source material existed to reconstruct from.\n\n"
+            "DISCOVERY REQUESTS\n"
+            "  none\n",
+        )
+        status = StageStatus.APPROVED.value
+    else:
+        scripting_row = db_mod.get_stage(conn, project_id, "scripting")
+        status = (
+            StageStatus.READY.value
+            if scripting_row is not None
+            and scripting_row["status"] == StageStatus.APPROVED.value
+            else StageStatus.LOCKED.value
+        )
+
+    row_id = db_mod.create_stage_row(conn, project_id, "styleboard", status)
+    if status == StageStatus.APPROVED.value:
+        db_mod.update_stage_status(conn, row_id, status, approved_at=now)
+    (run_dir / stage_dir_name(stage_def)).mkdir(parents=True, exist_ok=True)
+
+
 def backfill_styleboard_rows(
     conn: sqlite3.Connection,
     repo_root: Path,
@@ -62,6 +172,13 @@ def backfill_styleboard_rows(
     Where the project already produced a visual sheet, its WORLD LOCK block is lifted
     into a synthetic styleboard artifact and the row is approved, preserving the
     project's real world lock rather than blanking it.
+
+    Runs on every app startup, so a single corrupt/unreadable legacy artifact must not
+    take the whole app down, and must not repeat forever: a project whose processing
+    raises is skipped (loudly, to stderr) for this run, and because nothing was
+    committed for it yet (the risky disk read happens before any DB write), the guard
+    at the top of the loop retries it cleanly on the next startup rather than skipping
+    it forever or leaving a half-written artifact with no row.
     """
     stage_def = next((s for s in stage_defs if s.id == "styleboard"), None)
     if stage_def is None:
@@ -76,62 +193,17 @@ def backfill_styleboard_rows(
         if db_mod.get_stage(conn, project_id, "styleboard") is not None:
             continue
 
-        run_dir = repo_root / "runs" / project["run_id"]
-        world_block = None
-        if visual_def is not None:
-            visual_latest = artifacts.latest_artifact_path(run_dir / stage_dir_name(visual_def))
-            if visual_latest is not None:
-                _meta, body = artifacts.parse_frontmatter(
-                    visual_latest.read_text(encoding="utf-8")
-                )
-                world_block = extract_world_lock_block(body)
-
-        visual_row = db_mod.get_stage(conn, project_id, "visual")
-        got_past_visual = visual_row is not None and visual_row["status"] in _PAST_VISUAL
-
-        if world_block is not None:
-            stage_dir = run_dir / stage_dir_name(stage_def)
-            artifacts.write_artifact(
-                stage_dir,
-                1,
-                {
-                    "schema_version": 1,
-                    "run_id": project["run_id"],
-                    "stage": stage_def.skill,
-                    "version": 1,
-                    "status": "final",
-                    "created_at": now,
-                    "finalized_at": now,
-                    "supersedes": None,
-                    "depends_on": [],
-                    "backfilled": True,
-                },
-                f"=== STYLEBOARD — {project['run_id']} (backfilled) ===\n\n"
-                f"{world_block}\n\n"
-                "BINDINGS\n"
-                "  none — this styleboard was reconstructed from an existing prompt sheet's\n"
-                "  WORLD LOCK block. Its shots carry literal --sref codes, not slots.\n\n"
-                "DISCOVERY REQUESTS\n"
-                "  none\n",
+        try:
+            _backfill_one_project(conn, repo_root, stage_def, visual_def, project, now)
+        except _PER_PROJECT_RECOVERABLE as exc:
+            print(
+                "migrations.backfill_styleboard_rows: skipping project "
+                f"{project_id} (run_id={project['run_id']!r}) -- unreadable or "
+                f"malformed legacy artifact: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
             )
-            status = StageStatus.APPROVED.value
-        elif got_past_visual:
-            # Past visual but no liftable world lock: approve anyway rather than wedge a
-            # project that is already finished. There is nothing to reconstruct.
-            status = StageStatus.APPROVED.value
-        else:
-            scripting_row = db_mod.get_stage(conn, project_id, "scripting")
-            status = (
-                StageStatus.READY.value
-                if scripting_row is not None
-                and scripting_row["status"] == StageStatus.APPROVED.value
-                else StageStatus.LOCKED.value
-            )
+            continue
 
-        row_id = db_mod.create_stage_row(conn, project_id, "styleboard", status)
-        if status == StageStatus.APPROVED.value:
-            db_mod.update_stage_status(conn, row_id, status, approved_at=now)
-        (run_dir / stage_dir_name(stage_def)).mkdir(parents=True, exist_ok=True)
         touched.append(project_id)
 
     return touched
