@@ -5,7 +5,8 @@
       "name": "pipeline-app",
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "uvicorn", "pipeline_app.main:create_default_app", "--factory", "--host", "127.0.0.1", "--port", "8420"],
-      "port": 8420
+      "port": 8420,
+      "cwd": "pipeline-app"
     }
   ]
 }

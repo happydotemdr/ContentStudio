@@ -107,6 +107,24 @@ def test_grounding_template_has_no_input_file_reference():
     assert prompt.strip().startswith("/rgs-grounding")
 
 
+def test_music_template_lists_script_and_voiceover_inputs():
+    prompt = render_kickoff_prompt(TEMPLATES_DIR, "music", {
+        "skill": "music-brief",
+        "user_message": "",
+        "grounding_pointer": None,
+        "input_file": "runs/x/02-scripting/artifact.v1.md",
+        "input_files": [
+            "runs/x/02-scripting/artifact.v1.md",
+            "runs/x/03-voiceover/artifact.v1.md",
+        ],
+        "raw_output_path": "runs/x/03-music/raw_output.md",
+    })
+    assert prompt.strip().startswith("/music-brief")
+    assert "runs/x/02-scripting/artifact.v1.md" in prompt
+    assert "runs/x/03-voiceover/artifact.v1.md" in prompt
+    assert "runs/x/03-music/raw_output.md" in prompt
+
+
 def test_assembly_template_lists_both_upstream_inputs_not_the_script():
     prompt = render_kickoff_prompt(TEMPLATES_DIR, "assembly", {
         "skill": "shorts-assembly",

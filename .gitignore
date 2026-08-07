@@ -34,3 +34,6 @@ pipeline-app/youtube_api_key.txt
 
 # Resend API key for discovery email notifications (never commit)
 pipeline-app/resend_api_key.txt
+
+# Bright Data API key for Instagram discovery adapter (never commit)
+pipeline-app/brightdata_api_key.txt

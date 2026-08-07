@@ -4,7 +4,7 @@ from typing import AsyncIterator
 
 import pytest
 
-from pipeline_app import artifacts, db
+from pipeline_app import artifacts, db, gates
 from pipeline_app.pipeline_config import StageDef
 from pipeline_app.state_machine import StageStatus
 from pipeline_app import turn_service
@@ -306,3 +306,49 @@ def test_propagate_staleness_cascade_stops_at_a_non_approved_stage(conn, tmp_pat
     assert db.get_stage(conn, project_id, "visual")["status"] == StageStatus.STALE.value
     assert db.get_stage(conn, project_id, "assembly")["status"] == StageStatus.AWAITING_REVIEW.value
     assert db.get_stage(conn, project_id, "repurpose")["status"] == StageStatus.APPROVED.value
+
+
+@pytest.mark.asyncio
+async def test_scripting_turn_records_gate_results_in_frontmatter(conn, tmp_path, monkeypatch):
+    """A failing gate must not hide the artifact that failed it -- the stage
+    still reaches awaiting_review with the file on disk."""
+    project_id = db.create_project(conn, "gate-1", "gate", "generic", "2026-08-06T00:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "approved")
+    db.create_stage_row(conn, project_id, "scripting", "ready")
+
+    run_dir = tmp_path / "runs" / "gate-1"
+    stage_dir = run_dir / "02-scripting"
+    raw = stage_dir / "raw_output.md"
+
+    monkeypatch.setattr(
+        turn_service.cli_runner,
+        "stream_claude_turn",
+        _fake_stream(
+            [{"type": "result", "result": "ok", "total_cost_usd": 0.1, "is_error": False}],
+            writes_file=raw,
+            content=(
+                'HOOK (0–3s | 8 words): "It is not more serious play — it is labor."\n'
+                "GATES\n  Gate E (fresh Opus critic): pass\n"
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        turn_service.gates,
+        "run_gates_for_stage",
+        lambda root, sid, path: [{
+            "name": "gate_d_script_language",
+            "status": "fail",
+            "findings": [{"check": "D1", "beat": "HOOK", "message": "em-dash", "kind": "fail"}],
+        }],
+    )
+
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "gate-1",
+        STAGES[1], STAGES, "go",
+    ))
+
+    latest = artifacts.latest_artifact_path(stage_dir)
+    assert latest is not None
+    meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+    assert meta["gates"][0]["status"] == "fail"
+    assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.AWAITING_REVIEW.value

@@ -342,6 +342,92 @@ def test_stage_page_shows_all_upstream_inputs_not_just_first(tmp_path: Path, mon
     assert "visual prompt sheet text" in page.text
 
 
+def test_stage_page_renders_gate_results_and_override_field(tmp_path: Path, monkeypatch):
+    """Finding 2a: the stage page must render the latest artifact's `gates`
+    entries -- name, status, and each finding's check/beat/message/kind -- so
+    a user facing a failing gate can see WHY, and a `skipped` finding must be
+    visually distinguishable (its own CSS class) from a blocking one, since a
+    known unknown is not a failure."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    stage_dir = run_dir / "02-scripting"
+
+    meta = {
+        "schema_version": 1, "stage": "shorts-scripting", "version": 1, "status": "draft",
+        "gates": [{
+            "name": "gate_d_script_language", "status": "fail",
+            "findings": [
+                {"check": "D1", "beat": "HOOK", "message": "em-dash in VO line", "kind": "fail"},
+                {
+                    "check": "D5", "beat": "SETUP",
+                    "message": "no computable time range; pace unchecked", "kind": "skipped",
+                },
+            ],
+        }],
+    }
+    artifacts.write_artifact(stage_dir, 1, meta, "script body")
+
+    page = test_client.get(f"/projects/{project_id}/stages/scripting")
+    assert page.status_code == 200
+    assert "gate_d_script_language" in page.text
+    assert "em-dash in VO line" in page.text
+    assert "gate-finding-blocking" in page.text
+    assert "gate-finding-skipped" in page.text
+    assert 'name="override_reason"' in page.text
+
+
+def test_approve_route_blank_override_field_does_not_count_as_override(tmp_path: Path, monkeypatch):
+    """Finding 2b: the approve form's override_reason field is optional, and
+    the route already does `override_reason.strip() or None` -- a blank or
+    whitespace-only field must NOT be treated as an override on a failing
+    gate. This is the end-to-end verification the finding asked for, not an
+    assumption."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    stage_dir = run_dir / "02-scripting"
+
+    meta = {
+        "schema_version": 1, "stage": "shorts-scripting", "version": 1, "status": "draft",
+        "gates": [{"name": "gate_d_script_language", "status": "fail", "findings": [
+            {"check": "D1", "beat": "HOOK", "message": "em-dash in VO line", "kind": "fail"},
+        ]}],
+    }
+    artifacts.write_artifact(stage_dir, 1, meta, "script body")
+
+    # Whitespace-only override_reason must not count as an override.
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/approve", data={"override_reason": "   "}
+    )
+    assert resp.status_code == 409
+
+    # A real reason succeeds.
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/approve",
+        data={"override_reason": "verified manually"},
+    )
+    assert resp.status_code in (200, 303, 307)
+
+
 def test_stage_page_renders_markdown_as_html_not_raw_text(client):
     test_client, tmp_path, app = client
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})

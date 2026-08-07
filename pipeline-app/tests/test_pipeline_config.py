@@ -7,14 +7,31 @@ from pipeline_app.pipeline_config import StageDef, build_stage_nav, load_topolog
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_load_topology_has_eight_stages():
+def test_load_topology_has_nine_stages():
     stages = load_topology(REPO_ROOT / "pipeline.yaml")
-    assert len(stages) == 8
+    assert len(stages) == 9
     ids = [s.id for s in stages]
     assert ids == [
-        "grounding", "ideation", "scripting", "styleboard", "voiceover", "visual", "assembly",
-        "repurpose",
+        "grounding", "ideation", "scripting", "styleboard", "voiceover", "visual",
+        "music", "assembly", "repurpose",
     ]
+
+
+def test_music_stage_is_registered_with_its_specialist():
+    stages = load_topology(REPO_ROOT / "pipeline.yaml")
+    music = next(s for s in stages if s.id == "music")
+    assert music.skill == "music-brief"
+    assert music.depends_on == ["scripting", "voiceover"]
+    assert music.specialist == "elevenlabs-music"
+    assert music.specialist_mode == "manual"
+    assert music.dir_prefix == "03"
+
+
+def test_music_stage_has_a_kickoff_template():
+    """prompt_builder does env.get_template(f"{stage_id}.md"); a missing file is a
+    TemplateNotFound raised at the stage's first turn, which is otherwise only
+    discoverable at runtime."""
+    assert (REPO_ROOT / "pipeline-app" / "stage_templates" / "music.md").exists()
 
 
 def test_scripting_depends_on_ideation():

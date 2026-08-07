@@ -15,7 +15,8 @@ before anything expensive renders.
 character sheet, an architectural visualization, exploratory concept work. Run the full workflow from
 Step 0.
 
-**Pipeline (ContentStudio Shorts).** `visual-prompts` (skill #4 of the pipeline) owns the **beat
+**Pipeline (ContentStudio Shorts).** `visual-prompts` (a stage of ContentStudio's eight-skill
+pipeline, following `shorts-scripting`) owns the **beat
 mapping** — how many stills a beat needs, what each one shows, and which beats need real motion. It
 hands down a beat's visual note plus a forced stage, `register`, and `shot_class`; you convert that
 into a prompt. **Accept its shot-count, visual-intent, register, and shot-class calls and do not
