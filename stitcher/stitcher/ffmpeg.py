@@ -33,6 +33,17 @@ class ProbeResult:
     colorspace: str | None
     # Last, with a default, so existing positional constructions stay valid.
     profile: str | None = None
+    # colour_tagging (verify.py) gates on colorspace/primaries/transfer
+    # together (spec §4 stage F line 503), not colorspace alone. These two
+    # default to "bt709" rather than None so that pre-existing ProbeResult
+    # constructions elsewhere in the suite -- which only ever set the first
+    # 10 positional fields -- keep describing a conformant probe rather than
+    # spuriously acquiring untagged colour. probe() itself always passes
+    # explicit values (including an explicit None when a real file genuinely
+    # lacks the tag), which overrides these defaults, so a real untagged
+    # render still measures as untagged rather than silently passing.
+    color_primaries: str | None = "bt709"
+    color_transfer: str | None = "bt709"
 
     @property
     def has_video(self) -> bool:
@@ -102,6 +113,8 @@ def probe(path: Path) -> ProbeResult:
         sample_rate=int(audio["sample_rate"]) if audio and audio.get("sample_rate") else None,
         colorspace=video.get("color_space") if video else None,
         profile=video.get("profile") if video else None,
+        color_primaries=video.get("color_primaries") if video else None,
+        color_transfer=video.get("color_transfer") if video else None,
     )
 
 

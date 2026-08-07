@@ -252,6 +252,10 @@ def build_audio(
         )
     )
 
+    (ws.work_dir / "loudnorm_pass2.json").write_text(
+        json.dumps(pass2, indent=2), encoding="utf-8"
+    )
+
     if pass2.get("normalization_type") != "linear":
         raise LoudnormNotLinearError(
             "loudnorm fell back to "

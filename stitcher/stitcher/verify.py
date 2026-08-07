@@ -1,0 +1,328 @@
+# stitcher/stitcher/verify.py
+"""Stage F: measure the render and report, never assert without evidence.
+
+Checks that depend on work/ artifacts report UNAVAILABLE when those artifacts
+are gone rather than silently passing, which is what distinguishes "could not
+fully verify" (exit 4) from "verified and failed" (exit 3).
+
+Three measurement choices here are load-bearing, not stylistic (spec §4
+stage F):
+
+1. Duck depth differences the two bed intermediates (04a_bed_conformed.wav,
+   04b_bed_ducked.wav) over identical windows, never ducked-inside-voice
+   against ducked-outside-voice. The naive comparison measures the envelope
+   PLUS the music's own dynamics, which routinely swing past the 1.5 dB
+   tolerance and would false-fail a correct render. Ramp regions (the
+   attack/release either side of a voice span) are excluded from the
+   windows, and windows shorter than MIN_DUCK_WINDOW_S are skipped outright:
+   verified empirically against the real 9.0 binary that an ebur128 window
+   below its ~400ms gating block reports a meaningless "I: -70.0 LUFS" floor
+   rather than a real measurement, so a sub-400ms window would silently
+   corrupt the comparison rather than just being imprecise.
+2. True peak is measured on 06_mix_final.wav, before AAC encoding, not on
+   the master. AAC decode can overshoot its input by 0.3-1 dB, so a mix
+   correctly normalized to -1.5 dBTP would spuriously fail if measured on
+   the master.
+3. Timeline integrity allows one frame of slack. AAC priming and padding
+   shift container duration by 20-45ms; zero tolerance would fail every
+   correct render.
+
+Frame checksums are deliberately absent -- libx264 output varies by build
+and thread count, so a checksum produces false failures rather than
+evidence. Do not add one.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+from PIL import Image
+
+from . import envelope, ffmpeg
+from .naming import Workspace
+from .overlays import bbox_within
+from .spec import RenderSpec, runtime_seconds, shot_frame_bounds
+
+LOUDNESS_TOLERANCE_LU = 1.0
+DUCK_TOLERANCE_DB = 1.5
+MIN_DUCK_WINDOW_S = 0.4
+AAC_PADDING_SLACK_S = 0.05
+
+PASS = "pass"
+FAIL = "fail"
+UNAVAILABLE = "unavailable"
+
+
+@dataclass
+class Check:
+    name: str
+    status: str
+    detail: str
+
+
+def overall_status(checks: list[Check]) -> str:
+    if any(check.status == FAIL for check in checks):
+        return "fail"
+    if any(check.status == UNAVAILABLE for check in checks):
+        return "incomplete"
+    return "pass"
+
+
+_WINDOW_I = re.compile(r"^\s*I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.MULTILINE)
+
+
+def measure_window(path: Path, start: float, duration: float, log_path: Path) -> float:
+    """Integrated loudness over one window of a file.
+
+    Input-seeking (-ss/-t before -i) rather than output-seeking: verified
+    against the real 9.0 binary on a PCM WAV that this lands sample-accurate
+    windows and still produces the ebur128 "Summary:" block with its I: line
+    at true line-start, matching ffmpeg.measure_loudness's own regex
+    approach.
+    """
+    stderr = ffmpeg.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-ss", f"{start:.6f}",
+         "-t", f"{duration:.6f}", "-i", str(path),
+         "-filter_complex", "ebur128=peak=true", "-f", "null", "-"],
+        log_path,
+    )
+    matches = _WINDOW_I.findall(stderr)
+    if not matches:
+        raise ffmpeg.FFmpegError(f"no integrated loudness in window of {path}")
+    return float(matches[-1])
+
+
+def _check_container(spec: RenderSpec, probed: ffmpeg.ProbeResult) -> Check:
+    problems = []
+    if (probed.width, probed.height) != (spec.canvas.width, spec.canvas.height):
+        problems.append(f"resolution {probed.width}x{probed.height}")
+    if probed.fps is None or abs(probed.fps - spec.canvas.fps) > 0.01:
+        problems.append(f"fps {probed.fps}")
+    if probed.pix_fmt != spec.delivery.pix_fmt:
+        problems.append(f"pix_fmt {probed.pix_fmt}")
+    if probed.video_codec != "h264":
+        problems.append(f"video codec {probed.video_codec}")
+    if probed.profile and probed.profile.lower() != spec.delivery.profile.lower():
+        problems.append(f"profile {probed.profile}")
+    detail = (
+        f"{probed.width}x{probed.height} @ {probed.fps}fps, {probed.pix_fmt}, "
+        f"{probed.video_codec}"
+    )
+    return Check("container", FAIL if problems else PASS,
+                 "; ".join(problems) if problems else detail)
+
+
+def _check_audio_stream(spec: RenderSpec, probed: ffmpeg.ProbeResult) -> Check:
+    problems = []
+    if probed.audio_codec != "aac":
+        problems.append(f"audio codec {probed.audio_codec}")
+    if probed.sample_rate != spec.delivery.audio_rate:
+        problems.append(f"sample rate {probed.sample_rate}")
+    return Check(
+        "audio_stream", FAIL if problems else PASS,
+        "; ".join(problems) if problems else f"{probed.audio_codec} @ {probed.sample_rate}Hz",
+    )
+
+
+def _check_colour_tagging(probed: ffmpeg.ProbeResult) -> Check:
+    """Design spec line 503: "colorspace/primaries/trc != bt709" -- gates on
+    all three ffprobe-visible fields, not colorspace alone. Verified against
+    the real 9.0 binary: colour tags applied only as output-level flags
+    (-colorspace/-color_primaries/-color_trc) do NOT reliably surface as
+    color_primaries/color_transfer in `ffprobe -show_streams` (only
+    color_space landed); the frame-level `setparams` filter stage A actually
+    uses is what lands all three. A file probed with only colour_space set
+    genuinely has incomplete tagging by this gate's own observable, so it
+    must fail here too, not silently pass on one field out of three.
+    """
+    fields = (probed.colorspace, probed.color_primaries, probed.color_transfer)
+    ok = all(field == "bt709" for field in fields)
+    return Check(
+        "colour_tagging", PASS if ok else FAIL,
+        f"colorspace={probed.colorspace!r}, primaries={probed.color_primaries!r}, "
+        f"transfer={probed.color_transfer!r}",
+    )
+
+
+def _check_duck(spec: RenderSpec, ws: Workspace, log_path: Path) -> Check:
+    conformed = ws.audio_step("04a", "bed_conformed")
+    ducked = ws.audio_step("04b", "bed_ducked")
+    if not spec.audio.bed:
+        return Check("duck_depth", PASS, "no music bed in this spec")
+    if not (conformed.is_file() and ducked.is_file()):
+        return Check("duck_depth", UNAVAILABLE,
+                     "bed intermediates absent; run with an intact work/ directory")
+
+    bed = spec.audio.bed
+    expected = bed.duck_db - bed.gain_db
+    attack = bed.duck_attack_ms / 1000.0
+
+    durations = {stem.file: stem.duration_s for stem in spec.audio.stems
+                 if stem.duration_s is not None}
+    for stem in spec.audio.stems:
+        source = ws.asset(stem.file)
+        if source.is_file():
+            durations[stem.file] = ffmpeg.probe(source).duration
+
+    try:
+        spans = envelope.stem_spans(spec.audio.stems, durations)
+    except ValueError as exc:
+        # A stem whose file is gone and which declares no duration_s: report
+        # rather than crash the whole verification pass.
+        return Check("duck_depth", UNAVAILABLE, f"stem durations unknown: {exc}")
+
+    measured: list[float] = []
+    for start, end in spans:
+        window_start = start + attack
+        window_length = end - window_start
+        if window_length < MIN_DUCK_WINDOW_S:
+            continue
+        measured.append(
+            measure_window(ducked, window_start, window_length, log_path)
+            - measure_window(conformed, window_start, window_length, log_path)
+        )
+
+    if not measured:
+        return Check("duck_depth", UNAVAILABLE,
+                     "no voice span long enough to measure outside the ramps")
+
+    worst = max(measured, key=lambda value: abs(value - expected))
+    ok = abs(worst - expected) <= DUCK_TOLERANCE_DB
+    return Check(
+        "duck_depth", PASS if ok else FAIL,
+        f"expected {expected:.1f} dB, worst measured {worst:.1f} dB "
+        f"(tolerance {DUCK_TOLERANCE_DB} dB)",
+    )
+
+
+def _check_safe_zone(spec: RenderSpec, ws: Workspace) -> Check:
+    sidecars = sorted(ws.overlays_dir.glob("*.json"))
+    if not sidecars:
+        if not spec.overlays:
+            return Check("safe_zone", PASS, "no overlays in this spec")
+        return Check("safe_zone", UNAVAILABLE,
+                     "overlay bbox sidecars absent; run with an intact work/ directory")
+
+    escaped = []
+    for sidecar in sidecars:
+        bbox = tuple(json.loads(sidecar.read_text(encoding="utf-8"))["bbox"])
+        if not bbox_within(bbox, spec.safe_zone):
+            escaped.append(f"{sidecar.stem} {bbox}")
+    return Check("safe_zone", FAIL if escaped else PASS,
+                 "; ".join(escaped) if escaped else f"{len(sidecars)} overlays inside")
+
+
+def _check_linearity(ws: Workspace) -> Check:
+    record = ws.work_dir / "loudnorm_pass2.json"
+    if not record.is_file():
+        return Check("loudnorm_linearity", UNAVAILABLE,
+                     "loudnorm pass 2 record absent; run with an intact work/ directory")
+    kind = json.loads(record.read_text(encoding="utf-8")).get("normalization_type")
+    return Check("loudnorm_linearity", PASS if kind == "linear" else FAIL,
+                 f"normalization_type = {kind!r}")
+
+
+def _check_placeholders(ws: Workspace) -> Check:
+    found = sorted((ws.work_dir / "placeholders").glob("*.png")) \
+        if (ws.work_dir / "placeholders").is_dir() else []
+    if not found:
+        return Check("placeholders", PASS, "none")
+    names = ", ".join(path.stem for path in found)
+    status = FAIL if ws.mode == "final" else PASS
+    return Check("placeholders", status, f"{len(found)} placeholder(s): {names}")
+
+
+def contact_sheet(
+    spec: RenderSpec, master: Path, out_png: Path, log_path: Path
+) -> Path | None:
+    """One frame from each shot's midpoint, tiled. Informational only."""
+    frames: list[Image.Image] = []
+    temp_dir = out_png.parent / "_contact"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    for index, shot in enumerate(spec.shots, start=1):
+        midpoint = (shot.start + shot.end) / 2
+        frame = temp_dir / f"{index:03d}.png"
+        ffmpeg.run(
+            ["ffmpeg", "-hide_banner", "-y", "-ss", f"{midpoint:.3f}",
+             "-i", str(master), "-frames:v", "1", "-update", "1",
+             "-vf", "scale=216:384", str(frame)],
+            log_path,
+        )
+        if frame.is_file():
+            frames.append(Image.open(frame).convert("RGB"))
+    if not frames:
+        return None
+
+    columns = min(5, len(frames))
+    rows = (len(frames) + columns - 1) // columns
+    sheet = Image.new("RGB", (columns * 216, rows * 384), (0, 0, 0))
+    for position, frame in enumerate(frames):
+        sheet.paste(frame, ((position % columns) * 216, (position // columns) * 384))
+    sheet.save(out_png)
+    return out_png
+
+
+def verify(
+    spec: RenderSpec, ws: Workspace, master: Path, log_path: Path
+) -> list[Check]:
+    probed = ffmpeg.probe(master)
+    checks = [_check_container(spec, probed), _check_audio_stream(spec, probed)]
+    checks.append(_check_colour_tagging(probed))
+
+    integrated = ffmpeg.measure_loudness(master, log_path)["input_i"]
+    target = spec.audio.loudness.integrated_lufs
+    loud_ok = abs(integrated - target) <= LOUDNESS_TOLERANCE_LU
+    checks.append(Check("integrated_loudness", PASS if loud_ok else FAIL,
+                        f"{integrated:.1f} LUFS against a target of {target} LUFS"))
+
+    mix = ws.audio_step("06", "mix_final")
+    if mix.is_file():
+        # Measured pre-AAC: the codec can overshoot its input by 0.3-1 dB.
+        peak = ffmpeg.measure_loudness(mix, log_path)["input_tp"]
+        peak_ok = peak <= spec.audio.loudness.true_peak_dbtp + 1e-6
+        checks.append(Check("true_peak", PASS if peak_ok else FAIL,
+                            f"{peak:.1f} dBTP against a ceiling of "
+                            f"{spec.audio.loudness.true_peak_dbtp} dBTP"))
+    else:
+        checks.append(Check("true_peak", UNAVAILABLE,
+                            "06_mix_final.wav absent; true peak cannot be measured pre-AAC"))
+
+    checks.append(_check_linearity(ws))
+    checks.append(_check_duck(spec, ws, log_path))
+    checks.append(_check_safe_zone(spec, ws))
+
+    total_frames = shot_frame_bounds(spec)[-1][1]
+    expected_seconds = total_frames / spec.canvas.fps
+    # One frame is 33ms at 30fps, but AAC priming/padding can shift container
+    # duration by up to ~45ms -- so the floor is whichever is larger.
+    slack = max(1.0 / spec.canvas.fps, AAC_PADDING_SLACK_S)
+    timeline_ok = abs(probed.duration - expected_seconds) <= slack
+    checks.append(Check(
+        "timeline_integrity", PASS if timeline_ok else FAIL,
+        f"container {probed.duration:.3f}s against {expected_seconds:.3f}s "
+        f"({total_frames} frames), slack {slack * 1000:.0f}ms",
+    ))
+
+    checks.append(_check_placeholders(ws))
+    return checks
+
+
+def write_reports(checks: list[Check], json_path: Path, md_path: Path) -> None:
+    status = overall_status(checks)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(
+        json.dumps({"status": status, "checks": [asdict(c) for c in checks]}, indent=2),
+        encoding="utf-8",
+    )
+
+    symbols = {PASS: "PASS", FAIL: "FAIL", UNAVAILABLE: "N/A "}
+    lines = [f"# QA report — {status.upper()}", "", "| Check | Result | Detail |",
+             "|---|---|---|"]
+    lines += [
+        f"| `{check.name}` | {symbols[check.status]} | {check.detail} |"
+        for check in checks
+    ]
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

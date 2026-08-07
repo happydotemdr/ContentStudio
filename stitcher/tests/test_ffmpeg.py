@@ -50,7 +50,8 @@ def test_probe_parses_a_video_stream(tmp_path: Path, monkeypatch):
         "streams": [
             {"codec_type": "video", "codec_name": "h264", "width": 1080,
              "height": 1920, "pix_fmt": "yuv420p", "r_frame_rate": "30000/1001",
-             "color_space": "bt709"},
+             "color_space": "bt709", "color_primaries": "bt709",
+             "color_transfer": "bt709"},
             {"codec_type": "audio", "codec_name": "aac", "sample_rate": "48000"},
         ],
     }
@@ -63,7 +64,31 @@ def test_probe_parses_a_video_stream(tmp_path: Path, monkeypatch):
     assert result.audio_codec == "aac"
     assert result.sample_rate == 48000
     assert result.colorspace == "bt709"
+    assert result.color_primaries == "bt709"
+    assert result.color_transfer == "bt709"
     assert result.has_video and result.has_audio
+
+
+def test_probe_reports_an_explicit_none_for_untagged_colour_fields(tmp_path: Path, monkeypatch):
+    # A real file that genuinely lacks colour tagging must probe as None, not
+    # silently inherit ProbeResult's "bt709" constructor default -- that
+    # default exists only to keep pre-existing hand-built ProbeResult test
+    # fixtures elsewhere in the suite conformant; probe() itself must always
+    # pass an explicit value so verify.py's colour_tagging check (which gates
+    # on colorspace/primaries/transfer together) can tell "untagged" from
+    # "tagged bt709" for a file actually measured.
+    payload = {
+        "format": {"duration": "1.0"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264", "width": 1080,
+             "height": 1920, "pix_fmt": "yuv420p", "r_frame_rate": "30/1"},
+        ],
+    }
+    monkeypatch.setattr(ff, "_probe_json", lambda path: payload)
+    result = ff.probe(tmp_path / "untagged.mp4")
+    assert result.colorspace is None
+    assert result.color_primaries is None
+    assert result.color_transfer is None
 
 
 def test_probe_handles_an_audio_only_file(tmp_path: Path, monkeypatch):

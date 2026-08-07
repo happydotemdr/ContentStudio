@@ -147,6 +147,14 @@ def test_a_missing_bed_is_omitted_rather_than_faked_in_draft(spec, workspace, mo
     assert result.mix.is_file()
 
 
+def test_loudnorm_pass2_record_is_persisted_for_verify(spec, workspace, monkeypatch):
+    wire(monkeypatch)
+    au.build_audio(spec, workspace, "final", workspace.log_path("t"), [])
+    record = workspace.work_dir / "loudnorm_pass2.json"
+    assert record.is_file()
+    assert json.loads(record.read_text())["normalization_type"] == "linear"
+
+
 def test_a_missing_stem_with_duration_s_becomes_silence_in_draft(tmp_path, monkeypatch):
     payload = json.loads(json.dumps(MINIMAL))
     payload["audio"]["stems"][0]["duration_s"] = 2.875
