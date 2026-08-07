@@ -26,6 +26,17 @@ number in the inventory in Section 3. If a rule's evidence row is empty, the rul
 - **n=4 is thin.** Every threshold and every `[S]` rule in this document rests on four scripts.
   They are calibrated against this sample, not validated against a larger one, and they want
   retuning as the corpus of shipped scripts grows.
+- **The word count behind every wpm figure here treats a numeral as one word.** `word_count`
+  splits on whitespace, so `$1,250,000` counts as one word and `2009` counts as one — spoken, they
+  are six and three. Every D5 figure in this document, and the 170 wpm ceiling calibrated from
+  them, therefore *under*-states the real spoken length of any beat carrying figures, dates, or
+  money. That is not a rounding error in this genre: the shipped scripts open beats with
+  *"A 2009 international position stand…"*, *"Over 260 years ago…"*, *"A review of six thousand
+  athletes…"* and *"Eighty-one things. Eleven factors."* — stat-density is the format. The
+  consequence is a known, systematic **under-fire** of D5 on exactly the lines most likely to
+  over-run. **The counting is deliberately left as-is**: the ceiling was calibrated against it, so
+  changing one without re-deriving the other would retune the gate silently. Read a passing D5 on
+  a numeral-bearing beat as unproven rather than clean.
 - **`output/` is absent from this local checkout.** The Nick Nimmin finding
   (`[C] (Nick Nimmin, IF-PD6XMjYY)` — "don't over-polish the VO line into textbook-perfect
   grammar; a little natural cadence is a feature") is cited by the shipped scripts themselves to

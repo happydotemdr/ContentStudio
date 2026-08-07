@@ -25,7 +25,14 @@ BEAT_LABEL_RE = re.compile(r"^(HOOK|SETUP|BUILD/VALUE|PAYOFF|LOOP/CTA)\b")
 REHOOK_RE = re.compile(r"^\[re-hook\b")
 SUBRANGE_RE = re.compile(r"^\(\d+")
 RANGE_RE = re.compile(r"\((\d+)\s*[–—-]\s*(\d+)s")
-QUOTED_RE = re.compile(r'"([^"]+)"')
+# Straight AND curly quote pairs. A lone apostrophe (' or ’) is deliberately
+# NOT a delimiter: it is a letter's neighbour in "won't" / "kid’s", not a span
+# boundary, and treating it as one would shred every contraction in the corpus.
+QUOTED_RE = re.compile(r'"([^"]+)"|“([^”]+)”')
+# Every beat heading states its own budget as `| N words`. That declaration is
+# the only independent witness to how much spoken text the line is supposed to
+# contain, and it is what the dropped-text detector below measures against.
+DECLARED_WORDS_RE = re.compile(r"\|\s*(\d+)\s*words")
 
 
 @dataclass(frozen=True)
@@ -65,6 +72,46 @@ def _beat_name(stripped: str) -> str | None:
     return None
 
 
+# The dropped-text threshold. Calibrated against the declared-vs-counted spread
+# measured over all 27 VO lines in tests/fixtures/script_*.md: the worst
+# under-count there is 2 words absolute (let-kids-play-act's BUILD/VALUE group,
+# 51 declared vs 49 extracted) and 9.1% relative (its LOOP/CTA, 11 vs 10).
+# Those gaps are the authors' own rounding, not dropped text.
+#
+# Both conditions must hold, and each guards the other's blind spot: the
+# absolute floor stops a 1-word rounding gap on a 4-word beat from firing, and
+# the fraction stops a 3-word gap on a 60-word beat from firing. Real dropped
+# text is not subtle -- a swallowed sub-beat or an unclosed quoted span loses a
+# third to a half of the beat, several times the widest gap any shipped script
+# produces. An OVER-count never fires: more words than declared is a stale
+# heading number, not evidence the parser missed something.
+DROPPED_TEXT_MIN_WORDS = 3
+DROPPED_TEXT_MIN_FRACTION = 0.25
+
+
+def _is_dropped_text(declared: int, counted: int) -> bool:
+    shortfall = declared - counted
+    return (
+        shortfall >= DROPPED_TEXT_MIN_WORDS
+        and shortfall >= DROPPED_TEXT_MIN_FRACTION * declared
+    )
+
+
+def _quoted_spans(stripped: str) -> list[str]:
+    """Every quoted span on the line, straight or curly, in order.
+
+    `.search()` would return only the first, which is the silent
+    under-extraction this parser exists to avoid: a beat line carrying two
+    quoted spans, or a nested quote like `"He said "quit" and walked away —
+    done."`, would have its tail dropped -- taking the tail's em-dashes out of
+    D1's reach and collapsing D5's word count so an over-stuffed beat reads as
+    comfortable."""
+    return [
+        m.group(1) if m.group(1) is not None else m.group(2)
+        for m in QUOTED_RE.finditer(stripped)
+    ]
+
+
 def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
     """Return (VO lines in script order, coverage findings).
 
@@ -73,21 +120,46 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
     tracked per top-level beat: a heading is satisfied by its own quoted span or
     by any beat line before the next top-level heading. A heading satisfied by
     neither means the parser is not seeing text that is there, which must fail
-    loudly rather than silently shrink the linted surface."""
+    loudly rather than silently shrink the linted surface.
+
+    Coverage alone is too coarse, though: a sub-beat swallowed whole leaves its
+    heading covered by a *sibling* sub-beat and produces no finding at all. So
+    every declared `| N words` budget is also measured against the words
+    actually extracted under it -- per top-level group for a heading (whose
+    budget is the sum across its sub-beats), and per line for a sub-beat that
+    declares its own. A material shortfall is a `partial-parse` finding: the
+    parser saying out loud that it is linting less text than the script
+    contains."""
     vo_lines: list[VOLine] = []
     findings: list[Finding] = []
 
     current_label: str | None = None
     current_label_line = 0
     label_covered = True
+    group_declared: int | None = None
+    group_counted = 0
 
     def close_label() -> None:
-        if current_label is not None and not label_covered:
+        if current_label is None:
+            return
+        if not label_covered:
             findings.append(
                 Finding(
                     "PARSE",
                     current_label,
                     f"beat heading at line {current_label_line} yielded no voiceover line",
+                    kind="partial-parse",
+                )
+            )
+            return
+        if group_declared is not None and _is_dropped_text(group_declared, group_counted):
+            findings.append(
+                Finding(
+                    "PARSE",
+                    current_label,
+                    f"beat heading at line {current_label_line} declares {group_declared} "
+                    f"words but only {group_counted} were extracted from it and its "
+                    "sub-beats -- the parser is not seeing spoken text that is there",
                     kind="partial-parse",
                 )
             )
@@ -98,24 +170,54 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
         if beat is None:
             continue
 
+        declared_match = DECLARED_WORDS_RE.search(stripped)
+        declared = int(declared_match.group(1)) if declared_match else None
+
         is_top_level = BEAT_LABEL_RE.match(stripped) is not None
         if is_top_level:
             close_label()
             current_label = beat
             current_label_line = number
             label_covered = False
+            group_declared = declared
+            group_counted = 0
 
-        quoted = QUOTED_RE.search(stripped)
-        if quoted is None:
+        spans = _quoted_spans(stripped)
+        counted = sum(word_count(span) for span in spans)
+        group_counted += counted
+
+        # A top-level heading's budget covers its whole group (BUILD/VALUE
+        # declares the sum of its sub-ranges), so it is settled in close_label
+        # once the group is complete -- checking it here would fire on every
+        # heading that delegates to sub-beats.
+        if not is_top_level and declared is not None and _is_dropped_text(declared, counted):
+            findings.append(
+                Finding(
+                    "PARSE",
+                    current_label or beat,
+                    f"line {number} declares {declared} words but only {counted} were "
+                    "extracted from its quoted span(s) -- the parser is not seeing "
+                    "spoken text that is there",
+                    kind="partial-parse",
+                )
+            )
+
+        if not spans:
             continue
 
         label_covered = True
         span = RANGE_RE.search(stripped)
+        # Multiple spans on one beat line are joined into ONE VOLine rather
+        # than split into several. The beat line is the unit the script
+        # declares (`| N words`) and the unit D5 rates against a single time
+        # range; splitting would fragment one range across several lines and
+        # inflate the VO-line count that the baseline inventory and the
+        # calibration fixtures are pinned to.
         vo_lines.append(
             VOLine(
                 beat=current_label if beat == "sub-beat" and current_label else beat,
                 line_number=number,
-                text=quoted.group(1),
+                text=" ".join(spans),
                 start_s=int(span.group(1)) if span else None,
                 end_s=int(span.group(2)) if span else None,
             )
@@ -204,12 +306,24 @@ FINGERPRINT_PHRASES = (
     "it is important to note",
     "some may argue",
 )
+# The five lemmas are the corpus's, verbatim: delve, leverage, comprehensive,
+# robust, holistic. Only their inflections are enumerated here -- adding a sixth
+# lemma would be inventing corpus content, which this project's central rule
+# forbids. Each lemma is carried to its full set: verb forms for delve and
+# leverage, adverb and nominalization for the adjectives. "holistic" has no
+# nominalization on its own stem ("holism" is a different word, so it is not
+# listed rather than smuggled in as an inflection).
+#
+# Longest-first ordering is deliberate: `\b(robust|robustness)\b` still matches
+# "robustness" via backtracking, but ordering the alternation by descending
+# length makes the intended match obvious instead of load-bearing on regex
+# engine behaviour.
 BUZZWORDS = (
-    "delve", "delves", "delving",
-    "leverage", "leverages", "leveraged", "leveraging",
-    "comprehensive", "comprehensively",
-    "robust", "robustly",
-    "holistic", "holistically",
+    "delving", "delved", "delves", "delve",
+    "leveraging", "leveraged", "leverages", "leverage",
+    "comprehensiveness", "comprehensively", "comprehensive",
+    "robustness", "robustly", "robust",
+    "holistically", "holistic",
 )
 BUZZWORD_RE = re.compile(r"\b(" + "|".join(BUZZWORDS) + r")\b", re.IGNORECASE)
 
@@ -271,9 +385,15 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
     breathing room so a key word lands [C] (Kallaway, ZM3elcBE48I), and shipped
     scripts run a Loop/CTA at ~103 wpm on purpose. Over-running is a production
     failure: the line cannot be spoken in its seconds, and the bad timing
-    propagates into voiceover-brief and shorts-assembly unchallenged."""
+    propagates into voiceover-brief and shorts-assembly unchallenged.
+
+    One unratable beat is a known unknown -- reported `skipped`, non-blocking.
+    A script where NOTHING is ratable is not a known unknown, it is a format
+    failure: D5 checked nothing at all, and a gate that checked nothing must
+    not be reported as a gate that passed."""
     limit = WPM_CEILING + WPM_TOLERANCE
     findings: list[Finding] = []
+    rated = 0
     for vo in vo_lines:
         wpm = beat_wpm(vo)
         if wpm is None:
@@ -298,6 +418,7 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
                 )
             )
             continue
+        rated += 1
         if wpm > limit:
             findings.append(
                 Finding(
@@ -307,10 +428,30 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
                     f"(+{WPM_TOLERANCE} tolerance) -- more words than fit in the beat",
                 )
             )
+    if vo_lines and rated == 0:
+        findings.append(
+            Finding(
+                "D5",
+                None,
+                f"not one of the {len(vo_lines)} voiceover lines carries a readable time "
+                "range, so the wpm ceiling was never checked on this script -- every beat "
+                "heading needs a `(<start>–<end>s | N words)` range, e.g. "
+                "`(0–3s | 8 words)`. A gate that rated nothing is not a gate that passed",
+            )
+        )
     return findings
 
 
 GATE_E_RE = re.compile(r"^\s*Gate E\b[^:]*:\s*(\S.*)$", re.MULTILINE)
+# A value still wrapped in <…> or […] is the output contract's own slot, not a
+# result. So is one that still carries the template's `|` alternation bars --
+# no genuine result ("pass", "3 findings", "2 findings, 1 defended",
+# "overridden: <why>") contains one.
+PLACEHOLDER_WRAPPED_RE = re.compile(r"^<.*>$|^\[.*\]$", re.DOTALL)
+
+
+def _is_unfilled_placeholder(value: str) -> bool:
+    return bool(PLACEHOLDER_WRAPPED_RE.match(value)) or "|" in value
 
 
 def check_gate_e_reported(text: str) -> list[Finding]:
@@ -318,9 +459,26 @@ def check_gate_e_reported(text: str) -> list[Finding]:
 
     This cannot prove Gate E ran; a skill that skipped it can still write
     `Gate E: pass`. It raises the cost of the omission from silent to
-    deliberate, and no further. See the spec's "Known limits"."""
-    if GATE_E_RE.search(text):
+    deliberate, and no further. See the spec's "Known limits".
+
+    What it CAN refuse is the zero-cost defeat: pasting the output contract's
+    own placeholder unchanged. `<pass | N findings | N defended | overridden:
+    reason>` is a slot, not a result, and accepting it would let a skill
+    satisfy the lock without deciding anything at all -- weaker even than
+    "silent to deliberate"."""
+    values = [m.group(1).strip() for m in GATE_E_RE.finditer(text)]
+    if any(not _is_unfilled_placeholder(value) for value in values):
         return []
+    if values:
+        return [
+            Finding(
+                "D6",
+                None,
+                f"the `Gate E:` line still holds the unfilled output-contract "
+                f"placeholder ({values[0]!r}) -- pasting the template is not reporting "
+                "a result; write what the critic actually returned",
+            )
+        ]
     return [
         Finding(
             "D6",

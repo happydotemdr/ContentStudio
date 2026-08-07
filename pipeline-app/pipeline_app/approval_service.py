@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 
 from pipeline_app import artifacts, db as db_mod
+from pipeline_app.gates import GATE_REGISTRY
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
 from pipeline_app.state_machine import StageStatus, is_locked_or_running, stages_to_unlock
 
@@ -41,14 +42,25 @@ def approve_stage(
     # an edge case.
     latest_meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
 
-    failing = [
-        g for g in (latest_meta.get("gates") or [])
-        if g.get("status") in ("fail", "error")
+    # Registry-aware, deliberately: reading only what the frontmatter happens to
+    # carry makes an ABSENT `gates` key indistinguishable from a clean run. Any
+    # artifact minted before this stage had gates -- or by any future path that
+    # forgets to run them -- would otherwise approve with no gate having run at
+    # all, which is the same silent pass of an unknown result the whole design
+    # is built to refuse. A registered gate with no recorded result blocks
+    # exactly as a failing one does, and says which of the two it is.
+    recorded = latest_meta.get("gates") or []
+    failing = [g for g in recorded if g.get("status") in ("fail", "error")]
+    reported_names = {g.get("name") for g in recorded}
+    never_ran = [
+        name for name, _runner in GATE_REGISTRY.get(stage_id, [])
+        if name not in reported_names
     ]
-    if failing and not override_reason:
-        names = ", ".join(f"{g['name']} ({g['status']})" for g in failing)
+    if (failing or never_ran) and not override_reason:
+        problems = [f"{g['name']} ({g['status']})" for g in failing]
+        problems += [f"{name} (never ran -- no result in the artifact)" for name in never_ran]
         raise ValueError(
-            f"Stage '{stage_id}' has a failing gate: {names}. "
+            f"Stage '{stage_id}' has a blocking gate: {', '.join(problems)}. "
             "Fix the findings and regenerate, or approve with an override reason."
         )
 

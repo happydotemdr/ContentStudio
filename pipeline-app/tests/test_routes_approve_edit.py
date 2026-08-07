@@ -84,8 +84,17 @@ def test_hand_edit_flips_stage_to_awaiting_review_and_dependent_to_stale(two_sta
         },
         "script v1",
     )
+    # This artifact is written straight to disk with no `gates` key -- the
+    # pre-existing-artifact shape approve_stage now refuses, because a stage
+    # with a registered gate and no recorded result is a gate that never ran,
+    # not a gate that passed. The body ("script v1") is not real
+    # script-language-gate input either. This test is about hand-edit staleness
+    # propagation, not gate content, so it overrides the block rather than
+    # fabricating a gate-passing script body -- the same route Task 9 took for
+    # test_regenerating_an_approved_stage_marks_approved_dependent_stale.
     assert test_client.post(
-        f"/projects/{project_id}/stages/scripting/approve"
+        f"/projects/{project_id}/stages/scripting/approve",
+        data={"override_reason": "test fixture body is not real script-language-gate input"},
     ).status_code in (200, 303, 307)
 
     assert db.get_stage(app.state.conn, project_id, "ideation")["status"] == "approved"

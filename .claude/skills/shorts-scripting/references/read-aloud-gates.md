@@ -73,7 +73,7 @@ heading never fires D1.
 | D3 | Fingerprint-phrase and buzzword no-list | **`[C] (Romayroh, ErCV5czVK1g)`** — carried forward from `references/script-intelligence-and-delivery.md:40-43`, not derived from this repo's output |
 | D4 | No unspeakable tokens in a VO line (`&`, `n=142`, `12(3):424–433`, `§`) | **`[I]`** — zero hits in the 27-line inventory; a regression guard, honestly unevidenced |
 | D5 | No beat exceeds a **170 wpm ceiling** (words ÷ duration), ±2 tolerance | **`[S]`** — 3 over-ceiling beats across 2 scripts; both 07-25 Hooks at ≈260 wpm, `specialization` Setup at ≈228 (`docs/script-language-baseline.md`, "D5 evidence") |
-| D6 | The artifact carries a well-formed `Gate E:` line | **`[I]`** — the honesty lock; no line can evidence the absence of a line |
+| D6 | The artifact carries a well-formed `Gate E:` line, **filled in** — a value still wrapped in `<…>`/`[…]`, or still carrying the output contract's `|` bars, is the unfilled slot and is rejected | **`[I]`** — the honesty lock; no line can evidence the absence of a line |
 
 **D1 and D5 are the only two checks marked `[S]`, because they are the only two with a real
 shipped line behind them** `[S] (docs/script-language-baseline.md, "Rule index")`. Marking D2, D4,
@@ -96,6 +96,12 @@ than an accidental one `[S] (docs/script-language-baseline.md, decline BUILD/VAL
 old-format `[re-hook beat @ ~15s]: "…"` line carries no `(range | words)` group, so D5 cannot rate
 it. Read the skip and decide; an unchecked beat is a known unknown, not a clean one.
 
+**A script where *no* beat is ratable fails outright** `[I]`. One skip is a known unknown; a whole
+script of skips is a format failure — D5 read nothing, and a check that read nothing must not
+reach the approval boundary looking like a check that passed. The usual cause is colon timestamps
+(`(0:00–0:03 | 8 words)`) or `(0–3 sec …)`; the linter only reads whole seconds in the form
+`(0–3s | 8 words)`. Fix the headings, do not override the finding.
+
 ### Running it — the two-mode rule
 
 ```bash
@@ -115,8 +121,20 @@ and exists precisely so that "I could not run it" never has to be written as "it
 the failure `visual-prompts`' Gate C shipped with, and it is not repeated here.
 
 **Exit 2 is not a pass** `[I]`. Zero voiceover lines parsed means the linter is not seeing text
-that is there — fix the script's format and re-run. A `partial-parse` finding (fewer VO lines than
-beat headings) means the same thing for one beat.
+that is there — fix the script's format and re-run. A `partial-parse` finding means the same thing
+for one beat, and fires in two shapes `[I]`:
+
+- a beat heading that yielded **no** quoted line anywhere under it;
+- a beat whose `| N words` declaration is **materially** larger than the words actually extracted
+  from it — the dropped-text check. Under-extraction is the danger and it is silent by nature: a
+  swallowed sub-beat takes its own dashes and its own word count out of every check at once. The
+  threshold is a shortfall of **at least 3 words *and* at least 25% of the declaration**, so an
+  author's rounding does not fire and a lost span does. An over-count never fires — a heading
+  claiming fewer words than the line speaks is a stale number, not evidence of a parser miss.
+
+**Write the beat's real word count in its heading** `[I]`. That number is the only independent
+witness the linter has to how much spoken text a beat should contain; a heading left at a guess
+disarms the dropped-text check on that beat.
 
 ---
 
@@ -277,7 +295,11 @@ you re-run.
 2. **D6 cannot prove Gate E ran** `[I]`. A skill that skipped Gate E can still write
    `Gate E: pass` — the same self-attestation this whole design exists to replace, reintroduced for
    the more expensive gate. D6 raises the cost of the omission **from silent to deliberate, and no
-   further**. Do not treat a present `Gate E:` line as evidence a critic was dispatched.
+   further**. Do not treat a present `Gate E:` line as evidence a critic was dispatched. D6's
+   placeholder rejection buys exactly one thing on top of that: it removes the *zero-cost* defeat
+   in which the output contract is pasted unfilled and the lock is satisfied by a template nobody
+   read `[I]`. Writing a false `pass` is now the cheapest way past the lock, and it is still
+   available.
 3. **The Nick Nimmin extension is unverified** `[C] (Nick Nimmin, IF-PD6XMjYY)`. `output/` is not
    present in this checkout, so the original finding cannot be checked. It is possible it concerns
    only *the cut* — filler, breath, editing choices — and that its extension to written VO-line
@@ -287,3 +309,11 @@ you re-run.
    constraint you fail to annotate is a constraint the critic may rewrite. `unknown` defaults to
    no-touch so that failure is safe rather than silent, but nothing catches a line you confidently
    annotated `free` that was not.
+5. **D5 under-counts numerals, and this genre is full of them** `[I]`. The linter counts
+   whitespace-separated tokens, so `$1,250,000` is one word and `2009` is one word — spoken, they
+   are six and three. A stat-heavy beat therefore rates *slower* than it will actually be
+   performed, and D5 systematically under-fires on exactly the lines this brand writes most
+   (`"A 2009 international position stand…"`, `"A review of six thousand athletes…"`). **The
+   counting is not changed, because the 170 wpm ceiling was calibrated against it** — moving one
+   without the other would silently retune the gate. **Say the numeral out loud and count what you
+   hear before trusting a passing D5 on a beat carrying figures, dates, or money** `[I]`.

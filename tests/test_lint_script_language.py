@@ -107,6 +107,101 @@ def test_beat_heading_with_no_quoted_line_anywhere_is_partial_parse():
     assert findings[0].beat == "HOOK"
 
 
+def test_a_curly_quoted_sub_beat_under_a_covered_heading_is_not_dropped():
+    """Finding 1a. Coverage is tracked per TOP-LEVEL beat, so a sub-beat sitting
+    under a heading that a SIBLING sub-beat already satisfied produces no
+    coverage finding of its own. If its quotes are curly rather than straight
+    and the extractor only knows straight quotes, the whole sub-beat vanishes
+    silently -- its dashes never reach D1 and its words never reach D5. Both
+    sub-beats must parse."""
+    text = (
+        "BUILD/VALUE (8–28s | 16 words):\n"
+        '  (8–18s | 8 words): "A position stand reports that samplers reach elite level."\n'
+        "  (18–28s | 8 words): “But the offer isn’t really — about your kid.”\n"
+    )
+    lines, findings = parse_script(text)
+    assert [vo.line_number for vo in lines] == [2, 3]
+    assert "But the offer" in lines[1].text
+    assert findings == []
+    assert [f.check for f in check_punctuation(lines)] == ["D1"]
+
+
+def test_an_apostrophe_is_not_treated_as_a_quote_delimiter():
+    """The curly-quote support must not swallow contractions: `isn’t` and
+    `won't` carry apostrophes, not span boundaries."""
+    lines, _ = parse_script(
+        'HOOK (0–3s | 7 words): "It won\'t set him back. It isn’t serious."\n'
+    )
+    assert [vo.text for vo in lines] == ["It won't set him back. It isn’t serious."]
+
+
+def test_two_quoted_spans_on_one_beat_line_are_both_linted():
+    """Finding 1b. `.search()` returned only the first span, so a second one --
+    and any em-dash inside it -- escaped every check. Both spans are extracted
+    and joined into the single VOLine the beat line declares, so the VO-line
+    count the calibration fixtures pin is unchanged while the linted surface
+    grows."""
+    lines, _ = parse_script(
+        'HOOK (0–3s | 10 words): "The first half is clean" and then "the second half — is not"\n'
+    )
+    assert len(lines) == 1
+    assert "the second half" in lines[0].text
+    assert [f.check for f in check_punctuation(lines)] == ["D1"]
+
+
+def test_a_nested_quote_does_not_truncate_the_line_and_is_reported():
+    """Finding 1c. `"He said "quit" and walked away — done."` used to extract
+    only `He said `: the em-dash escaped D1 and the collapsed word count made
+    D5 under-fire. The tail is now extracted (so D1 fires), and because the
+    nested `"quit"` is still unrecoverable the declared-vs-counted shortfall is
+    reported as a partial parse rather than passing quietly."""
+    text = 'HOOK (0–3s | 9 words): "He said "quit" and walked away — done."\n'
+    lines, findings = parse_script(text)
+    assert "walked away" in lines[0].text
+    assert [f.check for f in check_punctuation(lines)] == ["D1"]
+    assert [f.kind for f in findings] == ["partial-parse"]
+    assert "declares 9 words but only 6" in findings[0].message
+
+
+def test_a_sub_beat_whose_text_is_unreadable_is_a_partial_parse():
+    """The dropped-text detector proper: a sub-beat that declares 20 words and
+    yields none is reported both on its own line and in its heading's group
+    total, even though a sibling sub-beat already covered the heading."""
+    text = (
+        "BUILD/VALUE (8–28s | 40 words):\n"
+        '  (8–18s | 20 words): "A position stand reports that kids who sample many sports '
+        'still tend to reach the elite level in the end."\n'
+        "  (18–28s | 20 words): unquoted prose the parser cannot see at all\n"
+    )
+    _, findings = parse_script(text)
+    assert [f.kind for f in findings] == ["partial-parse", "partial-parse"]
+    assert "line 3 declares 20 words but only 0" in findings[0].message
+    assert "declares 40 words" in findings[1].message
+
+
+def test_an_over_count_is_not_a_dropped_text_finding():
+    """A heading claiming fewer words than the line actually speaks is a stale
+    number, not evidence the parser missed something. Only a shortfall fires."""
+    text = 'HOOK (0–8s | 3 words): "This spoken line is very much longer than its heading claims."\n'
+    _, findings = parse_script(text)
+    assert findings == []
+
+
+def test_authorial_rounding_on_the_shipped_fixtures_never_fires_the_detector():
+    """The threshold's calibration case. The four shipped scripts declare word
+    counts that differ from their extracted text by up to 2 words absolute and
+    9.1% relative -- authors rounding, not dropped text. The detector must be
+    silent on all four."""
+    for name in (
+        "script_let_kids_play_act.md",
+        "script_specialization.md",
+        "script_decline.md",
+        "script_nobody_asked.md",
+    ):
+        _, findings = parse_script(_read(name))
+        assert findings == [], f"{name}: {findings}"
+
+
 def test_d1_flags_em_dash_in_vo_line():
     lines, _ = parse_script(
         'HOOK (0–3s | 9 words): "An activity done for a result — constrained labor."\n'
@@ -245,6 +340,29 @@ def test_d3_flags_buzzwords_and_their_inflections():
     assert len([f for f in check_vocabulary(lines) if f.check == "D3"]) == 3
 
 
+def test_d3_inflections_are_complete_for_every_corpus_lemma():
+    """Finding 5. `delves`/`delving` were listed but not `delved`; `robust` but
+    not `robustness` -- so "We delved into robustness levers." produced zero D3
+    findings. The five lemmas are the corpus's own and are not extended here;
+    only their inflections are completed."""
+    lines, _ = parse_script('HOOK (0–8s | 5 words): "We delved into robustness levers."\n')
+    found = sorted(f.message.rsplit(" ", 1)[-1] for f in check_vocabulary(lines))
+    assert found == ["'delved'", "'robustness'"]
+
+
+def test_d3_flags_the_remaining_new_inflections():
+    lines, _ = parse_script(
+        'HOOK (0–20s | 12 words): "A comprehensiveness nobody wanted, delved over and over."\n'
+    )
+    assert len([f for f in check_vocabulary(lines) if f.check == "D3"]) == 2
+
+
+def test_d3_does_not_flag_a_word_that_merely_contains_a_lemma():
+    """`levers` and `lever` are not `leverage`; the word boundaries hold."""
+    lines, _ = parse_script('HOOK (0–8s | 6 words): "He pulled the levers, every lever."\n')
+    assert check_vocabulary(lines) == []
+
+
 def test_d3_does_not_flag_hackfort_the_surname():
     lines, _ = parse_script('HOOK (0–3s | 5 words): "Côté, Lidor and Hackfort reported."\n')
     assert check_vocabulary(lines) == []
@@ -314,10 +432,46 @@ def test_d5_tolerance_passes_a_beat_at_171_wpm():
 
 
 def test_d5_skips_a_beat_with_no_range_and_says_so():
-    lines, _ = parse_script('[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n')
+    # A ratable HOOK sits alongside the old-format re-hook on purpose: with the
+    # re-hook alone this script would be 100% unratable, which is now its own
+    # blocking finding (see test_d5_blocks_when_no_beat_at_all_is_ratable).
+    # This test is about the per-beat `skipped` semantics, which are unchanged.
+    lines, _ = parse_script(
+        'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
+    )
     findings = check_pace(lines)
     assert [f.kind for f in findings] == ["skipped"]
     assert findings[0].check == "D5"
+
+
+def test_d5_blocks_when_no_beat_at_all_is_ratable():
+    """Finding 2. A script whose every beat uses colon timestamps yields
+    ALL-skipped pace findings, and `skipped` is non-blocking -- so the gate
+    recorded `pass` on a script whose timing D5 never read a single character
+    of, indistinguishable at the approval boundary from a verified one. One
+    unratable re-hook is a known unknown; every beat unratable is a format
+    failure, and the spec is explicit that a beat whose timing cannot be
+    checked is not a pass."""
+    lines, _ = parse_script(
+        'HOOK (0:00–0:03 | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP (0:03–0:08 | 6 words): "Kids do that every single time."\n'
+    )
+    findings = check_pace(lines)
+    assert [f.kind for f in findings] == ["skipped", "skipped", "fail"]
+    assert findings[-1].check == "D5"
+    assert "(<start>–<end>s | N words)" in findings[-1].message
+
+
+def test_d5_does_not_block_when_one_beat_among_several_is_unratable():
+    """The companion guard. `script_let_kids_play_act` and
+    `script_specialization` each carry one old-format re-hook with no range
+    alongside computable beats; neither may trip the all-unratable finding."""
+    for name in ("script_let_kids_play_act.md", "script_specialization.md"):
+        lines, _ = parse_script(_read(name))
+        findings = check_pace(lines)
+        assert any(f.kind == "skipped" for f in findings), name
+        assert [f for f in findings if f.beat is None] == [], name
 
 
 def test_d5_counts_on_shipped_fixtures():
@@ -345,6 +499,66 @@ def test_d6_fails_a_missing_gate_e_line():
 
 def test_d6_fails_an_empty_gate_e_value():
     assert [f.check for f in check_gate_e_reported("  Gate E (critic):   \n")] == ["D6"]
+
+
+SKILL_MD = (
+    Path(__file__).resolve().parents[1]
+    / ".claude" / "skills" / "shorts-scripting" / "SKILL.md"
+)
+
+
+def test_d6_rejects_the_unfilled_output_contract_placeholder():
+    """Finding 4. D6 accepted the output contract's own placeholder verbatim,
+    so a skill that pasted the contract without dispatching anything satisfied
+    the honesty lock at zero cost -- weaker than even the "raises the omission
+    from silent to deliberate" bar the lock claims, because pasting a template
+    is not a decision at all. An unfilled slot is not a result.
+
+    This does NOT make D6 a proof that Gate E ran; nothing here can be. A skill
+    that skipped the critic can still type `pass`. What changed is only that it
+    now has to type something."""
+    line = "  Gate E (fresh Opus critic):               <pass | N findings | N defended | overridden: reason>"
+    findings = check_gate_e_reported(f"GATES\n{line}\n")
+    assert [f.check for f in findings] == ["D6"]
+    assert "placeholder" in findings[0].message
+
+
+def test_the_skill_md_output_contract_placeholder_fails_d6():
+    """The contract shipped in SKILL.md is read straight off disk here rather
+    than restated, so the assertion cannot drift away from the real template.
+    An earlier task verified the opposite -- that the template SATISFIES D6 --
+    which was the bug: a skill emitting the contract unfilled must fail the
+    lock, not pass it."""
+    text = SKILL_MD.read_text(encoding="utf-8")
+    assert "Gate E (fresh Opus critic)" in text, "output contract no longer names Gate E"
+    assert [f.check for f in check_gate_e_reported(text)] == ["D6"]
+
+
+def test_d6_accepts_every_genuinely_filled_shape():
+    for value in (
+        "pass",
+        "3 findings",
+        "2 findings, 1 defended",
+        "overridden: dash is inside a verbatim 1886 quote",
+        "deferred — app-run",
+    ):
+        assert check_gate_e_reported(f"  Gate E (critic): {value}\n") == [], value
+
+
+def test_d6_rejects_a_bracketed_placeholder_too():
+    """The design spec writes the same slot with square brackets."""
+    text = "  Gate E (fresh Opus critic): [pass | N findings | N defended | overridden: <reason>]\n"
+    assert [f.check for f in check_gate_e_reported(text)] == ["D6"]
+
+
+def test_d6_accepts_a_filled_line_alongside_a_stray_placeholder():
+    """A real result anywhere satisfies the lock; a leftover template line
+    elsewhere in the document must not veto it."""
+    text = (
+        "  Gate E (fresh Opus critic): <pass | N findings>\n"
+        "  Gate E (fresh Opus critic): 2 findings, 1 defended\n"
+    )
+    assert check_gate_e_reported(text) == []
 
 
 def test_d6_fails_on_every_shipped_fixture_because_they_predate_the_gate():

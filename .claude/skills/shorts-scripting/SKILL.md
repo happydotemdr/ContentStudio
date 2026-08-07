@@ -180,8 +180,8 @@ Next-video bridge: <name a specific related Short/video to point to (pinned
 Total word count: ~N words (150–170 wpm)
 
 GATES
-  Gate D (scripts/lint_script_language.py): <pass | N findings | deferred — app-run>
-  Gate E (fresh Opus critic):               <pass | N findings | N defended | overridden: reason>
+  Gate D (scripts/lint_script_language.py): <replace this slot with the real result: "pass", "N findings", or "deferred — app-run">
+  Gate E (fresh Opus critic):               <replace this slot with the real result: "pass", "N findings", "N findings, N defended", or "overridden: reason">
 
 Visual notes (for visual-prompts downstream):
   Hook: <one line>
@@ -199,6 +199,12 @@ Delivery notes: <muted-friendly check, medium-confidence flags used (if any),
   used in the script, plus its "constraints that survive to publish" line,
   copied verbatim>
 ```
+
+**Every `<…>` above is a slot, and the two `GATES` slots are the ones a gate
+checks: D6 rejects a `Gate E:` value still wrapped in `<…>` or `[…]`, or still
+carrying the template's `|` bars** `[I]`. Emitting the contract unfilled is a
+Gate D failure, not a report. **This still does not prove Gate E ran** `[I]` —
+nothing in Gate D can; see `references/read-aloud-gates.md` "Known limits".
 
 A full worked example (concept brief → finished script, with citations
 annotating each choice) is in `references/worked-example.md` — read it before

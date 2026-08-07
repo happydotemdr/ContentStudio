@@ -48,6 +48,28 @@ def test_skipped_findings_are_recorded_but_do_not_fail(tmp_path):
     assert any(f["kind"] == "skipped" for f in results[0]["findings"])
 
 
+def test_a_script_whose_timings_are_all_unreadable_fails_the_gate(tmp_path):
+    """Finding 2: `skipped` findings do not block, so a script using colon
+    timestamps throughout produced ALL-skipped pace findings and recorded
+    `status: "pass"` -- indistinguishable at the approval boundary from a
+    script whose every beat D5 actually rated. This is the app-side half of
+    the fix: the whole-script finding is an ordinary blocking one, so the gate
+    result is `fail`."""
+    path = tmp_path / "raw_output.md"
+    path.write_text(
+        'HOOK (0:00–0:03 | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP (0:03–0:08 | 6 words): "Kids do that every single time."\n'
+        "GATES\n  Gate E (fresh Opus critic): pass\n",
+        encoding="utf-8",
+    )
+    results = gates.run_gates_for_stage(REPO_ROOT, "scripting", path)
+    assert results[0]["status"] == "fail"
+    assert any(
+        f["kind"] == "fail" and "never checked" in f["message"]
+        for f in results[0]["findings"]
+    )
+
+
 def test_unparseable_script_is_an_error_not_a_pass(tmp_path):
     path = tmp_path / "raw_output.md"
     path.write_text("no beats at all\n", encoding="utf-8")

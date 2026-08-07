@@ -1080,13 +1080,28 @@ In the output contract fenced block, immediately before the `Visual notes` line,
 
 ```
 GATES
-  Gate D (scripts/lint_script_language.py): <pass | N findings | deferred — app-run>
-  Gate E (fresh Opus critic):               <pass | N findings | N defended | overridden: reason>
+  Gate D (scripts/lint_script_language.py): <replace this slot with the real result: "pass", "N findings", or "deferred — app-run">
+  Gate E (fresh Opus critic):               <replace this slot with the real result: "pass", "N findings", "N findings, N defended", or "overridden: reason">
 ```
+
+*(Placeholder wording corrected 2026-08-07, fix wave 2 finding 4 — see Step 5.)*
 
 Then add `references/read-aloud-gates.md` to the reference-file list at the end of `SKILL.md` with a one-line description.
 
-- [ ] **Step 5: Verify the GATES block satisfies D6**
+- [ ] **Step 5: Verify the GATES block does NOT satisfy D6**
+
+**Corrected 2026-08-07 (fix wave 2, finding 4). This step originally asserted the
+opposite — that the unfilled template must be the shape D6 accepts — and that
+was wrong.** If pasting the output contract verbatim satisfies the honesty lock,
+a skill that never dispatched Gate E clears it at zero cost: weaker than even
+the "raises the omission from silent to deliberate" bar the spec claims for D6,
+because pasting a template is not a decision at all. The spec's intent governs
+over the plan step. D6 now rejects a `Gate E:` value still wrapped in `<…>` or
+`[…]`, or still carrying the template's `|` bars, and the contract's own
+placeholder is therefore required to FAIL. The permanent version of this check
+is `tests/test_lint_script_language.py::test_the_skill_md_output_contract_placeholder_fails_d6`,
+which reads SKILL.md off disk so the assertion cannot drift from the real
+template.
 
 Run:
 ```bash
@@ -1097,9 +1112,10 @@ from lint_script_language import check_gate_e_reported
 skill = pathlib.Path(".claude/skills/shorts-scripting/SKILL.md").read_text(encoding="utf-8")
 assert "read-aloud-gates.md" in skill, "reference file not linked from SKILL.md"
 assert "`[S]`" in skill, "[S] marker not documented in SKILL.md"
-# The contract's own template line must be the shape D6 accepts.
-template = "  Gate E (fresh Opus critic):               <pass | N findings>"
-assert check_gate_e_reported(template) == [], "output contract template would fail D6"
+# The contract's own template line must be REJECTED by D6: an unfilled slot is
+# not a reported result.
+assert [f.check for f in check_gate_e_reported(skill)] == ["D6"], \
+    "output contract template must fail D6, not satisfy it"
 print("OK")
 PY
 ```
