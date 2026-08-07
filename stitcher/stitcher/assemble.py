@@ -213,6 +213,33 @@ def assemble(
         if manifest is not None
         else None
     )
+    # THIS CACHE RARELY HITS AFTER A SUCCESSFUL FINAL RENDER. THAT IS CORRECT.
+    # DO NOT "FIX" IT.
+    #
+    # `is_fresh` requires the artifact to still exist, and on a QA pass
+    # cmd_render PROMOTES work/<mode>/master.mp4 -- it `shutil.move`s it into
+    # out/<slug>_v<NN>.mp4 -- so the file this key points at is gone by the
+    # next run and the stage honestly reports stale. (Proved by
+    # tests/test_stage_cache.py::
+    # test_a_promoted_master_leaves_stage_d_with_nothing_to_serve.)
+    #
+    # Nothing is lost by that, because an IDENTICAL re-render never reaches
+    # this line: cmd_render's total-cache-hit rule compares the aggregate run
+    # digest first and short-circuits with "no changes; vNN is current"
+    # before stage A. So the only ways here are `--force` (which explicitly
+    # means re-encode) or a run where something really did change.
+    #
+    # The one case this leaves on the table is a change that moves the run
+    # digest but not stage D's key -- e.g. editing spec.cover.source, which
+    # only stage E reads. That re-encodes a master byte-identical to the
+    # promoted one. Serving it from out/ instead was considered and
+    # rejected: stage D's contract is that it produces work/<mode>/master.mp4
+    # for stage F to measure and cmd_render to promote, and returning or
+    # copying back a promoted deliverable would either move a published file
+    # out of out/ or mint a second version of identical video. The promotion
+    # rule (stage D always writes work/, only a clean stage F promotes and
+    # allocates a version, spec §2 rule 5) is load-bearing and is not worth
+    # bending to save one encode in an uncommon case.
     if (
         manifest is not None
         and digest is not None

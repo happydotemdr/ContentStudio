@@ -50,6 +50,31 @@ renders/<slug>/
 A version is allocated only on a QA pass. A failed render leaves its master in
 `work/` and its report in `logs/`, so `out/` contains only outputs that met spec.
 
+## Caching
+
+Each stage records what determined its output in `work/<mode>/manifest.json`
+and skips itself when nothing in that key moved. On top of that, `render`
+compares one aggregate digest for the whole run and reports
+`no changes; <file> is current` without touching a stage. `--force` bypasses
+both; `clean` deletes `work/` entirely.
+
+Cache keys fold in the spec, every input asset's content hash, the ffmpeg
+build string, the run mode, and `CACHE_EPOCH` — a hand-bumped integer in
+`stitcher/cache.py` standing in for the stitcher's own render-affecting code.
+**Bump it when you change a filter, an ffmpeg argument, or a constant that
+reaches a command line**, or `render` will report "no changes" after your fix.
+The constant's own comment lists exactly what counts.
+
+Two behaviours that look like bugs and are not:
+
+- **Stage D (assemble) rarely hits its cache after a successful final
+  render.** A QA pass *moves* `work/<mode>/master.mp4` into `out/`, so the
+  artifact its manifest entry points at is gone and the stage correctly
+  reports stale. Nothing is lost: an identical re-render is short-circuited
+  by the whole-run digest before stage D is ever reached.
+- **Stage F always re-runs.** It measures the output that was just produced,
+  so a cached measurement would be a measurement of something else.
+
 ## JSON Schema
 
 `schema/render-spec.schema.json` describes `render-spec.json` for external
