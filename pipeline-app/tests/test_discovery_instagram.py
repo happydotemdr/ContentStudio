@@ -104,7 +104,6 @@ class _FakeResponse:
 
 
 def test_trigger_job_posts_expected_request_and_returns_snapshot_id(monkeypatch):
-    monkeypatch.setattr(ig, "DATASET_ID", "gd_real_dataset_id")
     captured = {}
 
     def fake_post(url, params=None, headers=None, json=None, timeout=None):
@@ -122,7 +121,27 @@ def test_trigger_job_posts_expected_request_and_returns_snapshot_id(monkeypatch)
     assert captured["url"] == f"{ig.BRIGHTDATA_API_BASE}/trigger"
     assert captured["params"]["dataset_id"] == ig.DATASET_ID
     assert captured["headers"]["Authorization"] == "Bearer the-key"
+    assert captured["json"][0]["url"] == "https://www.instagram.com/somehandle/"
     assert captured["json"][0]["num_of_posts"] == ig.MAX_ITEMS_PER_RUN
+
+
+def test_trigger_job_requests_a_discovery_job_not_a_single_page_collect(monkeypatch):
+    """Without type=discover_new + discover_by=url, Bright Data reads the
+    profile URL as one post page to scrape -- a paid job returning the wrong
+    thing. These params are what make it 'newest N posts by this profile'."""
+    captured = {}
+
+    def fake_post(url, params=None, headers=None, json=None, timeout=None):
+        captured.update(params)
+        return _FakeResponse({"snapshot_id": "snap123"})
+
+    monkeypatch.setattr(ig.requests, "post", fake_post)
+    ig._trigger_job("somehandle", "the-key")
+
+    assert captured["type"] == "discover_new"
+    assert captured["discover_by"] == "url"
+    # Server-side cost cap, independent of the num_of_posts input field.
+    assert captured["limit_per_input"] == ig.MAX_ITEMS_PER_RUN
 
 
 def test_trigger_job_raises_when_dataset_id_still_placeholder(monkeypatch):
@@ -130,7 +149,7 @@ def test_trigger_job_raises_when_dataset_id_still_placeholder(monkeypatch):
         raise AssertionError("requests.post must not be called when DATASET_ID is a placeholder")
 
     monkeypatch.setattr(ig.requests, "post", _fail_if_called)
-    assert ig.DATASET_ID.startswith("gd_REPLACE")
+    monkeypatch.setattr(ig, "DATASET_ID", "gd_REPLACE_WITH_REAL_DATASET_ID")
     with pytest.raises(RuntimeError, match="DATASET_ID is still a placeholder"):
         ig._trigger_job("somehandle", "the-key")
 
@@ -171,7 +190,7 @@ def test_fetch_job_results_gets_expected_request_and_returns_payload(monkeypatch
 
 def test_normalize_row_truncates_date_to_yyyy_mm_dd():
     row = {
-        "post_id": "p1", "caption": "hello world", "date_posted": "2026-08-01T12:34:56.000Z",
+        "post_id": "p1", "description": "hello world", "date_posted": "2026-08-01T12:34:56.000Z",
         "content_type": "post", "url": "https://instagram.com/p/p1", "likes": 10, "num_comments": 2,
     }
     normalized = ig._normalize_row(row)
@@ -183,39 +202,90 @@ def test_normalize_row_truncates_date_to_yyyy_mm_dd():
     assert normalized["comment_count"] == 2
 
 
+def test_normalize_row_parses_us_format_date_posted():
+    """The live dataset returns '07/23/2026 16:00:22', not ISO 8601 (verified
+    2026-08-06 against instagram.com/nike). Slicing raw[:10] and parsing it as
+    %Y-%m-%d rejected every such row, which surfaced as a healthy
+    'no_new_content' for an already-paid-for batch. Pin the real format."""
+    row = {"post_id": "3947698118484087161", "description": "Beat the heat.",
+           "date_posted": "07/23/2026 16:00:22", "content_type": "Reel",
+           "url": "https://www.instagram.com/reel/DbJCoXguNF5/",
+           "likes": 17227, "num_comments": 366}
+    normalized = ig._normalize_row(row)
+    assert normalized is not None, "a real Bright Data row must not be dropped"
+    assert normalized["published"] == "2026-07-23"
+    assert normalized["content_type"] == "reel"
+    assert normalized["like_count"] == 17227
+
+
+def test_parse_published_accepts_both_observed_and_iso_formats():
+    assert ig._parse_published("07/23/2026 16:00:22") == "2026-07-23"
+    assert ig._parse_published("07/23/2026") == "2026-07-23"
+    assert ig._parse_published("2026-07-23T16:00:22.000Z") == "2026-07-23"
+    assert ig._parse_published("") is None
+    assert ig._parse_published(None) is None
+    assert ig._parse_published("not a date at all") is None
+    # Month/day must not silently swap: 13 is not a month, so US parsing fails
+    # and the ISO fallback rejects it too, rather than yielding a wrong date.
+    assert ig._parse_published("13/45/2026 00:00:00") is None
+
+
+def test_normalize_row_handles_carousel_content_type():
+    """Live data returns Carousel alongside Post and Reel -- the design doc
+    only anticipated post|reel."""
+    row = {"post_id": "p1", "description": "x", "date_posted": "07/30/2026 16:00:32",
+           "content_type": "Carousel"}
+    assert ig._normalize_row(row)["content_type"] == "carousel"
+
+
+def test_normalize_row_reads_caption_text_from_description_field():
+    """Bright Data's Instagram Posts schema has no 'caption' field -- the text
+    is in 'description'. Reading the wrong key wouldn't drop the row (post_id
+    and date_posted are still there), it would silently write '(empty)' bodies
+    for posts already paid for, so pin the field name."""
+    row = {"post_id": "p1", "caption": "wrong field", "date_posted": "2026-08-01T00:00:00Z"}
+    assert ig._normalize_row(row)["caption"] == ""
+
+
+def test_normalize_row_lowercases_display_cased_content_type():
+    row = {"post_id": "p1", "description": "x", "date_posted": "2026-08-01T00:00:00Z",
+           "content_type": "Reel"}
+    assert ig._normalize_row(row)["content_type"] == "reel"
+
+
 def test_normalize_row_title_is_truncated_caption():
     long_caption = "x" * 100
-    row = {"post_id": "p1", "caption": long_caption, "date_posted": "2026-08-01T00:00:00Z", "content_type": "reel"}
+    row = {"post_id": "p1", "description": long_caption, "date_posted": "2026-08-01T00:00:00Z", "content_type": "reel"}
     normalized = ig._normalize_row(row)
     assert normalized["title"] == long_caption[:60]
     assert normalized["content_type"] == "reel"
 
 
 def test_normalize_row_returns_none_without_id():
-    row = {"caption": "x", "date_posted": "2026-08-01T00:00:00Z", "content_type": "post"}
+    row = {"description": "x", "date_posted": "2026-08-01T00:00:00Z", "content_type": "post"}
     assert ig._normalize_row(row) is None
 
 
 def test_normalize_row_returns_none_without_usable_date():
-    row = {"post_id": "p1", "caption": "x", "date_posted": "", "content_type": "post"}
+    row = {"post_id": "p1", "description": "x", "date_posted": "", "content_type": "post"}
     assert ig._normalize_row(row) is None
 
 
 def test_normalize_row_returns_none_with_malformed_date():
     """A date_posted value that is >= 10 chars but not valid YYYY-MM-DD should return None."""
-    row = {"post_id": "p1", "caption": "x", "date_posted": "01/08/2026 xx", "content_type": "post"}
+    row = {"post_id": "p1", "description": "x", "date_posted": "01/08/2026 xx", "content_type": "post"}
     assert ig._normalize_row(row) is None
 
 
 def test_normalize_row_empty_caption_still_normalizes():
-    row = {"post_id": "p1", "caption": None, "date_posted": "2026-08-01T00:00:00Z", "content_type": "post"}
+    row = {"post_id": "p1", "description": None, "date_posted": "2026-08-01T00:00:00Z", "content_type": "post"}
     normalized = ig._normalize_row(row)
     assert normalized["caption"] == ""
     assert normalized["title"] == "p1"  # falls back to id when caption is empty
 
 
 def _raw_row(post_id, date, caption="hello", content_type="post"):
-    return {"post_id": post_id, "caption": caption, "date_posted": f"{date}T00:00:00Z",
+    return {"post_id": post_id, "description": caption, "date_posted": f"{date}T00:00:00Z",
             "content_type": content_type, "url": f"https://instagram.com/p/{post_id}",
             "likes": 1, "num_comments": 1}
 
@@ -236,7 +306,8 @@ def test_enumerate_newest_first_caps_at_max_items_per_run(monkeypatch):
 
 
 def test_enumerate_newest_first_drops_undated_and_idless_rows(monkeypatch):
-    raw = [_raw_row("good", "2026-08-01"), {"caption": "no id"}, {"post_id": "no_date", "caption": "x", "date_posted": ""}]
+    raw = [_raw_row("good", "2026-08-01"), {"description": "no id"},
+           {"post_id": "no_date", "description": "x", "date_posted": ""}]
     monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
     items = ig.enumerate_newest_first("somehandle", keyword_filter=None)
     assert [i["id"] for i in items] == ["good"]
