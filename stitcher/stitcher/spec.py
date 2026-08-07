@@ -267,6 +267,22 @@ def validate_spec(spec: RenderSpec) -> list[str]:
         errors.append("shots must not be empty")
         return errors
 
+    # Every downstream stage assumes the rendered timeline starts at 0: stage
+    # D concatenates the shot clips head to tail (so the first frame of the
+    # first shot IS t=0), while every overlay `enable=` expression and every
+    # `adelay` is authored in ABSOLUTE spec seconds against that concat. A
+    # spec whose first shot starts at 2.0 renders 60 fewer frames than
+    # runtime_seconds implies and puts every overlay and stem 2 seconds late,
+    # with nothing but timeline_integrity to notice afterwards -- and only
+    # after a full render.
+    if spec.shots[0].start != 0:
+        errors.append(
+            f"the timeline must start at 0s; shot {spec.shots[0].id} starts at "
+            f"{spec.shots[0].start}s. Overlay, caption and audio times are absolute "
+            "spec seconds against a concat timeline that begins at the first shot, "
+            "so a non-zero start silently offsets all of them"
+        )
+
     for previous, shot in zip(spec.shots, spec.shots[1:]):
         if shot.start != previous.end:
             errors.append(

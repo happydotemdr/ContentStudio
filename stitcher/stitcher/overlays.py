@@ -111,6 +111,43 @@ def _hex_to_rgba(value: str, alpha: int) -> tuple[int, int, int, int]:
     return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16), alpha)
 
 
+def fit_error(
+    text: str, style: Style, font: ImageFont.FreeTypeFont
+) -> str | None:
+    """Why `text` cannot be laid out inside `style`'s box, or None if it fits.
+
+    Split out of render_overlay so PREFLIGHT can run the identical check
+    before a single frame is encoded (design spec line 227: "exceeding
+    max_lines after wrapping is a preflight failure", and line 369, which
+    lists it among the things rejected "before any asset is touched"). Left
+    inside stage B it only fired after stage A had already burned an encode
+    per shot, and reported as a render failure rather than a spec failure.
+    Both callers must agree on what "fits" means, so there is exactly one
+    implementation of it.
+    """
+    lines = wrap_lines(parse_accent(text), font, style.max_width_px)
+
+    # wrap_lines only breaks *between* tokens, so a single token with no
+    # space to break on (a hashtag, URL, or un-spaced accent span) that is
+    # itself wider than max_width_px is placed on its own line unchecked --
+    # it must be caught, or it renders wider than the declared box with no
+    # error and no signal (spec line 369).
+    for line in lines:
+        line_w = _measure(font, _line_text(line))
+        if line_w > style.max_width_px:
+            return (
+                f"line {_line_text(line)!r} is {line_w}px wide but "
+                f"max_width_px is {style.max_width_px}"
+            )
+
+    if len(lines) > style.max_lines:
+        return (
+            f"text wraps to {len(lines)} lines at {style.max_width_px}px but "
+            f"max_lines is {style.max_lines}"
+        )
+    return None
+
+
 def render_overlay(
     text: str,
     style: Style,
@@ -120,26 +157,15 @@ def render_overlay(
     out_png: Path,
 ) -> RenderedOverlay:
     font = ImageFont.truetype(style.font_file, style.size_px)
+
+    # Preflight has normally rejected this already; this stays as stage B's
+    # own guard for any caller that reaches the renderer directly.
+    problem = fit_error(text, style, font)
+    if problem is not None:
+        raise TextOverflowError(f"{problem}: {text!r}")
+
     lines = wrap_lines(parse_accent(text), font, style.max_width_px)
-
-    # wrap_lines only breaks *between* tokens, so a single token with no
-    # space to break on (a hashtag, URL, or un-spaced accent span) that is
-    # itself wider than max_width_px is placed on its own line unchecked --
-    # it must be caught here, or it renders wider than the declared box with
-    # no error and no signal (spec line 369).
     line_widths = [_measure(font, _line_text(line)) for line in lines]
-    for line, line_w in zip(lines, line_widths):
-        if line_w > style.max_width_px:
-            raise TextOverflowError(
-                f"line {_line_text(line)!r} is {line_w}px wide but "
-                f"max_width_px is {style.max_width_px}: {text!r}"
-            )
-
-    if len(lines) > style.max_lines:
-        raise TextOverflowError(
-            f"text wraps to {len(lines)} lines at {style.max_width_px}px but "
-            f"max_lines is {style.max_lines}: {text!r}"
-        )
 
     line_h = int(style.size_px * style.line_spacing)
     block_w = max(line_widths, default=0)

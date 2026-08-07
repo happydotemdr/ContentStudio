@@ -131,6 +131,22 @@ def test_validate_accepts_the_minimal_spec(tmp_path: Path):
     assert validate_spec(spec) == []
 
 
+def test_validate_rejects_a_timeline_that_does_not_start_at_zero(tmp_path: Path):
+    """Nothing required it, but everything assumed it: stage D concatenates the
+    shot clips head to tail while every overlay `enable=` and every `adelay`
+    uses absolute spec seconds. A spec starting at 2.0s rendered 60 fewer
+    frames than its runtime implied and put every overlay and stem 2s late."""
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["in"] = 2.0
+    payload["shots"][0]["out"] = 5.0
+    payload["shots"][1]["in"] = 5.0
+    payload["shots"][1]["out"] = 8.0
+    spec, _ = load_spec(write(tmp_path, payload))
+    errors = validate_spec(spec)
+    assert any("must start at 0" in e for e in errors)
+    assert not any("contiguous" in e for e in errors)
+
+
 def test_validate_rejects_non_contiguous_shots(tmp_path: Path):
     payload = json.loads(json.dumps(MINIMAL))
     payload["shots"][1]["in"] = 3.5

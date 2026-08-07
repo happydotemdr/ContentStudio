@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from stitcher import preflight as pf
 from stitcher.ffmpeg import ProbeResult
@@ -52,8 +53,12 @@ def ready(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(pf.ffmpeg, "has_encoder", lambda name: name == "libx264")
     ws = Workspace(root=tmp_path, slug="demo", mode="final")
     ws.ensure_dirs()
-    for name in ("a.png", "b.png", "cover.png", "vo.wav", "bed.mp3"):
+    for name in ("a.png", "b.png", "vo.wav", "bed.mp3"):
         ws.asset(name).write_bytes(b"x")
+    # A real image, unlike the placeholder bytes above: stage E opens the
+    # cover with Pillow, so preflight performs that same load (_check_cover)
+    # and a stub would fail it for the right reason at the wrong time.
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(ws.asset("cover.png"))
     (tmp_path / "fonts").mkdir(exist_ok=True)
     return ws
 
@@ -230,6 +235,79 @@ def test_a_pre_8x_ffmpeg_is_an_error(spec_and_font, monkeypatch):
     monkeypatch.setattr(pf.ffmpeg, "probe", lambda path: still())
     report = pf.run_preflight(spec, ws, "final")
     assert any("8" in e for e in report.errors)
+
+
+@requires_font
+def test_text_that_cannot_fit_max_lines_is_a_preflight_error(tmp_path, ready, monkeypatch):
+    """Design spec line 227 ("exceeding max_lines after wrapping is a preflight
+    failure") and line 369 (listed under "rejected before any asset is
+    touched"). Living only inside stage B, this surfaced as a render failure
+    AFTER stage A had already burned an encode per shot."""
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["styles"]["card"]["font_file"] = str(REAL_FONT)
+    payload["styles"]["card"]["max_width_px"] = 300
+    payload["styles"]["card"]["max_lines"] = 1
+    payload["overlays"][0]["text"] = "one two three four five six seven eight nine ten"
+    (tmp_path / "spec").mkdir(exist_ok=True)
+    spec = load(tmp_path, payload)
+    monkeypatch.setattr(pf.ffmpeg, "probe", lambda path: still())
+    report = pf.run_preflight(spec, ready, "final")
+    assert any("hook-1" in e and "max_lines" in e for e in report.errors)
+
+
+@requires_font
+def test_a_single_overlong_token_is_a_preflight_error(tmp_path, ready, monkeypatch):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["styles"]["card"]["font_file"] = str(REAL_FONT)
+    payload["styles"]["card"]["max_width_px"] = 50
+    payload["overlays"][0]["text"] = "SUPERCALIFRAGILISTICEXPIALIDOCIOUS"
+    (tmp_path / "spec").mkdir(exist_ok=True)
+    spec = load(tmp_path, payload)
+    monkeypatch.setattr(pf.ffmpeg, "probe", lambda path: still())
+    report = pf.run_preflight(spec, ready, "final")
+    assert any("hook-1" in e and "max_width_px" in e for e in report.errors)
+
+
+@requires_font
+def test_a_cover_ffprobe_reads_but_pillow_cannot_open_is_an_error(spec_and_font, monkeypatch):
+    """Stage E opens the cover with Pillow while preflight probed it with
+    ffprobe, so a file only one of them accepts used to surface as an uncaught
+    traceback -- after the master had already been promoted into out/."""
+    spec, ws = spec_and_font
+    ws.asset("cover.png").write_bytes(b"not a png at all")
+    monkeypatch.setattr(pf.ffmpeg, "probe", lambda path: still())
+    report = pf.run_preflight(spec, ws, "final")
+    assert any("cover.png" in e and "image" in e for e in report.errors)
+
+
+@requires_font
+def test_draft_mode_warns_that_a_non_high_profile_cannot_be_honoured(
+    tmp_path, ready, monkeypatch
+):
+    """Accepted limitation, surfaced before the render rather than after it:
+    -preset ultrafast emits Constrained Baseline and the High-only 8x8dct
+    override cannot generalize, so verify's container check will fail. A
+    warning, not an error -- the behaviour is deliberate."""
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["styles"]["card"]["font_file"] = str(REAL_FONT)
+    payload["delivery"]["profile"] = "main"
+    (tmp_path / "spec").mkdir(exist_ok=True)
+    spec = load(tmp_path, payload)
+    monkeypatch.setattr(pf.ffmpeg, "probe", lambda path: still())
+
+    draft = pf.run_preflight(spec, ready, "draft")
+    assert draft.ok is True
+    assert any("main" in w and "--mode final" in w for w in draft.warnings)
+
+    final = pf.run_preflight(spec, ready, "final")
+    assert not any("--mode final" in w for w in final.warnings)
+
+
+def test_the_path_gate_samples_the_longest_deliverable(ready):
+    """out_contact_sheet's suffix is 10 characters longer than out_qa_json's,
+    so sampling the latter let a workspace pass this gate and then fail while
+    writing the contact sheet -- which happens after promotion."""
+    assert len(str(ready.out_contact_sheet(99))) > len(str(ready.out_qa_json(99)))
 
 
 @requires_font

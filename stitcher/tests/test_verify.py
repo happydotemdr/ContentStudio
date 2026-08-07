@@ -1,5 +1,6 @@
 import json
 import math
+import shutil
 from pathlib import Path
 
 import pytest
@@ -373,7 +374,45 @@ def test_missing_work_artifacts_report_unavailable_never_pass(ready, tmp_path, m
     assert status_of(checks, "duck_depth") == vf.UNAVAILABLE
     assert status_of(checks, "safe_zone") == vf.UNAVAILABLE
     assert status_of(checks, "loudnorm_linearity") == vf.UNAVAILABLE
+    # work/ itself survives here, so this one genuinely did look and find
+    # nothing -- unlike the cleaned-workspace case below.
+    assert status_of(checks, "placeholders") == vf.PASS
     assert vf.overall_status(checks) == "incomplete"
+
+
+def test_a_cleaned_work_directory_makes_placeholder_detection_unavailable(
+    ready, tmp_path, monkeypatch
+):
+    """Design spec line 536 names placeholder detection among the checks that
+    must report `unavailable` when their artifacts are gone. An empty glob on
+    a workspace with no work/ at all is not evidence that no placeholder was
+    used, and reporting PASS there asserts something nothing measured."""
+    ws, master = ready
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch)
+    shutil.rmtree(ws.work_dir)
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "placeholders") == vf.UNAVAILABLE
+    assert vf.overall_status(checks) == "incomplete"
+
+
+def test_timeline_integrity_measures_the_span_of_the_shot_bounds(
+    ready, tmp_path, monkeypatch
+):
+    """The rendered master is the concat of the shot clips, so its expected
+    length is the SPAN of the frame bounds, not the last shot's absolute end
+    frame. Reading the end frame made a non-zero-start timeline fail after a
+    full render with a message that pointed nowhere near the cause."""
+    ws, master = ready
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["in"] = 2.0
+    payload["shots"][0]["out"] = 5.0
+    payload["shots"][1]["in"] = 5.0
+    payload["shots"][1]["out"] = 8.0
+    spec, _ = load_spec(write(tmp_path, payload))
+    wire(monkeypatch, duration=6.0)   # 180 - 60 = 120 frames = 6.0s of clips
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "timeline_integrity") == vf.PASS
 
 
 def test_a_placeholder_in_final_mode_is_a_failure(ready, tmp_path, monkeypatch):

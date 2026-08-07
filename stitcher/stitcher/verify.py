@@ -299,6 +299,18 @@ def _check_linearity(ws: Workspace) -> Check:
 
 
 def _check_placeholders(ws: Workspace) -> Check:
+    """Design spec line 536 names placeholder detection among the checks that
+    report `unavailable` when their work/ artifacts are absent.
+
+    An empty glob on a cleaned workspace is not evidence that no placeholder
+    was used; it is the absence of evidence either way. Reporting PASS there
+    would be an assertion nothing measured -- the same class of defect as
+    ProbeResult's colour fields defaulting to the passing value.
+    """
+    if not ws.work_dir.is_dir():
+        return Check("placeholders", UNAVAILABLE,
+                     "work/ directory absent; placeholder use cannot be established")
+
     found = sorted((ws.work_dir / "placeholders").glob("*.png")) \
         if (ws.work_dir / "placeholders").is_dir() else []
     if not found:
@@ -367,7 +379,13 @@ def verify(
     checks.append(_check_duck(spec, ws, log_path))
     checks.append(_check_safe_zone(spec, ws))
 
-    total_frames = shot_frame_bounds(spec)[-1][1]
+    # Difference the bounds rather than reading the last END frame: the two
+    # agree only when the timeline starts at 0. validate_spec now requires
+    # that, but this check exists to measure what was rendered, so it must not
+    # depend on the thing it is checking -- the rendered master is the concat
+    # of the shot clips, whose length is the SPAN of the bounds.
+    bounds = shot_frame_bounds(spec)
+    total_frames = bounds[-1][1] - bounds[0][0]
     expected_seconds = total_frames / spec.canvas.fps
     # One frame is 33ms at 30fps, but AAC priming/padding can shift container
     # duration by up to ~45ms -- so the floor is whichever is larger.

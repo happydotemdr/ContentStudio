@@ -12,9 +12,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PIL import ImageFont
+from PIL import Image, ImageFont
 
-from . import ffmpeg
+from . import ffmpeg, overlays
 from .naming import MAX_PATH_LEN, Workspace
 from .spec import RenderSpec, runtime_seconds, validate_spec
 
@@ -77,7 +77,12 @@ def _check_paths(spec: RenderSpec, ws: Workspace, report: PreflightReport) -> No
         candidates.append(ws.shot_clip(index, shot.id, shot.beat))
     for index, overlay in enumerate(spec.overlays, start=1):
         candidates.append(ws.overlay_png(index, overlay.id, overlay.text))
-    candidates.append(ws.out_qa_json(99))
+    # The LONGEST deliverable, not just any deliverable: out_contact_sheet's
+    # suffix is 10 characters longer than out_qa_json's, so sampling the
+    # latter let a workspace pass this gate and then fail while writing the
+    # contact sheet -- which happens after promotion. Version 99 stands in for
+    # the widest version number the naming scheme formats.
+    candidates.append(ws.out_contact_sheet(99))
 
     longest = max(candidates, key=lambda p: len(str(p)))
     if len(str(longest)) > MAX_PATH_LEN:
@@ -87,12 +92,16 @@ def _check_paths(spec: RenderSpec, ws: Workspace, report: PreflightReport) -> No
         )
 
 
-def _check_fonts(spec: RenderSpec, report: PreflightReport) -> None:
+def _check_fonts(spec: RenderSpec, report: PreflightReport) -> dict[str, ImageFont.FreeTypeFont]:
     """Design spec line 571: "Every referenced font file loads." Existence is
     not loading -- a truncated or corrupt font must be caught here, not during
     glyph rendering. PIL.ImageFont.truetype is the same call Task 7's renderer
     uses, so preflight and the renderer agree on what "loadable" means.
+
+    Returns the loaded fonts by style name so _check_text_fit can wrap against
+    the real metrics without loading each file a second time.
     """
+    loaded: dict[str, ImageFont.FreeTypeFont] = {}
     for name, style in spec.styles.items():
         path = Path(style.font_file)
         if not path.is_file():
@@ -101,12 +110,93 @@ def _check_fonts(spec: RenderSpec, report: PreflightReport) -> None:
             )
             continue
         try:
-            ImageFont.truetype(str(path), style.size_px)
+            loaded[name] = ImageFont.truetype(str(path), style.size_px)
         except Exception as exc:
             report.errors.append(
                 f"style {name!r} references a font file that failed to load: "
                 f"{style.font_file} ({exc})"
             )
+    return loaded
+
+
+def _check_text_fit(
+    spec: RenderSpec,
+    fonts: dict[str, ImageFont.FreeTypeFont],
+    report: PreflightReport,
+) -> None:
+    """Design spec line 227: "exceeding `max_lines` after wrapping is a
+    preflight failure, not a silent overflow" -- and line 369 lists it among
+    the things rejected before any asset is touched.
+
+    This cannot live in validate_spec: wrapping needs the real font metrics,
+    and validate_spec is pure and probes nothing (spec §3). Preflight is the
+    first point where both the text and the loaded font exist, which is the
+    same reason §3 defers `source_in`/`source_out` bounds here. Left where it
+    was -- inside stage B's renderer -- `render` only discovered it after
+    stage A had already burned an encode per shot, and reported it as a render
+    failure (exit 2) rather than a spec failure.
+    """
+    for overlay in spec.overlays:
+        font = fonts.get(overlay.style)
+        if font is None:
+            # Unknown style (validate_spec) or unloadable font (_check_fonts);
+            # both are already errors and neither can be wrapped against.
+            continue
+        problem = overlays.fit_error(overlay.text, spec.styles[overlay.style], font)
+        if problem is not None:
+            report.errors.append(
+                f"overlay {overlay.id!r} does not fit style {overlay.style!r}: "
+                f"{problem}: {overlay.text!r}"
+            )
+
+
+def _check_cover(spec: RenderSpec, ws: Workspace, mode: str, report: PreflightReport) -> None:
+    """Stage E opens the cover with Pillow, so preflight must too.
+
+    _check_visual_assets already probes it with ffprobe, but ffprobe and
+    Pillow do not accept the same set of files. A cover that ffprobe reads and
+    Pillow does not used to surface as an uncaught traceback in stage E --
+    after the master had already been promoted into out/ with a version
+    number. Validated here the way _check_fonts validates fonts: by performing
+    the load the later stage will perform.
+    """
+    if not spec.cover:
+        return
+    path = ws.asset(spec.cover.source)
+    if not path.is_file():
+        # Absence is _check_visual_assets' report to make (and is tolerated in
+        # draft mode, where the cover is skipped).
+        return
+    try:
+        with Image.open(path) as image:
+            image.load()
+    except Exception as exc:
+        report.errors.append(
+            f"cover source {spec.cover.source} could not be opened as an image: {exc}"
+        )
+
+
+def _check_draft_profile(spec: RenderSpec, mode: str, report: PreflightReport) -> None:
+    """An accepted limitation, surfaced before it costs a full render.
+
+    Draft mode encodes with `-preset ultrafast`, which sets
+    cabac=0/8x8dct=0/bframes=0 -- already Baseline-conforming, and x264
+    signals the profile the encode actually needs rather than the one
+    requested. Stage D restores High by forcing cabac/8x8dct back on, but
+    `8x8dct` is itself High-only, so that override cannot generalize to
+    "main" or "baseline" (see assemble.py). The combination therefore renders
+    fully and then fails verify's container check with a message that points
+    at the encoder rather than at the mode. It is knowable before a frame
+    renders, so say so here -- as a WARNING, because the render is otherwise
+    correct and the behaviour is deliberate.
+    """
+    if mode == "draft" and spec.delivery.profile.lower() != "high":
+        report.warnings.append(
+            f"draft mode cannot honour delivery.profile {spec.delivery.profile!r}: "
+            "-preset ultrafast emits Constrained Baseline and the High-only 8x8dct "
+            "override does not generalize, so the container check will fail. Use "
+            "--mode final to verify the profile."
+        )
 
 
 def _check_visual_assets(
@@ -193,7 +283,10 @@ def run_preflight(spec: RenderSpec, ws: Workspace, mode: str) -> PreflightReport
     _check_slug(spec, ws, report)
     _check_tools(report)
     _check_paths(spec, ws, report)
-    _check_fonts(spec, report)
+    fonts = _check_fonts(spec, report)
+    _check_text_fit(spec, fonts, report)
     _check_visual_assets(spec, ws, mode, report)
+    _check_cover(spec, ws, mode, report)
     _check_audio_assets(spec, ws, mode, report)
+    _check_draft_profile(spec, mode, report)
     return report

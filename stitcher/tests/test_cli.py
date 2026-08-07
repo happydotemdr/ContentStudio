@@ -86,6 +86,58 @@ def test_a_failing_qa_leaves_the_master_in_work_and_burns_no_version(
     assert list(workspace.logs_dir.glob("*_qa.md"))
 
 
+def test_a_stage_e_failure_promotes_nothing_and_burns_no_version(workspace, monkeypatch):
+    """Stage E, the contact sheet and the QA report used to run AFTER
+    shutil.move and outside every handler, so a failure in any of them left a
+    version-stamped master in out/ with no cover, no sidecars and no QA
+    report -- plus an uncaught traceback whose exit code collided with
+    EXIT_PREFLIGHT. Reachable today: preflight validated cover.source with
+    ffprobe while stage E opened it with Pillow."""
+    stub_pipeline(monkeypatch, [Check("container", PASS, "ok")])
+
+    def explode(*args, **kwargs):
+        raise OSError("cannot identify image file 'cover.png'")
+
+    monkeypatch.setattr(cli.derive, "render_cover", explode)
+    code = cli.cmd_render("demo", workspace.root, "final", force=False)
+
+    assert code == cli.EXIT_RENDER
+    assert workspace.master_path.is_file()          # still in work/
+    assert not workspace.out_master(1).exists()     # nothing promoted
+    assert workspace.next_version() == 1            # no version burned
+    assert list(workspace.out_dir.iterdir()) == []  # no partial deliverables
+
+
+def test_a_late_stage_e_failure_rolls_back_what_it_already_wrote(workspace, monkeypatch):
+    """The sidecars are written before the contact sheet, so a contact-sheet
+    failure has to remove them again rather than leaving a version's worth of
+    orphans behind a master that never arrived."""
+    stub_pipeline(monkeypatch, [Check("container", PASS, "ok")])
+
+    def explode(*args, **kwargs):
+        raise cli.ffmpeg.FFmpegError("ffmpeg failed extracting a contact-sheet frame")
+
+    monkeypatch.setattr(cli.verify, "contact_sheet", explode)
+    code = cli.cmd_render("demo", workspace.root, "final", force=False)
+
+    assert code == cli.EXIT_RENDER
+    assert list(workspace.out_dir.iterdir()) == []
+    assert workspace.master_path.is_file()
+
+
+def test_the_contact_sheet_is_taken_before_the_master_moves(workspace, monkeypatch):
+    """It reads whichever master it is handed, so it must be handed the one in
+    work/ -- the promoted path does not exist yet at that point."""
+    stub_pipeline(monkeypatch, [Check("container", PASS, "ok")])
+    seen: list[Path] = []
+    monkeypatch.setattr(
+        cli.verify, "contact_sheet",
+        lambda spec, master, out, log: seen.append(Path(master)) or None,
+    )
+    cli.cmd_render("demo", workspace.root, "final", force=False)
+    assert seen == [workspace.master_path]
+
+
 def test_versions_increment_across_successful_runs(workspace, monkeypatch):
     stub_pipeline(monkeypatch, [Check("container", PASS, "ok")])
     cli.cmd_render("demo", workspace.root, "final", force=False)

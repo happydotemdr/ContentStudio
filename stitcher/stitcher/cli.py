@@ -5,6 +5,12 @@ Stage D writes work/<mode>/master.mp4; only a clean stage-F pass promotes it
 into out/ with a freshly allocated version, so a QA failure never consumes a
 version number (spec §2 rule 5).
 
+Ordering inside cmd_render is load-bearing: stage E and the reports run
+BEFORE `shutil.move` promotes the master, and the move is the last thing that
+happens. The move allocates a version number and is not undoable; every step
+that can still fail therefore has to precede it, so a failure leaves the
+master in work/ and no half-populated version in out/.
+
 Deviation from the task-14 brief's sample code (see task-14-report.md for the
 full reasoning): the brief's sample promoted the master into out/ whenever
 verify's status was anything other than "fail", including "incomplete", and
@@ -183,17 +189,44 @@ def cmd_render(slug: str, root: Path, mode: str, force: bool) -> int:
                       file=sys.stderr)
         return EXIT_QA if status == "fail" else EXIT_INCOMPLETE
 
+    # Promotion is irreversible -- it allocates a version number and moves the
+    # only master out of work/ -- so everything that can still fail happens
+    # BEFORE it, inside a handler, and anything already written is rolled back
+    # on the way out. Stage E used to run after the move and outside every
+    # handler, so a failure there left a version-stamped master in out/ with
+    # no cover, no sidecars and no QA report, plus an uncaught traceback whose
+    # exit code (1) collided with EXIT_PREFLIGHT. That was reachable today:
+    # preflight validated cover.source with ffprobe while stage E opened it
+    # with Pillow (preflight now performs the Pillow load too).
     version = None if mode == "draft" else ws.next_version()
     target = ws.out_master(version)
-    shutil.move(str(master), str(target))
+    written: list[Path] = []
+    try:
+        if spec.cover and spec.cover.source not in report.missing_visual:
+            written.append(ws.out_cover(version))
+            derive.render_cover(spec, ws, overlay_pngs, ws.out_cover(version))
+        elif spec.cover:
+            print(f"warning: {spec.cover.source} is missing; no cover was derived")
+        written.append(ws.out_srt(version))
+        derive.write_srt(spec.captions, ws.out_srt(version))
+        written.append(ws.out_ass(version))
+        derive.write_ass(
+            spec.captions, spec.styles[spec.captions_style], spec.canvas,
+            ws.out_ass(version),
+        )
+        written.append(ws.out_contact_sheet(version))
+        # Sourced from the work/ master, which has not moved yet.
+        verify.contact_sheet(spec, master, ws.out_contact_sheet(version), log_path)
+        written += [ws.out_qa_json(version), ws.out_qa_md(version)]
+        verify.write_reports(checks, ws.out_qa_json(version), ws.out_qa_md(version))
+    except (ffmpeg.FFmpegError, OSError, ValueError) as exc:
+        for path in written:
+            path.unlink(missing_ok=True)
+        print(f"deriving the deliverables failed: {exc}", file=sys.stderr)
+        print(f"nothing was promoted; the master is still at {master}", file=sys.stderr)
+        return EXIT_RENDER
 
-    derive.render_cover(spec, ws, overlay_pngs, ws.out_cover(version))
-    derive.write_srt(spec.captions, ws.out_srt(version))
-    derive.write_ass(
-        spec.captions, spec.styles[spec.captions_style], spec.canvas, ws.out_ass(version)
-    )
-    verify.contact_sheet(spec, target, ws.out_contact_sheet(version), log_path)
-    verify.write_reports(checks, ws.out_qa_json(version), ws.out_qa_md(version))
+    shutil.move(str(master), str(target))
 
     manifest.set("run", digest)
     manifest.set("run/version", str(version) if version is not None else "draft")
