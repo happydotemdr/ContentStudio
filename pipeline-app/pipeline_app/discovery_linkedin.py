@@ -99,3 +99,152 @@ def _normalize_row(row: dict) -> dict | None:
         "comment_count": row.get("num_comments"),
         "hashtags": row.get("hashtags") or [],
     }
+
+
+class _Mode:
+    """One Bright Data product mode, and how this pipeline uses it."""
+
+    def __init__(self, platform: str, discover_by: str, url_template: str,
+                 author_filter: bool):
+        self.platform = platform
+        self.discover_by = discover_by
+        self.url_template = url_template
+        self.author_filter = author_filter
+
+
+# Profile discovery returns the person's profile ACTIVITY, not only their
+# authorship -- verified live 2026-08-07, where a query for /in/bettywliu
+# returned a post authored by mattwilkerson. author_filter=True restores the
+# "this directory holds what this account wrote" contract every other adapter
+# has. Company results showed no such contamination, and a company's user_id
+# is not guaranteed to equal its URL slug, so filtering there would risk
+# discarding legitimate rows.
+PROFILE = _Mode("linkedin-profile", "profile_url",
+                "https://www.linkedin.com/in/{slug}", author_filter=True)
+COMPANY = _Mode("linkedin-company", "company_url",
+                "https://www.linkedin.com/company/{slug}", author_filter=False)
+
+
+class LinkedInAdapter:
+    """Satisfies discovery_engine.PlatformAdapter for one LinkedIn mode.
+
+    An instance rather than a module because two platforms share this code and
+    each needs its own enumerate cache: a person and a company can have the
+    same slug, and a cache keyed by handle alone would let one mode's batch
+    serve the other's download_item.
+    """
+
+    def __init__(self, mode: _Mode):
+        self.mode = mode
+        self.platform = mode.platform
+        # handle -> item_id -> normalized row. Populated by
+        # enumerate_newest_first, read by download_item. Calling Bright Data
+        # again per item would double-pay for posts already collected.
+        self._cache: dict[str, dict[str, dict]] = {}
+
+    # -- credentials and request shape -----------------------------------
+
+    def api_key(self) -> str | None:
+        return brightdata_job.read_key(KEY_ENV_VAR, KEY_FILE)
+
+    def profile_url(self, handle: str) -> str:
+        return self.mode.url_template.format(slug=handle.lstrip("@").strip())
+
+    def _trigger_job(self, handle: str, key: str) -> str:
+        return brightdata_job.trigger(
+            brightdata_job.BRIGHTDATA_API_BASE,
+            DATASET_ID,
+            {
+                # A *discovery* job -- "find this account's newest posts".
+                # Without type/discover_by, Bright Data reads the input url as
+                # a single page to collect, the wrong product mode entirely.
+                "type": "discover_new",
+                "discover_by": self.mode.discover_by,
+                # Server-side per-input record cap: the primary cost control.
+                "limit_per_input": MAX_ITEMS_PER_RUN,
+                "include_errors": "true",
+                "notify": "false",
+            },
+            [{"url": self.profile_url(handle)}],
+            key,
+        )
+
+    def _poll_job_status(self, job_id: str, key: str) -> str:
+        return brightdata_job.poll_status(brightdata_job.BRIGHTDATA_API_BASE, job_id, key)
+
+    def _fetch_job_results(self, job_id: str, key: str) -> list[dict]:
+        return brightdata_job.fetch_results(brightdata_job.BRIGHTDATA_API_BASE, job_id, key)
+
+    def _run_collection_job(self, handle: str) -> list[dict]:
+        key = self.api_key()
+        if key is None:
+            raise RuntimeError(
+                "Bright Data API key not configured "
+                f"(set {KEY_ENV_VAR} or {KEY_FILE.name})"
+            )
+        return brightdata_job.await_results(
+            trigger_fn=lambda: self._trigger_job(handle, key),
+            poll_fn=lambda job_id: self._poll_job_status(job_id, key),
+            fetch_fn=lambda job_id: self._fetch_job_results(job_id, key),
+            label=f"for {self.platform}/{handle}",
+            poll_timeout_s=POLL_TIMEOUT_S,
+            poll_interval_s=POLL_INTERVAL_S,
+        )
+
+    # -- PlatformAdapter -------------------------------------------------
+
+    def enumerate_newest_first(self, handle: str, keyword_filter: str | None) -> list[dict]:
+        # Raises BrightDataJobTimeout/BrightDataJobFailed -- never swallowed
+        # here. An empty return must mean "the job completed and there was
+        # nothing", nothing else.
+        raw_rows = self._run_collection_job(handle)
+
+        normalized = [_normalize_row(r) for r in raw_rows]
+        unusable = sum(1 for n in normalized if n is None)
+        kept = [n for n in normalized if n is not None]
+
+        foreign = 0
+        if self.mode.author_filter:
+            wanted = handle.lstrip("@").strip().lower()
+            before = len(kept)
+            kept = [n for n in kept if n["author"].lower() == wanted]
+            foreign = before - len(kept)
+
+        if unusable or foreign:
+            print(f"  ! {self.platform}/{handle}: dropped {unusable} unusable row(s), "
+                  f"{foreign} row(s) by another author", file=sys.stderr)
+
+        if raw_rows and not kept:
+            # This run was billed and produced nothing, but process_handle will
+            # record the healthy status 'no_new_content' -- indistinguishable
+            # from a quiet day unless it is loud here.
+            print(f"  !! {self.platform}/{handle}: Bright Data returned "
+                  f"{len(raw_rows)} row(s) but none survived filtering. This run "
+                  f"was billed and captured nothing -- check whether this account "
+                  f"posts its own content.", file=sys.stderr)
+
+        # Rows arrive unsorted (verified live); the engine's early-stop dedup
+        # assumes newest-first. Cap AFTER filtering so it bounds retained items.
+        kept.sort(key=lambda n: n["published"], reverse=True)
+        kept = kept[:MAX_ITEMS_PER_RUN]
+
+        # Overwrite, not merge: a fresh successful enumerate replaces whatever
+        # this handle held, so download_item never reads a stale id.
+        self._cache[handle] = {n["id"]: n for n in kept}
+
+        items = kept
+        if keyword_filter:
+            items = [i for i in items if keyword_filter.lower() in i["body"].lower()]
+        return [
+            {"id": i["id"], "title": i["title"], "published": i["published"],
+             "content_type": i["content_type"]}
+            for i in items
+        ]
+
+
+def profile_adapter() -> LinkedInAdapter:
+    return LinkedInAdapter(PROFILE)
+
+
+def company_adapter() -> LinkedInAdapter:
+    return LinkedInAdapter(COMPANY)

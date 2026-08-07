@@ -114,3 +114,229 @@ def test_normalize_row_tolerates_missing_optional_fields():
     assert n["hashtags"] == []
     assert n["like_count"] is None
     assert n["content_type"] == "post"
+
+
+import pytest
+
+from pipeline_app import brightdata_job
+
+
+def _profile():
+    return li.profile_adapter()
+
+
+def _company():
+    return li.company_adapter()
+
+
+def _row(post_id, date, author="bettywliu", text="hello", post_type="post"):
+    return _raw_row(id=post_id, date_posted=f"{date}T00:00:00.000Z",
+                    user_id=author, post_text=text, headline=text,
+                    post_type=post_type)
+
+
+def _stub_job(adapter, rows, monkeypatch):
+    monkeypatch.setattr(adapter, "_run_collection_job", lambda handle: rows)
+
+
+def test_profile_and_company_adapters_report_their_platform():
+    assert _profile().platform == "linkedin-profile"
+    assert _company().platform == "linkedin-company"
+
+
+def test_profile_url_templates_differ_per_mode():
+    assert _profile().profile_url("bettywliu") == "https://www.linkedin.com/in/bettywliu"
+    assert _company().profile_url("lanieri") == "https://www.linkedin.com/company/lanieri"
+    # A pasted @-prefixed handle still resolves.
+    assert _profile().profile_url("@bettywliu") == "https://www.linkedin.com/in/bettywliu"
+
+
+def test_trigger_job_sends_the_mode_specific_discovery_params(monkeypatch):
+    captured = {}
+
+    def fake_trigger(api_base, dataset_id, params, body, key):
+        captured.update(api_base=api_base, dataset_id=dataset_id, params=params,
+                        body=body, key=key)
+        return "snap1"
+
+    monkeypatch.setattr(brightdata_job, "trigger", fake_trigger)
+    assert _profile()._trigger_job("bettywliu", "the-key") == "snap1"
+
+    assert captured["dataset_id"] == li.DATASET_ID
+    assert captured["params"]["type"] == "discover_new"
+    assert captured["params"]["discover_by"] == "profile_url"
+    # Server-side per-input record cap -- the primary cost control.
+    assert captured["params"]["limit_per_input"] == li.MAX_ITEMS_PER_RUN
+    assert captured["body"] == [{"url": "https://www.linkedin.com/in/bettywliu"}]
+
+
+def test_trigger_job_uses_company_url_discovery_for_the_company_mode(monkeypatch):
+    captured = {}
+
+    def fake_trigger(api_base, dataset_id, params, body, key):
+        captured.update(params=params, body=body)
+        return "snap1"
+
+    monkeypatch.setattr(brightdata_job, "trigger", fake_trigger)
+    _company()._trigger_job("lanieri", "the-key")
+    assert captured["params"]["discover_by"] == "company_url"
+    assert captured["body"] == [{"url": "https://www.linkedin.com/company/lanieri"}]
+
+
+def test_run_collection_job_raises_clear_error_when_key_missing(monkeypatch):
+    adapter = _profile()
+    monkeypatch.setattr(adapter, "api_key", lambda: None)
+    with pytest.raises(RuntimeError, match="Bright Data API key not configured"):
+        adapter._run_collection_job("bettywliu")
+
+
+def test_enumerate_propagates_job_timeout(monkeypatch):
+    adapter = _profile()
+
+    def raise_timeout(handle):
+        raise brightdata_job.BrightDataJobTimeout("timed out")
+
+    monkeypatch.setattr(adapter, "_run_collection_job", raise_timeout)
+    with pytest.raises(brightdata_job.BrightDataJobTimeout):
+        adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+
+
+def test_profile_mode_drops_posts_written_by_other_people(monkeypatch, capsys):
+    """VERIFIED LIVE: discover_by=profile_url returns the person's profile
+    ACTIVITY, including posts authored by others. Querying /in/bettywliu
+    returned a row authored by mattwilkerson. Without this filter those land
+    in her folder and any downstream reader misattributes them."""
+    adapter = _profile()
+    _stub_job(adapter, [
+        _row("own1", "2026-07-08", author="bettywliu"),
+        _row("foreign", "2026-07-14", author="mattwilkerson"),
+        _row("own2", "2026-07-03", author="bettywliu"),
+    ], monkeypatch)
+
+    items = adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+
+    assert [i["id"] for i in items] == ["own1", "own2"]
+    assert "other author" in capsys.readouterr().err
+
+
+def test_profile_mode_author_match_is_case_insensitive_and_ignores_at_prefix(monkeypatch):
+    adapter = _profile()
+    _stub_job(adapter, [_row("p1", "2026-07-08", author="BettyWLiu")], monkeypatch)
+    items = adapter.enumerate_newest_first("@bettywliu", keyword_filter=None)
+    assert [i["id"] for i in items] == ["p1"]
+
+
+def test_company_mode_does_not_filter_by_author(monkeypatch):
+    """Company results were clean in live testing -- every row was authored by
+    the queried org -- and a company's user_id need not equal its URL slug, so
+    filtering here would risk discarding legitimate rows."""
+    adapter = _company()
+    _stub_job(adapter, [_row("c1", "2026-04-01", author="lanieri-official")], monkeypatch)
+    items = adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    assert [i["id"] for i in items] == ["c1"]
+
+
+def test_enumerate_sorts_newest_first(monkeypatch):
+    """VERIFIED LIVE: rows arrive unsorted (Jul 8, Jul 14, Jul 3). The engine's
+    early-stop dedup assumes newest-first order."""
+    adapter = _company()
+    _stub_job(adapter, [
+        _row("mid", "2026-07-08"), _row("new", "2026-07-14"), _row("old", "2026-07-03"),
+    ], monkeypatch)
+    items = adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    assert [i["id"] for i in items] == ["new", "mid", "old"]
+
+
+def test_enumerate_caps_at_max_items_per_run(monkeypatch):
+    adapter = _company()
+    _stub_job(adapter, [_row(f"p{i}", "2026-07-08") for i in range(25)], monkeypatch)
+    monkeypatch.setattr(li, "MAX_ITEMS_PER_RUN", 10)
+    assert len(adapter.enumerate_newest_first("lanieri", keyword_filter=None)) == 10
+
+
+def test_enumerate_drops_unusable_rows_and_logs(monkeypatch, capsys):
+    adapter = _company()
+    _stub_job(adapter, [
+        _row("good", "2026-07-08"),
+        {"post_text": "no id"},
+        {"id": "no_date", "post_text": "x", "date_posted": ""},
+    ], monkeypatch)
+    items = adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    assert [i["id"] for i in items] == ["good"]
+    assert "unusable" in capsys.readouterr().err
+
+
+def test_enumerate_warns_loudly_when_rows_returned_but_none_survive(monkeypatch, capsys):
+    """The silent-failure door the author filter opens: a billed job returns
+    rows, the filter drops them all, enumerate returns [], and process_handle
+    records the HEALTHY status 'no_new_content'. Returning [] is correct --
+    it can happen legitimately -- but it must be loud in the log."""
+    adapter = _profile()
+    _stub_job(adapter, [
+        _row("f1", "2026-07-08", author="someone-else"),
+        _row("f2", "2026-07-09", author="another-person"),
+    ], monkeypatch)
+
+    assert adapter.enumerate_newest_first("bettywliu", keyword_filter=None) == []
+    err = capsys.readouterr().err
+    assert "none survived" in err
+    assert "billed" in err
+
+
+def test_enumerate_does_not_warn_when_the_job_genuinely_returned_nothing(monkeypatch, capsys):
+    adapter = _company()
+    _stub_job(adapter, [], monkeypatch)
+    assert adapter.enumerate_newest_first("lanieri", keyword_filter=None) == []
+    assert "none survived" not in capsys.readouterr().err
+
+
+def test_enumerate_applies_keyword_filter_to_post_text(monkeypatch):
+    adapter = _company()
+    _stub_job(adapter, [
+        _row("a", "2026-07-08", text="talks about gardens"),
+        _row("b", "2026-07-08", text="talks about cars"),
+    ], monkeypatch)
+    items = adapter.enumerate_newest_first("lanieri", keyword_filter="GARDEN")
+    assert [i["id"] for i in items] == ["a"]
+
+
+def test_enumerate_returns_only_the_engine_facing_keys(monkeypatch):
+    adapter = _company()
+    _stub_job(adapter, [_row("c1", "2026-07-08")], monkeypatch)
+    items = adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    assert set(items[0]) == {"id", "title", "published", "content_type"}
+
+
+def test_enumerate_populates_the_cache_before_the_keyword_filter(monkeypatch):
+    """download_item reads the cache, and process_handle only ever asks for
+    ids enumerate returned -- but caching the pre-filter batch matches the
+    Instagram adapter and costs nothing."""
+    adapter = _company()
+    _stub_job(adapter, [_row("c1", "2026-07-08", text="full body text")], monkeypatch)
+    adapter.enumerate_newest_first("lanieri", keyword_filter="nomatch")
+    assert adapter._cache["lanieri"]["c1"]["body"] == "full body text"
+
+
+def test_enumerate_overwrites_a_previous_cache_entry(monkeypatch):
+    adapter = _company()
+    _stub_job(adapter, [_row("old_batch", "2026-07-01")], monkeypatch)
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    _stub_job(adapter, [_row("new_batch", "2026-08-01")], monkeypatch)
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    assert "old_batch" not in adapter._cache["lanieri"]
+    assert "new_batch" in adapter._cache["lanieri"]
+
+
+def test_two_adapters_sharing_a_handle_slug_do_not_share_cache(monkeypatch):
+    """A person and a company can have the same slug. A module-level cache
+    keyed by handle alone would let one mode's batch serve the other's
+    download_item."""
+    person, company = _profile(), _company()
+    _stub_job(person, [_row("person_post", "2026-07-08", author="acme")], monkeypatch)
+    _stub_job(company, [_row("company_post", "2026-07-08", author="acme")], monkeypatch)
+
+    person.enumerate_newest_first("acme", keyword_filter=None)
+    company.enumerate_newest_first("acme", keyword_filter=None)
+
+    assert set(person._cache["acme"]) == {"person_post"}
+    assert set(company._cache["acme"]) == {"company_post"}
