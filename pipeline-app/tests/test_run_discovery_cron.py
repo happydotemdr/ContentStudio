@@ -167,6 +167,29 @@ def test_notify_exception_does_not_propagate_or_change_exit_code(monkeypatch, re
     assert "discovery notification failed" in capsys.readouterr().err
 
 
-def test_build_adapters_includes_all_three_platforms():
+def test_build_adapters_includes_every_platform():
     adapters = cron.build_adapters()
-    assert set(adapters.keys()) == {"youtube", "bluesky", "instagram"}
+    assert set(adapters.keys()) == {
+        "youtube", "bluesky", "instagram", "linkedin-profile", "linkedin-company",
+    }
+
+
+def test_build_adapters_gives_each_linkedin_mode_its_own_instance():
+    """Separate instances, so their enumerate caches stay separate -- a person
+    and a company can share a slug."""
+    adapters = cron.build_adapters()
+    profile, company = adapters["linkedin-profile"], adapters["linkedin-company"]
+    assert profile is not company
+    assert profile.platform == "linkedin-profile"
+    assert company.platform == "linkedin-company"
+
+
+def test_linkedin_platforms_are_excluded_from_backfill():
+    """discovery_engine rejects any platform outside this whitelist before an
+    adapter is called, so a backfill request can never trigger a paid LinkedIn
+    job that would return nothing useful. Instagram needed this guard added;
+    LinkedIn inherits it -- pin that it still holds."""
+    from pipeline_app.discovery_engine import BACKFILL_SUPPORTED_PLATFORMS
+
+    assert "linkedin-profile" not in BACKFILL_SUPPORTED_PLATFORMS
+    assert "linkedin-company" not in BACKFILL_SUPPORTED_PLATFORMS
