@@ -82,6 +82,42 @@ def test_a_second_identical_render_is_a_no_op(rendered):
     assert not ws.out_master(2).exists()
 
 
+# --- a bed window laid over the voice, measured against the real binary -----
+
+
+@pytest.fixture(scope="module")
+def rendered_windowed_bed(tmp_path_factory):
+    """The main fixture's bed has `windows: []`, so the whole
+    window-over-the-duck path had only ever been exercised against mocks."""
+    root = tmp_path_factory.mktemp("windowed")
+    base = make_fixture.build(root)
+    spec = json.loads((base / "render-spec.json").read_text(encoding="utf-8"))
+    spec["audio"]["bed"]["windows"] = [
+        {"in": 0.0, "out": 6.0, "mode": "ducked", "level_db": -30.0}
+    ]
+    (base / "render-spec.json").write_text(json.dumps(spec, indent=2), encoding="utf-8")
+    return root, cli.cmd_render("e2e", root, "final", force=False)
+
+
+@needs_ffmpeg
+@needs_font
+def test_a_bed_window_over_the_voice_verifies_against_the_window_level(
+    rendered_windowed_bed,
+):
+    """Design spec §3: an explicit window governs its span outright, over the
+    duck. Measured on the real binary before the fix, this correct render
+    reported `expected -14.0 dB, worst measured -22.0 dB` -- an 8 dB error
+    against a 1.5 dB tolerance, so duck_depth FAILed, exit 3, and the master
+    was never promoted."""
+    root, code = rendered_windowed_bed
+    ws = Workspace(root=root, slug="e2e", mode="final")
+    assert code == cli.EXIT_OK
+    payload = json.loads(ws.out_qa_json(1).read_text(encoding="utf-8"))
+    duck = next(c for c in payload["checks"] if c["name"] == "duck_depth")
+    assert duck["status"] == "pass", duck["detail"]
+    assert "expected -22.0 dB" in duck["detail"]
+
+
 # --- the second fixture: a real clip source, no bed, a short voice ----------
 
 
