@@ -465,3 +465,18 @@ def test_scoped_permissions_settings_scopes_write_edit_to_runs_and_rgs_briefs():
     assert "Edit(runs/**)" in allow
     assert "Write(rgs-briefs/**)" in allow
     assert "Edit(rgs-briefs/**)" in allow
+
+
+def test_default_allowed_tools_includes_task():
+    """Gate E (shorts-scripting) and Gate B (midjourney-prompting) both dispatch
+    a fresh reviewing agent via Task. cli_runner's comments say Task is
+    deliberately undenied, but the allowed_tools default never listed it, and
+    headless -p has no one to approve an unlisted tool -- so Gate B has very
+    likely been failing silently."""
+    import inspect
+
+    from pipeline_app import cli_runner
+
+    signature = inspect.signature(cli_runner.stream_claude_turn)
+    default = signature.parameters["allowed_tools"].default
+    assert "Task" in default.split(",")

@@ -221,7 +221,13 @@ async def stream_claude_turn(
     prompt: str,
     cwd: Path,
     resume_session_id: str | None,
-    allowed_tools: str = "Read,Glob,Grep,Write,Edit,Skill",
+    # Task is required, not optional: midjourney-prompting's Gate B and
+    # shorts-scripting's Gate E both dispatch a fresh reviewing agent through
+    # it. PIPELINE_DISALLOWED_TOOLS deliberately does not deny Task, but
+    # --allowedTools is the auto-approve list and headless -p has nobody to
+    # approve anything absent from it -- so omitting Task here silently
+    # degraded Gate B rather than surfacing an error.
+    allowed_tools: str = "Read,Glob,Grep,Write,Edit,Skill,Task",
     disallowed_tools: str = PIPELINE_DISALLOWED_TOOLS,
     settings_path: str | None = None,
 ) -> AsyncIterator[dict]:
