@@ -5,7 +5,7 @@ import pytest
 
 from stitcher import audio as au
 from stitcher.naming import Workspace
-from stitcher.spec import load_spec
+from stitcher.spec import load_spec, runtime_seconds
 from tests.test_spec import MINIMAL, write
 
 PASS1 = json.dumps({
@@ -111,12 +111,21 @@ def test_the_final_mix_is_padded_to_the_runtime_before_it_is_trimmed(
 ):
     """atrim only shortens. Without a pad in front of it, a mix whose sources
     all end before the runtime stays short, and stage D's `-shortest` then cuts
-    the video down to the audio."""
+    the video down to the audio.
+
+    The pad must also be bounded at the source with `whole_dur`, not left
+    bare: a bare `apad` is an unbounded generator, and atrim only discards
+    the frames it produces past `runtime` rather than signalling EOF
+    upstream, so ffmpeg can spin generating and discarding silence forever.
+    Reproduced directly against the real 9.0 binary: bare `apad` hung
+    intermittently (1/10, also seen 1/3 and 1/15 in other trials) under the
+    exact subprocess invocation shape ffmpeg.run() uses; `apad=whole_dur=...`
+    hung 0/15."""
     calls = wire(monkeypatch)
     au.build_audio(spec, workspace, "final", workspace.log_path("t"), [])
     pre = [c for c in calls if c[-1].endswith("05_mix_pre-loudnorm.wav")][-1]
     graph = pre[pre.index("-filter_complex") + 1]
-    assert "apad,atrim=0:" in graph
+    assert f"apad=whole_dur={runtime_seconds(spec):.6f},atrim=0:" in graph
 
 
 def test_a_dynamic_loudnorm_fallback_is_a_hard_failure(spec, workspace, monkeypatch):

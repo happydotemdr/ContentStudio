@@ -213,10 +213,21 @@ def build_audio(
     # binary: 3.000000s of video plus 1s of audio muxes to a 1.000000s
     # master. With a bed present the bed already runs the full runtime, which
     # is why only the bed-less path could show this.
+    # apad must be bounded at the source with whole_dur, not left bare and
+    # relying on the downstream atrim to cut it off. Bare `apad` is
+    # unbounded -- it is a generator, not a filter with a natural end -- so
+    # atrim only ever discards the frames it produces past `runtime` rather
+    # than signalling EOF upstream. ffmpeg can then spin generating and
+    # discarding silence forever. Reproduced directly against the real 9.0
+    # binary under subprocess.run(..., capture_output=True) (exactly how
+    # ffmpeg.run invokes it): bare `apad` hung 1/10 (also seen 1/3 and 1/15
+    # in other trials) on identical inputs, and adding `-t` instead did not
+    # help (hung 3/15). `apad=whole_dur={runtime:.6f}` hung 0/15 with output
+    # duration exactly `runtime` every time.
     labels = "".join(f"[m{i}]" for i in range(count))
     graph = ";".join(chains) + (
         f";{labels}amix=inputs={count}:normalize=0:dropout_transition=0,"
-        f"apad,atrim=0:{runtime:.6f},aresample=48000[mix]"
+        f"apad=whole_dur={runtime:.6f},atrim=0:{runtime:.6f},aresample=48000[mix]"
     )
 
     pre = ws.audio_step("05", "mix_pre-loudnorm")
