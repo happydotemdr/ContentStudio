@@ -32,6 +32,19 @@ def _tone(path: Path, frequency: int, duration: float) -> None:
     )
 
 
+def silence(path: Path, duration: float) -> None:
+    """Digital zero. ebur128 measures this as I: -70.0 LUFS / Peak: -inf dBFS
+    on the installed 9.0 binary, which is exactly what a draft whose stems
+    were all synthesized as silence produces -- and what final mode has to
+    refuse."""
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-y", "-f", "lavfi",
+         "-i", "anullsrc=r=48000:cl=stereo", "-t", f"{duration}",
+         "-c:a", "pcm_s16le", str(path)],
+        check=True, capture_output=True,
+    )
+
+
 def _testsrc(path: Path, fps: int, duration: float) -> None:
     """A real encoded video source, deliberately NOT at the canvas frame rate.
 

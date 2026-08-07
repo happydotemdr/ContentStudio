@@ -32,6 +32,7 @@ assuming (spec §4 stage C), both verified against the installed 9.0 binary:
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +58,17 @@ _JSON_RE = re.compile(r"\{[^{}]*\}", re.DOTALL)
 
 class LoudnormNotLinearError(RuntimeError):
     """loudnorm fell back to dynamic mode, voiding the determinism claim."""
+
+
+class SilentVoiceError(RuntimeError):
+    """The assembled voice track is digital silence outside draft mode.
+
+    Every bed level in a spec is expressed relative to the MEASURED voice
+    track (spec §4 stage C), so a silent voice leaves the whole dB model with
+    no reference to solve against. Draft mode renders that as preview audio;
+    final mode refuses, loudly, rather than shipping a mix whose levels were
+    solved against ebur128's -70 LUFS floor artifact.
+    """
 
 
 @dataclass
@@ -148,15 +160,26 @@ def _build_bed(
     voice_lufs: float,
     durations: dict[str, float],
     log_path: Path,
+    preview: bool,
 ) -> tuple[Path, Path]:
     bed = spec.audio.bed
     source = ws.asset(bed.file)
 
-    # Conform: trim/loop to runtime and shift so the bed sits gain_db below
-    # the voice. Levels in the spec are voice-relative, never absolute.
-    measured = ffmpeg.measure_loudness(source, log_path)["input_i"]
-    target_lufs = voice_lufs + bed.gain_db
-    conform_gain = target_lufs - measured
+    if preview:
+        # No voice, so no reference: the relative solve is skipped outright
+        # rather than fed ebur128's floor artifact, which would place the bed
+        # (gain_db - 70) LUFS below its own level and render an inaudible
+        # preview. The bed is mixed at its literal gain_db instead. The
+        # envelope below still subtracts gain_db, so it lands relative to this
+        # conformed level exactly as it does on a normal run and duck_depth
+        # still measures the real envelope.
+        conform_gain = bed.gain_db
+    else:
+        # Conform: trim/loop to runtime and shift so the bed sits gain_db
+        # below the voice. Levels in the spec are voice-relative, never
+        # absolute.
+        measured = ffmpeg.measure_loudness(source, log_path)["input_i"]
+        conform_gain = (voice_lufs + bed.gain_db) - measured
 
     conformed = ws.audio_step("04a", "bed_conformed")
     ffmpeg.run(
@@ -198,12 +221,33 @@ def build_audio(
 ) -> AudioResult:
     runtime = runtime_seconds(spec)
     voice, durations = _place_stems(spec, ws, log_path, missing_audio)
-    voice_lufs = ffmpeg.measure_loudness(voice, log_path)["input_i"]
+    voice_measured = ffmpeg.measure_loudness(voice, log_path)
+    voice_lufs = voice_measured["input_i"]
+
+    # PREVIEW MODE (spec goal 6: "preview pacing and card legibility BEFORE
+    # spending Midjourney or ElevenLabs credits"). Spec §6 already provides
+    # for every stem being synthesized as silence in draft, and validate_spec
+    # rejects a zero-stem spec -- so a draft before any VO exists is the
+    # intended authoring path, and it made 03_vo_assembled.wav digital
+    # silence. There is then no voice reference, so the relative dB model has
+    # nothing to be relative to and is bypassed rather than solved against
+    # ebur128's floor. DRAFT ONLY: in final mode a silent voice is a loud
+    # failure, never a silent downgrade.
+    preview = ffmpeg.is_digital_silence(voice_measured)
+    if preview and mode != "draft":
+        raise SilentVoiceError(
+            f"{voice.name} is digital silence "
+            f"(integrated {voice_lufs} LUFS, true peak "
+            f"{voice_measured['input_tp']} dBFS). Every bed level in this spec is "
+            "expressed relative to the measured voice track, so there is no "
+            "reference level to solve against. Supply real voice stems, or use "
+            "--mode draft, which renders this as preview audio."
+        )
 
     conformed = ducked = None
     if spec.audio.bed and spec.audio.bed.file not in missing_audio:
         conformed, ducked = _build_bed(
-            spec, ws, runtime, voice_lufs, durations, log_path
+            spec, ws, runtime, voice_lufs, durations, log_path, preview
         )
 
     # Written BEFORE the loudnorm passes, not after: it is the only record of
@@ -216,7 +260,13 @@ def build_audio(
         json.dumps(
             {
                 "mode": mode,
-                "voice_reference_lufs": voice_lufs,
+                "preview_audio": preview,
+                # None rather than a non-finite literal: json.dumps would
+                # write bare `-Infinity`, which round-trips in Python but is
+                # not valid JSON for anything else that reads this file.
+                "voice_reference_lufs": (
+                    voice_lufs if math.isfinite(voice_lufs) else None
+                ),
                 "bed_built": ducked is not None,
                 "omitted": omitted,
                 "silent_stems": silent_stems,
@@ -322,7 +372,13 @@ def build_audio(
         json.dumps(pass2, indent=2), encoding="utf-8"
     )
 
-    if pass2.get("normalization_type") != "linear":
+    # Not gated in preview mode. The linearity guarantee is what makes the
+    # voice-relative solve deterministic, and in preview there is no solve to
+    # be deterministic about -- so a `dynamic` fallback here is a fact about a
+    # preview, not a broken render. It is reported in the QA report either way
+    # (verify's loudnorm_linearity check keeps printing the real value), and
+    # the preview_audio check states plainly that the mix does not conform.
+    if pass2.get("normalization_type") != "linear" and not preview:
         raise LoudnormNotLinearError(
             "loudnorm fell back to "
             f"{pass2.get('normalization_type')!r} mode instead of linear, which voids "

@@ -41,7 +41,8 @@ def ready(tmp_path: Path):
     # Stage C's record of what it built. A complete work/ directory carries
     # one, so a fixture standing in for a complete work/ directory must too.
     ws.audio_report_path.write_text(
-        json.dumps({"mode": "final", "voice_reference_lufs": -18.0,
+        json.dumps({"mode": "final", "preview_audio": False,
+                    "voice_reference_lufs": -18.0,
                     "bed_built": True, "omitted": [], "silent_stems": []}),
         encoding="utf-8",
     )
@@ -441,7 +442,8 @@ def _draft(ws: Workspace) -> Workspace:
 
 
 def _record(ws: Workspace, **overrides) -> None:
-    payload = {"mode": ws.mode, "voice_reference_lufs": -18.0, "bed_built": True,
+    payload = {"mode": ws.mode, "preview_audio": False,
+               "voice_reference_lufs": -18.0, "bed_built": True,
                "omitted": [], "silent_stems": []}
     payload.update(overrides)
     ws.audio_report_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -522,6 +524,71 @@ def test_an_omission_reaching_a_final_render_is_a_failure(ready, tmp_path, monke
     assert status_of(checks, "audio_omissions") == vf.FAIL
 
 
+def test_a_preview_mix_is_named_as_one_and_does_not_block_promotion(
+    ready, tmp_path, monkeypatch
+):
+    """A preview passes by design (spec goal 6 needs the draft to render), so
+    the only thing standing between it and being mistaken for a conforming
+    render is that the report says what it is."""
+    ws, master = ready
+    draft = _draft(ws)
+    _record(draft, preview_audio=True, voice_reference_lufs=-70.0,
+            silent_stems=["vo.wav"])
+    (draft.work_dir / "loudnorm_pass2.json").write_text(
+        json.dumps({"normalization_type": "dynamic"}), encoding="utf-8"
+    )
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch, integrated=-70.0)
+    checks = vf.verify(spec, draft, master, draft.log_path("t"))
+
+    assert vf.overall_status(checks) == "pass"
+    assert status_of(checks, "preview_audio") == vf.PASS
+    assert vf.is_preview_audio(checks)
+    # Bypassed, but each still prints what it actually measured.
+    linearity = next(c for c in checks if c.name == "loudnorm_linearity")
+    assert linearity.status == vf.PASS and "dynamic" in linearity.detail
+    loudness = next(c for c in checks if c.name == "integrated_loudness")
+    assert loudness.status == vf.PASS and "-70.0 LUFS" in loudness.detail
+
+
+def test_preview_mode_never_leaks_into_a_final_report(ready, tmp_path, monkeypatch):
+    """The same dynamic fallback and the same off-target loudness, in final
+    mode, must still fail. Preview is a draft-only concession."""
+    ws, master = ready
+    (ws.work_dir / "loudnorm_pass2.json").write_text(
+        json.dumps({"normalization_type": "dynamic"}), encoding="utf-8"
+    )
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch, integrated=-70.0)
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "loudnorm_linearity") == vf.FAIL
+    assert status_of(checks, "integrated_loudness") == vf.FAIL
+    assert not vf.is_preview_audio(checks)
+
+
+def test_true_peak_is_still_gated_in_preview(ready, tmp_path, monkeypatch):
+    """Preview bypasses the checks that need a voice reference, not every
+    check. A clipping mix is a clipping mix with or without a voice."""
+    ws, master = ready
+    draft = _draft(ws)
+    _record(draft, preview_audio=True)
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch, true_peak=-0.4)
+    checks = vf.verify(spec, draft, master, draft.log_path("t"))
+    assert status_of(checks, "true_peak") == vf.FAIL
+
+
+def test_preview_audio_is_unavailable_without_stage_cs_record(
+    ready, tmp_path, monkeypatch
+):
+    ws, master = ready
+    ws.audio_report_path.unlink()
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch)
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "preview_audio") == vf.UNAVAILABLE
+
+
 def test_write_reports_emits_both_json_and_markdown(tmp_path: Path):
     checks = [vf.Check("container", vf.PASS, "1080x1920 @ 30fps"),
               vf.Check("true_peak", vf.FAIL, "-0.4 dBTP exceeds -1.5")]
@@ -530,4 +597,16 @@ def test_write_reports_emits_both_json_and_markdown(tmp_path: Path):
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     assert payload["status"] == "fail"
     assert len(payload["checks"]) == 2
+    assert payload["preview_audio"] is False
     assert "true_peak" in md_path.read_text(encoding="utf-8")
+
+
+def test_a_preview_report_carries_a_banner_above_the_table(tmp_path: Path):
+    checks = [vf.Check("container", vf.PASS, "1080x1920 @ 30fps"),
+              vf.Check("preview_audio", vf.PASS, vf.PREVIEW_BANNER + " — silent voice")]
+    json_path, md_path = tmp_path / "qa.json", tmp_path / "qa.md"
+    vf.write_reports(checks, json_path, md_path)
+    assert json.loads(json_path.read_text(encoding="utf-8"))["preview_audio"] is True
+    markdown = md_path.read_text(encoding="utf-8")
+    assert vf.PREVIEW_BANNER in markdown
+    assert markdown.index(vf.PREVIEW_BANNER) < markdown.index("| Check |")

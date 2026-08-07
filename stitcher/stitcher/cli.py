@@ -161,7 +161,8 @@ def cmd_render(slug: str, root: Path, mode: str, force: bool) -> int:
         master = assemble.assemble(
             spec, ws, mode, clips, overlay_pngs, mix.mix, log_path
         )
-    except (ffmpeg.FFmpegError, TextOverflowError, audio.LoudnormNotLinearError) as exc:
+    except (ffmpeg.FFmpegError, TextOverflowError, audio.LoudnormNotLinearError,
+            audio.SilentVoiceError) as exc:
         print(f"render failed: {exc}", file=sys.stderr)
         return EXIT_RENDER
 

@@ -122,6 +122,70 @@ def test_measure_loudness_parses_the_ebur128_summary(tmp_path: Path, monkeypatch
     assert result["input_lra"] == pytest.approx(6.2)
 
 
+# --- silence is a measurement, not a parse failure -------------------------
+#
+# Captured verbatim from the installed 9.0 binary:
+#
+#     ffmpeg -f lavfi -i anullsrc=r=48000:cl=stereo -t 2 \
+#            -filter_complex ebur128=peak=true -f null -
+#
+# The integrated loudness comes back as the finite gating floor while the true
+# peak comes back as the literal token "-inf", which the old numeric-only
+# pattern could not match -- so measure_loudness RAISED on a digitally silent
+# track and the render died at exit 2 blaming unreadable ffmpeg output.
+SILENT_SUMMARY = (
+    "[Parsed_ebur128_0 @ 0000] Summary:\n"
+    "  Integrated loudness:\n"
+    "    I:         -70.0 LUFS\n"
+    "    Threshold:   0.0 LUFS\n"
+    "  Loudness range:\n"
+    "    LRA:         0.0 LU\n"
+    "  True peak:\n"
+    "    Peak:       -inf dBFS\n"
+)
+
+
+def test_measure_loudness_reads_an_infinite_true_peak(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(ff, "run", lambda args, log_path: SILENT_SUMMARY)
+    result = ff.measure_loudness(tmp_path / "silence.wav", tmp_path / "run.log")
+    assert result["input_tp"] == float("-inf")
+    assert result["input_i"] == pytest.approx(-70.0)
+    assert result["input_lra"] == pytest.approx(0.0)
+
+
+def test_a_positive_infinity_parses_too(tmp_path: Path, monkeypatch):
+    """The pattern admits `inf` as well as `-inf`; neither is a parse error."""
+    monkeypatch.setattr(
+        ff, "run",
+        lambda args, log_path: SILENT_SUMMARY.replace("-inf dBFS", "inf dBFS"),
+    )
+    result = ff.measure_loudness(tmp_path / "x.wav", tmp_path / "run.log")
+    assert result["input_tp"] == float("inf")
+
+
+def test_measure_loudness_still_raises_on_genuinely_absent_output(
+    tmp_path: Path, monkeypatch
+):
+    """Admitting -inf must not turn a real parse failure into a silent one."""
+    monkeypatch.setattr(ff, "run", lambda args, log_path: "ffmpeg wrote nothing useful")
+    with pytest.raises(ff.FFmpegError):
+        ff.measure_loudness(tmp_path / "x.wav", tmp_path / "run.log")
+
+
+def test_digital_silence_is_detected_from_either_signal():
+    assert ff.is_digital_silence({"input_i": -70.0, "input_tp": float("-inf")})
+    # A stray non-zero sample lifts the peak off -inf, but ebur128 still
+    # declined to measure the programme -- which is the operative condition.
+    assert ff.is_digital_silence({"input_i": -70.0, "input_tp": -91.2})
+    # Exact digital zero with a floor reading that somehow parsed higher.
+    assert ff.is_digital_silence({"input_i": -60.0, "input_tp": float("-inf")})
+
+
+def test_a_real_measurement_is_not_mistaken_for_silence():
+    assert not ff.is_digital_silence({"input_i": -18.0, "input_tp": -3.0})
+    assert not ff.is_digital_silence({"input_i": -69.9, "input_tp": -80.0})
+
+
 # --- argv construction coverage -------------------------------------------
 #
 # The tests above monkeypatch this module's own helpers (`_probe_json`,

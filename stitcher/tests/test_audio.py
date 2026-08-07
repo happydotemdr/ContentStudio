@@ -177,6 +177,90 @@ def test_loudnorm_pass2_record_is_persisted_for_verify(spec, workspace, monkeypa
     assert json.loads(record.read_text())["normalization_type"] == "linear"
 
 
+SILENT = {"input_i": -70.0, "input_tp": float("-inf"), "input_lra": 0.0}
+
+
+def silence_the_voice(monkeypatch) -> None:
+    """Make only 03_vo_assembled.wav measure as digital silence."""
+    def measure(path, log_path):
+        if "vo_assembled" in str(path):
+            return dict(SILENT)
+        return {"input_i": -18.0, "input_tp": -3.0, "input_lra": 6.0}
+
+    monkeypatch.setattr(au.ffmpeg, "measure_loudness", measure)
+
+
+def test_a_silent_voice_in_draft_mixes_the_bed_at_its_literal_gain(
+    spec, workspace, monkeypatch
+):
+    """Spec goal 6: preview pacing and card legibility BEFORE spending VO
+    credits. With every stem synthesized as silence there is no voice
+    reference, so the relative solve is skipped rather than fed ebur128's
+    -70 LUFS floor -- which would place the bed 78 dB below its own level and
+    render an inaudible preview."""
+    calls = wire(monkeypatch, pass2=PASS2_DYNAMIC)
+    silence_the_voice(monkeypatch)
+    ws = Workspace(root=workspace.root, slug="demo", mode="draft")
+    ws.ensure_dirs()
+    for name in ("vo.wav", "bed.mp3"):
+        ws.asset(name).write_bytes(b"x")
+
+    result = au.build_audio(spec, ws, "draft", ws.log_path("t"), ["vo.wav"])
+
+    conform = [c for c in calls if c[-1].endswith("04a_bed_conformed.wav")][-1]
+    # MINIMAL's bed.gain_db is -8.0; applied literally, not solved.
+    assert "volume=-8.0dB" in " ".join(conform)
+    assert result.mix.is_file()
+    record = json.loads(ws.audio_report_path.read_text(encoding="utf-8"))
+    assert record["preview_audio"] is True
+
+
+def test_preview_mode_bypasses_the_linearity_gate(spec, workspace, monkeypatch):
+    """The linearity guarantee exists to make the voice-relative solve
+    deterministic. A preview has no such solve, so a dynamic fallback there is
+    a property of the preview -- but it must still be a hard failure whenever
+    a real solve happened (test_a_dynamic_loudnorm_fallback_is_a_hard_failure
+    above still covers that)."""
+    wire(monkeypatch, pass2=PASS2_DYNAMIC)
+    silence_the_voice(monkeypatch)
+    ws = Workspace(root=workspace.root, slug="demo", mode="draft")
+    ws.ensure_dirs()
+    for name in ("vo.wav", "bed.mp3"):
+        ws.asset(name).write_bytes(b"x")
+    result = au.build_audio(spec, ws, "draft", ws.log_path("t"), ["vo.wav"])
+    assert result.mix.is_file()
+
+
+def test_a_silent_voice_in_final_mode_is_a_hard_failure(spec, workspace, monkeypatch):
+    """Preview is a draft-only concession. In final mode a silent voice track
+    must be a loud, clear failure -- never a silent downgrade."""
+    wire(monkeypatch)
+    silence_the_voice(monkeypatch)
+    with pytest.raises(au.SilentVoiceError) as caught:
+        au.build_audio(spec, workspace, "final", workspace.log_path("t"), [])
+    assert "--mode draft" in str(caught.value)
+
+
+def test_a_real_voice_track_never_enters_preview_mode(spec, workspace, monkeypatch):
+    wire(monkeypatch)
+    au.build_audio(spec, workspace, "final", workspace.log_path("t"), [])
+    record = json.loads(workspace.audio_report_path.read_text(encoding="utf-8"))
+    assert record["preview_audio"] is False
+    assert record["voice_reference_lufs"] == pytest.approx(-18.0)
+
+
+def test_the_stage_c_record_lists_what_the_mix_left_out(spec, workspace, monkeypatch):
+    wire(monkeypatch)
+    ws = Workspace(root=workspace.root, slug="demo", mode="draft")
+    ws.ensure_dirs()
+    ws.asset("vo.wav").write_bytes(b"x")
+    au.build_audio(spec, ws, "draft", ws.log_path("t"), ["bed.mp3"])
+    record = json.loads(ws.audio_report_path.read_text(encoding="utf-8"))
+    assert record["omitted"] == [{"file": "bed.mp3", "role": "bed"}]
+    assert record["silent_stems"] == []
+    assert record["bed_built"] is False
+
+
 def test_a_missing_stem_with_duration_s_becomes_silence_in_draft(tmp_path, monkeypatch):
     payload = json.loads(json.dumps(MINIMAL))
     payload["audio"]["stems"][0]["duration_s"] = 2.875

@@ -219,6 +219,71 @@ def test_draft_mode_renders_with_a_missing_bed_omitted_from_the_mix(tmp_path):
 
 @needs_ffmpeg
 @needs_font
+def test_draft_mode_previews_a_short_whose_voiceover_does_not_exist_yet(tmp_path):
+    """Spec goal 6: "let a user preview pacing and card legibility BEFORE
+    spending Midjourney or ElevenLabs credits."
+
+    Spec §6 already provides for a missing stem with duration_s being
+    synthesized as silence in draft, and validate_spec rejects a zero-stem
+    spec -- so this IS the authoring path for previewing before VO exists.
+    Every stem being silence made 03_vo_assembled.wav digital silence, ebur128
+    printed `Peak: -inf dBFS`, ffmpeg.py's numeric-only regex could not match
+    it, and measure_loudness raised: the render died at exit 2 and goal 6 had
+    no working path at all.
+    """
+    root = tmp_path / "renders"
+    base = make_fixture.build(root)
+    spec = json.loads((base / "render-spec.json").read_text(encoding="utf-8"))
+    # §6's own condition for synthesizing a stem: a declared duration_s.
+    spec["audio"]["stems"][0]["duration_s"] = 5.0
+    (base / "render-spec.json").write_text(json.dumps(spec, indent=2), encoding="utf-8")
+    (base / "assets" / "vo.wav").unlink()
+    ws = Workspace(root=root, slug="e2e", mode="draft")
+
+    assert cli.cmd_render("e2e", root, "draft", force=False) == cli.EXIT_OK
+    assert ws.out_master(None).is_file()
+
+    payload = json.loads(ws.out_qa_json(None).read_text(encoding="utf-8"))
+    assert payload["status"] == "pass", json.dumps(payload["checks"], indent=2)
+    # Visible as a preview, in the machine record and above the human table.
+    assert payload["preview_audio"] is True
+    preview = next(c for c in payload["checks"] if c["name"] == "preview_audio")
+    assert preview["detail"].startswith("PREVIEW AUDIO")
+    markdown = ws.out_qa_md(None).read_text(encoding="utf-8")
+    assert "PREVIEW AUDIO" in markdown
+    assert markdown.index("PREVIEW AUDIO") < markdown.index("| Check |")
+    omissions = next(c for c in payload["checks"] if c["name"] == "audio_omissions")
+    assert "vo.wav" in omissions["detail"]
+
+
+@needs_ffmpeg
+@needs_font
+def test_final_mode_refuses_a_silent_voice_track(tmp_path, capsys):
+    """Preview mode is draft-only. The same silent voice in final mode has to
+    be a loud, clear failure rather than a silent downgrade: nothing about the
+    bed levels in the spec means anything without a voice to be relative to.
+
+    Stage C raises before stage D writes anything, so there is no master here
+    at all -- not in out/, not in work/ -- and the message names the cause and
+    the way out rather than surfacing as an ffmpeg parse error.
+    """
+    root = tmp_path / "renders"
+    base = make_fixture.build(root)
+    make_fixture.silence(base / "assets" / "vo.wav", 5.0)
+    ws = Workspace(root=root, slug="e2e", mode="final")
+
+    assert cli.cmd_render("e2e", root, "final", force=False) == cli.EXIT_RENDER
+    assert not ws.out_master(1).exists()
+    assert not ws.master_path.exists()
+    assert ws.next_version() == 1          # no version burned
+
+    message = capsys.readouterr().err
+    assert "digital silence" in message
+    assert "--mode draft" in message
+
+
+@needs_ffmpeg
+@needs_font
 def test_draft_mode_renders_with_a_placeholder_for_a_missing_still(tmp_path):
     root = tmp_path / "renders"
     base = make_fixture.build(root)

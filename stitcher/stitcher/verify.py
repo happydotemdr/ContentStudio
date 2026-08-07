@@ -71,6 +71,13 @@ PASS = "pass"
 FAIL = "fail"
 UNAVAILABLE = "unavailable"
 
+# Leads the preview_audio check's detail when the mix IS a preview, and is what
+# write_reports keys the report banner off. A preview passes its checks by
+# design (spec goal 6 needs the draft to render), so "pass" alone would be an
+# invisible downgrade -- the banner is what stops a preview reading as a
+# conforming render at a glance.
+PREVIEW_BANNER = "PREVIEW AUDIO"
+
 
 @dataclass
 class Check:
@@ -87,7 +94,11 @@ def overall_status(checks: list[Check]) -> str:
     return "pass"
 
 
-_WINDOW_I = re.compile(r"^\s*I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.MULTILINE)
+# Same pattern as ffmpeg._I, and for the same reason: a window ebur128 reports
+# as -inf is a reading, not a parse failure. duck_windows' own floor guards
+# then discard it, which is the honest outcome -- previously it raised out of
+# the whole verification pass instead.
+_WINDOW_I = re.compile(rf"^\s*I:\s*({ffmpeg.EBUR128_NUMBER})\s*LUFS", re.MULTILINE)
 
 
 def load_audio_record(ws: Workspace) -> dict | None:
@@ -325,14 +336,50 @@ def _check_safe_zone(spec: RenderSpec, ws: Workspace) -> Check:
                  "; ".join(escaped) if escaped else f"{len(sidecars)} overlays inside")
 
 
-def _check_linearity(ws: Workspace) -> Check:
+def _check_linearity(ws: Workspace, preview: bool) -> Check:
     record = ws.work_dir / "loudnorm_pass2.json"
     if not record.is_file():
         return Check("loudnorm_linearity", UNAVAILABLE,
                      "loudnorm pass 2 record absent; run with an intact work/ directory")
     kind = json.loads(record.read_text(encoding="utf-8")).get("normalization_type")
+    if preview:
+        # Reported, not gated. Linearity is what makes the voice-relative
+        # solve deterministic; a preview has no such solve, so a `dynamic`
+        # fallback here is a property of the preview rather than a defect.
+        # The measured value is still printed -- nothing is hidden -- and the
+        # preview_audio check states outright that this is not a conforming
+        # mix.
+        return Check("loudnorm_linearity", PASS,
+                     f"normalization_type = {kind!r}; not gated (preview audio)")
     return Check("loudnorm_linearity", PASS if kind == "linear" else FAIL,
                  f"normalization_type = {kind!r}")
+
+
+def _check_preview_audio(record: dict | None) -> Check:
+    """States, in the report itself, that a preview is not a conforming mix.
+
+    Spec goal 6 wants a draft renderable before any VO exists, and spec §6
+    already synthesizes a missing stem as silence -- so a draft whose voice
+    track is entirely silence is an intended state, not an error. But it is a
+    state in which the entire voice-relative dB model is void, so the report
+    has to say so out loud rather than pass quietly: the point of this check
+    is that nobody can mistake a preview for a conforming render.
+    """
+    if record is None:
+        return Check("preview_audio", UNAVAILABLE,
+                     "stage C's audio record is absent; whether this mix is a "
+                     "preview cannot be established")
+    if not record.get("preview_audio"):
+        reference = record.get("voice_reference_lufs")
+        measured = f"{reference:.1f} LUFS" if isinstance(reference, (int, float)) \
+            else "unrecorded"
+        return Check("preview_audio", PASS,
+                     f"no; the mix is levelled against a voice reference of {measured}")
+    return Check("preview_audio", PASS, PREVIEW_BANNER + " — the assembled voice "
+                 "track is digital silence, so there is no voice reference: the bed "
+                 "was mixed at its literal gain_db, and the loudness target and the "
+                 "loudnorm linearity gate were reported but not enforced. Draft only "
+                 "— this is a pacing/legibility preview, not a conforming mix.")
 
 
 def _check_placeholders(ws: Workspace) -> Check:
@@ -435,15 +482,26 @@ def verify(
     spec: RenderSpec, ws: Workspace, master: Path, log_path: Path
 ) -> list[Check]:
     record = load_audio_record(ws)
+    preview = bool(record and record.get("preview_audio"))
     probed = ffmpeg.probe(master)
     checks = [_check_container(spec, probed), _check_audio_stream(spec, probed)]
     checks.append(_check_colour_tagging(probed))
 
     integrated = ffmpeg.measure_loudness(master, log_path)["input_i"]
     target = spec.audio.loudness.integrated_lufs
-    loud_ok = abs(integrated - target) <= LOUDNESS_TOLERANCE_LU
-    checks.append(Check("integrated_loudness", PASS if loud_ok else FAIL,
-                        f"{integrated:.1f} LUFS against a target of {target} LUFS"))
+    if preview:
+        # Reported, not gated, for the same reason as loudnorm_linearity: the
+        # target is a level for a mix built around a voice, and a preview has
+        # no voice. A bed-less preview is digital silence end to end and would
+        # measure the -70 LUFS floor here -- failing QA, blocking promotion,
+        # and defeating spec goal 6 outright.
+        checks.append(Check("integrated_loudness", PASS,
+                            f"{integrated:.1f} LUFS against a target of {target} LUFS; "
+                            "not gated (preview audio)"))
+    else:
+        loud_ok = abs(integrated - target) <= LOUDNESS_TOLERANCE_LU
+        checks.append(Check("integrated_loudness", PASS if loud_ok else FAIL,
+                            f"{integrated:.1f} LUFS against a target of {target} LUFS"))
 
     mix = ws.audio_step("06", "mix_final")
     if mix.is_file():
@@ -457,7 +515,10 @@ def verify(
         checks.append(Check("true_peak", UNAVAILABLE,
                             "06_mix_final.wav absent; true peak cannot be measured pre-AAC"))
 
-    checks.append(_check_linearity(ws))
+    # true_peak is deliberately still gated in preview: "do not hand back
+    # something that clips" means the same thing with or without a voice, and
+    # a blanket bypass is exactly what preview mode must not become.
+    checks.append(_check_linearity(ws, preview))
     checks.append(_check_duck(spec, ws, log_path, record))
     checks.append(_check_safe_zone(spec, ws))
 
@@ -481,20 +542,44 @@ def verify(
 
     checks.append(_check_placeholders(ws))
     checks.append(_check_audio_omissions(ws, record))
+    checks.append(_check_preview_audio(record))
     return checks
+
+
+def is_preview_audio(checks: list[Check]) -> bool:
+    """Whether this check set describes a preview mix, for report banners."""
+    return any(
+        check.name == "preview_audio" and check.detail.startswith(PREVIEW_BANNER)
+        for check in checks
+    )
 
 
 def write_reports(checks: list[Check], json_path: Path, md_path: Path) -> None:
     status = overall_status(checks)
+    preview = is_preview_audio(checks)
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(
-        json.dumps({"status": status, "checks": [asdict(c) for c in checks]}, indent=2),
+        json.dumps(
+            {"status": status, "preview_audio": preview,
+             "checks": [asdict(c) for c in checks]},
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
     symbols = {PASS: "PASS", FAIL: "FAIL", UNAVAILABLE: "N/A "}
-    lines = [f"# QA report — {status.upper()}", "", "| Check | Result | Detail |",
-             "|---|---|---|"]
+    lines = [f"# QA report — {status.upper()}", ""]
+    if preview:
+        # Above the table, not buried in a row: a preview passes by design, so
+        # the one thing a reader must not miss is that it passed as a preview.
+        lines += [
+            f"> **{PREVIEW_BANNER}** — the voice track is silent, so this mix "
+            "was not levelled against a voice reference and its loudness "
+            "target and linearity were reported rather than enforced. Preview "
+            "the pacing and the cards from it; do not publish it.",
+            "",
+        ]
+    lines += ["| Check | Result | Detail |", "|---|---|---|"]
     lines += [
         f"| `{check.name}` | {symbols[check.status]} | {check.detail} |"
         for check in checks

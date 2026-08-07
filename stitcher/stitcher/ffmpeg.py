@@ -159,9 +159,50 @@ def has_encoder(name: str) -> bool:
     return False
 
 
-_I = re.compile(r"^\s*I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.MULTILINE)
-_TP = re.compile(r"^\s*Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS", re.MULTILINE)
-_LRA = re.compile(r"^\s*LRA:\s*(-?\d+(?:\.\d+)?)\s*LU", re.MULTILINE)
+# ebur128 reports silence as a MEASUREMENT, not as an absence, and the two
+# fields report it differently. Verified against the installed 9.0 binary on
+# `anullsrc=r=48000:cl=stereo -t 2`:
+#
+#     I:         -70.0 LUFS      <- the gating floor, a finite number
+#     LRA:         0.0 LU
+#     Peak:       -inf dBFS      <- literally "-inf"
+#
+# The old numeric pattern could not match "-inf", so measure_loudness raised
+# FFmpegError on a digitally silent track and the render died at exit 2 with a
+# message about unreadable output -- a parse failure standing in for a
+# perfectly good reading. Python's float() accepts "inf"/"-inf" directly, so
+# the pattern just has to admit them; every caller then gets a real -inf and
+# decides for itself what silence means (see is_digital_silence).
+EBUR128_NUMBER = r"-?(?:inf|\d+(?:\.\d+)?)"
+
+# The flat value ebur128 reports for anything at or below its gating floor.
+# verify.EBUR128_FLOOR_DB is the same number, used there to reject a duck
+# window whose reading is dominated by the floor; here it is the honest signal
+# that a track has no measurable programme at all.
+EBUR128_FLOOR_LUFS = -70.0
+
+_I = re.compile(rf"^\s*I:\s*({EBUR128_NUMBER})\s*LUFS", re.MULTILINE)
+_TP = re.compile(rf"^\s*Peak:\s*({EBUR128_NUMBER})\s*dBFS", re.MULTILINE)
+_LRA = re.compile(rf"^\s*LRA:\s*({EBUR128_NUMBER})\s*LU", re.MULTILINE)
+
+
+def is_digital_silence(measured: dict) -> bool:
+    """True when an ebur128 measurement describes no programme at all.
+
+    Detected FROM THE MEASUREMENT rather than guessed from the inputs: a
+    stem synthesized as silence, a stem that is silent on disk, and a mix of
+    both are the same fact about the audio, and only the measurement knows.
+
+    Either signal is sufficient and each covers a case the other misses. A
+    true peak of -inf is exact digital zero. An integrated loudness at or
+    below the gating floor is a track ebur128 declined to measure -- which is
+    the operative condition for anything expressed relative to it, whether or
+    not a stray non-zero sample lifted the peak off -inf.
+    """
+    return (
+        measured["input_tp"] == float("-inf")
+        or measured["input_i"] <= EBUR128_FLOOR_LUFS
+    )
 
 
 def measure_loudness(path: Path, log_path: Path) -> dict:
