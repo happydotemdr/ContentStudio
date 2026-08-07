@@ -23,34 +23,24 @@ Two concrete reasons, not a style preference:
   can parse turns "did you follow the register rules" from an honor-system checklist
   into a deterministic pass/fail the agent cannot route around `[I]`.
 
-## 2. The world-lock block
+## 2. The world-lock block — moved to the styleboard
 
-Exact format the parser accepts (`WORLD_HEADING_RE`, `WORLD_ENTRY_RE`):
+The prompt sheet no longer carries a `WORLD LOCK` block. It lives in the styleboard
+artifact (`shorts-styleboard/references/styleboard-format.md`), and Gate C reads it via
+`python scripts/lint_prompt_sheet.py <sheet> --styleboard <styleboard>` `[I]`.
 
-- The heading line is `WORLD LOCK` — no leading indentation, nothing else on the line.
-- Every following line is a **two-space-indented** `snake_case_key: value` pair. The
-  parser's entry regex only requires *some* leading whitespace and a key starting with a
-  lowercase letter (`[a-z][a-z0-9_]*`), but two-space indentation is this skill's own
-  convention — keep it consistent `[I]`.
-- The block ends at the **first line that doesn't match** the `key: value` shape —
-  a blank line, a new heading, anything. There is no explicit terminator.
+What the sheet carries instead is **slot tokens**, in flag position:
 
-All **11** real keys (5 `register_a_*`, 5 `register_b_*`, 1 `motif`), from
-`visual-registers.md` §7:
+- `{style:register_a}` / `{style:register_b}` — the register's style binding.
+- `{char:<name>}` — a character binding, where the styleboard declares one.
 
-| Key | One-line description |
-|---|---|
-| `register_a_sport` | The one sport locked for this Short; named in every Register A prompt. |
-| `register_a_venue` | The venue type Register A prompts render (a specific place, not a generic one). |
-| `register_a_signature_objects` | 2–3 short, literal objects that make the sport unmistakable — see the warning below. |
-| `register_a_season_time` | Season / time of day Register A prompts render, kept consistent across the Short. |
-| `register_a_rationale` | One line tying the chosen sport to the claim's evidence — not a free aesthetic pick. |
-| `register_b_thinker` | The named historical/source-era figure Register B renders as an archetype. |
-| `register_b_era_place` | The specific era and place Register B prompts are set in. |
-| `register_b_locations` | 2–3 named period locations Register B `WORLD` shots draw from. |
-| `register_b_artifacts` | 2–3 period objects Register B `ARTIFACT` shots draw from. |
-| `register_b_figure_archetype` | Role and dress of the Register B figure — never a specific likeness. |
-| `motif` | The object rendered in **both** registers, welding the two eras into one story. |
+Each must be declared in the styleboard's world lock as `slot_register_a:`,
+`slot_char_<name>:`, etc., or Gate C's **C18** fires. Slots sit **after at least one
+literal flag** — `prompt_body`/`prompt_flags` split at the first ` --`, so a slot placed
+earlier lands in the prompt body `[I]`.
+
+The `register_a_signature_objects` substring-matching warning below still applies, and
+still bites — it is now a property of the styleboard's block, not the sheet's.
 
 **Warning — `register_a_signature_objects` is matched mechanically, not read as prose.**
 `scripts/lint_prompt_sheet.py`'s `signature_objects()` splits this value on commas, and
@@ -143,7 +133,7 @@ a description of it:
 Changes vs. previous: opening frame.
 
 ```text
-documentary sports photography, extreme close-up of a child's small hands pulling a nylon shin-guard strap tight over a club soccer sock, knuckles whitening against the webbing, a scuffed cleat and a mud-flecked ball resting behind on cropped winter turf, a goal net dissolving into unfocused background, low three-quarter angle from knee height, 100mm macro lens at f/2.8, razor-thin focal plane on the buckle, flat blue-grey dawn light from an overcast sky, desaturated palette of turf green and cold slate, fine grain, DSLR, No Text. --ar 9:16 --raw --s 95 --sref 1122334455
+documentary sports photography, extreme close-up of a child's small hands pulling a nylon shin-guard strap tight over a club soccer sock, knuckles whitening against the webbing, a scuffed cleat and a mud-flecked ball resting behind on cropped winter turf, a goal net dissolving into unfocused background, low three-quarter angle from knee height, 100mm macro lens at f/2.8, razor-thin focal plane on the buckle, flat blue-grey dawn light from an overcast sky, desaturated palette of turf green and cold slate, fine grain, DSLR, No Text. --ar 9:16 --raw --s 95 {style:register_a}
 ```
 ```
 
@@ -153,16 +143,15 @@ Everything below sits outside `scripts/lint_prompt_sheet.py`'s parser — it nev
 these sections — but they still travel downstream to `shorts-assembly` and must be
 present in every emitted sheet `[I]`:
 
-- **`WHOLE-SHORT SETUP`** — aspect ratio (`--ar 9:16`), the **two** `--sref` codes (one
-  harvested per Short for Register A per `visual-registers.md` §3, one fixed
-  channel-level code reused every Short for Register B per §4), and the **phase ladder**
-  — the ordered list of script beats this sheet covers (Hook → Setup → Build → ... →
-  Loop/CTA, whatever `shorts-scripting` emitted), so a reader can see the whole arc
-  before reading a single shot block. "Phase ladder" is this skill's own name for that
-  list, not a corpus or parser term `[I]`.
-- **The cover/thumbnail decision** (`SKILL.md` step 6) — either a dedicated cover
-  prompt, or an explicit statement that the Hook still doubles as the cover. Never
-  silently omitted `[I]`.
+- **`WHOLE-SHORT SETUP`** — aspect ratio (`--ar 9:16`), the **two style slots**
+  (`{style:register_a}`, `{style:register_b}`) and the path to the styleboard artifact
+  they resolve against, and the **phase ladder** — the ordered list of script beats this
+  sheet covers, so a reader can see the whole arc before reading a single shot block.
+  "Phase ladder" is this skill's own name for that list, not a corpus or parser term `[I]`.
+- **The cover/thumbnail decision** (`SKILL.md` step 6) — either a `### Cover — <Beat> ·
+  Register <A|B|PLATE> · <SHOT CLASS> · <SCALE> · <CAMERA HEIGHT>` block with its own
+  fenced prompt, or a line beginning exactly `Cover = Hook` stating the Hook still
+  doubles as the cover. Gate C's **C19** rejects a sheet that states neither `[I]`.
 - **The I2V block** — for any beat `SKILL.md` step 5 decided needs a real animated clip:
   source still, target tool and one-line why, the i2v prompt text itself, and
   start/end-frame notes, per `references/image-to-video.md` `[I]`.

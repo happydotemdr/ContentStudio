@@ -1,6 +1,6 @@
 ---
 name: visual-prompts
-description: Storyboards a shot-ready ContentStudio Short script into a visual prompt sheet using dual-register visual storytelling — locking a Register A/present and Register B/source-era world plus a per-Short sport/world lock, mapping each script beat to a shot count at the corpus's ~3-second visual cadence, building the whole shot sequence as an arc and passing it through Gate C before any prompt is written, deciding which beats need real animated motion versus a still, writing the image-to-video (i2v) prompt for any beat that does (Kling, Seedance, Veo, etc.), calling the cover/thumbnail decision, and assembling the whole sheet for handoff. Use this whenever the user has a scripted/timed Short (from shorts-scripting) and asks to "storyboard this script," "build the prompt sheet," "lock the world/registers," "how many shots does this beat need," "which beats need motion/animation," "write the i2v prompt," "give me a Kling/Seedance prompt," "run Gate C," or asks how to visualize a faceless Short beat by beat. The actual Midjourney prompt wording and parameter stack is NOT this skill's job — it delegates every still prompt to the `midjourney-prompting` skill, which owns V8.2 prompt craft, the flag stack, and consistency mechanics. Use that skill directly for a one-off image prompt with no Short script behind it.
+description: Storyboards a shot-ready ContentStudio Short script into a visual prompt sheet using dual-register visual storytelling — consuming the world lock from `shorts-styleboard`, mapping each script beat to a shot count at the corpus's ~3-second visual cadence, building the whole shot sequence as an arc and passing it through Gate C before any prompt is written, deciding which beats need real animated motion versus a still, writing the image-to-video (i2v) prompt for any beat that does (Kling, Seedance, Veo, etc.), calling the cover/thumbnail decision, and assembling the whole sheet for handoff. Use this whenever the user has a scripted/timed Short (from shorts-scripting) and asks to "storyboard this script," "build the prompt sheet," "lock the world/registers," "how many shots does this beat need," "which beats need motion/animation," "write the i2v prompt," "give me a Kling/Seedance prompt," "run Gate C," or asks how to visualize a faceless Short beat by beat. The actual Midjourney prompt wording and parameter stack is NOT this skill's job — it delegates every still prompt to the `midjourney-prompting` skill, which owns V8.2 prompt craft, the flag stack, and consistency mechanics. Use that skill directly for a one-off image prompt with no Short script behind it. Does NOT lock the world or pick the sport — that is `shorts-styleboard`, which runs before this skill.
 ---
 
 # Visual Prompts (script beats → Midjourney prompt sheet)
@@ -12,15 +12,13 @@ description: Storyboards a shot-ready ContentStudio Short script into a visual p
   duration and VO line per beat. **Optionally**, a companion grounding artifact may also be handed
   to this skill directly (or reached via the script's own upstream chain) — see "Optional input"
   below.
-- **This skill's job:** lock the Short's two visual registers and its world **before** any per-beat
-  decision is made — Register A/present, Register B/source-era, and the sport/world-lock block per
-  `references/visual-registers.md` — then plan the whole sheet as a shot-by-shot arc (scale, camera
-  height, shot class, register) per `references/visual-arc.md`, and only then decide how each beat
-  becomes pictures: the shot count per beat at the corpus's ~3-second cadence, which beats need real
-  animated motion rather than a still, and whether the cover needs its own image `[I]`. **For any beat
-  that genuinely needs motion, this skill writes the image-to-video (i2v) prompt itself** (Kling,
-  Seedance, etc.), built from `references/image-to-video.md`. It also decides *which* whole-Short
-  consistency mechanism applies.
+- **This skill's job:** read the world lock `shorts-styleboard` already decided — Register A/present,
+  Register B/source-era, the sport, and the `slot_*` bindings, per step 2.5 below — then plan the whole
+  sheet as a shot-by-shot arc (scale, camera height, shot class, register) per `references/visual-arc.md`,
+  and only then decide how each beat becomes pictures: the shot count per beat at the corpus's ~3-second
+  cadence, which beats need real animated motion rather than a still, and whether the cover needs its own
+  image `[I]`. **For any beat that genuinely needs motion, this skill writes the image-to-video (i2v)
+  prompt itself** (Kling, Seedance, etc.), built from `references/image-to-video.md`.
 - **Delegated to `midjourney-prompting`:** the wording of every still prompt and the parameter stack
   behind it. That skill owns the 9-layer prompt body, V8.2 flags, `--sref`/`--p`/`--oref` mechanics, the
   syntax lint, and GPU-cost discipline. Hand it each beat's visual note plus the stage; take back the
@@ -30,11 +28,14 @@ description: Storyboards a shot-ready ContentStudio Short script into a visual p
   `shorts-assembly` **alongside** `voiceover-brief`'s output — assembly is the first skill that sees
   both the visuals and the voice spec together. `shorts-assembly` operates the tools, renders the
   clips/composites, and owns the edit, captions, and the audio side.
-- **Not this skill's job:** Midjourney prompt anatomy, parameter selection, V8.2 model mechanics, or the
-  consistency *implementation* — all `midjourney-prompting`. Nor actually operating an external i2v
-  tool, rendering the video file, editing, captions, or the audio side — those belong to
-  `shorts-assembly` and `voiceover-brief` respectively. This skill decides *whether* a beat needs a real
-  clip and writes *the i2v prompt* for it; it does not run the render.
+- **Not this skill's job:** locking the world, picking the sport, or deciding the whole-Short consistency
+  situation (`subject-lock` / `style-lock` / `none`) — all `shorts-styleboard`, which runs before this
+  skill and hands its decisions down in the styleboard artifact `[I]`. Nor Midjourney prompt anatomy,
+  parameter selection, V8.2 model mechanics, or the consistency *implementation* — all
+  `midjourney-prompting`. Nor actually operating an external i2v tool, rendering the video file, editing,
+  captions, or the audio side — those belong to `shorts-assembly` and `voiceover-brief` respectively. This
+  skill decides *whether* a beat needs a real clip and writes *the i2v prompt* for it; it does not run the
+  render.
 
 ## Why this is grounded, not generic
 
@@ -59,14 +60,13 @@ system itself is not presented as corpus-derived, and neither file should be rea
 
 ## Optional input: a companion grounding artifact `[I]`
 
-If a companion grounding artifact is handed to this skill, it feeds two places, not just one.
-First, its named thinker/source and any motif cue feed **step 2.5's world lock** — the
-`register_b_thinker`/`register_b_era_place`/`register_b_locations`/`register_b_artifacts` keys
-come from the grounding artifact when one exists, and its motif becomes the `motif` key rendered
-in both registers per `references/visual-registers.md` §6. Second, the same motif cue still
-informs shot-composition for the beat(s) carrying that citation — fold it into step 2's
-still-count decision and step 4's prompt anatomy for that beat, the same way any other visual
-note is used.
+If a companion grounding artifact is handed to this skill, its motif cue still informs
+shot-composition for the beat(s) carrying that citation — fold it into step 2's still-count
+decision and step 4's prompt anatomy for that beat, the same way any other visual note is used.
+The artifact's thinker/source and motif populating the `register_b_*` keys and `motif` key
+themselves is `shorts-styleboard`'s job, not this skill's (see step 2.5) — `shorts-styleboard`
+is fed the same grounding artifact upstream, so the world lock you read at step 2.5 should
+already reflect it `[I]`.
 
 This section does **not** add a quotability/quote-card gate — this skill never renders
 on-screen text (every prompt ends "No Text," step 4 below); on-screen text and caption
@@ -92,56 +92,37 @@ said sentence-by-sentence, or the mismatch reads as confusing `[C]`, same refere
 beyond what the VO content actually supports — the rule is "don't let a frame go stale," not "cut for
 its own sake" (see the over-editing caution in the same reference file).
 
-### 2.5. Lock the world
+### 2.5. Read the world lock — do not decide it
 
-Before any per-beat decision or prompt exists, emit the `WORLD LOCK` block per
-`references/visual-registers.md` §7 — the twelve-key (11 real keys plus the `WORLD LOCK` heading)
-`register_a_*` / `register_b_*` / `motif` block that every downstream prompt inherits from `[I]`:
+The world lock is `shorts-styleboard`'s output, not yours. Read the styleboard artifact
+handed to you and inherit its 11 `register_a_*` / `register_b_*` / `motif` keys and its
+`slot_*` declarations unchanged `[I]`. **Do not re-emit the `WORLD LOCK` block into your
+sheet** — one home, no sync rule needed.
 
-```
-WORLD LOCK
-  register_a_sport:              [one sport]
-  register_a_venue:              [venue type]
-  register_a_signature_objects:  [2-3 objects that make the sport unmistakable]
-  register_a_season_time:        [season / time of day]
-  register_a_rationale:          [one line tying the sport to the claim's evidence]
-  register_b_thinker:            [name]
-  register_b_era_place:          [specific era and place]
-  register_b_locations:          [2-3 named period locations]
-  register_b_artifacts:          [2-3 period objects]
-  register_b_figure_archetype:   [role and dress; never a likeness]
-  motif:                         [the grounding brief's motif, rendered in BOTH registers]
-```
+If no styleboard artifact was supplied, stop and say so rather than inventing a world:
+an invented world lock produces invented `--sref` codes, which is the defect this split
+removed `[I]`.
 
-**The sport is chosen here, with a stated rationale, only if nothing upstream names one.** Check three
-places in order — the incoming script, the concept brief, the grounding artifact — before picking a
-sport yourself; the sport is part of the argument, not a free aesthetic choice, so `register_a_rationale`
-must tie it to the claim's evidence `[I]` (`references/visual-registers.md` §8). Name the choice at the
-top of the prompt sheet, not buried in the world-lock block alone. If a grounding artifact was handed to
-this skill (see "Optional input" above), its thinker/source and motif populate the `register_b_*` keys
-and `motif` directly rather than being invented here `[I]`.
+Every `--sref` in your prompts is a **slot**, never a literal code: `{style:register_a}`
+for Register A shots, `{style:register_b}` for Register B, `{char:<name>}` where the
+styleboard declares a character binding. Slots go **last in the flag block**, after
+`--ar`/`--raw`/`--s` — before the first ` --` they are parsed as prompt body and Gate C's
+**C18** rejects them `[I]`.
 
-### 3a. Decide the whole-Short consistency *situation*, once
+### 3a. Read the consistency situation the styleboard chose — do not decide it
 
-You decide **which situation the Short is in**; `midjourney-prompting` decides how to implement it and
-what it costs.
+Which situation the Short is in — `subject-lock`, `style-lock` (with or without
+`budget: cheap`), or `none` — is `shorts-styleboard`'s decision
+(`shorts-styleboard/SKILL.md` step 2), not yours `[I]`. Read whatever it hands down in
+the styleboard artifact and carry it unchanged into every `midjourney-prompting`
+delegation (step 4 below); `midjourney-prompting` decides how to implement it and what
+it costs.
 
-| Situation | Hand down as |
-|---|---|
-| A recurring character/host appears across beats | `consistency: subject-lock` |
-| No recurring character, but the Short should read as one look/brand | `consistency: style-lock` |
-| Cheap/low-stakes, perfection not required | `consistency: style-lock`, `budget: cheap` |
-| Subject-free b-roll/background plates | `consistency: none` |
-
-**`style-lock` is the default for both registers under the dual-register system, with two `--sref`
-codes** — one harvested per Short for Register A, one fixed and harvested once channel-wide for
-Register B, reused unchanged on every subsequent Short (`references/visual-registers.md` §3–§4) `[I]`.
-Register B's archetype-figure treatment — unnamed, face averted or in shadow, dressed to the role, never
-a specific likeness — is precisely what makes `subject-lock` unnecessary there: there is no likeness to
-lock `[I]`.
-
-Only one mechanism is normally active per Short (or, under the dual-register system, per register).
-This "pick one" framing is this skill's own operational guidance `[I]`, not a distinct corpus claim.
+`style-lock` is the styleboard's default for both registers, resolved through the two
+`slot_register_a` / `slot_register_b` bindings it declares rather than a literal code
+`[I]`. Register B's archetype-figure treatment — unnamed, face averted or in shadow,
+dressed to the role, never a specific likeness — is precisely what makes `subject-lock`
+unnecessary there: there is no likeness to lock `[I]`.
 
 **Expect a pushback on `subject-lock`.** Attaching Omni Reference makes Midjourney run the whole job in
 V7 at 2× GPU cost `[T] (verified 2026-07-26)` — so a character-driven Short cannot also have V8.2's
@@ -179,7 +160,8 @@ subject:      [the beat's visual note — what this still shows]
 stage:        draft   (or refine / production, per where the Short is)
 look:         [photographic | stylized | illustrative — from the packaging direction]
 format:       9:16
-consistency:  [from step 3a, plus the locked --sref/--p code or --oref URL once it exists]
+consistency:  [from step 3a, plus the register's {style:register_a}/{style:register_b} slot
+              (or {char:<name>} slot) from the styleboard]
 register:     [A | B | PLATE — from the arc table row (step 3b)]
 shot_class:   [the register's own taxonomy value for this row, e.g. DETAIL / FIGURE / ESTABLISHING]
 literalism / variance / budget: [defaults unless the beat needs otherwise]
@@ -205,8 +187,8 @@ Two things you still own at this step:
 - **Do not achieve consistency by repeating a shared style-vocabulary string across prompts.** Cloning a
   style phrase (or an entire prompt body with a noun swapped) into every prompt is exactly what produced
   six near-identical stills in a real production run — see `references/visual-arc.md` §1. Consistency
-  lives in `--sref`, not in the prompt body. Gate C's **C11** enforces this mechanically (no two shots
-  may share more than 5 identical prompt-body clauses) `[I]`.
+  lives in the register's style slot, not in the prompt body. Gate C's **C11** enforces this mechanically
+  (no two shots may share more than 5 identical prompt-body clauses) `[I]`.
 
 ### 5. Decide, per beat, whether a still suffices or the beat needs a real animated clip — and if so, write its i2v prompt
 
@@ -261,9 +243,10 @@ decision:
 
 ### 7. Emit the prompt sheet
 
-The exact, byte-level output shape — the `WORLD LOCK` block format, the per-shot heading and fence
-syntax, the one-line prompt rule, and the remaining sheet sections (`WHOLE-SHORT SETUP`, cover/thumbnail,
-I2V block, overlay-copy handoff, validation line) — now lives in `references/prompt-sheet-format.md`.
+The exact, byte-level output shape — the `{style:...}`/`{char:...}` slot-token rule, the per-shot heading
+and fence syntax, the one-line prompt rule, and the remaining sheet sections (`WHOLE-SHORT SETUP`,
+cover/thumbnail, I2V block, overlay-copy handoff, validation line) — now lives in
+`references/prompt-sheet-format.md`.
 Read it before emitting; it is the literal format `scripts/lint_prompt_sheet.py`'s parser accepts, and a
 sheet that drifts from it (wrong dash, wrong case, a missing field) has shots silently skipped by the
 parser, not flagged. See `references/worked-example.md` for a full run of a real beat table through it.
@@ -273,13 +256,11 @@ Skeleton (see `references/prompt-sheet-format.md` §2–§7 for the exact syntax
 ```
 === VISUAL PROMPT SHEET — [Short ID / title] ===
 
-WORLD LOCK
-  [11 keys — see references/visual-registers.md §7 and step 2.5]
-
 WHOLE-SHORT SETUP
   Aspect ratio:     --ar 9:16
-  Register A --sref: [harvested this Short]
-  Register B --sref: [fixed channel-level code, reused unchanged]
+  Register A style: {style:register_a}   [resolved from the styleboard's binding at generate time]
+  Register B style: {style:register_b}   [resolved from the styleboard's binding at generate time]
+  Styleboard:       [path to the styleboard artifact this sheet was built against]
   Phase ladder:      [the ordered beat list this sheet covers]
   Notes:             [anything beat-specific that overrides the default]
 

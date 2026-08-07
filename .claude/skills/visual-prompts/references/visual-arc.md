@@ -162,7 +162,7 @@ tooling, not extracted from the corpus.
 | **C8** | Every Register A prompt names the world lock's `register_a_sport` and contains at least one of its `register_a_signature_objects`. |
 | **C9** | No Register A prompt contains a banned generic-venue string (`empty gym`, `empty youth gym`). |
 | **C10** | No Register B prompt contains banned photographic vocabulary (`DSLR`, `shot on 35mm film`, `documentary`, any `<n>mm` token, any `f/<n>` token) — this is the vocabulary-disjunction rule from `visual-registers.md` §2, enforced mechanically. |
-| **C11** | No two shots share more than 5 identical prompt-body clauses — consistency belongs in `--sref`, not in a cloned prompt body. |
+| **C11** | No two shots share more than 5 identical prompt-body clauses — consistency belongs in the register's style slot, not in a cloned prompt body. |
 | **C12** | Every prompt body has at least 10 clauses and at least 60 words — density enough that all layers carry concrete renderable content. |
 | **C13** | Copy-paste format: prompt is one contiguous line, `No Text.` appears immediately before the flags, a parameter block exists, `--ar` is present, and no stray punctuation (`,` `;` `.`) sits inside the parameter block. |
 | **C14** | Register parameter bands: Register A requires `--raw` and `--s` in 80–120; Register B must not carry `--raw` and requires `--s` in 400–700. |
