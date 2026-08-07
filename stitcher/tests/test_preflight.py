@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -357,6 +358,57 @@ def test_the_path_gate_samples_the_true_maximum_including_the_cover(
     monkeypatch.setattr(pf, "MAX_PATH_LEN", others_max)
     report = pf.run_preflight(spec, ready, "final")
     assert any("path" in e.lower() for e in report.errors)
+
+
+@requires_font
+def test_the_path_gate_measures_the_absolute_path_not_a_relative_fragment(
+    tmp_path, monkeypatch
+):
+    """cli.py's DEFAULT_ROOT is the RELATIVE Path("renders"), so under every
+    default CLI invocation each candidate here was a relative fragment and the
+    gate measured it verbatim -- 41 characters where the filesystem sees 206.
+    The gate was inert for exactly the case it exists to catch. Two prior fixes
+    argued over WHICH deliverable is longest and neither noticed the strings
+    were relative, so this asserts on a measured length against a known
+    absolute path rather than eyeballing the message."""
+    monkeypatch.setattr(pf.ffmpeg, "ffmpeg_version", lambda: "ffmpeg version 8.0.1")
+    monkeypatch.setattr(pf.ffmpeg, "has_encoder", lambda name: name == "libx264")
+    monkeypatch.setattr(pf.ffmpeg, "probe", lambda path: still())
+
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["styles"]["card"]["font_file"] = str(REAL_FONT)
+    (tmp_path / "spec").mkdir(exist_ok=True)
+    spec = load(tmp_path, payload)
+
+    monkeypatch.chdir(tmp_path)
+    ws = Workspace(root=Path("renders"), slug="demo", mode="final")
+    ws.ensure_dirs()
+    for name in ("a.png", "b.png", "vo.wav", "bed.mp3"):
+        ws.asset(name).write_bytes(b"x")
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(ws.asset("cover.png"))
+
+    fragment = ws.out_cover(99)
+    real = fragment.resolve()
+    assert not fragment.is_absolute()
+    assert len(str(real)) > len(str(fragment))
+
+    # A ceiling every relative fragment clears and the real path does not.
+    # Before the fix this produced no error at all.
+    monkeypatch.setattr(pf, "MAX_PATH_LEN", len(str(real)) - 1)
+    report = pf.run_preflight(spec, ws, "final")
+
+    offending = [e for e in report.errors if e.startswith("path exceeds")]
+    assert len(offending) == 1
+    match = re.match(
+        r"path exceeds \d+ characters \((\d+)\): (.+)\. Use a shorter", offending[0]
+    )
+    assert match is not None, offending[0]
+    reported_length, reported_path = int(match.group(1)), match.group(2)
+    # The measured number is the length of a real absolute path, not a fragment.
+    assert Path(reported_path).is_absolute()
+    assert reported_length == len(reported_path)
+    assert reported_length >= len(str(real))
+    assert reported_path.startswith(str(ws.base.resolve()))
 
 
 @requires_font

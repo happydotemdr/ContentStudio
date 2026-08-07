@@ -100,7 +100,20 @@ def _check_paths(spec: RenderSpec, ws: Workspace, mode: str, report: PreflightRe
         ws.out_contact_sheet(version),
     ]
 
-    longest = max(candidates, key=lambda p: len(str(p)))
+    # Measure the ABSOLUTE path, which is the only thing the OS ever sees.
+    # Spec §2: "preflight computes the longest path the run will produce".
+    # This used to measure `str(candidate)` directly, and cli.py's
+    # DEFAULT_ROOT is the relative Path("renders") -- so under the default
+    # CLI every candidate here was a relative fragment and the gate measured
+    # something like 41 characters for a path the filesystem sees as 206.
+    # The gate was therefore inert for exactly the case it exists to catch: a
+    # workspace under a deep working directory sailed through preflight and
+    # then failed mid-render, or after promotion, with a raw OSError.
+    # resolve() is used rather than str.__len__ on the raw value because it
+    # is what open() will resolve against; it emits a plain drive-letter path
+    # (no \\?\ prefix) on this platform, so the measured length is the length
+    # Windows itself applies MAX_PATH to.
+    longest = max((path.resolve() for path in candidates), key=lambda p: len(str(p)))
     if len(str(longest)) > MAX_PATH_LEN:
         report.errors.append(
             f"path exceeds {MAX_PATH_LEN} characters ({len(str(longest))}): {longest}. "
