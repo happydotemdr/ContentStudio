@@ -8,6 +8,8 @@ from lint_prompt_sheet import (  # noqa: E402
     Finding,
     parse_sheet,
     parse_world_lock,
+    parse_cover,
+    declares_cover_reuse,
     prompt_body,
     prompt_flags,
     body_clauses,
@@ -17,11 +19,15 @@ from lint_prompt_sheet import (  # noqa: E402
     check_register_balance,
     check_world_lock,
     check_prompt_quality,
+    check_prompt_clone,
+    check_prompt_density,
     check_format,
     check_vocabulary,
     check_style_reference,
     check_style_mechanism,
     check_slots,
+    check_cover_present,
+    lint_cover,
     lint,
     main,
 )
@@ -655,6 +661,54 @@ def test_c18_accepts_two_correctly_placed_declared_slots_without_over_firing():
         "--ar 9:16 --raw --s 95 {style:register_a} {char:coach}"
     )
     assert check_slots([shot], SLOT_WORLD) == []
+
+
+COVER_BLOCK = """\
+COVER / THUMBNAIL
+
+### Cover — Thumbnail · Register A · HUMAN-COST · CLOSE · EYE
+
+```text
+documentary sports photography, tight close-up of a determined young club soccer player mid-effort framed right of centre, jaw set and eyes fixed off-camera, sweat and pitch mud on one cheek, a goal net blurred far behind, low three-quarter angle, 85mm lens at f1.8, shallow focal plane holding the face sharp, warm amber rim light against a cold teal ground, the left third kept dark and empty for a title overlay, muted palette of teal-ink amber and off-white, fine film grain, DSLR, No Text. --ar 9:16 --raw --s 110 {style:register_a}
+```
+"""
+
+
+def test_parse_cover_reads_the_cover_block():
+    cover = parse_cover(COVER_BLOCK)
+    assert cover is not None
+    assert cover.index == 0
+    assert cover.register == "A"
+    assert cover.shot_class == "HUMAN-COST"
+    assert cover.scale == "CLOSE"
+    assert cover.camera_height == "EYE"
+
+
+def test_parse_cover_returns_none_when_the_cover_reuses_the_hook():
+    text = "COVER / THUMBNAIL\n  Cover = Hook beat still #1 + shorts-assembly's overlay.\n"
+    assert parse_cover(text) is None
+    assert declares_cover_reuse(text) is True
+
+
+def test_c19_fires_when_no_cover_decision_is_stated():
+    assert [f.check for f in check_cover_present("=== SHEET ===\n\nno cover here\n")] == ["C19"]
+
+
+def test_c19_passes_for_either_cover_branch():
+    assert check_cover_present(COVER_BLOCK) == []
+    assert check_cover_present("Cover = Hook beat still #1, no separate generation.") == []
+
+
+def test_lint_cover_applies_format_and_style_checks_but_not_sequence():
+    cover = parse_cover(COVER_BLOCK)
+    findings = lint_cover(cover, SLOT_WORLD)
+    assert all(f.check not in {"C1", "C2", "C3", "C4", "C5", "C6", "C7", "C11"} for f in findings)
+
+
+def test_lint_cover_catches_a_bad_cover_sref():
+    bad = COVER_BLOCK.replace("{style:register_a}", "--sref SREF-RGS-A-DL01")
+    findings = lint_cover(parse_cover(bad), SLOT_WORLD)
+    assert any(f.check == "C16" for f in findings)
 
 
 STYLEBOARD = """\

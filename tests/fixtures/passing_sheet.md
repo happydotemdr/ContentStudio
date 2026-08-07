@@ -42,3 +42,11 @@ Changes vs. previous: back to the present; the load set down.
 ```text
 documentary sports photography, a child's hands lowering a single kit bag onto the painted touchline of a club soccer pitch, the strap slackening as the weight settles, a corner flag stirring just beyond in the morning air, goal net catching thin early light at the frame edge, eye-level three-quarter view from a crouch, 50mm lens at f/4, moderate depth holding both hands and flag legible, a warm shaft of sun breaking the overcast from behind, palette warming from cold slate toward pale gold, No Text. --ar 9:16 --raw --s 105 --sref 1122334455
 ```
+
+COVER / THUMBNAIL
+
+### Cover — Thumbnail · Register A · HUMAN-COST · CLOSE · EYE
+
+```text
+documentary sports photography, tight close-up of a determined young club soccer player mid-effort framed right of centre, jaw set and eyes fixed off-camera, sweat and pitch mud across one cheek, a goal net blurred in soft focus far behind, low three-quarter angle from a crouch, 85mm lens at f1.8, shallow focal plane holding only the face sharp, warm amber rim light cutting against a cold teal ground, the left third of the frame kept dark and empty for a title overlay, muted palette of teal ink amber and off white, fine visible film grain, DSLR, No Text. --ar 9:16 --raw --s 105 --sref 1122334455
+```

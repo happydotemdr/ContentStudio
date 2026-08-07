@@ -97,6 +97,83 @@ def parse_world_lock(text: str) -> dict[str, str]:
     return world
 
 
+COVER_HEADING_RE = re.compile(
+    r"^###\s+Cover\s+—\s+(.+?)\s+·\s+Register\s+(A|B|PLATE)"
+    r"\s+·\s+([A-Z-]+)\s+·\s+([A-Z-]+)\s+·\s+([A-Z]+)\s*$"
+)
+COVER_REUSE_RE = re.compile(r"^\s*Cover\s*=\s*Hook\b", re.IGNORECASE | re.MULTILINE)
+
+
+def parse_cover(text: str) -> Shot | None:
+    """The dedicated cover prompt, as a Shot with index 0, or None.
+
+    None means either 'the cover reuses the Hook still' (a legitimate branch — see
+    declares_cover_reuse) or 'no cover block at all' (C19). Index 0 keeps the cover
+    distinguishable from every real shot in a finding message.
+    """
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        heading = COVER_HEADING_RE.match(line)
+        if not heading:
+            continue
+        prompt_lines, _next = _read_fenced_prompt(lines, i + 1)
+        if not prompt_lines:
+            return None
+        return Shot(
+            index=0,
+            beat=heading.group(1),
+            register=heading.group(2),
+            shot_class=heading.group(3),
+            scale=heading.group(4),
+            camera_height=heading.group(5),
+            prompt=" ".join(prompt_lines).strip(),
+            prompt_line_count=len(prompt_lines),
+        )
+    return None
+
+
+def declares_cover_reuse(text: str) -> bool:
+    return COVER_REUSE_RE.search(text) is not None
+
+
+def check_cover_present(text: str) -> list[Finding]:
+    """C19: the cover decision is stated, never silently omitted.
+
+    prompt-sheet-format.md §7 already requires this of every emitted sheet `[I]`; until
+    now nothing enforced it.
+    """
+    if parse_cover(text) is not None or declares_cover_reuse(text):
+        return []
+    return [
+        Finding(
+            "C19",
+            None,
+            "no cover decision: emit a '### Cover — ...' block, or state "
+            "'Cover = Hook beat still #1' explicitly",
+        )
+    ]
+
+
+def lint_cover(cover: Shot, world: dict[str, str]) -> list[Finding]:
+    """Every per-shot check, and none of the whole-sequence ones.
+
+    C1-C7 are adjacency, scale-spread and register-balance checks over an ordered arc;
+    the cover has no position in that arc, so folding it into the shot list would
+    corrupt all seven. C11 is excluded for a different reason: the cover is *supposed*
+    to resemble the Hook still, so anti-clone would fire by design.
+    """
+    single = [cover]
+    return [
+        *check_world_lock(single, world),
+        *check_prompt_density(single),
+        *check_format(single),
+        *check_vocabulary(single),
+        *check_style_reference(single),
+        *check_style_mechanism(single),
+        *check_slots(single, world),
+    ]
+
+
 def _read_fenced_prompt(lines: list[str], start: int) -> tuple[list[str], int]:
     """Read the next ```text fence after `start`. Returns (non-empty lines, index after it)."""
     i = start
@@ -375,10 +452,9 @@ MIN_CLAUSES = 10
 MIN_WORDS = 60
 
 
-def check_prompt_quality(shots: list[Shot]) -> list[Finding]:
-    """C11-C12: anti-clone and prompt density."""
+def check_prompt_clone(shots: list[Shot]) -> list[Finding]:
+    """C11: anti-clone. Consistency belongs in --sref, not a copied prompt body."""
     findings: list[Finding] = []
-
     for left, right in _pairs(shots):
         shared = set(body_clauses(left)) & set(body_clauses(right))
         if len(shared) > MAX_SHARED_CLAUSES:
@@ -391,7 +467,12 @@ def check_prompt_quality(shots: list[Shot]) -> list[Finding]:
                     f"prompt body. Shared: {sorted(shared)[:3]}",
                 )
             )
+    return findings
 
+
+def check_prompt_density(shots: list[Shot]) -> list[Finding]:
+    """C12: every prompt carries concrete renderable content in all nine layers."""
+    findings: list[Finding] = []
     for shot in shots:
         clause_count = len(body_clauses(shot))
         if clause_count < MIN_CLAUSES:
@@ -408,8 +489,12 @@ def check_prompt_quality(shots: list[Shot]) -> list[Finding]:
             findings.append(
                 Finding("C12", shot.index, f"{words} words in body; need >= {MIN_WORDS}")
             )
-
     return findings
+
+
+def check_prompt_quality(shots: list[Shot]) -> list[Finding]:
+    """C11-C12, kept as one entry point for callers that want both."""
+    return [*check_prompt_clone(shots), *check_prompt_density(shots)]
 
 
 def _pairs(shots: list[Shot]):
@@ -625,19 +710,27 @@ def check_slots(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
     return findings
 
 
-def lint(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
+def lint(
+    shots: list[Shot],
+    world: dict[str, str],
+    *,
+    cover: Shot | None = None,
+) -> list[Finding]:
     """Run every Gate C check, in check order."""
-    return [
+    findings = [
         *check_sequence(shots),
         *check_register_balance(shots),
         *check_world_lock(shots, world),
         *check_prompt_quality(shots),
         *check_format(shots),
+        *check_vocabulary(shots),
         *check_style_reference(shots),
         *check_style_mechanism(shots),
         *check_slots(shots, world),
-        *check_vocabulary(shots),
     ]
+    if cover is not None:
+        findings.extend(lint_cover(cover, world))
+    return findings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -666,7 +759,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Gate C: no shots parsed from {args.sheet}. Check the sheet format.")
         return 2
 
-    findings = lint(shots, world)
+    cover = parse_cover(sheet_text)
+    findings = [*check_cover_present(sheet_text), *lint(shots, world, cover=cover)]
     if not findings:
         print(f"Gate C: PASS — {len(shots)} shots, 0 findings.")
         return 0
