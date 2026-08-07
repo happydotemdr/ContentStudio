@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from pipeline_app import db as db_mod
+from pipeline_app import migrations
 from pipeline_app import preflight
 from pipeline_app.pipeline_config import load_topology
 from pipeline_app.routes import browse, discovery, doctor, inspector, projects, skills, stages
@@ -21,6 +22,9 @@ def create_app(repo_root: Path, db_path: Path) -> FastAPI:
     schema_path = PACKAGE_DIR / "schema.sql"
     db_mod.init_db(db_path, schema_path)
     app.state.conn = db_mod.get_connection(db_path)
+    app.state.backfilled_projects = migrations.backfill_styleboard_rows(
+        app.state.conn, app.state.repo_root, app.state.stage_defs
+    )
     app.state.orphaned_count = preflight.reconcile_orphaned_turns(
         app.state.conn, app.state.repo_root, app.state.stage_defs
     )

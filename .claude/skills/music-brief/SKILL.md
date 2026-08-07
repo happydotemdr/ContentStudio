@@ -7,7 +7,7 @@ description: Designs the background-music bed arc for a faceless YouTube Short �
 
 Produces the **Bed Arc** for one Short: the background-music bed's emotional shape mapped to the
 script's beat timings — which movement plays where, whether the bed holds out under the hook, and
-where a pause is a deliberate device. This is a stage of ContentStudio's seven-skill pipeline,
+where a pause is a deliberate device. This is a stage of ContentStudio's eight-skill pipeline,
 sharing the `03` group with `voiceover-brief` and `visual-prompts` — but unlike `visual-prompts`,
 it is not parallel to `voiceover-brief`: it runs after both `shorts-scripting` and
 `voiceover-brief`, depending on the latter's tone-per-beat call. It is deliberately thin: it owns

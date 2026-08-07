@@ -1,11 +1,11 @@
 ---
 name: social-repurpose
-description: Generate multi-surface post copy (YouTube title/description/hashtags plus cross-platform caption variants for TikTok/Instagram/X/Bluesky) from a finished faceless-YouTube-Short's script and packaging direction. This is the final stage of the ContentStudio seven-skill pipeline — use it after a Short has been assembled (script + voiceover brief + visual prompts + edit plan from shorts-assembly) and you need publish-ready copy for YouTube and repurposed captions elsewhere. Trigger this whenever the user asks to write a YouTube title, description, or hashtags for a Short; asks to "repurpose," "cross-post," or write captions for TikTok/Instagram/X/Bluesky/Threads from a video; or wants the final post-copy package for a produced Short. Every normative line traces to the ContentStudio corpus (docs/headless-youtube-audit.md) with [C]/[I]/[T] provenance markers — do not invent generic social-media best practices.
+description: Generate multi-surface post copy (YouTube title/description/hashtags plus cross-platform caption variants for TikTok/Instagram/X/Bluesky) from a finished faceless-YouTube-Short's script and packaging direction. This is the final stage of the ContentStudio eight-skill pipeline — use it after a Short has been assembled (script + voiceover brief + visual prompts + edit plan from shorts-assembly) and you need publish-ready copy for YouTube and repurposed captions elsewhere. Trigger this whenever the user asks to write a YouTube title, description, or hashtags for a Short; asks to "repurpose," "cross-post," or write captions for TikTok/Instagram/X/Bluesky/Threads from a video; or wants the final post-copy package for a produced Short. Every normative line traces to the ContentStudio corpus (docs/headless-youtube-audit.md) with [C]/[I]/[T] provenance markers — do not invent generic social-media best practices.
 ---
 
 # Social Repurpose
 
-The final stage of ContentStudio's seven-skill pipeline, following `shorts-assembly`. Turns
+The final stage of ContentStudio's eight-skill pipeline, following `shorts-assembly`. Turns
 a **finished Short** into the **multi-surface post copy** that ships it. There is no
 downstream stage: this skill's output is the pipeline's final deliverable.
 
