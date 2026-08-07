@@ -568,6 +568,50 @@ def check_style_mechanism(shots: list[Shot]) -> list[Finding]:
     return findings
 
 
+SLOT_KINDS = (
+    (STYLE_SLOT_RE, "style", "slot_"),
+    (CHAR_SLOT_RE, "char", "slot_char_"),
+)
+
+
+def check_slots(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
+    """C18: slot tokens are declared in the world lock and sit in flag position.
+
+    Position is load-bearing, not cosmetic. prompt_body/prompt_flags split a prompt at
+    the first occurrence of ' --', and a slot token does not begin with '--'. Placed
+    before the first literal flag it lands in the prompt BODY, where it would both fail
+    C13's 'No Text. is last' rule and be sent to Midjourney as literal prose.
+    """
+    findings: list[Finding] = []
+    for shot in shots:
+        flags = prompt_flags(shot)
+        for pattern, kind, prefix in SLOT_KINDS:
+            in_flags = set(pattern.findall(flags))
+            for name in pattern.findall(shot.prompt):
+                if name not in in_flags:
+                    findings.append(
+                        Finding(
+                            "C18",
+                            shot.index,
+                            f"{{{kind}:{name}}} must sit after at least one literal flag "
+                            "(put it last, after --ar/--s); before the first ' --' it is "
+                            "parsed as prompt body",
+                        )
+                    )
+                    continue
+                key = f"{prefix}{name}"
+                if key not in world:
+                    findings.append(
+                        Finding(
+                            "C18",
+                            shot.index,
+                            f"{{{kind}:{name}}} is not declared; add a {key!r} line to the "
+                            "styleboard's WORLD LOCK block naming the Library entry it binds to",
+                        )
+                    )
+    return findings
+
+
 def lint(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
     """Run every Gate C check, in check order."""
     return [
@@ -578,6 +622,7 @@ def lint(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
         *check_format(shots),
         *check_style_reference(shots),
         *check_style_mechanism(shots),
+        *check_slots(shots, world),
         *check_vocabulary(shots),
     ]
 

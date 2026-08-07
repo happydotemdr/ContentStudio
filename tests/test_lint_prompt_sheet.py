@@ -21,6 +21,7 @@ from lint_prompt_sheet import (  # noqa: E402
     check_vocabulary,
     check_style_reference,
     check_style_mechanism,
+    check_slots,
     lint,
     main,
 )
@@ -595,6 +596,41 @@ def test_c17_exempts_plate_shots():
         register="PLATE",
     )
     assert check_style_mechanism([shot]) == []
+
+
+SLOT_WORLD = {
+    "register_a_sport": "club soccer",
+    "register_a_signature_objects": "goal net, corner flag, painted touchline",
+    "slot_register_a": "rgs-present-soccer-a",
+    "slot_char_coach": "rgs-coach-01",
+}
+
+
+def test_c18_accepts_a_declared_slot_in_flag_position():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    assert check_slots([shot], SLOT_WORLD) == []
+
+
+def test_c18_rejects_an_undeclared_style_slot():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_z}")
+    findings = check_slots([shot], SLOT_WORLD)
+    assert [f.check for f in findings] == ["C18"]
+    assert "slot_register_z" in findings[0].message
+
+
+def test_c18_rejects_a_slot_before_the_first_flag():
+    """Before the first ' --' the token is parsed as prompt body, not flags."""
+    shot = _shot("a strap pulled tight {style:register_a}, No Text. --ar 9:16 --raw --s 95")
+    findings = check_slots([shot], SLOT_WORLD)
+    assert [f.check for f in findings] == ["C18"]
+    assert "after at least one literal flag" in findings[0].message
+
+
+def test_c18_checks_character_slots_too():
+    shot = _shot("a coach lowering a medal, No Text. --ar 9:16 --raw --s 95 {char:coach}")
+    assert check_slots([shot], SLOT_WORLD) == []
+    missing = _shot("a coach lowering a medal, No Text. --ar 9:16 --raw --s 95 {char:parent}")
+    assert [f.check for f in check_slots([missing], SLOT_WORLD)] == ["C18"]
 
 
 STYLEBOARD = """\
