@@ -84,10 +84,21 @@ def _normalize_row(row: dict) -> dict | None:
     first_line = body.split("\n", 1)[0].strip()
     title = headline or first_line or str(post_id)
 
+    raw_date_posted = (row.get("date_posted") or "").strip()
+
     return {
         "id": str(post_id),
         "title": title[:TITLE_MAX_CHARS],
         "published": published,
+        # Full ISO 8601 timestamp, used only as the sort key -- 'published'
+        # truncates to the date, so same-day rows would otherwise sort in
+        # Bright Data's arbitrary arrival order (verified live: rows are NOT
+        # returned newest-first). Lexicographic comparison is correct for
+        # this dataset's real ISO 8601 strings (verified live 2026-08-07).
+        # raw_date_posted is guaranteed non-empty here (the published check
+        # above already required it), but the "or" fallback keeps this key
+        # total rather than crashing if that ever stops being true.
+        "published_ts": raw_date_posted or f"{published}T00:00:00",
         # Observed values: 'post', 'repost'. Lowercased defensively -- the
         # Instagram product returns display-cased values for the same concept.
         "content_type": (row.get("post_type") or "post").strip().lower(),
@@ -210,22 +221,42 @@ class LinkedInAdapter:
             kept = [n for n in kept if n["author"].lower() == wanted]
             foreign = before - len(kept)
 
-        if unusable or foreign:
+        if unusable and foreign:
             print(f"  ! {self.platform}/{handle}: dropped {unusable} unusable row(s), "
                   f"{foreign} row(s) by another author", file=sys.stderr)
+        elif unusable:
+            print(f"  ! {self.platform}/{handle}: dropped {unusable} unusable row(s)",
+                  file=sys.stderr)
+        elif foreign:
+            print(f"  ! {self.platform}/{handle}: dropped {foreign} row(s) by another author",
+                  file=sys.stderr)
 
         if raw_rows and not kept:
             # This run was billed and produced nothing, but process_handle will
             # record the healthy status 'no_new_content' -- indistinguishable
-            # from a quiet day unless it is loud here.
+            # from a quiet day unless it is loud here. The advice depends on
+            # *why* nothing survived: an all-unusable batch (e.g. a dead or
+            # renamed slug returning error rows with no id, with
+            # include_errors=true) points at a bad handle, not at authorship --
+            # pointing the operator at the wrong cause wastes their time.
+            if unusable and not foreign:
+                advice = "check whether this handle/slug is still valid"
+            elif foreign and not unusable:
+                advice = "check whether this account posts its own content"
+            else:
+                advice = "check whether this handle is valid and posts its own content"
             print(f"  !! {self.platform}/{handle}: Bright Data returned "
                   f"{len(raw_rows)} row(s) but none survived filtering. This run "
-                  f"was billed and captured nothing -- check whether this account "
-                  f"posts its own content.", file=sys.stderr)
+                  f"was billed and captured nothing -- {advice}.", file=sys.stderr)
 
         # Rows arrive unsorted (verified live); the engine's early-stop dedup
-        # assumes newest-first. Cap AFTER filtering so it bounds retained items.
-        kept.sort(key=lambda n: n["published"], reverse=True)
+        # assumes newest-first. Sort on the full timestamp, not the
+        # date-truncated 'published': Python's sort is stable, so same-day
+        # rows sorted on 'published' alone would keep Bright Data's arbitrary
+        # arrival order, which can put a genuinely newer post behind ones
+        # already on disk and trip the early-stop dedup before reaching it.
+        # Cap AFTER filtering so it bounds retained items.
+        kept.sort(key=lambda n: n["published_ts"], reverse=True)
         kept = kept[:MAX_ITEMS_PER_RUN]
 
         # Overwrite, not merge: a fresh successful enumerate replaces whatever

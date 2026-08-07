@@ -119,8 +119,9 @@ def _run_collection_job(handle: str) -> list[dict]:
     )
 
 
-def _parse_published(raw: str | None) -> str | None:
-    """Bright Data's date_posted -> the engine's required YYYY-MM-DD, or None.
+def _parse_datetime(raw: str | None) -> _dt.datetime | None:
+    """Bright Data's date_posted -> a full datetime, or None if it matches
+    none of this dataset's known formats.
 
     This dataset returns a US-format local timestamp -- '07/23/2026 16:00:22'
     -- NOT ISO 8601 (verified 2026-08-06 against a live snapshot of
@@ -129,25 +130,42 @@ def _parse_published(raw: str | None) -> str | None:
     [] and the engine report a healthy 'no_new_content' for a batch that had
     already been paid for. The ISO branch is kept as a cheap fallback in case
     the dataset's format changes or another Bright Data product is pointed at
-    this adapter.
+    this adapter -- it only recovers the date, not the time of day.
 
-    No timezone is supplied with the timestamp; since the engine only ever
-    compares dates, an off-by-one at a midnight boundary is the worst case.
+    No timezone is supplied with the timestamp; since 'published' (see
+    _parse_published) only ever compares dates, an off-by-one at a midnight
+    boundary is the worst case there. The full time-of-day this function
+    preserves is used only as enumerate_newest_first's sort key, to break
+    ties between same-day posts -- see the sort call in enumerate_newest_first
+    for why a date-only sort key is not good enough (Bright Data returns rows
+    unsorted, and a date-only key sorts same-day rows in that arbitrary
+    arrival order instead of newest-first).
+
+    This is the single place the format list lives; _parse_published and
+    enumerate_newest_first's sort key both build on it rather than
+    reimplementing it.
     """
     raw = (raw or "").strip()
     if not raw:
         return None
     for fmt in ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y"):
         try:
-            return _dt.datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+            return _dt.datetime.strptime(raw, fmt)
         except ValueError:
             pass
     candidate = raw[:10]
     try:
-        _dt.datetime.strptime(candidate, "%Y-%m-%d")
-        return candidate
+        return _dt.datetime.strptime(candidate, "%Y-%m-%d")
     except ValueError:
         return None
+
+
+def _parse_published(raw: str | None) -> str | None:
+    """Bright Data's date_posted -> the engine's required YYYY-MM-DD, or
+    None. Thin wrapper over _parse_datetime; see that function's docstring
+    for the format list and why the US-format branch is tried first."""
+    parsed = _parse_datetime(raw)
+    return parsed.strftime("%Y-%m-%d") if parsed else None
 
 
 def _normalize_row(row: dict) -> dict | None:
@@ -166,12 +184,22 @@ def _normalize_row(row: dict) -> dict | None:
     if published is None:
         return None
     caption = (row.get("description") or "").strip()
+    # Full parsed datetime, used only as enumerate_newest_first's sort key --
+    # 'published' truncates to the date, so same-day rows need the time of
+    # day to sort correctly. Reuses _parse_datetime rather than a second copy
+    # of the format list. This second parse can't fail: _parse_published
+    # above already required _parse_datetime to succeed on this same raw
+    # value, but the "or" fallback keeps the key total (never crash, never
+    # sort to the top) rather than relying on that invariant silently.
+    parsed_dt = _parse_datetime(row.get("date_posted"))
+    published_ts = parsed_dt.isoformat() if parsed_dt else f"{published}T00:00:00"
     # Bright Data returns display-cased values ("Post", "Reel"); the file
     # format documented in the design doc is lowercase.
     return {
         "id": post_id,
         "title": caption[:60] if caption else post_id,
         "published": published,
+        "published_ts": published_ts,
         "content_type": (row.get("content_type") or "post").lower(),
         "caption": caption,
         "url": row.get("url") or "",
@@ -195,7 +223,12 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
         print(f"  ! {dropped} Bright Data row(s) for {handle} dropped (missing id or unusable date)",
               file=sys.stderr)
     normalized = [n for n in normalized if n is not None]
-    normalized.sort(key=lambda n: n["published"], reverse=True)
+    # Sort on the full timestamp, not the date-truncated 'published': Python's
+    # sort is stable and Bright Data returns rows unsorted, so same-day rows
+    # sorted on 'published' alone would keep Bright Data's arbitrary arrival
+    # order, which can put a genuinely newer post behind ones already on disk
+    # and trip discovery_engine's early-stop dedup before reaching it.
+    normalized.sort(key=lambda n: n["published_ts"], reverse=True)
     # Client-side backstop cap, independent of whether Bright Data's trigger
     # actually honors num_of_posts (see Task 2's comment) -- bounds cost
     # regardless of that unverified assumption.

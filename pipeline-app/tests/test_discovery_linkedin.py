@@ -190,6 +190,46 @@ def test_run_collection_job_raises_clear_error_when_key_missing(monkeypatch):
         adapter._run_collection_job("bettywliu")
 
 
+def test_run_collection_job_drives_full_trigger_poll_fetch_cycle(monkeypatch):
+    """Nothing else exercises _run_collection_job's wiring of
+    brightdata_job.trigger/poll_status/fetch_results into
+    brightdata_job.await_results -- every other adapter test stubs
+    _run_collection_job wholesale. A transposed callable or a wrong constant
+    here would survive the whole suite and fail on the first live run, after
+    paying for a job. Stub the shared brightdata_job boundary, never the
+    network, and assert the snapshot id trigger() returns is what gets
+    threaded through to poll_status() and fetch_results() -- the specific
+    transposition this test exists to catch."""
+    adapter = _profile()
+    monkeypatch.setattr(adapter, "api_key", lambda: "the-key")
+
+    poll_calls = []
+    fetch_calls = []
+    statuses = iter(["running", "ready"])
+
+    def fake_trigger(api_base, dataset_id, params, body, key):
+        return "snap-789"
+
+    def fake_poll_status(api_base, job_id, key):
+        poll_calls.append(job_id)
+        return next(statuses)
+
+    def fake_fetch_results(api_base, job_id, key):
+        fetch_calls.append(job_id)
+        return [{"id": "p1", "date_posted": "2026-07-08T00:00:00.000Z"}]
+
+    monkeypatch.setattr(brightdata_job, "trigger", fake_trigger)
+    monkeypatch.setattr(brightdata_job, "poll_status", fake_poll_status)
+    monkeypatch.setattr(brightdata_job, "fetch_results", fake_fetch_results)
+    monkeypatch.setattr(brightdata_job.time, "sleep", lambda s: None)
+
+    result = adapter._run_collection_job("bettywliu")
+
+    assert result == [{"id": "p1", "date_posted": "2026-07-08T00:00:00.000Z"}]
+    assert poll_calls == ["snap-789", "snap-789"]
+    assert fetch_calls == ["snap-789"]
+
+
 def test_enumerate_propagates_job_timeout(monkeypatch):
     adapter = _profile()
 
@@ -247,6 +287,25 @@ def test_enumerate_sorts_newest_first(monkeypatch):
     assert [i["id"] for i in items] == ["new", "mid", "old"]
 
 
+def test_enumerate_sorts_same_day_rows_by_full_timestamp_not_arrival_order(monkeypatch):
+    """date_posted is a full ISO 8601 timestamp, not just a date --
+    'published' truncates to the date, so three same-day rows would come
+    back in Bright Data's arbitrary arrival order under a date-only sort.
+    Feed them out of BOTH arrival order and time order so a date-only (or
+    absent) sort would fail this test."""
+    adapter = _company()
+    _stub_job(adapter, [
+        _raw_row(id="mid", date_posted="2026-07-08T14:00:00.000Z"),
+        _raw_row(id="early", date_posted="2026-07-08T08:00:00.000Z"),
+        _raw_row(id="late", date_posted="2026-07-08T20:00:00.000Z"),
+    ], monkeypatch)
+
+    items = adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+
+    assert [i["id"] for i in items] == ["late", "mid", "early"]
+    assert {i["published"] for i in items} == {"2026-07-08"}
+
+
 def test_enumerate_caps_at_max_items_per_run(monkeypatch):
     adapter = _company()
     _stub_job(adapter, [_row(f"p{i}", "2026-07-08") for i in range(25)], monkeypatch)
@@ -264,6 +323,41 @@ def test_enumerate_drops_unusable_rows_and_logs(monkeypatch, capsys):
     items = adapter.enumerate_newest_first("lanieri", keyword_filter=None)
     assert [i["id"] for i in items] == ["good"]
     assert "unusable" in capsys.readouterr().err
+
+
+def test_enumerate_drop_log_reports_both_counts_when_both_are_nonzero(monkeypatch, capsys):
+    """When a batch has both unusable rows and foreign-author rows, the
+    combined wording from before this fix wave must still appear -- only the
+    zero-count case changes."""
+    adapter = _profile()
+    _stub_job(adapter, [
+        _row("own", "2026-07-08", author="bettywliu"),
+        _row("foreign", "2026-07-08", author="someone-else"),
+        {"post_text": "no id"},
+    ], monkeypatch)
+    adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+    err = capsys.readouterr().err
+    assert "unusable" in err
+    assert "other author" in err
+
+
+def test_enumerate_all_filtered_warning_points_at_handle_when_rows_were_unusable(monkeypatch, capsys):
+    """Regression for the fix-wave finding: with include_errors=true, a dead
+    or renamed slug returns error rows with no id, which normalize to None.
+    Before this fix, the all-filtered warning always said 'check whether
+    this account posts its own content' even when every drop was unusable
+    (not foreign-authored), pointing the operator at the wrong cause."""
+    adapter = _company()
+    _stub_job(adapter, [
+        {"post_text": "no id"},
+        {"id": "no_date", "post_text": "x", "date_posted": ""},
+    ], monkeypatch)
+    assert adapter.enumerate_newest_first("lanieri", keyword_filter=None) == []
+    err = capsys.readouterr().err
+    assert "none survived" in err
+    assert "billed" in err
+    assert "posts its own content" not in err
+    assert "handle" in err
 
 
 def test_enumerate_warns_loudly_when_rows_returned_but_none_survive(monkeypatch, capsys):
