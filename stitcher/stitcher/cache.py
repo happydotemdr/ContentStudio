@@ -16,6 +16,44 @@ from pathlib import Path
 _CHUNK = 1 << 20
 _MISSING_SENTINEL = b"\x00stitcher:missing\x00"
 
+# --- the stitcher's own code version, as one number ------------------------
+#
+# ******************* BUMP THIS WHEN RENDER-AFFECTING CODE CHANGES ***********
+#
+# Every cache key folds in the spec, the input assets, the ffmpeg build and
+# the run mode -- but nothing in any key changed when the STITCHER's OWN CODE
+# changed. So after fixing a filter, an argv, or a constant that lands in a
+# command line, `render` reported "no changes; v01 is current" and did
+# nothing, until someone remembered `--force` or `clean`. During active
+# development that is not a stale cache, it is a misleading one.
+#
+# CACHE_EPOCH is that missing input. It is folded into every stage key
+# (shots, overlays, audio, assemble) and into cli.run_digest, so bumping it
+# invalidates the whole workspace's cache in one edit.
+#
+# WHAT "RENDER-AFFECTING" MEANS -- bump for any change that could make the
+# same spec and the same assets produce different BYTES on disk:
+#   - any filter string, filtergraph shape, or filter constant
+#     (shots.py, motion.py, envelope.py, audio.py, assemble.py, overlays.py);
+#   - any ffmpeg/ffprobe argv: added, removed or reordered flags, encoder
+#     settings, pixel format, colour tagging, -fps_mode, CRF/preset defaults;
+#   - any numeric constant that reaches a command line or a computed frame
+#     count (LRA_TARGET, DRAFT_CRF, DRAFT_PRESET, supersample factors,
+#     rounding of frame bounds);
+#   - any change to overlay text layout, font handling, or PNG composition.
+#
+# Do NOT bump for: comments, docstrings, tests, type annotations, error
+# messages, verify.py's measurement code (stage F reads the output, it does
+# not produce it), or CLI wiring that cannot change a rendered byte.
+#
+# WHY A HAND-BUMPED INTEGER rather than a package version or a source hash: a
+# human decides when the output could have changed, and this is honest about
+# that. A source hash would invalidate the cache on a typo fix in a comment;
+# a package version would only be right if it were bumped with the same
+# discipline, one indirection further away. If in doubt, bump it -- the cost
+# is one re-render, and the cost of not bumping it is shipping a stale master.
+CACHE_EPOCH = 1
+
 
 def file_digest(path: Path) -> str:
     """SHA-256 of a file's bytes. Missing files hash to a stable sentinel."""

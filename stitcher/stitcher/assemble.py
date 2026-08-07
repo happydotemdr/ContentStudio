@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import ffmpeg
-from .cache import Manifest, file_digest, payload_digest
+from .cache import CACHE_EPOCH, Manifest, file_digest, payload_digest
 from .naming import Workspace
 from .spec import Overlay, RenderSpec
 
@@ -135,9 +135,11 @@ def assemble_cache_key(
       `-x264-params` fix;
     - the ffmpeg build.
 
-    Deliberately NOT included: this module's own argv construction. Same rule
-    as stage C -- a spec edit invalidates, a code edit needs `clean` or
-    `--force`.
+    - `CACHE_EPOCH`, which stands in for this module's own argv construction
+      and filtergraph shape -- the one thing here that a spec edit cannot
+      move. Same rule as stage C: a spec edit invalidates by itself, and a
+      render-affecting CODE edit is declared by bumping the epoch. See
+      cache.CACHE_EPOCH for what counts.
     """
     return payload_digest(
         [clip.name for clip in clips],
@@ -149,6 +151,7 @@ def assemble_cache_key(
         spec.canvas.model_dump(),
         mode,
         ffmpeg_build,
+        CACHE_EPOCH,
     )
 
 

@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import envelope, ffmpeg
-from .cache import Manifest, file_digest, payload_digest
+from .cache import CACHE_EPOCH, Manifest, file_digest, payload_digest
 from .naming import Workspace
 from .spec import RenderSpec, runtime_seconds
 
@@ -141,12 +141,12 @@ def audio_cache_key(
       loudnorm command lines;
     - the ffmpeg build and the run mode.
 
-    Deliberately NOT included: this module's own filter-construction code and
-    envelope.py's constants. No stage hashes its own source (stage A does not
-    either), and a cache that silently served a stale artifact would be worse
-    than no cache -- so the rule is that anything a SPEC EDIT can change is in
-    the key, and a code edit is expected to be followed by `clean` or
-    `--force`. Said out loud here rather than left as an omission to discover.
+    - `CACHE_EPOCH`, which stands in for this module's own
+      filter-construction code and envelope.py's constants. No stage hashes
+      its own source, and requiring a `clean` or `--force` after every code
+      edit was too easy to forget -- `render` would report "no changes" after
+      a real fix. The epoch is the one hand-bumped number that closes that;
+      see cache.CACHE_EPOCH for exactly when to bump it.
     """
     stems = [file_digest(ws.asset(stem.file)) for stem in spec.audio.stems]
     bed = file_digest(ws.asset(spec.audio.bed.file)) if spec.audio.bed else None
@@ -161,6 +161,7 @@ def audio_cache_key(
         LRA_TARGET,
         ffmpeg_build,
         mode,
+        CACHE_EPOCH,
     )
 
 

@@ -473,3 +473,83 @@ def test_a_failed_stage_d_encode_records_no_cache_key(stage_d, monkeypatch):
         run_stage_d(spec, ws, clips, pngs, mix)
 
     assert Manifest.load(ws.manifest_path).get(asm.CACHE_KEY) is None
+
+
+# =========================================================================
+# The cache epoch (cache.CACHE_EPOCH)
+# =========================================================================
+#
+# Every key above folds in the spec, the assets, the ffmpeg build and the
+# mode -- but nothing in any of them moved when the STITCHER'S OWN CODE moved.
+# So after a render-affecting fix, `render` answered "no changes; v01 is
+# current" and did nothing until someone remembered --force or clean. The
+# epoch is the one hand-bumped number that closes that, and it is only worth
+# anything if it actually reaches EVERY key: these tests bump it and require
+# each digest to move. Each site is a separate test so a key that quietly
+# stops folding it in is named, not averaged away.
+
+
+def bump(monkeypatch, module):
+    """Raise the epoch as the maintainer would, for one module's key."""
+    monkeypatch.setattr(module, "CACHE_EPOCH", module.CACHE_EPOCH + 1)
+
+
+def test_the_epoch_is_in_the_stage_a_shot_key(spec, monkeypatch):
+    from stitcher import shots as sh
+    from stitcher.spec import Transition
+
+    args = (spec.shots[0], Transition(kind="cut"), "src", FFMPEG_BUILD, 4, "final", 30)
+    before = sh.shot_cache_key(*args)
+    bump(monkeypatch, sh)
+    assert sh.shot_cache_key(*args) != before
+
+
+def test_the_epoch_is_in_the_stage_b_overlay_key(spec, workspace, monkeypatch):
+    """Stage B has no standalone key function -- the digest is built inline in
+    cli.render_overlays -- so this drives the real function and counts renders."""
+    from stitcher import cli
+
+    rendered: list[str] = []
+    monkeypatch.setattr(
+        cli, "render_overlay",
+        lambda text, style, canvas, anchor, offset, target: (
+            rendered.append(text), target.write_bytes(b"png")
+        )[0],
+    )
+    cli.render_overlays(spec, workspace, Manifest(workspace.manifest_path))
+    burned = len(rendered)
+    assert burned >= 1, "the first pass must actually render something"
+
+    # Same spec, same fonts, same canvas: without the epoch this is a hit.
+    cli.render_overlays(spec, workspace, Manifest.load(workspace.manifest_path))
+    assert len(rendered) == burned
+
+    bump(monkeypatch, cli)
+    cli.render_overlays(spec, workspace, Manifest.load(workspace.manifest_path))
+    assert len(rendered) == burned * 2
+
+
+def test_the_epoch_is_in_the_stage_c_audio_key(spec, workspace, monkeypatch):
+    before = au.audio_cache_key(spec, workspace, "final", FFMPEG_BUILD, [])
+    bump(monkeypatch, au)
+    assert au.audio_cache_key(spec, workspace, "final", FFMPEG_BUILD, []) != before
+
+
+def test_the_epoch_is_in_the_stage_d_assemble_key(stage_d, monkeypatch):
+    spec, ws, clips, pngs, mix, calls = stage_d
+    run_stage_d(spec, ws, clips, pngs, mix)
+
+    bump(monkeypatch, asm)
+    run_stage_d(spec, ws, clips, pngs, mix)
+    assert len(calls) == 2, "a bumped epoch must re-encode the master"
+
+
+def test_the_epoch_is_in_the_whole_run_digest(spec, workspace, monkeypatch):
+    """cli.run_digest is what the total-cache-hit rule compares, so the epoch
+    has to be here too: otherwise a bumped epoch would invalidate every stage
+    and still be short-circuited before any of them ran."""
+    from stitcher import cli
+
+    before = cli.run_digest(spec, workspace, "final", FFMPEG_BUILD)
+    bump(monkeypatch, cli)
+    assert cli.run_digest(spec, workspace, "final", FFMPEG_BUILD) != before

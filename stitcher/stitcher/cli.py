@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import assemble, audio, derive, ffmpeg, preflight, shots, verify
-from .cache import Manifest, file_digest, payload_digest
+from .cache import CACHE_EPOCH, Manifest, file_digest, payload_digest
 from .naming import Workspace
 from .overlays import TextOverflowError, render_overlay
 from .spec import RenderSpec, load_spec, validate_spec
@@ -53,7 +53,14 @@ def _timestamp() -> str:
 
 
 def run_digest(spec: RenderSpec, ws: Workspace, mode: str, ffmpeg_build: str) -> str:
-    """Everything that determines the whole run (spec §5)."""
+    """Everything that determines the whole run (spec §5).
+
+    This is what the total-cache-hit rule below compares, so CACHE_EPOCH has
+    to be here as well as in the per-stage keys: without it, a render-affecting
+    code fix left every stage key AND this digest unchanged, and `render`
+    answered "no changes; v01 is current" instead of re-rendering. See
+    cache.CACHE_EPOCH for when to bump it.
+    """
     assets = sorted(
         {shot.source for shot in spec.shots}
         | {stem.file for stem in spec.audio.stems}
@@ -67,6 +74,7 @@ def run_digest(spec: RenderSpec, ws: Workspace, mode: str, ffmpeg_build: str) ->
         [file_digest(Path(style.font_file)) for _, style in sorted(spec.styles.items())],
         ffmpeg_build,
         mode,
+        CACHE_EPOCH,
     )
 
 
@@ -79,11 +87,14 @@ def render_overlays(
         style = spec.styles[overlay.style]
         target = ws.overlay_png(index, overlay.id, overlay.text)
         key = f"overlays/{index:03d}"
+        # CACHE_EPOCH stands in for overlays.py's own text layout and PNG
+        # composition code, which no other part of this key can move.
         digest = payload_digest(
             overlay.model_dump(by_alias=True),
             style.model_dump(),
             file_digest(Path(style.font_file)),
             spec.canvas.model_dump(),
+            CACHE_EPOCH,
         )
         if not manifest.is_fresh(key, digest, target):
             render_overlay(

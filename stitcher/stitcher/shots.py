@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import ffmpeg, motion
-from .cache import Manifest, file_digest, payload_digest
+from .cache import CACHE_EPOCH, Manifest, file_digest, payload_digest
 from .naming import SUPERSAMPLE_DRAFT, SUPERSAMPLE_FINAL, Workspace
 from .overlays import render_placeholder
 from .spec import Canvas, Motion, RenderSpec, Shot, Transition, shot_frame_bounds
@@ -253,6 +253,9 @@ def shot_cache_key(
     # source_digest/ffmpeg_build/supersample/mode would differ. Without fps
     # here, re-rendering after an fps edit would report a false cache hit and
     # silently keep serving a clip rendered at the old frame rate.
+    #
+    # CACHE_EPOCH stands in for this module's own filter-construction code,
+    # which is not otherwise represented in any key. See cache.CACHE_EPOCH.
     return payload_digest(
         shot.model_dump(by_alias=True),
         next_transition.model_dump() if next_transition else None,
@@ -261,6 +264,7 @@ def shot_cache_key(
         supersample,
         mode,
         fps,
+        CACHE_EPOCH,
     )
 
 
