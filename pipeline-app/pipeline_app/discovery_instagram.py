@@ -14,17 +14,22 @@ double-pay for the same posts.
 from __future__ import annotations
 
 import datetime as _dt
-import os
 import sys
-import time
+import time  # noqa: F401 -- kept so tests can monkeypatch ig.time.sleep/monotonic
 from pathlib import Path
 
-import requests
+import requests  # noqa: F401 -- kept so tests can monkeypatch ig.requests.post/get
 
-from pipeline_app import artifacts
+from pipeline_app import artifacts, brightdata_job
 from pipeline_app.discovery_paths import handle_dir
 
-BRIGHTDATA_API_BASE = "https://api.brightdata.com/datasets/v3"
+BRIGHTDATA_API_BASE = brightdata_job.BRIGHTDATA_API_BASE
+REQUEST_TIMEOUT_S = brightdata_job.REQUEST_TIMEOUT_S
+
+# Re-exported so `pytest.raises(discovery_instagram.BrightDataJobFailed)` keeps
+# working and callers need not know the exceptions moved.
+BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
+BrightDataJobFailed = brightdata_job.BrightDataJobFailed
 
 # Key lookup order: env var first (works for the scheduled task, which
 # inherits the User environment), then a gitignored file for convenience --
@@ -39,32 +44,16 @@ KEY_FILE = Path(__file__).resolve().parent.parent / "brightdata_api_key.txt"
 # modes; the type/discover_by query params below are what select between them.
 DATASET_ID = "gd_lk5ns7kz21pck8jpis"
 
-REQUEST_TIMEOUT_S = 30
-
 
 def api_key() -> str | None:
-    """The Bright Data API token, or None if not configured."""
-    env_key = os.environ.get(KEY_ENV_VAR, "").strip()
-    if env_key:
-        return env_key
-    if KEY_FILE.exists():
-        file_key = KEY_FILE.read_text(encoding="utf-8").strip()
-        if file_key:
-            return file_key
-    return None
+    """The Bright Data API token, or None if not configured. Reads this
+    module's KEY_ENV_VAR/KEY_FILE at call time so tests can patch them."""
+    return brightdata_job.read_key(KEY_ENV_VAR, KEY_FILE)
 
 
 MAX_ITEMS_PER_RUN = 10
 POLL_TIMEOUT_S = 300
 POLL_INTERVAL_S = 5
-
-
-class BrightDataJobTimeout(Exception):
-    """A Bright Data collection job did not reach 'ready' within POLL_TIMEOUT_S."""
-
-
-class BrightDataJobFailed(Exception):
-    """A Bright Data collection job reported status 'failed'."""
 
 
 def _trigger_job(handle: str, key: str) -> str:
@@ -75,10 +64,10 @@ def _trigger_job(handle: str, key: str) -> str:
             "dataset id in discovery_instagram.py"
         )
     profile_url = f"https://www.instagram.com/{handle.lstrip('@')}/"
-    response = requests.post(
-        f"{BRIGHTDATA_API_BASE}/trigger",
-        params={
-            "dataset_id": DATASET_ID,
+    return brightdata_job.trigger(
+        BRIGHTDATA_API_BASE,
+        DATASET_ID,
+        {
             # This is a *discovery* job -- "find this profile's newest posts".
             # Without type/discover_by, Bright Data reads the input url as a
             # single post page to collect, which is the wrong product mode for
@@ -91,46 +80,23 @@ def _trigger_job(handle: str, key: str) -> str:
             "include_errors": "true",
             "notify": "false",
         },
-        headers={"Authorization": f"Bearer {key}"},
-        # Bare-array body is /trigger's documented shape. The dashboard's
-        # {"input": [...], "limit_per_input": null} object form belongs to the
-        # synchronous /scrape endpoint, which this adapter deliberately does
-        # not use -- a discovery job takes minutes and would hang an HTTP call.
-        # Empty start_date/end_date/post_type mirror the dashboard's "no
-        # filter" example rows: unfiltered returns posts and Reels together,
-        # which is what this pipeline wants.
-        json=[{
+        [{
             "url": profile_url,
             "num_of_posts": MAX_ITEMS_PER_RUN,
             "start_date": "",
             "end_date": "",
             "post_type": "",
         }],
-        timeout=REQUEST_TIMEOUT_S,
+        key,
     )
-    response.raise_for_status()
-    return response.json()["snapshot_id"]
 
 
 def _poll_job_status(job_id: str, key: str) -> str:
-    response = requests.get(
-        f"{BRIGHTDATA_API_BASE}/progress/{job_id}",
-        headers={"Authorization": f"Bearer {key}"},
-        timeout=REQUEST_TIMEOUT_S,
-    )
-    response.raise_for_status()
-    return response.json()["status"]
+    return brightdata_job.poll_status(BRIGHTDATA_API_BASE, job_id, key)
 
 
 def _fetch_job_results(job_id: str, key: str) -> list[dict]:
-    response = requests.get(
-        f"{BRIGHTDATA_API_BASE}/snapshot/{job_id}",
-        params={"format": "json"},
-        headers={"Authorization": f"Bearer {key}"},
-        timeout=REQUEST_TIMEOUT_S,
-    )
-    response.raise_for_status()
-    return response.json()
+    return brightdata_job.fetch_results(BRIGHTDATA_API_BASE, job_id, key)
 
 
 def _run_collection_job(handle: str) -> list[dict]:
@@ -140,23 +106,22 @@ def _run_collection_job(handle: str) -> list[dict]:
             "Bright Data API key not configured "
             f"(set {KEY_ENV_VAR} or {KEY_FILE.name})"
         )
-    job_id = _trigger_job(handle, key)
-    deadline = time.monotonic() + POLL_TIMEOUT_S
-    while True:
-        status = _poll_job_status(job_id, key)
-        if status == "ready":
-            return _fetch_job_results(job_id, key)
-        if status == "failed":
-            raise BrightDataJobFailed(f"Bright Data job {job_id} for {handle} failed")
-        if time.monotonic() >= deadline:
-            raise BrightDataJobTimeout(
-                f"Bright Data job {job_id} for {handle} timed out after {POLL_TIMEOUT_S}s"
-            )
-        time.sleep(POLL_INTERVAL_S)
+    # The three lambdas resolve _trigger_job/_poll_job_status/_fetch_job_results
+    # through module globals when they run, which is what keeps the existing
+    # monkeypatch-based tests working after the extraction.
+    return brightdata_job.await_results(
+        trigger_fn=lambda: _trigger_job(handle, key),
+        poll_fn=lambda job_id: _poll_job_status(job_id, key),
+        fetch_fn=lambda job_id: _fetch_job_results(job_id, key),
+        label=f"for {handle}",
+        poll_timeout_s=POLL_TIMEOUT_S,
+        poll_interval_s=POLL_INTERVAL_S,
+    )
 
 
-def _parse_published(raw: str | None) -> str | None:
-    """Bright Data's date_posted -> the engine's required YYYY-MM-DD, or None.
+def _parse_datetime(raw: str | None) -> _dt.datetime | None:
+    """Bright Data's date_posted -> a full datetime, or None if it matches
+    none of this dataset's known formats.
 
     This dataset returns a US-format local timestamp -- '07/23/2026 16:00:22'
     -- NOT ISO 8601 (verified 2026-08-06 against a live snapshot of
@@ -165,25 +130,42 @@ def _parse_published(raw: str | None) -> str | None:
     [] and the engine report a healthy 'no_new_content' for a batch that had
     already been paid for. The ISO branch is kept as a cheap fallback in case
     the dataset's format changes or another Bright Data product is pointed at
-    this adapter.
+    this adapter -- it only recovers the date, not the time of day.
 
-    No timezone is supplied with the timestamp; since the engine only ever
-    compares dates, an off-by-one at a midnight boundary is the worst case.
+    No timezone is supplied with the timestamp; since 'published' (see
+    _parse_published) only ever compares dates, an off-by-one at a midnight
+    boundary is the worst case there. The full time-of-day this function
+    preserves is used only as enumerate_newest_first's sort key, to break
+    ties between same-day posts -- see the sort call in enumerate_newest_first
+    for why a date-only sort key is not good enough (Bright Data returns rows
+    unsorted, and a date-only key sorts same-day rows in that arbitrary
+    arrival order instead of newest-first).
+
+    This is the single place the format list lives; _parse_published and
+    enumerate_newest_first's sort key both build on it rather than
+    reimplementing it.
     """
     raw = (raw or "").strip()
     if not raw:
         return None
     for fmt in ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y"):
         try:
-            return _dt.datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+            return _dt.datetime.strptime(raw, fmt)
         except ValueError:
             pass
     candidate = raw[:10]
     try:
-        _dt.datetime.strptime(candidate, "%Y-%m-%d")
-        return candidate
+        return _dt.datetime.strptime(candidate, "%Y-%m-%d")
     except ValueError:
         return None
+
+
+def _parse_published(raw: str | None) -> str | None:
+    """Bright Data's date_posted -> the engine's required YYYY-MM-DD, or
+    None. Thin wrapper over _parse_datetime; see that function's docstring
+    for the format list and why the US-format branch is tried first."""
+    parsed = _parse_datetime(raw)
+    return parsed.strftime("%Y-%m-%d") if parsed else None
 
 
 def _normalize_row(row: dict) -> dict | None:
@@ -202,12 +184,22 @@ def _normalize_row(row: dict) -> dict | None:
     if published is None:
         return None
     caption = (row.get("description") or "").strip()
+    # Full parsed datetime, used only as enumerate_newest_first's sort key --
+    # 'published' truncates to the date, so same-day rows need the time of
+    # day to sort correctly. Reuses _parse_datetime rather than a second copy
+    # of the format list. This second parse can't fail: _parse_published
+    # above already required _parse_datetime to succeed on this same raw
+    # value, but the "or" fallback keeps the key total (never crash, never
+    # sort to the top) rather than relying on that invariant silently.
+    parsed_dt = _parse_datetime(row.get("date_posted"))
+    published_ts = parsed_dt.isoformat() if parsed_dt else f"{published}T00:00:00"
     # Bright Data returns display-cased values ("Post", "Reel"); the file
     # format documented in the design doc is lowercase.
     return {
         "id": post_id,
         "title": caption[:60] if caption else post_id,
         "published": published,
+        "published_ts": published_ts,
         "content_type": (row.get("content_type") or "post").lower(),
         "caption": caption,
         "url": row.get("url") or "",
@@ -231,7 +223,12 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
         print(f"  ! {dropped} Bright Data row(s) for {handle} dropped (missing id or unusable date)",
               file=sys.stderr)
     normalized = [n for n in normalized if n is not None]
-    normalized.sort(key=lambda n: n["published"], reverse=True)
+    # Sort on the full timestamp, not the date-truncated 'published': Python's
+    # sort is stable and Bright Data returns rows unsorted, so same-day rows
+    # sorted on 'published' alone would keep Bright Data's arbitrary arrival
+    # order, which can put a genuinely newer post behind ones already on disk
+    # and trip discovery_engine's early-stop dedup before reaching it.
+    normalized.sort(key=lambda n: n["published_ts"], reverse=True)
     # Client-side backstop cap, independent of whether Bright Data's trigger
     # actually honors num_of_posts (see Task 2's comment) -- bounds cost
     # regardless of that unverified assumption.
