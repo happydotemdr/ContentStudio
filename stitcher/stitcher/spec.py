@@ -53,7 +53,13 @@ class Style(_Base):
 
 class Motion(_Base):
     kind: Literal["push_in", "pull_out", "scale_up", "none"] = "none"
-    amount_pct: float = 0.0
+    # A negative zoom amount makes the animated `scale` shrink BELOW the fixed
+    # `crop` that follows it, so the crop reads outside its input. Probed
+    # against the installed 9.0 binary with stage A's real filter chain
+    # (amount_pct=-20, supersample 4, a moving anchor): ffmpeg segfaults, exit
+    # 139. There is no meaningful negative zoom to express -- pull_out is how
+    # a shrink is authored -- so the floor is zero.
+    amount_pct: float = Field(0.0, ge=0)
     anchor_start: tuple[float, float] = (0.5, 0.5)
     anchor_end: tuple[float, float] = (0.5, 0.5)
     hold_s: float = 0.0
@@ -314,6 +320,16 @@ def validate_spec(spec: RenderSpec) -> list[str]:
                     f"its timeline slot is {slot_duration}s ({shot.start}-{shot.end}s); "
                     "stage A trims without re-timing, so these must match exactly"
                 )
+        if shot.motion.amount_pct < 0:
+            # Unreachable through load_spec, which rejects it at the field
+            # (Motion.amount_pct has ge=0). Kept as a second gate for any spec
+            # built by a path that skips field validation, because what it
+            # prevents is an ffmpeg SEGFAULT rather than a bad-looking render.
+            errors.append(
+                f"shot {shot.id}: motion.amount_pct is {shot.motion.amount_pct} and must "
+                "not be negative; a negative zoom shrinks the animated scale below the "
+                "fixed crop and ffmpeg segfaults. Use motion.kind 'pull_out' to shrink"
+            )
         if shot.transition_in.kind == "whip" and shot.transition_in.direction is None:
             errors.append(
                 f"shot {shot.id} has a whip transition without a direction; "

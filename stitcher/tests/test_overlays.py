@@ -93,6 +93,60 @@ def test_wrap_lines_preserves_accent_flags_across_a_break():
     assert any(text.strip() == "dddd" and is_accent for text, is_accent in flattened)
 
 
+@requires_any_font
+def test_an_accent_span_abutting_its_neighbour_gains_no_space():
+    """`BEST[[MUD]]` is one word in two colours, not two words. Tokenizing it
+    as two tokens made the renderer draw `BEST MUD` -- silently altered
+    burned-in copy, with nothing anywhere to catch it."""
+    font = ImageFont.truetype(str(_OVERFLOW_FONT), 72)
+    wrapped = ov.wrap_lines(ov.parse_accent("BEST[[MUD]]"), font, max_width_px=2000)
+    assert "".join(text for text, _ in wrapped[0]) == "BESTMUD"
+    assert [is_accent for _, is_accent in wrapped[0]] == [False, True]
+
+
+@requires_any_font
+def test_a_spaced_accent_span_keeps_its_single_space():
+    font = ImageFont.truetype(str(_OVERFLOW_FONT), 72)
+    wrapped = ov.wrap_lines(ov.parse_accent("HELLO [[WORLD]]"), font, max_width_px=2000)
+    assert "".join(text for text, _ in wrapped[0]) == "HELLO WORLD"
+
+
+@requires_any_font
+def test_an_abutting_accent_span_never_breaks_mid_word():
+    """The whole abutting run is one wrappable token, so a line break can only
+    fall on either side of it, never between its two colours."""
+    font = ImageFont.truetype(str(_OVERFLOW_FONT), 72)
+    wrapped = ov.wrap_lines(
+        ov.parse_accent("aaaa bbbb cccc dddd[[eeee]] ffff"), font, max_width_px=300
+    )
+    for line in wrapped:
+        text = "".join(part for part, _ in line)
+        assert "dddd" not in text or "ddddeeee" in text
+
+
+@requires_any_font
+def test_an_accent_span_abutting_punctuation_stays_one_word():
+    font = ImageFont.truetype(str(_OVERFLOW_FONT), 72)
+    wrapped = ov.wrap_lines(ov.parse_accent("the [[mud]]!"), font, max_width_px=2000)
+    assert "".join(text for text, _ in wrapped[0]) == "the mud!"
+
+
+@requires_any_font
+def test_the_rendered_ink_of_an_abutting_accent_span_carries_no_space(tmp_path: Path):
+    """Measured on the actual raster, not just the token list: the ink of
+    `BEST[[MUD]]` has to be as wide as `BESTMUD`, not `BEST MUD`. No ground
+    plate, so the bbox is the glyphs alone rather than the padded plate."""
+    font = ImageFont.truetype(str(_OVERFLOW_FONT), 72)
+    result = ov.render_overlay(
+        "BEST[[MUD]]", style(font_file=str(_OVERFLOW_FONT), ground=None),
+        CANVAS, "center", (0, 0), tmp_path / "card.png",
+    )
+    width = result.bbox[2] - result.bbox[0]
+    joined = font.getlength("BESTMUD")
+    spaced = font.getlength("BEST MUD")
+    assert abs(width - joined) < abs(width - spaced)
+
+
 @requires_font
 def test_render_overlay_emits_a_full_canvas_rgba_png(tmp_path: Path):
     result = ov.render_overlay("HELLO [[WORLD]]", style(), CANVAS, "center", (0, 0),

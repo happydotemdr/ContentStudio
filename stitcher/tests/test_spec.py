@@ -193,6 +193,25 @@ def test_validate_accepts_a_clip_source_window_matching_the_timeline_slot(tmp_pa
     assert not any("source window" in e for e in validate_spec(spec))
 
 
+def test_a_negative_motion_amount_is_rejected_at_load(tmp_path: Path):
+    """A negative zoom shrinks the animated `scale` below the fixed `crop`
+    that follows it. Probed against the installed 9.0 binary with stage A's
+    real filter chain (amount_pct=-20, supersample 4, a moving anchor): ffmpeg
+    segfaults, exit 139."""
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["motion"]["amount_pct"] = -20
+    with pytest.raises(ValueError):
+        load_spec(write(tmp_path, payload))
+
+
+def test_validate_also_rejects_a_negative_motion_amount(tmp_path: Path):
+    """Second gate, for a spec built by any path that skips field validation:
+    what it prevents is a segfault, not a bad-looking render."""
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    spec.shots[0].motion.amount_pct = -20
+    assert any("amount_pct" in e for e in validate_spec(spec))
+
+
 def test_validate_rejects_whip_without_direction(tmp_path: Path):
     payload = json.loads(json.dumps(MINIMAL))
     payload["shots"][1]["transition_in"] = {"kind": "whip", "frames": 4}

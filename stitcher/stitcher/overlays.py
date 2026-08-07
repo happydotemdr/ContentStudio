@@ -21,7 +21,13 @@ _ACCENT_RE = re.compile(r"\[\[(.+?)\]\]")
 _PLACEHOLDER_RGBA = (255, 0, 255, 255)
 
 Run = tuple[str, bool]
+# A line is its rendered text split into coloured runs, IN ORDER and with no
+# separator implied between them: concatenating a Line's run texts reproduces
+# the line exactly. Spaces therefore live inside the runs, never between them.
 Line = list[Run]
+# A whitespace-delimited word, which may itself be several coloured runs when
+# an accent span abuts its neighbour. Internal to wrapping.
+Token = list[Run]
 
 
 class TextOverflowError(ValueError):
@@ -64,14 +70,51 @@ def _measure(font: ImageFont.FreeTypeFont, text: str) -> int:
     return int(font.getlength(text))
 
 
-def _tokenize(line: Line) -> list[Run]:
-    """Split runs into word-level tokens, carrying the accent flag."""
-    tokens: list[Run] = []
+def _tokenize(line: Line) -> list[Token]:
+    """Split a line into wrappable tokens, each a list of coloured runs.
+
+    A token is a whitespace-delimited word and the unit wrap_lines is allowed
+    to break between; it holds MORE THAN ONE run when an accent span abuts its
+    neighbour with no space between them. `BEST[[MUD]]` is one word rendered
+    in two colours, not two words: treating it as two tokens is what made
+    render_overlay emit `BEST MUD`, silently altering burned-in copy.
+    """
+    tokens: list[Token] = []
+    joined_to_previous = False
     for text, is_accent in line:
-        for word in text.split(" "):
-            if word:
-                tokens.append((word, is_accent))
+        if not text:
+            continue
+        for index, piece in enumerate(text.split(" ")):
+            if index > 0:
+                joined_to_previous = False   # a space closed the last token
+            if not piece:
+                continue
+            if joined_to_previous and tokens:
+                tokens[-1].append((piece, is_accent))
+            else:
+                tokens.append([(piece, is_accent)])
+            joined_to_previous = True
     return tokens
+
+
+def _token_text(token: Token) -> str:
+    return "".join(text for text, _ in token)
+
+
+def _runs_for(tokens: list[Token]) -> Line:
+    """Flatten wrapped tokens back to runs, with the separating spaces baked in.
+
+    A `Line` is therefore always the exact rendered text of that line, run by
+    run and in order, with no separator implied between runs -- so the space
+    an accent span does NOT have cannot be reintroduced by the renderer.
+    """
+    runs: Line = []
+    for index, token in enumerate(tokens):
+        runs.extend(token)
+        if index < len(tokens) - 1:
+            text, is_accent = runs[-1]
+            runs[-1] = (text + " ", is_accent)
+    return runs
 
 
 def wrap_lines(
@@ -80,22 +123,24 @@ def wrap_lines(
     """Word-wrap each hard line to max_width_px, preserving accent flags."""
     wrapped: list[Line] = []
     for line in lines:
-        current: Line = []
-        current_text = ""
-        for word, is_accent in _tokenize(line):
-            candidate = f"{current_text} {word}".strip()
-            if current and _measure(font, candidate) > max_width_px:
-                wrapped.append(current)
-                current, current_text = [(word, is_accent)], word
+        current: list[Token] = []
+        for token in _tokenize(line):
+            candidate = current + [token]
+            if current and _measure(font, _tokens_text(candidate)) > max_width_px:
+                wrapped.append(_runs_for(current))
+                current = [token]
             else:
-                current.append((word, is_accent))
-                current_text = candidate
-        wrapped.append(current or [("", False)])
+                current = candidate
+        wrapped.append(_runs_for(current) or [("", False)])
     return wrapped
 
 
+def _tokens_text(tokens: list[Token]) -> str:
+    return " ".join(_token_text(token) for token in tokens)
+
+
 def _line_text(line: Line) -> str:
-    return " ".join(word for word, _ in line)
+    return "".join(text for text, _ in line)
 
 
 def _anchor_origin(anchor: str, canvas: Canvas, block_h: int) -> int:
@@ -200,14 +245,16 @@ def render_overlay(
             cursor_x = origin_x + (block_w - line_w) // 2
         cursor_y = origin_y + row * line_h
 
-        for index, (word, is_accent) in enumerate(line):
-            piece = word if index == len(line) - 1 else f"{word} "
+        # Each run already carries whatever spacing follows it (see Line's
+        # definition), so the renderer draws runs verbatim and never inserts a
+        # separator of its own.
+        for text, is_accent in line:
             draw.text(
-                (cursor_x, cursor_y), piece, font=font,
+                (cursor_x, cursor_y), text, font=font,
                 fill=accent if is_accent else body,
                 stroke_width=style.stroke_px, stroke_fill=stroke,
             )
-            cursor_x += _measure(font, piece)
+            cursor_x += _measure(font, text)
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
     image.save(out_png)
