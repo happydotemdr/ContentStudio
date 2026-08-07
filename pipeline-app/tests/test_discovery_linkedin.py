@@ -340,3 +340,101 @@ def test_two_adapters_sharing_a_handle_slug_do_not_share_cache(monkeypatch):
 
     assert set(person._cache["acme"]) == {"person_post"}
     assert set(company._cache["acme"]) == {"company_post"}
+
+
+def test_on_disk_ids_empty_when_directory_missing(tmp_path):
+    assert _profile().on_disk_ids(tmp_path, "bettywliu") == set()
+
+
+def test_on_disk_ids_reads_stems_of_md_files(tmp_path):
+    out_dir = tmp_path / "output" / "brand-intel" / "linkedin-profile" / "bettywliu"
+    out_dir.mkdir(parents=True)
+    (out_dir / "p1.md").write_text("x", encoding="utf-8")
+    (out_dir / "p2.md").write_text("x", encoding="utf-8")
+    assert _profile().on_disk_ids(tmp_path, "bettywliu") == {"p1", "p2"}
+
+
+def test_on_disk_ids_is_scoped_per_platform(tmp_path):
+    """A person and a company sharing a slug must not see each other's files."""
+    person_dir = tmp_path / "output" / "brand-intel" / "linkedin-profile" / "acme"
+    person_dir.mkdir(parents=True)
+    (person_dir / "person_post.md").write_text("x", encoding="utf-8")
+    assert _profile().on_disk_ids(tmp_path, "acme") == {"person_post"}
+    assert _company().on_disk_ids(tmp_path, "acme") == set()
+
+
+def test_peek_upload_date_always_none():
+    assert _profile().peek_upload_date("anything") is None
+
+
+def test_download_item_writes_frontmatter_and_body_from_cache(tmp_path, monkeypatch):
+    adapter = _profile()
+    _stub_job(adapter, [_row("p1", "2026-07-08", author="bettywliu",
+                             text="the body text")], monkeypatch)
+    adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+
+    result = adapter.download_item(tmp_path, "bettywliu", "p1", "the body text",
+                                   content_type="post")
+
+    assert result == {"id": "p1", "ok": True, "published": "2026-07-08"}
+    out_path = (tmp_path / "output" / "brand-intel" / "linkedin-profile"
+                / "bettywliu" / "p1.md")
+    text = out_path.read_text(encoding="utf-8")
+    assert "post_id: p1" in text
+    assert "author: bettywliu" in text
+    assert "account_type: person" in text
+    assert "content_type: post" in text
+    # yaml.safe_dump quotes date-like strings -- this is NOT bare 2026-07-08.
+    assert "published: '2026-07-08'" in text
+    assert "the body text" in text
+    # write-temp-then-rename must leave no partial file behind
+    assert not out_path.with_name("p1.md.tmp").exists()
+
+
+def test_download_item_records_engagement_and_hashtags(tmp_path, monkeypatch):
+    adapter = _company()
+    _stub_job(adapter, [_raw_row(id="c1", date_posted="2026-04-01T00:00:00.000Z",
+                                 num_likes=18, num_comments=0,
+                                 hashtags=["#wool", "#tailoring"])], monkeypatch)
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    adapter.download_item(tmp_path, "lanieri", "c1", "t")
+
+    text = (tmp_path / "output" / "brand-intel" / "linkedin-company" / "lanieri"
+            / "c1.md").read_text(encoding="utf-8")
+    assert "like_count: 18" in text
+    assert "comment_count: 0" in text
+    assert "- '#wool'" in text
+
+
+def test_download_item_empty_body_writes_placeholder(tmp_path, monkeypatch):
+    adapter = _company()
+    _stub_job(adapter, [_row("c1", "2026-07-08", text="")], monkeypatch)
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    adapter.download_item(tmp_path, "lanieri", "c1", "c1")
+    out = tmp_path / "output" / "brand-intel" / "linkedin-company" / "lanieri" / "c1.md"
+    assert "(empty)" in out.read_text(encoding="utf-8")
+
+
+def test_download_item_raises_on_cache_miss(tmp_path, monkeypatch):
+    """A missing id is a programming error, not a degraded write. KeyError
+    propagates to run_discovery's per-handle handler and is recorded as a
+    normal 'error' -- safe-fail rather than an empty file that on_disk_ids
+    would then treat as captured."""
+    adapter = _company()
+    _stub_job(adapter, [_row("c1", "2026-07-08")], monkeypatch)
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    with pytest.raises(KeyError):
+        adapter.download_item(tmp_path, "lanieri", "not_in_cache", "title")
+
+
+def test_download_item_makes_no_network_call(tmp_path, monkeypatch):
+    adapter = _company()
+    _stub_job(adapter, [_row("c1", "2026-07-08")], monkeypatch)
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("download_item must read the cache, not re-collect")
+
+    monkeypatch.setattr(adapter, "_run_collection_job", _fail)
+    monkeypatch.setattr(brightdata_job, "trigger", _fail)
+    assert adapter.download_item(tmp_path, "lanieri", "c1", "t")["ok"] is True
