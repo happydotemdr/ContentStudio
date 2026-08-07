@@ -633,6 +633,30 @@ def test_c18_checks_character_slots_too():
     assert [f.check for f in check_slots([missing], SLOT_WORLD)] == ["C18"]
 
 
+def test_c18_rejects_a_body_copy_even_when_a_correct_copy_also_exists_in_flags():
+    """A name-membership check (does 'register_a' appear anywhere in the flags?) would
+    silently accept the stray body copy below because a second, correctly-placed copy
+    of the same name also sits in the flags. Position must be decided per-occurrence,
+    from that occurrence's own offset in shot.prompt -- not from set membership."""
+    shot = _shot(
+        "a strap pulled tight {style:register_a}, No Text. "
+        "--ar 9:16 --raw --s 95 {style:register_a}"
+    )
+    findings = check_slots([shot], SLOT_WORLD)
+    assert [f.check for f in findings] == ["C18"]
+    assert "after at least one literal flag" in findings[0].message
+
+
+def test_c18_accepts_two_correctly_placed_declared_slots_without_over_firing():
+    """Guard against the position-offset rewrite over-firing: two different slot kinds,
+    both after the split point and both declared, must still produce zero findings."""
+    shot = _shot(
+        "a coach lowering a medal, No Text. "
+        "--ar 9:16 --raw --s 95 {style:register_a} {char:coach}"
+    )
+    assert check_slots([shot], SLOT_WORLD) == []
+
+
 STYLEBOARD = """\
 === STYLEBOARD — demo ===
 

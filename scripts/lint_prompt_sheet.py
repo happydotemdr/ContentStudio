@@ -577,18 +577,31 @@ SLOT_KINDS = (
 def check_slots(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
     """C18: slot tokens are declared in the world lock and sit in flag position.
 
-    Position is load-bearing, not cosmetic. prompt_body/prompt_flags split a prompt at
-    the first occurrence of ' --', and a slot token does not begin with '--'. Placed
-    before the first literal flag it lands in the prompt BODY, where it would both fail
-    C13's 'No Text. is last' rule and be sent to Midjourney as literal prose.
+    Position is decided from each match's own offset in shot.prompt, not from whether
+    the slot's name happens to appear anywhere in the flags -- a name-membership check
+    would silently accept a mis-positioned copy in the body as long as a second,
+    correctly-placed copy of the same name also existed in the flags (a plausible
+    authoring mistake: slot appended at the end, old copy in the body never deleted).
+
+    prompt_body/prompt_flags split a prompt at the first occurrence of ' --', and a slot
+    token does not begin with '--'. A match whose offset falls before that split point
+    lands in the prompt BODY, where it would both fail C13's 'No Text. is last' rule and
+    be sent to Midjourney as literal prose -- so it is flagged regardless of any other
+    occurrence of the same name elsewhere in the prompt.
     """
     findings: list[Finding] = []
     for shot in shots:
-        flags = prompt_flags(shot)
+        # Recompute the same split point prompt_body/prompt_flags use, rather than
+        # re-locating prompt_flags(shot)'s return value inside shot.prompt afterwards:
+        # that string is only guaranteed to be *a* suffix of shot.prompt, and searching
+        # for it with str.index() would find the first matching span, which need not be
+        # the real flag boundary if identical text also occurs earlier (e.g. a stray
+        # copy of the same flag text sitting in the body).
+        flags_start = shot.prompt.find(" --")
         for pattern, kind, prefix in SLOT_KINDS:
-            in_flags = set(pattern.findall(flags))
-            for name in pattern.findall(shot.prompt):
-                if name not in in_flags:
+            for match in pattern.finditer(shot.prompt):
+                name = match.group(1)
+                if flags_start == -1 or match.start() < flags_start:
                     findings.append(
                         Finding(
                             "C18",
