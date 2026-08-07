@@ -86,3 +86,20 @@ def stamp_final(path: Path, finalized_at: str, gate_override_reason: str | None 
         # the finding was wrong.
         meta["gate_override_reason"] = gate_override_reason
     path.write_text(render_frontmatter(meta, body), encoding="utf-8")
+
+
+def record_gate_override(path: Path, gate_override_reason: str) -> None:
+    """Record an override reason on an artifact that is ALREADY stamped final.
+
+    Re-approving an already-final artifact deliberately skips stamp_final
+    (see approval_service.approve_stage) so that finalized_at -- and therefore
+    the file's sha256 -- does not churn on a no-op re-approval. But an
+    override reason supplied on that path is a real decision, not a no-op,
+    and dropping it silently would be exactly the "unknown gate result
+    quietly passes" failure mode this whole mechanism exists to close. This
+    writes only gate_override_reason: status, finalized_at, and the `gates`
+    entry itself are left untouched -- an override says a human accepted the
+    finding, not that the finding was wrong."""
+    meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+    meta["gate_override_reason"] = gate_override_reason
+    path.write_text(render_frontmatter(meta, body), encoding="utf-8")

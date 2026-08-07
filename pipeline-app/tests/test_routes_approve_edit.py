@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 import pytest
@@ -5,6 +6,20 @@ from fastapi.testclient import TestClient
 
 from pipeline_app import artifacts, db
 from pipeline_app.main import create_app
+
+# The real repo root, for tests that need gates.run_gates_for_stage to load
+# the actual scripts/lint_script_language.py rather than error out against an
+# isolated tmp_path that has no scripts/ directory of its own.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _install_real_script_linter(tmp_path: Path) -> None:
+    dest = tmp_path / "scripts"
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copy(
+        REPO_ROOT / "scripts" / "lint_script_language.py",
+        dest / "lint_script_language.py",
+    )
 
 
 @pytest.fixture
@@ -84,6 +99,84 @@ def test_hand_edit_flips_stage_to_awaiting_review_and_dependent_to_stale(two_sta
 
     assert db.get_stage(app.state.conn, project_id, "ideation")["status"] == "awaiting_review"
     assert db.get_stage(app.state.conn, project_id, "scripting")["status"] == "stale"
+
+
+def test_hand_edit_runs_gate_d_and_records_real_results(two_stage_client):
+    """Finding 1: the hand-edit route must run the stage's registered gates
+    over the SAVED content and write the real result into the new version's
+    meta -- exactly like turn_service does after a turn -- not mint a version
+    with no `gates` key at all. Before this fix, approval_service.approve_stage
+    read `meta.get("gates") or []`, saw an empty list, and approved through:
+    a silent pass of an unknown gate result on a hand-edited script."""
+    test_client, tmp_path, app = two_stage_client
+    _install_real_script_linter(tmp_path)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    ideation_dir = run_dir / "01-ideation"
+    scripting_dir = run_dir / "02-scripting"
+
+    artifacts.write_artifact(
+        ideation_dir, 1, {"stage": "shorts-ideation", "status": "draft"}, "concept v1"
+    )
+    assert test_client.post(
+        f"/projects/{project_id}/stages/ideation/approve"
+    ).status_code in (200, 303, 307)
+
+    clean_script = (
+        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        "GATES\n  Gate E (fresh Opus critic): pass\n"
+    )
+    edit_resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/edit", data={"body": clean_script}
+    )
+    assert edit_resp.status_code in (200, 303, 307)
+
+    meta, _ = artifacts.parse_frontmatter(
+        (scripting_dir / "artifact.v1.md").read_text(encoding="utf-8")
+    )
+    assert meta["gates"][0]["name"] == "gate_d_script_language"
+    assert meta["gates"][0]["status"] == "pass"
+
+
+def test_hand_edit_introducing_a_gate_d_failure_blocks_approval(two_stage_client):
+    """Companion to the test above: a hand edit that introduces an em-dash
+    into a voiceover line must fail Gate D on the newly-minted version, and
+    approval must then refuse without an override -- the exact bypass
+    Finding 1 identified (a user hand-editing a script in the UI could not
+    previously be blocked by Gate D at all)."""
+    test_client, tmp_path, app = two_stage_client
+    _install_real_script_linter(tmp_path)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    ideation_dir = run_dir / "01-ideation"
+
+    artifacts.write_artifact(
+        ideation_dir, 1, {"stage": "shorts-ideation", "status": "draft"}, "concept v1"
+    )
+    assert test_client.post(
+        f"/projects/{project_id}/stages/ideation/approve"
+    ).status_code in (200, 303, 307)
+
+    dashed_script = (
+        'HOOK (0–5s | 8 words): "It is not more serious play — it is labor."\n'
+        "GATES\n  Gate E (fresh Opus critic): pass\n"
+    )
+    edit_resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/edit", data={"body": dashed_script}
+    )
+    assert edit_resp.status_code in (200, 303, 307)
+
+    approve_resp = test_client.post(f"/projects/{project_id}/stages/scripting/approve")
+    assert approve_resp.status_code == 409
+    assert "gate" in approve_resp.text.lower()
 
 
 def test_approve_route_stamps_artifact_final(client):

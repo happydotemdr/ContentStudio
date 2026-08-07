@@ -329,3 +329,53 @@ def test_approve_succeeds_normally_on_a_passing_gate(conn, tmp_path):
     _write_artifact_with_gates(stage_dir, "pass")
     approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
     assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.APPROVED.value
+
+
+def test_override_on_already_final_artifact_records_reason_without_rewriting_gates(conn, tmp_path):
+    """Finding 3: re-approving an artifact that is ALREADY stamped final (the
+    stale-stage re-approve path stage.html encourages) must still record a
+    supplied override reason. approve_stage skips stamp_final entirely on
+    this path to avoid churning finalized_at/sha256 on a no-op re-approve --
+    but that must not silently drop a real override reason supplied on THIS
+    call. The gates entry and finalized_at must stay untouched: an override
+    says a human accepted the finding, not that the finding was rewritten
+    away or that anything else changed."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "fail")
+    meta, body = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    meta["status"] = "final"
+    meta["finalized_at"] = "2026-08-01T00:00:00+00:00"
+    path.write_text(artifacts.render_frontmatter(meta, body), encoding="utf-8")
+
+    approve_stage(
+        conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+        override_reason="re-approving a stale stage; dash is inside a verbatim quote",
+    )
+
+    meta_after, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert meta_after["gate_override_reason"] == (
+        "re-approving a stale stage; dash is inside a verbatim quote"
+    )
+    assert meta_after["finalized_at"] == "2026-08-01T00:00:00+00:00"  # untouched, no churn
+    assert meta_after["status"] == "final"
+    assert meta_after["gates"][0]["status"] == "fail"  # the record is not rewritten
+
+
+def test_reapproving_an_already_final_artifact_with_blank_override_does_not_record_one(conn, tmp_path):
+    """The companion case to the test above: an already-final artifact
+    re-approved with NO override reason (None, same as a blank form field
+    after the route's .strip() or None) must not gain a
+    gate_override_reason key at all -- record_gate_override must only be
+    called when a reason is actually supplied."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "pass")
+    meta, body = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    meta["status"] = "final"
+    meta["finalized_at"] = "2026-08-01T00:00:00+00:00"
+    path.write_text(artifacts.render_frontmatter(meta, body), encoding="utf-8")
+
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+    meta_after, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert "gate_override_reason" not in meta_after
+    assert meta_after["finalized_at"] == "2026-08-01T00:00:00+00:00"

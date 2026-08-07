@@ -6,9 +6,11 @@ no regex can answer: *does a person say this out loud?*
 
 They replace step 9's old humanize pass, which was a self-attestation — the same turn, the same
 model, and the same context that authored the script graded it, against a no-list of two phrases
-and five words. **All four shipped scripts attest to passing it, and all four still carry failures
-the baseline catalogues: three carry D1 or D5 findings, and the fourth — clean against D1–D5 —
-still carries the contextual failures** (all four also fail D6, which postdates them)
+and five words. **All four shipped scripts attest to passing it**
+`[S] (rgs-briefs/2026-07-25-let-kids-play-act-script.md:29, rgs-briefs/2026-07-25-let-kids-play-act-specialization-script.md:29, rgs-briefs/2026-07-28-decline-the-next-level-script.md:234, rgs-briefs/2026-07-28-nobody-asked-the-kid-script.md:368 — each carries its own "Humanize pass" line)`,
+and **all four still carry failures the baseline catalogues: three carry D1 or D5 findings, and the
+fourth — clean against D1–D5 — still carries the contextual failures** (all four also fail D6, which
+postdates them)
 `[S] (docs/script-language-baseline.md, "Per-script VO-line inventory" and "Contextual failures — not Gate D's business")`.
 
 **Both gates block emission** `[I]`. A finding is resolved, defended in writing, or explicitly

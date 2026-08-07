@@ -53,8 +53,15 @@ def approve_stage(
         )
 
     already_final = latest_meta.get("status") == "final"
-    if stage_id != "grounding" and not already_final:
-        artifacts.stamp_final(latest, now, gate_override_reason=override_reason)
+    if stage_id != "grounding":
+        if not already_final:
+            artifacts.stamp_final(latest, now, gate_override_reason=override_reason)
+        elif override_reason:
+            # already_final skips stamp_final entirely (see the no-churn
+            # comment above), but an override reason supplied on THIS call is
+            # still a real decision and must not be dropped just because the
+            # artifact was already final -- see artifacts.record_gate_override.
+            artifacts.record_gate_override(latest, override_reason)
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.APPROVED.value, approved_at=now)
 
     all_rows = db_mod.list_stages(conn, project_id)

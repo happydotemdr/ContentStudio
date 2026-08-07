@@ -18,10 +18,9 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-BEAT_LABELS = ("HOOK", "SETUP", "BUILD/VALUE", "PAYOFF", "LOOP/CTA")
 BEAT_LABEL_RE = re.compile(r"^(HOOK|SETUP|BUILD/VALUE|PAYOFF|LOOP/CTA)\b")
 REHOOK_RE = re.compile(r"^\[re-hook\b")
 SUBRANGE_RE = re.compile(r"^\(\d+")
@@ -278,11 +277,23 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
     for vo in vo_lines:
         wpm = beat_wpm(vo)
         if wpm is None:
+            # Same `skipped` kind either way -- only the message text
+            # distinguishes a range that was never parsed (old-format
+            # re-hook line) from one that parsed but is malformed (start >=
+            # end), so a reader isn't told "missing" when the beat actually
+            # carries a nonsensical range.
+            if vo.start_s is not None and vo.end_s is not None and vo.end_s <= vo.start_s:
+                reason = (
+                    f"malformed time range ({vo.start_s}–{vo.end_s}s, start >= end); "
+                    "pace unchecked"
+                )
+            else:
+                reason = "no computable time range; pace unchecked"
             findings.append(
                 Finding(
                     "D5",
                     vo.beat,
-                    f"line {vo.line_number}: no computable time range; pace unchecked",
+                    f"line {vo.line_number}: {reason}",
                     kind="skipped",
                 )
             )

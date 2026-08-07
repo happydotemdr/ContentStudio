@@ -306,7 +306,7 @@ OVERLAY COPY HANDOFF
 VALIDATION
   Gate A (midjourney-prompting syntax lint): [pass/fail]
   Gate B (upstream visual-quality check, if applicable): [pass/fail]
-  Gate C (scripts/lint_prompt_sheet.py):     [pass/fail — see below]
+  Gate C (scripts/lint_prompt_sheet.py):     [pass/fail/deferred — app-run — see below]
 ```
 
 Write each row's still prompt to stand alone — Midjourney does not carry context between separate jobs

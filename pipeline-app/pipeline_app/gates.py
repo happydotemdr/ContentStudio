@@ -27,6 +27,13 @@ def _load_linter(repo_root: Path, module_name: str):
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load linter at {path}")
     module = importlib.util.module_from_spec(spec)
+    # Load-bearing, not cleanup-eligible: on Python 3.14, `@dataclass` resolves
+    # its fields' string annotations by looking the defining module up in
+    # sys.modules by name. A module loaded by file path (as these
+    # standalone-tool linters are, having no package identity) is not in
+    # sys.modules unless this line puts it there -- omit it and the linter's
+    # own `@dataclass` definitions raise AttributeError before a single check
+    # runs.
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module

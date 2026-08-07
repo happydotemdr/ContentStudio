@@ -119,6 +119,17 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .input-panel, .chat-panel, .output-panel { margin-bottom: 1.5rem; }
 .stale-override-note { color: var(--accent-amber); font-size: 0.9rem; }
 
+.status-pass { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
+.status-fail { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
+.status-error { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
+
+.gates-panel { margin: 1rem 0; }
+.gate-result { margin-bottom: 0.75rem; }
+.gate-findings { margin: 0.35rem 0 0; padding-left: 1.25rem; }
+.gate-finding { font-size: 0.9rem; }
+.gate-finding-blocking { color: #ff5f5f; }
+.gate-finding-skipped { color: var(--text-dim); font-style: italic; }
+
 .app-shell { display: flex; gap: 2rem; align-items: flex-start; padding: 1.5rem 2rem; }
 .app-sidebar { flex: 0 0 260px; }
 .app-sidebar:not(:has(*)) { flex: 0 0 0; }
