@@ -157,9 +157,15 @@ def cmd_render(slug: str, root: Path, mode: str, force: bool) -> int:
     try:
         clips = shots.render_all(spec, ws, mode, manifest, log_path, report.missing_visual)
         overlay_pngs = render_overlays(spec, ws, manifest)
-        mix = audio.build_audio(spec, ws, mode, log_path, report.missing_audio)
+        # Every stage takes the same per-mode manifest, so each one is
+        # independently cacheable (spec §4) and spec §5's worked example
+        # holds: a copy edit re-runs B, D, E and F and leaves the shot clips
+        # AND the whole audio chain untouched.
+        mix = audio.build_audio(
+            spec, ws, mode, log_path, report.missing_audio, manifest
+        )
         master = assemble.assemble(
-            spec, ws, mode, clips, overlay_pngs, mix.mix, log_path
+            spec, ws, mode, clips, overlay_pngs, mix.mix, log_path, manifest
         )
     except (ffmpeg.FFmpegError, TextOverflowError, audio.LoudnormNotLinearError,
             audio.SilentVoiceError) as exc:

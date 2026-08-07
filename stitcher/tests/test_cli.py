@@ -28,14 +28,14 @@ def stub_pipeline(monkeypatch, checks: list[Check]):
                         lambda *a, **k: [a[1].shots_dir / "001_x_y.mkv"])
     monkeypatch.setattr(cli, "render_overlays", lambda spec, ws, manifest: {})
 
-    def fake_audio(spec, ws, mode, log_path, missing):
+    def fake_audio(spec, ws, mode, log_path, missing, manifest=None):
         target = ws.audio_step("06", "mix_final")
         target.write_bytes(b"wav")
         return cli.audio.AudioResult(target, None, None, -18.0, {})
 
     monkeypatch.setattr(cli.audio, "build_audio", fake_audio)
 
-    def fake_assemble(spec, ws, mode, clips, pngs, mix, log_path):
+    def fake_assemble(spec, ws, mode, clips, pngs, mix, log_path, manifest=None):
         ws.master_path.write_bytes(b"mp4")
         return ws.master_path
 
