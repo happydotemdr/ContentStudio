@@ -10,7 +10,7 @@ __pycache__/
 cowork-plugin/
 dist/
 
-# Pipeline app (local control app for the six-skill pipeline)
+# Pipeline app (local control app for the seven-skill pipeline)
 runs/
 pipeline-app/pipeline.db
 pipeline-app/pipeline.db-wal
@@ -21,6 +21,10 @@ pipeline-app/pipeline_app/**/__pycache__/
 pipeline-app/tests/__pycache__/
 pipeline-app/pipeline_app.egg-info/
 rgs-briefs/.superseded/
+
+# Rendered Midjourney assets for each Short — large binaries, local only.
+# Untracked but previously un-ignored, so a stray `git add .` would have committed them.
+Generated Assets/
 
 # YouTube session cookies for yt-dlp auth (live credentials -- never commit)
 pipeline-app/cookies.txt

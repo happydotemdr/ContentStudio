@@ -1,7 +1,7 @@
 # CLAUDE.md — ContentStudio
 
 Standalone local project. Turns a faceless-YouTube-Shorts idea into a produced Short
-plus repurposed cross-post copy, using six atomic Claude Code skills — with every
+plus repurposed cross-post copy, using seven atomic Claude Code skills — with every
 normative recommendation traced back to a specific real-world corpus, never generic
 content-creation advice.
 
@@ -50,7 +50,7 @@ RaisingGoodSports-only `rgs-grounding` and `rgs-pairing-review` skills (see
 `.claude/skills/rgs-grounding/` and `.claude/skills/rgs-pairing-review/`) — the general-interest
 roster entry remains unused by any skill. See `README.md`'s scope note for the full picture.
 
-### The six skills (`.claude/skills/`)
+### The seven skills (`.claude/skills/`)
 
 One atomic skill per production stage, chained by hand (no orchestrator/meta-skill).
 Each skill's `SKILL.md` states its own upstream input and downstream next stage.
@@ -59,8 +59,9 @@ Each skill's `SKILL.md` states its own upstream input and downstream next stage.
 |---|---|---|---|
 | `shorts-ideation` | Idea → concept | a raw topic/idea | validated concept brief (angle, hook, packaging direction) |
 | `shorts-scripting` | Concept → script | the concept brief | shot-ready script with timing |
+| `shorts-styleboard` | Script → world lock | the script | world lock + Style Library bindings (Gate C reads its `WORLD LOCK`) |
 | `voiceover-brief` | Script → voice spec | the script | ElevenLabs voiceover production brief |
-| `visual-prompts` | Script → visual prompts | the script | dual-register prompt sheet (present-day photographic + source-era painterly), copy-paste ready, Gate C linted |
+| `visual-prompts` | Script → visual prompts | the script + the styleboard | dual-register prompt sheet (present-day photographic + source-era painterly), copy-paste ready, Gate C linted |
 | `shorts-assembly` | Script + assets → edit plan | script + voiceover brief + prompt sheet | assembly/edit plan |
 | `social-repurpose` | Finished Short → post copy | the finished Short + its script/packaging | multi-surface post copy (YouTube + cross-platform) |
 
@@ -70,7 +71,7 @@ detail lives in `references/`.
 
 ### Tool-specialist skills (not corpus-derived — read this before editing them)
 
-Two skills sit **beside** the six-stage pipeline rather than inside it. Each is
+Two skills sit **beside** the seven-stage pipeline rather than inside it. Each is
 usable standalone for any job in its tool, and each is also the downstream
 specialist for one pipeline stage. Neither is built from the corpus:
 
@@ -105,7 +106,7 @@ extending these skills.
 
 ## Anti-generic guarantee (read before editing any skill)
 
-The corpus is the **only** knowledge source for the six pipeline skills. Do not
+The corpus is the **only** knowledge source for the seven pipeline skills. Do not
 fall back on general "content creation best practices" — if the corpus doesn't
 cover something, the skill must say so and flag it, not silently substitute
 generic advice. When editing or extending a skill: every new normative line needs
@@ -155,7 +156,7 @@ bash scripts/build-cowork-plugin.sh
 
 This copies `.claude/skills/` into `cowork-plugin/skills/`, writes
 `cowork-plugin/.claude-plugin/plugin.json`, and zips the result to
-`dist/content-studio.plugin`. Load that `.plugin` file in Cowork to install all six
+`dist/content-studio.plugin`. Load that `.plugin` file in Cowork to install all seven
 skills there. `.claude/skills/` is the single source of truth — never hand-edit
 `cowork-plugin/skills/`; re-run the build script instead.
 
@@ -174,5 +175,8 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
 - When adding corpus-grounded content to a skill, cite it the way the corpus does:
   `(Channel, video_id)` for `[C]`, and keep `[T]` facts dated.
 - The `visual-prompts` output format is machine-parseable and enforced by
-  `scripts/lint_prompt_sheet.py` (Gate C). Run it on any emitted sheet before handing off to
-  `shorts-assembly`; a failing gate blocks emission. Tests: `python -m pytest tests/ -v`.
+  `scripts/lint_prompt_sheet.py` (Gate C). Run it as
+  `python scripts/lint_prompt_sheet.py <sheet> --styleboard <styleboard>` on any emitted sheet
+  before handing off to `shorts-assembly`; a failing gate blocks emission. The sheet carries
+  `{style:...}` slots, never literal `--sref` codes — C16 rejects an invented code and C17
+  rejects a shot with no style mechanism at all. Tests: `python -m pytest tests/ -v`.
