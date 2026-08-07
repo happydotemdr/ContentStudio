@@ -6,8 +6,10 @@ no regex can answer: *does a person say this out loud?*
 
 They replace step 9's old humanize pass, which was a self-attestation — the same turn, the same
 model, and the same context that authored the script graded it, against a no-list of two phrases
-and five words. Every shipped script passed it, and every shipped script still carried the
-failures catalogued in `docs/script-language-baseline.md`.
+and five words. **All four shipped scripts attest to passing it, and all four still carry failures
+the baseline catalogues: three carry D1 or D5 findings, and the fourth — clean against D1–D5 —
+still carries the contextual failures** (all four also fail D6, which postdates them)
+`[S] (docs/script-language-baseline.md, "Per-script VO-line inventory" and "Contextual failures — not Gate D's business")`.
 
 **Both gates block emission** `[I]`. A finding is resolved, defended in writing, or explicitly
 overridden with a stated reason — it is never quietly dropped.
@@ -53,8 +55,8 @@ it does not make the choice.
 
 ## Gate D — mechanical, deterministic
 
-**Fires:** on every emitted script, before handoff to `voiceover-brief` and `visual-prompts`.
-**Blocks:** emission.
+**Fires:** on every emitted script, before handoff to `voiceover-brief` and `visual-prompts` `[I]`.
+**Blocks:** emission `[I]`.
 **Scope:** **voiceover lines only** `[I]`. Prose, Delivery notes, verbatim quote cards, and
 on-screen text plates legitimately use written punctuation and are never checked — extraction is
 over the quoted spans of beat lines, which is also why the en-dash inside every `(0–3s | N words)`
@@ -118,8 +120,8 @@ beat headings) means the same thing for one beat.
 
 ## Gate E — fresh Opus critic
 
-**Fires:** on every emitted script, after Gate D is clean or its findings are resolved.
-**Blocks:** emission until every finding is resolved, defended, or overridden.
+**Fires:** on every emitted script, after Gate D is clean or its findings are resolved `[I]`.
+**Blocks:** emission until every finding is resolved, defended, or overridden `[I]`.
 
 Dispatch a **fresh `general-purpose` agent with `model: opus`** `[I]`. It judges the artifact and
 not the reasoning, and it is instructed to **find the failure, not approve**. This mirrors
@@ -262,7 +264,8 @@ you re-run.
 
 ## Known limits
 
-State these when they bear on a call you are making; do not let them fade into the background.
+**State these when they bear on a call you are making; do not let them fade into the background**
+`[I]`.
 
 1. **n=4.** Every `[S]` rule and both numeric thresholds rest on four scripts and 27 voiceover
    lines — the whole evidence base, inventoried in `docs/script-language-baseline.md` ("Scope and
