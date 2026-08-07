@@ -171,8 +171,12 @@ tooling, not extracted from the corpus.
 ## 9. How to run Gate C `[I]`
 
 ```bash
-python scripts/lint_prompt_sheet.py <path-to-sheet.md>
+python scripts/lint_prompt_sheet.py <path-to-sheet.md> --styleboard <path-to-styleboard.md>
 ```
+
+**`--styleboard` is required, not optional** — the sheet no longer carries its own
+`WORLD LOCK` block, so omitting it resolves an empty world lock and produces a wall of
+false C8/C18 findings instead of a clear error `[I]`.
 
 Exit 0 clean · exit 1 findings · exit 2 nothing parsed (usually a format error — see
 `prompt-sheet-format.md`). `[I]` — this skill's own operational rule: a failing gate

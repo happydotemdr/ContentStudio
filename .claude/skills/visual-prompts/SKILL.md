@@ -298,8 +298,13 @@ names its source still as the start frame, per `references/image-to-video.md`.
 **Before emitting the sheet, run Gate C — this is mandatory, not optional:**
 
 ```bash
-python scripts/lint_prompt_sheet.py <path-to-sheet.md>
+python scripts/lint_prompt_sheet.py <path-to-sheet.md> --styleboard <path-to-styleboard.md>
 ```
+
+**`--styleboard` is required, not optional, now that the sheet carries no `WORLD LOCK`
+block of its own.** Omitting it resolves an empty world lock and produces a wall of
+false C8/C18 findings instead of a clear error — always pass the styleboard artifact
+this sheet was built against `[I]`.
 
 **A failing gate blocks emission.** Exit 0 is the only outcome that allows handing the sheet downstream;
 exit 1 (findings) or exit 2 (nothing parsed — almost always a format error, see
