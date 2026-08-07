@@ -1,4 +1,5 @@
 # stitcher/tests/test_assemble.py
+import copy
 import json
 from pathlib import Path
 
@@ -143,3 +144,32 @@ def test_draft_mode_overrides_crf_and_preset_but_keeps_delivery_conformance(
     assert f"-preset {asm.DRAFT_PRESET}" in joined
     assert "-pix_fmt yuv420p" in joined      # delivery conformance still exercised
     assert "-c:a aac" in joined
+    # MINIMAL's delivery.profile is "high": ultrafast alone can't reach it
+    # (verified against the real binary -- see assemble.py's comment), so
+    # the cabac/8x8dct override must be present.
+    assert "-x264-params cabac=1:8x8dct=1" in joined
+
+
+def test_draft_mode_does_not_force_x264_params_for_a_non_high_profile(
+    tmp_path, ready, monkeypatch
+):
+    # Regression test for a task-15 review finding: an earlier version of
+    # this fix applied "-x264-params cabac=1:8x8dct=1" unconditionally in
+    # draft mode, on the false claim that "-profile:v" would constrain the
+    # signalled profile back down for "main"/"baseline". It doesn't --
+    # 8x8dct is itself a High-only feature, so forcing it on drags a "main"
+    # request up to a High-profile bitstream regardless (reproduced against
+    # the real binary and end-to-end through cmd_render). The fix must only
+    # apply when the spec actually asks for "high".
+    ws, clips, mix = ready
+    non_high = copy.deepcopy(MINIMAL)
+    non_high["delivery"]["profile"] = "main"
+    spec, _ = load_spec(write(tmp_path, non_high))
+    draft_ws = Workspace(root=ws.root, slug="demo", mode="draft")
+    draft_ws.ensure_dirs()
+    captured: list[list[str]] = []
+    monkeypatch.setattr(asm.ffmpeg, "run", lambda args, log_path: captured.append(args) or "")
+    asm.assemble(spec, draft_ws, "draft", clips, {}, mix, draft_ws.log_path("t"))
+    joined = " ".join(captured[0])
+    assert "-profile:v main" in joined
+    assert "-x264-params" not in joined

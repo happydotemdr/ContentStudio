@@ -168,11 +168,30 @@ def assemble(
     # includes `delivery.profile`. Re-enabling cabac and the 8x8 transform
     # via `-x264-params` restores that: confirmed on the same binary that
     # adding only this flag to the same ultrafast command makes ffprobe
-    # report `profile=High`. This is safe for any configured profile, not
-    # just "high": `-profile:v` is parsed after `-x264-params` and its
-    # `x264_param_apply_profile` step constrains features back down for
-    # "main" or "baseline" regardless of what was set here.
-    profile_args = ["-x264-params", "cabac=1:8x8dct=1"] if mode == "draft" else []
+    # report `profile=High`.
+    #
+    # CORRECTION (task-15 review): an earlier version of this comment claimed
+    # this was "safe for any configured profile" because `-profile:v` is
+    # parsed after `-x264-params` and `x264_param_apply_profile` would
+    # constrain the features back down for "main"/"baseline". That claim was
+    # never actually verified and is false: `8x8dct` is itself a High-only
+    # feature, so forcing it on drags the signalled profile UP to High
+    # regardless of what `-profile:v` requested -- reproduced directly with
+    # this exact argv (`-preset ultrafast -profile:v main -x264-params
+    # cabac=1:8x8dct=1` -> `profile=High`, not Main) and end-to-end through
+    # `cmd_render` with `delivery.profile` set to "main" (QA failed, "FAIL
+    # container: profile High"). So this fix is gated to specs that actually
+    # request "high" -- the only profile it's known to restore correctly.
+    # A spec requesting "main" or "baseline" gets no override here and keeps
+    # whatever `-preset ultrafast` naturally produces; verify.py's container
+    # check will correctly fail that combination until a per-profile
+    # feature mapping is added, which no current spec (including this
+    # module's default) needs.
+    profile_args = (
+        ["-x264-params", "cabac=1:8x8dct=1"]
+        if mode == "draft" and delivery.profile.lower() == "high"
+        else []
+    )
 
     ffmpeg.run(
         [
