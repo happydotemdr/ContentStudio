@@ -193,18 +193,26 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
 
 
 @router.post("/projects/{project_id}/stages/{stage_id}/approve")
-def approve_stage_route(request: Request, project_id: int, stage_id: str):
+def approve_stage_route(
+    request: Request,
+    project_id: int,
+    stage_id: str,
+    override_reason: str = Form(""),
+):
     project, _stage_def, _stage_row = _resolve_project_stage(request, project_id, stage_id)
     conn = request.app.state.conn
     repo_root = request.app.state.repo_root
     stage_defs = request.app.state.stage_defs
     run_dir = repo_root / "runs" / project["run_id"]
     try:
-        approval_service.approve_stage(conn, repo_root, run_dir, project_id, stage_defs, stage_id)
+        approval_service.approve_stage(
+            conn, repo_root, run_dir, project_id, stage_defs, stage_id,
+            override_reason=override_reason.strip() or None,
+        )
     except ValueError as exc:
-        # Nothing to approve yet, or the locked/running invariant --
-        # approval_service raises for both; an explicit conflict state,
-        # never a 500.
+        # Nothing to approve yet, the locked/running invariant, or a failing
+        # gate -- approval_service raises for all three; an explicit conflict
+        # state, never a 500.
         return PlainTextResponse(str(exc), status_code=409)
     return RedirectResponse(url=f"/projects/{project_id}/stages/{stage_id}", status_code=303)
 

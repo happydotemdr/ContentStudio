@@ -76,8 +76,13 @@ def write_artifact(stage_dir: Path, version: int, meta: dict, body: str) -> Path
     return path
 
 
-def stamp_final(path: Path, finalized_at: str) -> None:
+def stamp_final(path: Path, finalized_at: str, gate_override_reason: str | None = None) -> None:
     meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
     meta["status"] = "final"
     meta["finalized_at"] = finalized_at
+    if gate_override_reason:
+        # Recorded alongside the failing gate result, which is deliberately left
+        # untouched -- an override says a human accepted the finding, not that
+        # the finding was wrong.
+        meta["gate_override_reason"] = gate_override_reason
     path.write_text(render_frontmatter(meta, body), encoding="utf-8")

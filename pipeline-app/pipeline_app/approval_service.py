@@ -14,6 +14,7 @@ def approve_stage(
     project_id: int,
     stage_defs: list[StageDef],
     stage_id: str,
+    override_reason: str | None = None,
 ) -> list[str]:
     stage_row = db_mod.get_stage(conn, project_id, stage_id)
     if is_locked_or_running(stage_row["status"]):
@@ -39,9 +40,21 @@ def approve_stage(
     # approving it directly (without regenerating) an encouraged path, not
     # an edge case.
     latest_meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+
+    failing = [
+        g for g in (latest_meta.get("gates") or [])
+        if g.get("status") in ("fail", "error")
+    ]
+    if failing and not override_reason:
+        names = ", ".join(f"{g['name']} ({g['status']})" for g in failing)
+        raise ValueError(
+            f"Stage '{stage_id}' has a failing gate: {names}. "
+            "Fix the findings and regenerate, or approve with an override reason."
+        )
+
     already_final = latest_meta.get("status") == "final"
     if stage_id != "grounding" and not already_final:
-        artifacts.stamp_final(latest, now)
+        artifacts.stamp_final(latest, now, gate_override_reason=override_reason)
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.APPROVED.value, approved_at=now)
 
     all_rows = db_mod.list_stages(conn, project_id)

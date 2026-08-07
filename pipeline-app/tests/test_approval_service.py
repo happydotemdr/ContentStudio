@@ -249,7 +249,15 @@ async def test_regenerating_an_approved_stage_marks_approved_dependent_stale(con
     await _drain(turn_service.run_stage_turn(
         conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1", STAGES[1], STAGES, "",
     ))
-    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+    # The fake turn's body ("script body") is not real script-language-gate
+    # input, so gate_d_script_language errors on it (no VO lines to parse) --
+    # exactly the fail-closed behavior Task 9 requires. This test is about
+    # staleness propagation, not gate content, so it overrides the block
+    # rather than fabricating a gate-passing script body.
+    approve_stage(
+        conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+        override_reason="test fixture body is not real script-language-gate input",
+    )
 
     # Regenerate ideation -> v2
     monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _fake_stream(events, raw_output, "v2 body"))
@@ -264,3 +272,60 @@ async def test_regenerating_an_approved_stage_marks_approved_dependent_stale(con
 
     scripting_stage = db.get_stage(conn, project_id, "scripting")
     assert scripting_stage["status"] == StageStatus.STALE.value
+
+
+def _seed_scripting_awaiting_review(conn, tmp_path: Path) -> tuple[int, Path, Path]:
+    project_id = db.create_project(conn, "gate-1", "gate", "generic", "2026-08-06T00:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "approved")
+    db.create_stage_row(conn, project_id, "scripting", "awaiting_review")
+    run_dir = tmp_path / "runs" / "gate-1"
+    stage_dir = run_dir / "02-scripting"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    return project_id, run_dir, stage_dir
+
+
+def _write_artifact_with_gates(stage_dir: Path, status: str) -> Path:
+    meta = {
+        "schema_version": 1, "run_id": "r1", "stage": "shorts-scripting", "version": 1,
+        "status": "draft", "created_at": "2026-08-06T00:00:00+00:00", "finalized_at": None,
+        "supersedes": None, "depends_on": [],
+        "gates": [{
+            "name": "gate_d_script_language", "status": status,
+            "findings": [{"check": "D1", "beat": "HOOK", "message": "em-dash", "kind": "fail"}],
+        }],
+    }
+    return artifacts.write_artifact(stage_dir, 1, meta, "body")
+
+
+def test_approve_raises_on_a_failing_gate_without_an_override(conn, tmp_path):
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "fail")
+    with pytest.raises(ValueError, match="gate"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+
+def test_approve_raises_on_an_errored_gate_without_an_override(conn, tmp_path):
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "error")
+    with pytest.raises(ValueError, match="gate"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+
+def test_approve_succeeds_with_an_override_and_records_the_reason(conn, tmp_path):
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "fail")
+    approve_stage(
+        conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+        override_reason="dash is inside a verbatim 1886 quote",
+    )
+    meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert meta["status"] == "final"
+    assert meta["gate_override_reason"] == "dash is inside a verbatim 1886 quote"
+    assert meta["gates"][0]["status"] == "fail"  # the record is not rewritten
+
+
+def test_approve_succeeds_normally_on_a_passing_gate(conn, tmp_path):
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "pass")
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+    assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.APPROVED.value
