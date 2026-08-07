@@ -306,6 +306,63 @@ re-registered by hand — the same recovery path that already applies to
 every other platform. No engine change is proposed to fix this pre-existing
 behavior; it's called out here only so the design doesn't misstate it.
 
+## Verification log (2026-08-06, post-implementation)
+
+Checked against the Bright Data dashboard's generated API snippets for the
+Instagram Posts product plus the published dataset field list. Three of this
+design's assumptions were wrong and are now fixed in `discovery_instagram.py`:
+
+- **`[T]` Dataset id is `gd_lk5ns7kz21pck8jpis`** (2026-08-06, dashboard
+  snippet) — one dataset serves both discover-by-profile and
+  collect-by-post-URL; `type`/`discover_by` select the mode.
+- **`[T]` A newest-N-by-profile job requires `type=discover_new` and
+  `discover_by=url`** on the trigger query string (2026-08-06, dashboard
+  snippet + Bright Data trigger-collection docs). The original implementation
+  omitted both, which would have run a collect-by-page job against a profile
+  URL — a paid job returning the wrong shape.
+- **`[T]` The newest-N limit is real and has two levers** (2026-08-06):
+  `limit_per_input` as a trigger query param (server-side, per input) and
+  `num_of_posts` as a dataset input field. Both are now set to
+  `MAX_ITEMS_PER_RUN`. This confirms the cost model's load-bearing assumption
+  below.
+- **`[T]` The caption text field is `description`, not `caption`**
+  (2026-08-06, published Instagram-Posts field list). `post_id`,
+  `date_posted`, `content_type`, `url`, `likes`, `num_comments` were all
+  correct. The `caption` misread was the dangerous one: it drops no rows, so
+  it would have written one `(empty)` file per already-paid-for post.
+- **`[T-unverified, 2026-08-06]`** Billing granularity (per record vs. per
+  job minimum) and whether failed/timed-out jobs are charged are still
+  unconfirmed — watch the first live runs against the dashboard's usage page.
+
+### Live smoke test (2026-08-06, snapshot `sd_msi9anpb4jxhh8g1x`)
+
+A real 3-record discovery job against `instagram.com/nike` — 3 records, 0
+errors, ~84s collection time. Findings, all now fixed and pinned by tests:
+
+- **`[T]` `/trigger` accepts the bare-array body.** Closes the open question
+  above; the `{"input": [...]}` object form is `/scrape`-only. The async
+  trigger → poll → fetch flow is confirmed end to end, with `progress`
+  returning `status: running` → `ready` as assumed.
+- **`[T]` `limit_per_input` is honored** — `limit_per_input=3` returned
+  exactly 3 records. The cost model's load-bearing assumption holds.
+- **`[T]` `date_posted` is a US-format local timestamp, `07/23/2026
+  16:00:22` — NOT ISO 8601.** This design's "truncate to the first 10
+  characters" rule (gap 4) was wrong, and wrong in the most dangerous
+  direction: `"07/23/2026"` fails `strptime(..., "%Y-%m-%d")`, so *every*
+  row was dropped as undated, `enumerate_newest_first` returned `[]`, and
+  `process_handle` recorded a healthy `no_new_content` for a batch that had
+  already been paid for. Date parsing now lives in `_parse_published`, which
+  accepts the real format and keeps ISO as a fallback.
+- **`[T]` `content_type` includes `Carousel`**, not just `Post`/`Reel`, and
+  is display-cased. Normalized to lowercase; the file format below is
+  updated.
+- **`[T]` No timezone accompanies `date_posted`.** Only dates are compared,
+  so the worst case is an off-by-one at a midnight boundary.
+
+Operational note: Bright Data's domains are blocked by DNS-filtering
+resolvers that categorize proxy/scraping infrastructure — a live run needs
+that path clear or every job fails at name resolution before any HTTP call.
+
 ## Verification needed before implementation (gap 5)
 
 Two assumptions this whole design leans on are unverified against Bright
@@ -336,7 +393,7 @@ transcript):
 post_id: <string>
 url: <string>
 handle: <string>
-content_type: post | reel
+content_type: post | reel | carousel
 published: <YYYY-MM-DD>
 like_count: <int | null>
 comment_count: <int | null>

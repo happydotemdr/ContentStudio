@@ -33,10 +33,11 @@ KEY_ENV_VAR = "BRIGHTDATA_API_KEY"
 KEY_FILE = Path(__file__).resolve().parent.parent / "brightdata_api_key.txt"
 
 # Bright Data dataset id for the Instagram Posts Scraper API product. Not a
-# secret -- a one-time value from the Bright Data dashboard when the product
-# is provisioned. Placeholder until that provisioning step happens; replace
-# before the first real run.
-DATASET_ID = "gd_REPLACE_WITH_REAL_DATASET_ID"
+# secret -- a one-time value read off the Bright Data dashboard's generated
+# API snippet for "Instagram post - discover by URL" (2026-08-06). The same
+# dataset id serves both the discover-by-profile and collect-by-post-URL
+# modes; the type/discover_by query params below are what select between them.
+DATASET_ID = "gd_lk5ns7kz21pck8jpis"
 
 REQUEST_TIMEOUT_S = 30
 
@@ -76,14 +77,35 @@ def _trigger_job(handle: str, key: str) -> str:
     profile_url = f"https://www.instagram.com/{handle.lstrip('@')}/"
     response = requests.post(
         f"{BRIGHTDATA_API_BASE}/trigger",
-        params={"dataset_id": DATASET_ID, "include_errors": "true"},
+        params={
+            "dataset_id": DATASET_ID,
+            # This is a *discovery* job -- "find this profile's newest posts".
+            # Without type/discover_by, Bright Data reads the input url as a
+            # single post page to collect, which is the wrong product mode for
+            # a profile URL. Values from the dashboard's generated snippet.
+            "type": "discover_new",
+            "discover_by": "url",
+            # Server-side per-input record cap: the primary cost control, and
+            # the one that binds even if the dataset ignores num_of_posts.
+            "limit_per_input": MAX_ITEMS_PER_RUN,
+            "include_errors": "true",
+            "notify": "false",
+        },
         headers={"Authorization": f"Bearer {key}"},
-        # num_of_posts as a request-time limit is this design's best-available
-        # assumption about Bright Data's trigger API -- UNVERIFIED, see the
-        # design doc's "Verification needed before implementation". If the API
-        # doesn't honor it, enumerate_newest_first's post-fetch slice (Task 4)
-        # still bounds cost on this side.
-        json=[{"url": profile_url, "num_of_posts": MAX_ITEMS_PER_RUN}],
+        # Bare-array body is /trigger's documented shape. The dashboard's
+        # {"input": [...], "limit_per_input": null} object form belongs to the
+        # synchronous /scrape endpoint, which this adapter deliberately does
+        # not use -- a discovery job takes minutes and would hang an HTTP call.
+        # Empty start_date/end_date/post_type mirror the dashboard's "no
+        # filter" example rows: unfiltered returns posts and Reels together,
+        # which is what this pipeline wants.
+        json=[{
+            "url": profile_url,
+            "num_of_posts": MAX_ITEMS_PER_RUN,
+            "start_date": "",
+            "end_date": "",
+            "post_type": "",
+        }],
         timeout=REQUEST_TIMEOUT_S,
     )
     response.raise_for_status()
@@ -133,34 +155,60 @@ def _run_collection_job(handle: str) -> list[dict]:
         time.sleep(POLL_INTERVAL_S)
 
 
+def _parse_published(raw: str | None) -> str | None:
+    """Bright Data's date_posted -> the engine's required YYYY-MM-DD, or None.
+
+    This dataset returns a US-format local timestamp -- '07/23/2026 16:00:22'
+    -- NOT ISO 8601 (verified 2026-08-06 against a live snapshot of
+    instagram.com/nike). The original ISO-prefix-slicing implementation
+    rejected every row of that shape, which made enumerate_newest_first return
+    [] and the engine report a healthy 'no_new_content' for a batch that had
+    already been paid for. The ISO branch is kept as a cheap fallback in case
+    the dataset's format changes or another Bright Data product is pointed at
+    this adapter.
+
+    No timezone is supplied with the timestamp; since the engine only ever
+    compares dates, an off-by-one at a midnight boundary is the worst case.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y"):
+        try:
+            return _dt.datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    candidate = raw[:10]
+    try:
+        _dt.datetime.strptime(candidate, "%Y-%m-%d")
+        return candidate
+    except ValueError:
+        return None
+
+
 def _normalize_row(row: dict) -> dict | None:
     """Maps one raw Bright Data Instagram row into the shape this adapter
-    works with internally. Field names (post_id, caption, date_posted,
-    content_type, url, likes, num_comments) are this design's best-available
-    assumption about Bright Data's response schema -- UNVERIFIED, see the
-    design doc's "Verification needed before implementation". This is the
-    single place to update if the real schema differs.
+    works with internally. Field names are taken from the published
+    Instagram-Posts dataset schema (post_id, description, date_posted,
+    content_type, url, likes, num_comments) -- note the caption text lives in
+    'description', NOT 'caption'; there is no 'caption' field, and reading one
+    would silently write empty bodies for a batch that was already paid for.
+    This is the single place to update if the real schema differs.
     """
     post_id = row.get("post_id")
     if not post_id:
         return None
-    published_raw = row.get("date_posted") or ""
-    published_candidate = published_raw[:10] if len(published_raw) >= 10 else None
-    published = None
-    if published_candidate is not None:
-        try:
-            _dt.datetime.strptime(published_candidate, "%Y-%m-%d")
-            published = published_candidate
-        except ValueError:
-            published = None
+    published = _parse_published(row.get("date_posted"))
     if published is None:
         return None
-    caption = (row.get("caption") or "").strip()
+    caption = (row.get("description") or "").strip()
+    # Bright Data returns display-cased values ("Post", "Reel"); the file
+    # format documented in the design doc is lowercase.
     return {
         "id": post_id,
         "title": caption[:60] if caption else post_id,
         "published": published,
-        "content_type": row.get("content_type") or "post",
+        "content_type": (row.get("content_type") or "post").lower(),
         "caption": caption,
         "url": row.get("url") or "",
         "like_count": row.get("likes"),
