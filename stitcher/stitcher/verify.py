@@ -90,6 +90,30 @@ def overall_status(checks: list[Check]) -> str:
 _WINDOW_I = re.compile(r"^\s*I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.MULTILINE)
 
 
+def load_audio_record(ws: Workspace) -> dict | None:
+    """Stage C's own account of what it built, or None if it is not there.
+
+    Stage F cannot infer "the bed was deliberately omitted in draft" from the
+    filesystem: an absent 04a/04b pair looks identical whether stage C chose
+    not to build a bed or `stitcher clean` removed it afterwards. Only stage C
+    knows which, so it says so in writing (spec §6) and this reads it back.
+    """
+    path = ws.audio_report_path
+    if not path.is_file():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _omitted_files(record: dict | None) -> set[str]:
+    if not record:
+        return set()
+    return {entry.get("file") for entry in record.get("omitted", [])}
+
+
 def measure_window(path: Path, start: float, duration: float, log_path: Path) -> float:
     """Integrated loudness over one window of a file.
 
@@ -202,11 +226,24 @@ def duck_windows(
     return windows
 
 
-def _check_duck(spec: RenderSpec, ws: Workspace, log_path: Path) -> Check:
+def _check_duck(
+    spec: RenderSpec, ws: Workspace, log_path: Path, record: dict | None
+) -> Check:
     conformed = ws.audio_step("04a", "bed_conformed")
     ducked = ws.audio_step("04b", "bed_ducked")
     if not spec.audio.bed:
         return Check("duck_depth", PASS, "no music bed in this spec")
+    if spec.audio.bed.file in _omitted_files(record):
+        # Spec §6: "A missing music bed or SFX file is simply omitted in
+        # draft." There is no envelope because there is no bed, which is a
+        # correct draft mix rather than an unverifiable one -- so this must
+        # not block promotion. Before this branch existed, a draft with a
+        # missing bed reported UNAVAILABLE with a diagnosis ("run with an
+        # intact work/ directory") that was actively wrong: work/ was intact,
+        # and the run exited 4 having produced no deliverable at all.
+        return Check("duck_depth", PASS,
+                     f"no music bed in this mix; {spec.audio.bed.file} was omitted "
+                     "from the draft (see audio_omissions)")
     if not (conformed.is_file() and ducked.is_file()):
         return Check("duck_depth", UNAVAILABLE,
                      "bed intermediates absent; run with an intact work/ directory")
@@ -320,6 +357,50 @@ def _check_placeholders(ws: Workspace) -> Check:
     return Check("placeholders", status, f"{len(found)} placeholder(s): {names}")
 
 
+def _check_audio_omissions(ws: Workspace, record: dict | None) -> Check:
+    """Spec §6: a bed or SFX file omitted in draft is "listed as omitted in
+    the QA report". Nothing did that before this check existed.
+
+    Deliberately a SIBLING of `placeholders` rather than an extension of it,
+    for three reasons. A placeholder is a substitution -- a magenta slate that
+    is present in the output and visible in the frame -- whereas an omission
+    is content that is simply not there, so folding them together would make
+    one detail string mean two different things. `placeholders` reads a
+    directory of PNGs that stage A wrote; this reads stage C's record, a
+    different artifact with a different absence story. And spec §4 stage F
+    tabulates its checks one row per observable, so a second observable earns
+    a second row.
+
+    A stem synthesized as silence is reported here too, under its own label:
+    §6 treats it as the audio analogue of a placeholder (a substitution with a
+    known duration), not as an omission, and conflating the two would hide
+    which half of §6's draft contract actually fired.
+    """
+    if record is None:
+        return Check("audio_omissions", UNAVAILABLE,
+                     "stage C's audio record is absent; what the mix left out "
+                     "cannot be established")
+
+    omitted = record.get("omitted", [])
+    silent = record.get("silent_stems", [])
+    if not omitted and not silent:
+        return Check("audio_omissions", PASS, "none")
+
+    parts = []
+    if omitted:
+        parts.append("omitted: " + ", ".join(
+            f"{entry.get('file')} ({entry.get('role')})" for entry in omitted
+        ))
+    if silent:
+        parts.append("synthesized as silence: " + ", ".join(silent))
+    # Unreachable through preflight, which aborts a final run on any missing
+    # audio file -- but stated rather than assumed, exactly as `placeholders`
+    # states it: an omission that somehow reached a final render is a defect,
+    # not a pass.
+    status = FAIL if ws.mode == "final" else PASS
+    return Check("audio_omissions", status, "; ".join(parts))
+
+
 def contact_sheet(
     spec: RenderSpec, master: Path, out_png: Path, log_path: Path
 ) -> Path | None:
@@ -353,6 +434,7 @@ def contact_sheet(
 def verify(
     spec: RenderSpec, ws: Workspace, master: Path, log_path: Path
 ) -> list[Check]:
+    record = load_audio_record(ws)
     probed = ffmpeg.probe(master)
     checks = [_check_container(spec, probed), _check_audio_stream(spec, probed)]
     checks.append(_check_colour_tagging(probed))
@@ -376,7 +458,7 @@ def verify(
                             "06_mix_final.wav absent; true peak cannot be measured pre-AAC"))
 
     checks.append(_check_linearity(ws))
-    checks.append(_check_duck(spec, ws, log_path))
+    checks.append(_check_duck(spec, ws, log_path, record))
     checks.append(_check_safe_zone(spec, ws))
 
     # Difference the bounds rather than reading the last END frame: the two
@@ -398,6 +480,7 @@ def verify(
     ))
 
     checks.append(_check_placeholders(ws))
+    checks.append(_check_audio_omissions(ws, record))
     return checks
 
 

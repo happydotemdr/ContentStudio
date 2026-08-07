@@ -105,6 +105,20 @@ class Workspace:
         """Stage D output. Promoted to out/ only on a QA pass (spec §2 rule 5)."""
         return self.work_dir / "master.mp4"
 
+    @property
+    def audio_report_path(self) -> Path:
+        """Stage C's record of what it actually built (spec §6).
+
+        Kept in work/ for the same reason loudnorm_pass2.json is: stage F has
+        to distinguish "the bed was deliberately omitted in draft" from "your
+        work/ directory was cleaned", and neither the preflight report nor the
+        AudioResult is in hand when `stitcher verify` re-runs QA against an
+        already-promoted master. An artifact in work/ is available to both
+        callers and reports `unavailable` when it is gone, which is exactly
+        what the rest of stage F does with work/-derived evidence.
+        """
+        return self.work_dir / "audio_report.json"
+
     def asset(self, filename: str) -> Path:
         return self.assets_dir / filename
 

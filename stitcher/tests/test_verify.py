@@ -38,6 +38,13 @@ def ready(tmp_path: Path):
     (ws.work_dir / "loudnorm_pass2.json").write_text(
         json.dumps({"normalization_type": "linear"}), encoding="utf-8"
     )
+    # Stage C's record of what it built. A complete work/ directory carries
+    # one, so a fixture standing in for a complete work/ directory must too.
+    ws.audio_report_path.write_text(
+        json.dumps({"mode": "final", "voice_reference_lufs": -18.0,
+                    "bed_built": True, "omitted": [], "silent_stems": []}),
+        encoding="utf-8",
+    )
     png = ws.overlay_png(1, "hook-1", "hello")
     png.write_bytes(b"png")
     png.with_suffix(".json").write_text(json.dumps({"bbox": [200, 500, 800, 700]}), "utf-8")
@@ -423,6 +430,96 @@ def test_a_placeholder_in_final_mode_is_a_failure(ready, tmp_path, monkeypatch):
     wire(monkeypatch)
     checks = vf.verify(spec, ws, master, ws.log_path("t"))
     assert status_of(checks, "placeholders") == vf.FAIL
+
+
+def _draft(ws: Workspace) -> Workspace:
+    """The same workspace seen in draft mode, with work/ carried across."""
+    draft = Workspace(root=ws.root, slug=ws.slug, mode="draft")
+    draft.ensure_dirs()
+    shutil.copytree(ws.work_dir, draft.work_dir, dirs_exist_ok=True)
+    return draft
+
+
+def _record(ws: Workspace, **overrides) -> None:
+    payload = {"mode": ws.mode, "voice_reference_lufs": -18.0, "bed_built": True,
+               "omitted": [], "silent_stems": []}
+    payload.update(overrides)
+    ws.audio_report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_a_bed_omitted_in_draft_does_not_block_promotion(ready, tmp_path, monkeypatch):
+    """Spec §6: "A missing music bed or SFX file is simply omitted in draft."
+
+    Before this, duck_depth saw `spec.audio.bed` set with no 04a/04b pair and
+    reported UNAVAILABLE with the wrong diagnosis -- "run with an intact work/
+    directory", when work/ was perfectly intact. cmd_render blocks promotion
+    on any non-pass status, so the draft exited 4 having produced nothing.
+    """
+    ws, master = ready
+    draft = _draft(ws)
+    draft.audio_step("04a", "bed_conformed").unlink()
+    draft.audio_step("04b", "bed_ducked").unlink()
+    _record(draft, bed_built=False, omitted=[{"file": "bed.mp3", "role": "bed"}])
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch)
+    checks = vf.verify(spec, draft, master, draft.log_path("t"))
+    assert status_of(checks, "duck_depth") == vf.PASS
+    assert status_of(checks, "audio_omissions") == vf.PASS
+    assert "bed.mp3" in next(c.detail for c in checks if c.name == "audio_omissions")
+    assert vf.overall_status(checks) == "pass"
+
+
+def test_a_bed_that_was_never_omitted_still_reports_unavailable_without_its_intermediates(
+    ready, tmp_path, monkeypatch
+):
+    """The omission branch must not become a blanket excuse: a spec that
+    declares a bed, with a record saying nothing was omitted and no
+    intermediates on disk, is a cleaned workspace and still unverifiable."""
+    ws, master = ready
+    ws.audio_step("04a", "bed_conformed").unlink()
+    ws.audio_step("04b", "bed_ducked").unlink()
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch)
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "duck_depth") == vf.UNAVAILABLE
+
+
+def test_audio_omissions_is_unavailable_without_stage_cs_record(
+    ready, tmp_path, monkeypatch
+):
+    ws, master = ready
+    ws.audio_report_path.unlink()
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch)
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "audio_omissions") == vf.UNAVAILABLE
+    assert vf.overall_status(checks) == "incomplete"
+
+
+def test_a_stem_synthesized_as_silence_is_listed_separately_from_an_omission(
+    ready, tmp_path, monkeypatch
+):
+    """Spec §6 treats them differently -- a stem is substituted, a bed is
+    dropped -- so the report must not collapse them into one word."""
+    ws, master = ready
+    draft = _draft(ws)
+    _record(draft, silent_stems=["vo.wav"],
+            omitted=[{"file": "zap.wav", "role": "sfx"}])
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch)
+    checks = vf.verify(spec, draft, master, draft.log_path("t"))
+    detail = next(c.detail for c in checks if c.name == "audio_omissions")
+    assert "omitted: zap.wav (sfx)" in detail
+    assert "synthesized as silence: vo.wav" in detail
+
+
+def test_an_omission_reaching_a_final_render_is_a_failure(ready, tmp_path, monkeypatch):
+    ws, master = ready
+    _record(ws, omitted=[{"file": "bed.mp3", "role": "bed"}])
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    wire(monkeypatch)
+    checks = vf.verify(spec, ws, master, ws.log_path("t"))
+    assert status_of(checks, "audio_omissions") == vf.FAIL
 
 
 def test_write_reports_emits_both_json_and_markdown(tmp_path: Path):

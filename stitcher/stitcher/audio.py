@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import envelope, ffmpeg
@@ -66,6 +66,31 @@ class AudioResult:
     bed_ducked: Path | None
     voice_reference_lufs: float
     loudnorm: dict
+    # What this stage left OUT, and why. Spec §6 requires a bed or SFX file
+    # that draft mode omitted to be "listed as omitted in the QA report", and
+    # stage F additionally has to tell a deliberate omission apart from a
+    # cleaned work/ directory. Defaulted so an AudioResult built positionally
+    # by an older caller stays valid.
+    omitted: list[dict] = field(default_factory=list)
+    silent_stems: list[str] = field(default_factory=list)
+
+
+def audio_omissions(spec: RenderSpec, missing_audio: list[str]) -> tuple[list[dict], list[str]]:
+    """(omitted bed/sfx, stems synthesized as silence) for this run.
+
+    Spec §6 draws the line here, not at "missing audio": a stem that declares
+    duration_s is SUBSTITUTED with silence and still occupies its slot in the
+    timeline, while a bed or SFX file is simply dropped. They are different
+    facts about the mix and the QA report reports them as such.
+    """
+    omitted: list[dict] = []
+    if spec.audio.bed and spec.audio.bed.file in missing_audio:
+        omitted.append({"file": spec.audio.bed.file, "role": "bed"})
+    for item in spec.audio.sfx:
+        if item.file in missing_audio:
+            omitted.append({"file": item.file, "role": "sfx"})
+    silent = [stem.file for stem in spec.audio.stems if stem.file in missing_audio]
+    return omitted, silent
 
 
 def parse_loudnorm_json(stderr: str) -> dict:
@@ -181,6 +206,26 @@ def build_audio(
             spec, ws, runtime, voice_lufs, durations, log_path
         )
 
+    # Written BEFORE the loudnorm passes, not after: it is the only record of
+    # what this stage chose to leave out, and stage F needs it even on a run
+    # that dies later. See Workspace.audio_report_path for why it is durable
+    # rather than passed in memory.
+    omitted, silent_stems = audio_omissions(spec, missing_audio)
+    ws.audio_report_path.parent.mkdir(parents=True, exist_ok=True)
+    ws.audio_report_path.write_text(
+        json.dumps(
+            {
+                "mode": mode,
+                "voice_reference_lufs": voice_lufs,
+                "bed_built": ducked is not None,
+                "omitted": omitted,
+                "silent_stems": silent_stems,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
     # Sum voice, ducked bed, and sfx. Inputs are separate argv elements (never
     # embedded in the filtergraph string), and the graph itself refers to them
     # only by ffmpeg input index ([0:a], [1:a], ...) -- it never names a
@@ -285,4 +330,6 @@ def build_audio(
             "level so limiting is not required."
         )
 
-    return AudioResult(final, conformed, ducked, voice_lufs, pass2)
+    return AudioResult(
+        final, conformed, ducked, voice_lufs, pass2, omitted, silent_stems
+    )

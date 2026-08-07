@@ -183,6 +183,42 @@ def test_a_bedless_spec_with_a_short_voice_is_not_truncated(rendered_clip):
 
 @needs_ffmpeg
 @needs_font
+def test_draft_mode_renders_with_a_missing_bed_omitted_from_the_mix(tmp_path):
+    """Spec §6: "A missing music bed or SFX file is simply omitted in draft,
+    and listed as omitted in the QA report."
+
+    Both halves were broken and neither was covered: the only draft e2e test
+    deleted a PNG, so the missing-AUDIO half of §6's draft contract had never
+    been rendered. Measured against the real binary before the fix, this
+    render printed
+
+        warning: bed.wav is missing; it will be omitted from the draft mix
+        UNAVAILABLE duck_depth - bed intermediates absent; run with an intact
+                                 work/ directory
+
+    and exited 4 with no deliverable at all -- work/ was intact throughout.
+    """
+    root = tmp_path / "renders"
+    base = make_fixture.build(root)
+    (base / "assets" / "bed.wav").unlink()
+    ws = Workspace(root=root, slug="e2e", mode="draft")
+
+    assert cli.cmd_render("e2e", root, "draft", force=False) == cli.EXIT_OK
+    assert ws.out_master(None).is_file()
+    assert ws.out_qa_json(None).is_file()
+
+    payload = json.loads(ws.out_qa_json(None).read_text(encoding="utf-8"))
+    assert payload["status"] == "pass", json.dumps(payload["checks"], indent=2)
+    duck = next(c for c in payload["checks"] if c["name"] == "duck_depth")
+    assert duck["status"] == "pass", duck["detail"]
+    omissions = next(c for c in payload["checks"] if c["name"] == "audio_omissions")
+    assert omissions["status"] == "pass"
+    assert "bed.wav" in omissions["detail"]
+    assert "bed.wav" in ws.out_qa_md(None).read_text(encoding="utf-8")
+
+
+@needs_ffmpeg
+@needs_font
 def test_draft_mode_renders_with_a_placeholder_for_a_missing_still(tmp_path):
     root = tmp_path / "renders"
     base = make_fixture.build(root)
