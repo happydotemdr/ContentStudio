@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from lint_prompt_sheet import (  # noqa: E402
@@ -460,8 +462,14 @@ def test_c15_passes_valid_vocabulary():
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
-def lint_fixture(name):
-    shots, world = parse_sheet((FIXTURES / name).read_text(encoding="utf-8"))
+def lint_fixture(name, styleboard_name=None):
+    """Lint a fixture sheet. Pass styleboard_name for a migrated sheet whose world
+    lock now lives in a separate styleboard artifact rather than the sheet itself."""
+    shots, sheet_world = parse_sheet((FIXTURES / name).read_text(encoding="utf-8"))
+    if styleboard_name is not None:
+        world = parse_world_lock((FIXTURES / styleboard_name).read_text(encoding="utf-8"))
+    else:
+        world = sheet_world
     return shots, lint(shots, world)
 
 
@@ -471,7 +479,7 @@ def test_passing_fixture_parses_five_shots():
 
 
 def test_passing_fixture_is_clean():
-    _, findings = lint_fixture("passing_sheet.md")
+    _, findings = lint_fixture("passing_sheet.md", "passing_styleboard.md")
     assert findings == [], [f"{f.check}#{f.shot_index}: {f.message}" for f in findings]
 
 
@@ -483,7 +491,13 @@ def test_failing_fixture_reproduces_the_original_defects():
 
 
 def test_main_returns_zero_for_a_clean_sheet():
-    assert main([str(FIXTURES / "passing_sheet.md")]) == 0
+    assert main(
+        [
+            str(FIXTURES / "passing_sheet.md"),
+            "--styleboard",
+            str(FIXTURES / "passing_styleboard.md"),
+        ]
+    ) == 0
 
 
 def test_main_returns_one_for_a_failing_sheet():
@@ -497,7 +511,7 @@ def test_main_returns_two_when_no_shots_parse(tmp_path):
 
 
 def test_worked_example_sheet_passes_gate_c():
-    shots, findings = lint_fixture("worked_example_sheet.md")
+    shots, findings = lint_fixture("worked_example_sheet.md", "worked_example_styleboard.md")
     assert len(shots) >= 8, f"worked example has only {len(shots)} shots"
     assert findings == [], [f"{f.check}#{f.shot_index}: {f.message}" for f in findings]
 
@@ -804,3 +818,34 @@ def test_main_reports_a_missing_world_lock_when_no_styleboard_is_given(tmp_path,
 
     main([str(sheet)])
     assert "declares no register_a_sport" in capsys.readouterr().out
+
+
+MIGRATED_PAIRS = [
+    ("passing_sheet.md", "passing_styleboard.md"),
+    ("worked_example_sheet.md", "worked_example_styleboard.md"),
+]
+
+
+@pytest.mark.parametrize("sheet_name, styleboard_name", MIGRATED_PAIRS)
+def test_migrated_fixture_is_clean_against_its_styleboard(sheet_name, styleboard_name):
+    sheet = (FIXTURES / sheet_name).read_text(encoding="utf-8")
+    world = parse_world_lock((FIXTURES / styleboard_name).read_text(encoding="utf-8"))
+    shots, _ = parse_sheet(sheet)
+    findings = [*check_cover_present(sheet), *lint(shots, world, cover=parse_cover(sheet))]
+    assert findings == [], [f"[{f.check}] shot {f.shot_index}: {f.message}" for f in findings]
+
+
+@pytest.mark.parametrize("sheet_name, _styleboard_name", MIGRATED_PAIRS)
+def test_migrated_sheet_carries_no_world_lock_of_its_own(sheet_name, _styleboard_name):
+    """The world lock has exactly one home now. Two copies with no sync rule is the
+    failure this split exists to prevent."""
+    assert "WORLD LOCK" not in (FIXTURES / sheet_name).read_text(encoding="utf-8")
+
+
+def test_the_two_fixtures_cover_both_cover_branches():
+    """One dedicated cover prompt, one Hook-reuse declaration — so a regression in
+    either branch of parse_cover/declares_cover_reuse fails a test."""
+    assert parse_cover((FIXTURES / "passing_sheet.md").read_text(encoding="utf-8")) is not None
+    worked = (FIXTURES / "worked_example_sheet.md").read_text(encoding="utf-8")
+    assert parse_cover(worked) is None
+    assert declares_cover_reuse(worked) is True
