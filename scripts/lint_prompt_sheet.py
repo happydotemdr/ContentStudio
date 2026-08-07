@@ -628,44 +628,82 @@ def check_format(shots: list[Shot]) -> list[Finding]:
     return findings
 
 
-SREF_FLAG_RE = re.compile(r"--sref((?:\s+(?!--)\S+)+)")
+SREF_FLAG_RE = re.compile(r"--sref\b((?:\s+(?!--)\S+)*)")
+P_FLAG_RE = re.compile(r"--p\b((?:\s+(?!--)\S+)*)")
 STYLE_SLOT_RE = re.compile(r"\{style:([a-z][a-z0-9_]*)\}")
 CHAR_SLOT_RE = re.compile(r"\{char:([a-z][a-z0-9_]*)\}")
 VALID_SREF_VALUE_RE = re.compile(r"^(?:\d+|random|https?://\S+)$")
+# A legitimate --p value is an opaque pID/mID/resolved code -- alphanumeric, no
+# separators (see midjourney-prompting/references/parameters.md:49 and the corpus
+# example `--p m72678`). An invented placeholder reads like a human-authored label
+# (`mj-INVENTED-01`, hyphens and spelled-out words); real codes don't look like that.
+VALID_P_VALUE_RE = re.compile(r"^[A-Za-z0-9]+$")
 
 
-def check_style_reference(shots: list[Shot]) -> list[Finding]:
-    """C16: every literal --sref value is a real Midjourney style reference.
+def _check_style_flag_values(
+    shots: list[Shot], flag_re: re.Pattern, valid_value_re: re.Pattern, flag_name: str
+) -> list[Finding]:
+    """Shared body for the --sref and --p value checks (both C16).
 
-    Sheets have shipped with invented placeholders (`--sref SREF-RGS-A-DL01`) that
-    cannot be pasted into Midjourney. A style code is a number, a URL, or the literal
-    `random`; anything else means no code was ever harvested. Midjourney also supports
-    stacking a second code onto an existing --sref (`--sref A B`) -- every space-separated
-    value up to the next flag is checked, not just the first.
+    A flag written with no value at all (`--sref` with nothing after it, or before
+    the next flag) fails here too -- it references nothing, which is the same defect
+    as an invented placeholder one step removed. `--p` is the one exception: a bare
+    `--p` with no value is Midjourney's own syntax for "apply my active personalization
+    profile" and is legitimate, so an empty capture for `--p` is not flagged.
     """
     findings: list[Finding] = []
     for shot in shots:
-        for stack in SREF_FLAG_RE.findall(prompt_flags(shot)):
+        for match in flag_re.finditer(prompt_flags(shot)):
+            stack = match.group(1).strip()
+            if not stack:
+                if flag_name == "--sref":
+                    findings.append(
+                        Finding(
+                            "C16",
+                            shot.index,
+                            f"{flag_name} has no value; a bare {flag_name} references "
+                            "nothing, the same defect as an invented placeholder code",
+                        )
+                    )
+                continue
             for value in stack.split():
                 if STYLE_SLOT_RE.fullmatch(value) or CHAR_SLOT_RE.fullmatch(value):
                     findings.append(
                         Finding(
                             "C16",
                             shot.index,
-                            f"slot {value} used as an --sref value; a slot expands to the "
-                            "entire flag group, so write it on its own, not after --sref",
+                            f"slot {value} used as an {flag_name} value; a slot expands to "
+                            f"the entire flag group, so write it on its own, not after {flag_name}",
                         )
                     )
-                elif not VALID_SREF_VALUE_RE.match(value):
+                elif not valid_value_re.match(value):
                     findings.append(
                         Finding(
                             "C16",
                             shot.index,
-                            f"--sref value {value!r} is not a numeric code, a URL, or 'random'. "
+                            f"{flag_name} value {value!r} is not a plausible code. "
                             "A placeholder here means no real style code was ever harvested.",
                         )
                     )
     return findings
+
+
+def check_style_reference(shots: list[Shot]) -> list[Finding]:
+    """C16: every literal --sref/--p value is a real Midjourney style reference.
+
+    Sheets have shipped with invented placeholders (`--sref SREF-RGS-A-DL01`,
+    `--p mj-INVENTED-01`) that cannot be pasted into Midjourney -- the identical
+    defect one flag over. A --sref code is a number, a URL, or the literal `random`;
+    a --p value is an opaque pID/mID/resolved code (alphanumeric, no separators) --
+    anything else means no code was ever harvested. Midjourney also supports
+    stacking a second code onto an existing --sref (`--sref A B`) -- every
+    space-separated value up to the next flag is checked, not just the first. A
+    flag written with no value at all also fails (see `_check_style_flag_values`).
+    """
+    return [
+        *_check_style_flag_values(shots, SREF_FLAG_RE, VALID_SREF_VALUE_RE, "--sref"),
+        *_check_style_flag_values(shots, P_FLAG_RE, VALID_P_VALUE_RE, "--p"),
+    ]
 
 
 MOODBOARD_FLAG_RE = re.compile(r"--p\b")
@@ -680,6 +718,13 @@ def check_style_mechanism(shots: list[Shot]) -> list[Finding]:
 
     PLATE shots are exempt — they are subject-free background plates with no register
     look to lock (visual-registers.md §5).
+
+    Presence is checked with `SREF_FLAG_RE` — the same anchored, word-boundary regex
+    C16 uses to find --sref occurrences — rather than a raw `"--sref" in flags"`
+    substring test. The two checks answer different questions (C17: is some
+    mechanism written at all; C16: is its value real) but must agree on what counts
+    as "an --sref is here" so a bare, valueless `--sref` isn't invisible to one
+    check while silently satisfying the other.
     """
     findings: list[Finding] = []
     for shot in shots:
@@ -687,7 +732,7 @@ def check_style_mechanism(shots: list[Shot]) -> list[Finding]:
             continue
         flags = prompt_flags(shot)
         has_mechanism = (
-            "--sref" in flags
+            SREF_FLAG_RE.search(flags) is not None
             or MOODBOARD_FLAG_RE.search(flags) is not None
             or STYLE_SLOT_RE.search(flags) is not None
         )
@@ -707,10 +752,19 @@ SLOT_KINDS = (
     (STYLE_SLOT_RE, "style", "slot_"),
     (CHAR_SLOT_RE, "char", "slot_char_"),
 )
+# A legitimate slot_* value is a Style Library entry label -- lowercase kebab-case,
+# e.g. `rgs-present-soccer-a` (styleboard-format.md's "why the code is not written
+# here" section). The code itself is resolved later, at render time, against the
+# Library -- writing it into the styleboard moves the invented-code defect one
+# artifact upstream instead of removing it, so anything that looks like a raw
+# Midjourney code (numeric, a URL, `random`) or an invented uppercase/hyphenated
+# placeholder (`SREF-RGS-A-DL01`, `mj-INVENTED-01`) fails here.
+VALID_SLOT_VALUE_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 
 
 def check_slots(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
-    """C18: slot tokens are declared in the world lock and sit in flag position.
+    """C18: slot tokens are declared in the world lock, sit in flag position, and
+    are bound to a real Style Library label rather than an invented code.
 
     Position is decided from each match's own offset in shot.prompt, not from whether
     the slot's name happens to appear anywhere in the flags -- a name-membership check
@@ -755,6 +809,19 @@ def check_slots(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
                             shot.index,
                             f"{{{kind}:{name}}} is not declared; add a {key!r} line to the "
                             "styleboard's WORLD LOCK block naming the Library entry it binds to",
+                        )
+                    )
+                    continue
+                value = world[key].strip()
+                if not VALID_SLOT_VALUE_RE.match(value):
+                    findings.append(
+                        Finding(
+                            "C18",
+                            shot.index,
+                            f"{key!r} = {value!r} looks like a raw Midjourney style code or an "
+                            "invented placeholder, not a Style Library entry label. A slot value "
+                            "must be a label like 'rgs-present-soccer-a' -- the code itself is "
+                            "resolved later, at render time, against the Library.",
                         )
                     )
     return findings

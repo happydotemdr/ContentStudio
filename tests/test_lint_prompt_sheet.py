@@ -583,9 +583,64 @@ def test_c16_ignores_a_following_flag_as_an_sref_value():
     assert check_style_reference([shot]) == []
 
 
-def test_c16_does_not_crash_on_sref_with_no_value():
+def test_c16_rejects_sref_with_no_value():
+    """A bare --sref (no value at all, end of prompt) references nothing -- the
+    same defect as an invented placeholder, one step further. It must not slip
+    through silently just because it never reaches VALID_SREF_VALUE_RE."""
     shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --sref")
+    findings = check_style_reference([shot])
+    assert [f.check for f in findings] == ["C16"]
+    assert "no value" in findings[0].message
+
+
+def test_c16_rejects_a_dangling_sref_followed_by_another_flag():
+    """The exact repro from the finding: `--sref` immediately followed by another
+    flag, with nothing in between. Neither the old SREF_FLAG_RE (required >=1
+    value) nor C17's old substring test caught this -- it passed everything."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --s 95 --sref --ar 9:16")
+    findings = check_style_reference([shot])
+    assert [f.check for f in findings] == ["C16"]
+    assert "no value" in findings[0].message
+
+
+def test_c17_now_agrees_with_c16_on_a_dangling_sref():
+    """C17 used to treat a bare '--sref' substring as 'a mechanism is present' even
+    with no value -- now it uses the same anchored regex as C16, so the two checks
+    can't silently disagree about whether an --sref is 'there'. C17 still passes
+    (a --sref token was written), while C16 rejects its missing value -- Gate C as
+    a whole still fails the sheet either way."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --s 95 --sref --ar 9:16")
+    assert check_style_mechanism([shot]) == []
+    assert check_style_reference([shot]) != []
+
+
+def test_c16_accepts_a_legitimate_p_value():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --p m72678")
     assert check_style_reference([shot]) == []
+
+
+def test_c16_accepts_a_bare_p_flag():
+    """A bare --p (no value) is Midjourney's own syntax for 'apply my active
+    personalization profile' -- legitimate, unlike a bare --sref."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --p")
+    assert check_style_reference([shot]) == []
+
+
+def test_c16_rejects_an_invented_p_placeholder():
+    """The identical invented-code defect one flag over: --p takes a pID/mID/code
+    (parameters.md:49), not a hand-authored label. `mj-INVENTED-01` is exactly the
+    shape of an invented placeholder, not a real Midjourney personalization/
+    moodboard code."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --s 95 --p mj-INVENTED-01")
+    findings = check_style_reference([shot])
+    assert [f.check for f in findings] == ["C16"]
+    assert "mj-INVENTED-01" in findings[0].message
+
+
+def test_c16_full_repro_ar_s_p_invented():
+    """The exact repro string from the finding."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --s 95 --p mj-INVENTED-01")
+    assert any(f.check == "C16" for f in check_style_reference([shot]))
 
 
 def test_c16_fires_on_the_real_legacy_sheet():
@@ -675,6 +730,36 @@ def test_c18_accepts_two_correctly_placed_declared_slots_without_over_firing():
         "--ar 9:16 --raw --s 95 {style:register_a} {char:coach}"
     )
     assert check_slots([shot], SLOT_WORLD) == []
+
+
+def test_c18_rejects_an_invented_style_code_as_the_declared_slot_value():
+    """A styleboard writing `slot_register_a: SREF-RGS-A-DL01` moves the invented-code
+    defect one artifact upstream -- styleboard-format.md forbids it in prose but C18
+    never checked the declared *value*, only that the slot *name* was declared."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    world = {**SLOT_WORLD, "slot_register_a": "SREF-RGS-A-DL01"}
+    findings = check_slots([shot], world)
+    assert [f.check for f in findings] == ["C18"]
+    assert "SREF-RGS-A-DL01" in findings[0].message
+
+
+def test_c18_accepts_a_real_style_library_label_as_the_declared_slot_value():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    world = {**SLOT_WORLD, "slot_register_a": "rgs-present-soccer-a"}
+    assert check_slots([shot], world) == []
+
+
+def test_c18_rejects_both_fixtures_slot_values_do_not_regress():
+    """Sanity check against the two real green fixtures' actual slot_* values --
+    the new value check must not fire on real Library labels."""
+    for fixture in ("passing_styleboard.md", "worked_example_styleboard.md"):
+        world = parse_world_lock((FIXTURES / fixture).read_text(encoding="utf-8"))
+        for key in ("slot_register_a", "slot_register_b"):
+            shot = _shot(
+                f"a strap pulled tight, No Text. --ar 9:16 --raw --s 95 "
+                f"{{{'style'}:{key.removeprefix('slot_')}}}"
+            )
+            assert check_slots([shot], world) == [], (fixture, key, world[key])
 
 
 COVER_BLOCK = """\

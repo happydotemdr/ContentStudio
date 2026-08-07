@@ -358,12 +358,19 @@ to `rgs-briefs/` in this mode.
    direction.
    **Staleness check:** re-run the resolver for `--kind script` again right before you finish —
    if a newer version now exists than the one you read, tell the user before proceeding.
-2. Before writing the prompt sheet, run
+2. Resolve the styleboard: run
+   `python scripts/resolve_brief_version.py --slug <slug> --kind styleboard` from the repo root.
+   Read the file it reports — this is the artifact step 2.5 above requires you to read (not
+   decide) the world lock from. If it prints `NONE`, stop and tell the user to run
+   `shorts-styleboard` first rather than inventing a world lock, per step 2.5.
+   **Staleness check:** re-run the resolver for `--kind styleboard` again right before you finish —
+   if a newer version now exists than the one you read, tell the user before proceeding.
+3. Before writing the prompt sheet, run
    `python scripts/resolve_brief_version.py --slug <slug> --kind visual-prompts` from the repo
    root (no `--next`). If it prints a path (not `NONE`), that's the current version being
    superseded — remember its printed path verbatim for the `supersedes:` field below; it's already
    `rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
-3. After emitting the prompt sheet, run
+4. After emitting the prompt sheet, run
    `python scripts/resolve_brief_version.py --slug <slug> --kind visual-prompts --next --date <YYYY-MM-DD>`.
    Write the file at `rgs-briefs/<filename>` via the `Write` tool with this frontmatter (in
    addition to the prompt sheet's own output format above):
@@ -375,8 +382,9 @@ to `rgs-briefs/` in this mode.
    slug: <slug>
    stage: 03-visual
    version: <version from the resolver>
-   supersedes: <path from step 2 above — only if version > 1>
+   supersedes: <path from step 3 above — only if version > 1>
    script: <the script file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
+   styleboard: <the styleboard file's path, exactly as the resolver printed it in step 2 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
    concept_brief: <carried through from the script, if present>
    archetype: <carried through from the script / concept brief, if present>
    visual_system: <path to a run-level visual-system document, if one was provided>
@@ -384,6 +392,6 @@ to `rgs-briefs/` in this mode.
    status: complete
    ---
    ```
-4. State the exact file path you wrote in your final chat response.
+5. State the exact file path you wrote in your final chat response.
 
 Never edit an existing `rgs-briefs/*.md` file — a `PreToolUse` hook enforces this.

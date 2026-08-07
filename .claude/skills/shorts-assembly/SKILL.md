@@ -20,6 +20,16 @@ Produces the **edit plan** for one Short: the fifth of six atomic ContentStudio 
 
 If any of the three is missing, ask for it rather than inventing shot content — this skill assembles what upstream produced, it doesn't re-derive the script or the visuals.
 
+**Before pasting any prompt from input 3, resolve its slot token — this is a manual step until
+the render console exists `[I]`.** Every prompt in the sheet ends in an unresolved
+`{style:register_a}` / `{style:register_b}` / `{char:<name>}` token, never a literal `--sref`/`--p`
+code — `visual-prompts`' Gate C rejects a literal invented code, so the code was deliberately never
+written into the sheet. Before a prompt is run in Midjourney, look up the styleboard's `BINDINGS`
+line for that slot, find the actual harvested code for the Style Library entry it names, and replace
+the whole token with the real flag(s) — `--sref <code>`, `--p <code>`, `--oref <url> --ow <n>`, or
+nothing at all for a personalization binding. Pasting the token as literal text renders the words
+"style register a" into the image instead of applying a look.
+
 **Optional: constraints that survive to publish.** `[I]` If the incoming script's Delivery notes field
 carries a "constraints that survive to publish" line (e.g. a quotability restriction on a
 citation, or a mandatory safety-resource line), honor it in the caption/overlay treatment below,
