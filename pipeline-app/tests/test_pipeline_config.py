@@ -7,12 +7,13 @@ from pipeline_app.pipeline_config import StageDef, build_stage_nav, load_topolog
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_load_topology_has_seven_stages():
+def test_load_topology_has_eight_stages():
     stages = load_topology(REPO_ROOT / "pipeline.yaml")
-    assert len(stages) == 7
+    assert len(stages) == 8
     ids = [s.id for s in stages]
     assert ids == [
-        "grounding", "ideation", "scripting", "voiceover", "visual", "assembly", "repurpose",
+        "grounding", "ideation", "scripting", "styleboard", "voiceover", "visual", "assembly",
+        "repurpose",
     ]
 
 
@@ -28,7 +29,7 @@ def test_voiceover_and_visual_are_a_parallel_pair():
     voiceover = next(s for s in stages if s.id == "voiceover")
     visual = next(s for s in stages if s.id == "visual")
     assert voiceover.depends_on == ["scripting"]
-    assert visual.depends_on == ["scripting"]
+    assert visual.depends_on == ["scripting", "styleboard"]
     assert voiceover.dir_prefix == visual.dir_prefix == "03"
 
 
@@ -257,3 +258,27 @@ def test_load_topology_rejects_invalid_specialist_mode_value(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="Manual"):
         load_topology(path)
+
+
+def test_real_topology_has_styleboard_between_scripting_and_visual():
+    repo_root = Path(__file__).resolve().parents[2]
+    stages = load_topology(repo_root / "pipeline.yaml")
+    by_id = {s.id: s for s in stages}
+
+    assert "styleboard" in by_id
+    assert by_id["styleboard"].depends_on == ["scripting"]
+    assert by_id["styleboard"].dir_prefix == "02b"
+    assert by_id["visual"].depends_on == ["scripting", "styleboard"]
+
+    ids = [s.id for s in stages]
+    assert ids.index("styleboard") < ids.index("visual")
+
+
+def test_every_stage_has_a_kickoff_template():
+    """render_kickoff_prompt does env.get_template(f'{stage_id}.md'); a stage with no
+    template raises TemplateNotFound on its first turn, not at startup."""
+    repo_root = Path(__file__).resolve().parents[2]
+    stages = load_topology(repo_root / "pipeline.yaml")
+    templates_dir = repo_root / "pipeline-app" / "stage_templates"
+    missing = [s.id for s in stages if not (templates_dir / f"{s.id}.md").exists()]
+    assert missing == []
