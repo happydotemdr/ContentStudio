@@ -1,0 +1,854 @@
+{
+  "$comment": "Generated from the pydantic models in stitcher/stitcher/spec.py (design spec section 3). Do not edit by hand: run `cd stitcher && python -m stitcher.spec` to regenerate. tests/test_spec.py fails if this file drifts from the models, or if an upgraded pydantic changes how it emits schemas; regenerating is the fix in both cases.",
+  "$defs": {
+    "Audio": {
+      "additionalProperties": false,
+      "properties": {
+        "bed": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Bed"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "loudness": {
+          "$ref": "#/$defs/Loudness"
+        },
+        "sfx": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Sfx"
+          },
+          "title": "Sfx",
+          "type": "array"
+        },
+        "stems": {
+          "items": {
+            "$ref": "#/$defs/Stem"
+          },
+          "title": "Stems",
+          "type": "array"
+        }
+      },
+      "required": [
+        "stems",
+        "loudness"
+      ],
+      "title": "Audio",
+      "type": "object"
+    },
+    "Bed": {
+      "additionalProperties": false,
+      "properties": {
+        "duck_attack_ms": {
+          "default": 120,
+          "title": "Duck Attack Ms",
+          "type": "integer"
+        },
+        "duck_db": {
+          "title": "Duck Db",
+          "type": "number"
+        },
+        "duck_release_ms": {
+          "default": 400,
+          "title": "Duck Release Ms",
+          "type": "integer"
+        },
+        "fades": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Fade"
+          },
+          "title": "Fades",
+          "type": "array"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "gain_db": {
+          "title": "Gain Db",
+          "type": "number"
+        },
+        "windows": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/BedWindow"
+          },
+          "title": "Windows",
+          "type": "array"
+        }
+      },
+      "required": [
+        "file",
+        "gain_db",
+        "duck_db"
+      ],
+      "title": "Bed",
+      "type": "object"
+    },
+    "BedWindow": {
+      "additionalProperties": false,
+      "properties": {
+        "in": {
+          "title": "In",
+          "type": "number"
+        },
+        "level_db": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Level Db"
+        },
+        "mode": {
+          "enum": [
+            "out",
+            "ducked",
+            "full"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "out": {
+          "title": "Out",
+          "type": "number"
+        }
+      },
+      "required": [
+        "in",
+        "out",
+        "mode"
+      ],
+      "title": "BedWindow",
+      "type": "object"
+    },
+    "Canvas": {
+      "additionalProperties": false,
+      "properties": {
+        "fps": {
+          "title": "Fps",
+          "type": "integer"
+        },
+        "height": {
+          "title": "Height",
+          "type": "integer"
+        },
+        "width": {
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "fps"
+      ],
+      "title": "Canvas",
+      "type": "object"
+    },
+    "Caption": {
+      "additionalProperties": false,
+      "properties": {
+        "in": {
+          "title": "In",
+          "type": "number"
+        },
+        "out": {
+          "title": "Out",
+          "type": "number"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "in",
+        "out",
+        "text"
+      ],
+      "title": "Caption",
+      "type": "object"
+    },
+    "Cover": {
+      "additionalProperties": false,
+      "properties": {
+        "overlays": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Overlays",
+          "type": "array"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "title": "Cover",
+      "type": "object"
+    },
+    "Delivery": {
+      "additionalProperties": false,
+      "properties": {
+        "audio_bitrate": {
+          "default": "192k",
+          "title": "Audio Bitrate",
+          "type": "string"
+        },
+        "audio_codec": {
+          "default": "aac",
+          "title": "Audio Codec",
+          "type": "string"
+        },
+        "audio_rate": {
+          "default": 48000,
+          "title": "Audio Rate",
+          "type": "integer"
+        },
+        "codec": {
+          "default": "libx264",
+          "title": "Codec",
+          "type": "string"
+        },
+        "crf": {
+          "default": 18,
+          "title": "Crf",
+          "type": "integer"
+        },
+        "pix_fmt": {
+          "default": "yuv420p",
+          "title": "Pix Fmt",
+          "type": "string"
+        },
+        "preset": {
+          "default": "slow",
+          "title": "Preset",
+          "type": "string"
+        },
+        "profile": {
+          "default": "high",
+          "title": "Profile",
+          "type": "string"
+        }
+      },
+      "title": "Delivery",
+      "type": "object"
+    },
+    "Fade": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "title": "At",
+          "type": "number"
+        },
+        "kind": {
+          "enum": [
+            "in",
+            "out"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "ms": {
+          "title": "Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "at",
+        "kind",
+        "ms"
+      ],
+      "title": "Fade",
+      "type": "object"
+    },
+    "Loudness": {
+      "additionalProperties": false,
+      "properties": {
+        "integrated_lufs": {
+          "title": "Integrated Lufs",
+          "type": "number"
+        },
+        "true_peak_dbtp": {
+          "title": "True Peak Dbtp",
+          "type": "number"
+        }
+      },
+      "required": [
+        "integrated_lufs",
+        "true_peak_dbtp"
+      ],
+      "title": "Loudness",
+      "type": "object"
+    },
+    "Motion": {
+      "additionalProperties": false,
+      "properties": {
+        "amount_pct": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Amount Pct",
+          "type": "number"
+        },
+        "anchor_end": {
+          "default": [
+            0.5,
+            0.5
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Anchor End",
+          "type": "array"
+        },
+        "anchor_start": {
+          "default": [
+            0.5,
+            0.5
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Anchor Start",
+          "type": "array"
+        },
+        "ease": {
+          "default": "linear",
+          "enum": [
+            "linear",
+            "ease_in",
+            "ease_out",
+            "ease_in_out"
+          ],
+          "title": "Ease",
+          "type": "string"
+        },
+        "hold_s": {
+          "default": 0.0,
+          "title": "Hold S",
+          "type": "number"
+        },
+        "kind": {
+          "default": "none",
+          "enum": [
+            "push_in",
+            "pull_out",
+            "scale_up",
+            "none"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "Motion",
+      "type": "object"
+    },
+    "Overlay": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "default": "center",
+          "enum": [
+            "center",
+            "upper_third",
+            "lower_third"
+          ],
+          "title": "Anchor",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "in": {
+          "title": "In",
+          "type": "number"
+        },
+        "offset_px": {
+          "default": [
+            0,
+            0
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Offset Px",
+          "type": "array"
+        },
+        "out": {
+          "title": "Out",
+          "type": "number"
+        },
+        "style": {
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "style",
+        "in",
+        "out",
+        "text"
+      ],
+      "title": "Overlay",
+      "type": "object"
+    },
+    "SafeZone": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "title": "Height",
+          "type": "integer"
+        },
+        "width": {
+          "title": "Width",
+          "type": "integer"
+        },
+        "x": {
+          "title": "X",
+          "type": "integer"
+        },
+        "y": {
+          "title": "Y",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "title": "SafeZone",
+      "type": "object"
+    },
+    "Sfx": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "title": "At",
+          "type": "number"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "gain_db": {
+          "default": 0.0,
+          "title": "Gain Db",
+          "type": "number"
+        }
+      },
+      "required": [
+        "file",
+        "at"
+      ],
+      "title": "Sfx",
+      "type": "object"
+    },
+    "Shot": {
+      "additionalProperties": false,
+      "properties": {
+        "beat": {
+          "title": "Beat",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "in": {
+          "title": "In",
+          "type": "number"
+        },
+        "kind": {
+          "enum": [
+            "still",
+            "clip"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "motion": {
+          "$ref": "#/$defs/Motion",
+          "default": {
+            "amount_pct": 0.0,
+            "anchor_end": [
+              0.5,
+              0.5
+            ],
+            "anchor_start": [
+              0.5,
+              0.5
+            ],
+            "ease": "linear",
+            "hold_s": 0.0,
+            "kind": "none"
+          }
+        },
+        "n": {
+          "title": "N",
+          "type": "integer"
+        },
+        "out": {
+          "title": "Out",
+          "type": "number"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "source_in": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source In"
+        },
+        "source_out": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Out"
+        },
+        "transition_in": {
+          "$ref": "#/$defs/Transition",
+          "default": {
+            "direction": null,
+            "frames": 4,
+            "kind": "cut"
+          }
+        }
+      },
+      "required": [
+        "n",
+        "id",
+        "beat",
+        "in",
+        "out",
+        "source",
+        "kind"
+      ],
+      "title": "Shot",
+      "type": "object"
+    },
+    "Stem": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "title": "At",
+          "type": "number"
+        },
+        "duration_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration S"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "gain_db": {
+          "default": 0.0,
+          "title": "Gain Db",
+          "type": "number"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "file",
+        "at"
+      ],
+      "title": "Stem",
+      "type": "object"
+    },
+    "Style": {
+      "additionalProperties": false,
+      "properties": {
+        "accent": {
+          "title": "Accent",
+          "type": "string"
+        },
+        "align": {
+          "default": "center",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Align",
+          "type": "string"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "font_file": {
+          "title": "Font File",
+          "type": "string"
+        },
+        "ground": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ground"
+        },
+        "ground_opacity": {
+          "default": 1.0,
+          "title": "Ground Opacity",
+          "type": "number"
+        },
+        "line_spacing": {
+          "default": 1.0,
+          "title": "Line Spacing",
+          "type": "number"
+        },
+        "max_lines": {
+          "title": "Max Lines",
+          "type": "integer"
+        },
+        "max_width_px": {
+          "title": "Max Width Px",
+          "type": "integer"
+        },
+        "padding_px": {
+          "default": [
+            0,
+            0
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Padding Px",
+          "type": "array"
+        },
+        "size_px": {
+          "title": "Size Px",
+          "type": "integer"
+        },
+        "stroke_color": {
+          "default": "#000000",
+          "title": "Stroke Color",
+          "type": "string"
+        },
+        "stroke_px": {
+          "default": 0,
+          "title": "Stroke Px",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "font_file",
+        "size_px",
+        "body",
+        "accent",
+        "max_width_px",
+        "max_lines"
+      ],
+      "title": "Style",
+      "type": "object"
+    },
+    "Transition": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "anyOf": [
+            {
+              "enum": [
+                "left",
+                "right",
+                "up",
+                "down"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Direction"
+        },
+        "frames": {
+          "default": 4,
+          "title": "Frames",
+          "type": "integer"
+        },
+        "kind": {
+          "default": "cut",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "title": "Transition",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "audio": {
+      "$ref": "#/$defs/Audio"
+    },
+    "canvas": {
+      "$ref": "#/$defs/Canvas"
+    },
+    "captions": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Caption"
+      },
+      "title": "Captions",
+      "type": "array"
+    },
+    "captions_style": {
+      "title": "Captions Style",
+      "type": "string"
+    },
+    "cover": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Cover"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "delivery": {
+      "$ref": "#/$defs/Delivery",
+      "default": {
+        "audio_bitrate": "192k",
+        "audio_codec": "aac",
+        "audio_rate": 48000,
+        "codec": "libx264",
+        "crf": 18,
+        "pix_fmt": "yuv420p",
+        "preset": "slow",
+        "profile": "high"
+      }
+    },
+    "overlays": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Overlay"
+      },
+      "title": "Overlays",
+      "type": "array"
+    },
+    "safe_zone": {
+      "$ref": "#/$defs/SafeZone"
+    },
+    "shots": {
+      "items": {
+        "$ref": "#/$defs/Shot"
+      },
+      "title": "Shots",
+      "type": "array"
+    },
+    "slug": {
+      "title": "Slug",
+      "type": "string"
+    },
+    "spec_version": {
+      "title": "Spec Version",
+      "type": "string"
+    },
+    "styles": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Style"
+      },
+      "title": "Styles",
+      "type": "object"
+    }
+  },
+  "required": [
+    "spec_version",
+    "slug",
+    "canvas",
+    "safe_zone",
+    "styles",
+    "shots",
+    "captions_style",
+    "audio"
+  ],
+  "title": "RenderSpec",
+  "type": "object"
+}

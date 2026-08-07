@@ -1,0 +1,6 @@
+# Version floors (not pins): Pillow's freetype rendering varies by version, and
+# golden-image tests compare against locally generated PNGs (never committed).
+# Generated images may vary across machines with different Pillow versions.
+pydantic>=2.9
+Pillow>=11.0
+pytest>=8.3

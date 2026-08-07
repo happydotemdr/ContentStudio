@@ -1,0 +1,403 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from stitcher.spec import (
+    RenderSpec,
+    frame_residual,
+    load_spec,
+    quantize,
+    runtime_seconds,
+    shot_frame_bounds,
+    validate_spec,
+)
+
+MINIMAL = {
+    "spec_version": "1.0",
+    "slug": "demo",
+    "canvas": {"width": 1080, "height": 1920, "fps": 30},
+    "safe_zone": {"x": 90, "y": 380, "width": 900, "height": 1160},
+    "styles": {
+        "card": {
+            "font_file": "fonts/Inter-Bold.ttf",
+            "size_px": 72,
+            "body": "#F7F3E8",
+            "accent": "#F2A541",
+            "ground": "#0E3B43",
+            "ground_opacity": 0.85,
+            "padding_px": [32, 40],
+            "line_spacing": 1.15,
+            "align": "center",
+            "max_width_px": 820,
+            "max_lines": 4,
+            "stroke_px": 0,
+            "stroke_color": "#000000",
+        }
+    },
+    "shots": [
+        {
+            "n": 1,
+            "id": "B-01",
+            "beat": "Hook",
+            "in": 0.0,
+            "out": 3.0,
+            "source": "a.png",
+            "kind": "still",
+            "motion": {"kind": "push_in", "amount_pct": 15},
+            "transition_in": {"kind": "cut"},
+        },
+        {
+            "n": 2,
+            "id": "B-02",
+            "beat": "Setup",
+            "in": 3.0,
+            "out": 6.0,
+            "source": "b.png",
+            "kind": "still",
+            "motion": {"kind": "none"},
+            "transition_in": {"kind": "cut"},
+        },
+    ],
+    "overlays": [
+        {"id": "hook-1", "style": "card", "in": 0.0, "out": 2.0,
+         "anchor": "center", "offset_px": [0, 0], "text": "HELLO [[WORLD]]"}
+    ],
+    "captions": [{"in": 0.0, "out": 2.9, "text": "Hello world."}],
+    "captions_style": "card",
+    "audio": {
+        "stems": [{"id": "vo", "file": "vo.wav", "at": 0.0, "gain_db": 0.0}],
+        "bed": {
+            "file": "bed.mp3", "gain_db": -8.0, "duck_db": -22.0,
+            "duck_attack_ms": 120, "duck_release_ms": 400,
+            "windows": [], "fades": [],
+        },
+        "sfx": [],
+        "loudness": {"integrated_lufs": -14.0, "true_peak_dbtp": -1.5},
+    },
+    "cover": {"source": "cover.png", "overlays": []},
+    "delivery": {
+        "codec": "libx264", "crf": 18, "preset": "slow", "profile": "high",
+        "pix_fmt": "yuv420p", "audio_codec": "aac",
+        "audio_bitrate": "192k", "audio_rate": 48000,
+    },
+}
+
+
+def write(tmp_path: Path, payload: dict) -> Path:
+    path = tmp_path / "render-spec.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_quantize_rounds_to_nearest_frame():
+    assert quantize(2.0, 30) == 60
+    assert quantize(2.875, 30) == 86
+    assert quantize(21.5, 30) == 645
+
+
+def test_frame_residual_reports_non_frame_aligned_times():
+    assert frame_residual(21.5, 30) == pytest.approx(0.0)
+    assert frame_residual(2.875, 30) == pytest.approx(0.25)
+
+
+def test_load_spec_warns_about_non_frame_aligned_times(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["out"] = 2.875
+    payload["shots"][1]["in"] = 2.875
+    spec, warnings = load_spec(write(tmp_path, payload))
+    assert any("2.875" in w and "86.25" in w for w in warnings)
+
+
+def test_load_spec_exposes_in_out_as_start_end(tmp_path: Path):
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    assert spec.shots[0].start == 0.0
+    assert spec.shots[0].end == 3.0
+
+
+def test_shot_frame_bounds_are_derived_by_differencing_boundaries(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["out"] = 2.875
+    payload["shots"][1]["in"] = 2.875
+    spec, _ = load_spec(write(tmp_path, payload))
+    bounds = shot_frame_bounds(spec)
+    # Boundary 2.875s quantizes to frame 86 once, shared by both shots.
+    assert bounds == [(0, 86), (86, 180)]
+    assert bounds[-1][1] == quantize(runtime_seconds(spec), spec.canvas.fps)
+
+
+def test_validate_accepts_the_minimal_spec(tmp_path: Path):
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    assert validate_spec(spec) == []
+
+
+def test_validate_rejects_a_timeline_that_does_not_start_at_zero(tmp_path: Path):
+    """Nothing required it, but everything assumed it: stage D concatenates the
+    shot clips head to tail while every overlay `enable=` and every `adelay`
+    uses absolute spec seconds. A spec starting at 2.0s rendered 60 fewer
+    frames than its runtime implied and put every overlay and stem 2s late."""
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["in"] = 2.0
+    payload["shots"][0]["out"] = 5.0
+    payload["shots"][1]["in"] = 5.0
+    payload["shots"][1]["out"] = 8.0
+    spec, _ = load_spec(write(tmp_path, payload))
+    errors = validate_spec(spec)
+    assert any("must start at 0" in e for e in errors)
+    assert not any("contiguous" in e for e in errors)
+
+
+def test_validate_rejects_non_contiguous_shots(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][1]["in"] = 3.5
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert any("contiguous" in e for e in validate_spec(spec))
+
+
+def test_validate_rejects_non_1080x1920_canvas(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["canvas"]["width"] = 720
+    payload["canvas"]["height"] = 1280
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert any("1080" in e for e in validate_spec(spec))
+
+
+def test_validate_rejects_clip_without_source_trim(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["kind"] = "clip"
+    payload["shots"][0]["source"] = "a.mp4"
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert any("source_in" in e for e in validate_spec(spec))
+
+
+def test_validate_rejects_clip_source_window_that_does_not_match_the_timeline_slot(
+    tmp_path: Path,
+):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["kind"] = "clip"
+    payload["shots"][0]["source"] = "a.mp4"
+    payload["shots"][0]["source_in"] = 0.0
+    payload["shots"][0]["source_out"] = 2.0  # slot is 0.0-3.0s = 3s, window is 2s
+    spec, _ = load_spec(write(tmp_path, payload))
+    errors = validate_spec(spec)
+    assert any("B-01" in e and "source window" in e for e in errors)
+
+
+def test_validate_accepts_a_clip_source_window_matching_the_timeline_slot(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["kind"] = "clip"
+    payload["shots"][0]["source"] = "a.mp4"
+    payload["shots"][0]["source_in"] = 1.0
+    payload["shots"][0]["source_out"] = 4.0  # slot is 0.0-3.0s = 3s, window is 3s
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert not any("source window" in e for e in validate_spec(spec))
+
+
+def test_validate_rejects_motion_on_a_clip_shot(tmp_path: Path):
+    """shots.clip_filters never reads shot.motion -- the Ken Burns scale/crop
+    pair is built only by still_filters -- so a clip authoring push_in used to
+    render motionless with no error, no warning and no QA signal. That is the
+    "subtly wrong video" goal 5 exists to prevent, and §3 rejects
+    unimplemented values rather than dropping them."""
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["kind"] = "clip"
+    payload["shots"][0]["source"] = "a.mp4"
+    payload["shots"][0]["source_in"] = 0.0
+    payload["shots"][0]["source_out"] = 3.0
+    payload["shots"][0]["motion"] = {"kind": "push_in", "amount_pct": 12}
+    spec, _ = load_spec(write(tmp_path, payload))
+    errors = validate_spec(spec)
+    assert any("B-01" in e and "push_in" in e and "not implemented in v1" in e
+               for e in errors), errors
+
+
+def test_a_clip_shot_with_no_motion_is_accepted(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["kind"] = "clip"
+    payload["shots"][0]["source"] = "a.mp4"
+    payload["shots"][0]["source_in"] = 0.0
+    payload["shots"][0]["source_out"] = 3.0
+    payload["shots"][0]["motion"] = {"kind": "none"}
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert not any("motion" in e for e in validate_spec(spec))
+
+
+def test_motion_on_a_still_shot_is_untouched_by_the_clip_rule(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["motion"] = {"kind": "push_in", "amount_pct": 12}
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert not any("motion" in e for e in validate_spec(spec))
+
+
+def test_a_negative_motion_amount_is_rejected_at_load(tmp_path: Path):
+    """A negative zoom shrinks the animated `scale` below the fixed `crop`
+    that follows it. Probed against the installed 9.0 binary with stage A's
+    real filter chain (amount_pct=-20, supersample 4, a moving anchor): ffmpeg
+    segfaults, exit 139."""
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["motion"]["amount_pct"] = -20
+    with pytest.raises(ValueError):
+        load_spec(write(tmp_path, payload))
+
+
+def test_validate_also_rejects_a_negative_motion_amount(tmp_path: Path):
+    """Second gate, for a spec built by any path that skips field validation:
+    what it prevents is a segfault, not a bad-looking render."""
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    spec.shots[0].motion.amount_pct = -20
+    assert any("amount_pct" in e for e in validate_spec(spec))
+
+
+def test_validate_rejects_whip_without_direction(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][1]["transition_in"] = {"kind": "whip", "frames": 4}
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert any("direction" in e for e in validate_spec(spec))
+
+
+def test_validate_rejects_overlapping_bed_windows(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["audio"]["bed"]["windows"] = [
+        {"in": 0.0, "out": 3.0, "mode": "out", "level_db": None},
+        {"in": 2.0, "out": 5.0, "mode": "ducked", "level_db": None},
+    ]
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert any("overlap" in e for e in validate_spec(spec))
+
+
+def test_validate_rejects_an_empty_stems_list(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["audio"]["stems"] = []
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert any("no audio stems" in e for e in validate_spec(spec))
+
+
+def test_validate_rejects_unknown_captions_style(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["captions_style"] = "nope"
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert any("captions_style" in e for e in validate_spec(spec))
+
+
+def test_validate_rejects_overlapping_captions(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["captions"] = [
+        {"in": 0.0, "out": 2.0, "text": "one"},
+        {"in": 1.5, "out": 3.0, "text": "two"},
+    ]
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert any("caption" in e.lower() for e in validate_spec(spec))
+
+
+def test_validate_rejects_overlay_past_runtime(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["overlays"][0]["out"] = 99.0
+    spec, _ = load_spec(write(tmp_path, payload))
+    assert any("runtime" in e for e in validate_spec(spec))
+
+
+def test_unknown_spec_version_is_rejected(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["spec_version"] = "9.9"
+    with pytest.raises(ValueError):
+        load_spec(write(tmp_path, payload))
+
+
+def test_unsupported_transition_names_v1(tmp_path: Path):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][1]["transition_in"] = {"kind": "dissolve"}
+    with pytest.raises(ValueError, match="not implemented in v1"):
+        load_spec(write(tmp_path, payload))
+
+
+# --- the generated JSON Schema (design spec section 3) --------------------
+
+# The one-line fix for every failure in this section, quoted verbatim in the
+# assertion messages and in stitcher/README.md so the three never disagree.
+REGENERATE_SCHEMA_CMD = "cd stitcher && python -m stitcher.spec"
+
+
+def test_the_committed_json_schema_matches_the_models():
+    """Spec §3: "Pydantic v2 models are the source of truth;
+    stitcher/schema/render-spec.schema.json is generated from them so external
+    tools can validate without importing Python."
+
+    The file is committed rather than generated on demand -- a file that only
+    exists after a Python run does not deliver "validate without importing
+    Python" -- which means it can rot. This test is the thing that stops it:
+    it fails the suite the moment a model changes without the file being
+    regenerated, and names the command that fixes it.
+
+    THE OTHER WAY THIS FAILS. Under R2 the dependency pins are floors
+    (`pydantic>=2.9`), so a pydantic upgrade that changes how schemas are
+    emitted -- a new keyword, a renamed `$defs` entry, a different
+    representation of a constraint -- also fails this test, on a day nobody
+    touched spec.py. That is the CORRECT signal, not a false alarm: the
+    committed file really has stopped describing what this build validates,
+    and external tools really would be checking against yesterday's schema.
+    So the test is not weakened to tolerate it. Instead the failure says
+    exactly what to run, and distinguishes a content change from a
+    formatting-only one, so a maintainer who did not touch a model can see
+    in one line that an upgrade moved the schema under them.
+    """
+    from stitcher.spec import SCHEMA_PATH, schema_json
+
+    assert SCHEMA_PATH.is_file(), (
+        f"{SCHEMA_PATH} is missing; generate it with `{REGENERATE_SCHEMA_CMD}`"
+    )
+
+    committed = SCHEMA_PATH.read_text(encoding="utf-8")
+    generated = schema_json()
+    if committed == generated:
+        return
+
+    # Byte equality is still what the test enforces -- the formatting is
+    # entirely ours (json.dumps, sorted keys, 2-space, trailing LF), so
+    # loosening to parsed equality would let the committed file drift out of
+    # canonical form for no benefit. Parsing only classifies the failure.
+    try:
+        same_content = json.loads(committed) == json.loads(generated)
+    except json.JSONDecodeError:
+        same_content = False
+    kind = (
+        "the FORMATTING differs but the schema content is identical"
+        if same_content
+        else "the schema CONTENT differs from what the models now emit"
+    )
+    raise AssertionError(
+        f"{SCHEMA_PATH} has drifted from the pydantic models in spec.py: {kind}.\n"
+        f"Fix it with exactly this, from the repo root, and commit the result:\n\n"
+        f"    {REGENERATE_SCHEMA_CMD}\n\n"
+        "If you did not change a model, an upgraded pydantic changed how it "
+        "emits schemas (requirements.txt pins floors, not exact versions). "
+        "Regenerating is still the right fix: the committed file is what "
+        "external validators use, and it has to describe this build."
+    )
+
+
+def test_the_generated_schema_publishes_the_external_in_out_keys():
+    """The file describes render-spec.json as written on disk, whose keys are
+    `in`/`out` -- not the Python attributes `start`/`end`, which only exist
+    because `in` is a reserved word. Publishing the attribute names would
+    make every external validator reject every real spec."""
+    from stitcher.spec import render_spec_schema
+
+    schema = render_spec_schema()
+    for model in ("Shot", "Overlay", "Caption", "BedWindow"):
+        properties = schema["$defs"][model]["properties"]
+        assert "in" in properties and "out" in properties, model
+        assert "start" not in properties and "end" not in properties, model
+    assert "in" in schema["$defs"]["Shot"]["required"]
+    assert "out" in schema["$defs"]["Shot"]["required"]
+
+
+def test_the_generated_schema_is_a_usable_json_schema_document():
+    from stitcher.spec import SCHEMA_PATH
+
+    document = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert document["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert document["type"] == "object"
+    # extra="forbid" on every model has to survive into the published schema,
+    # or an external validator would silently accept keys load_spec rejects.
+    assert document["additionalProperties"] is False
+    assert set(MINIMAL) <= set(document["properties"])
