@@ -38,10 +38,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import envelope, ffmpeg
+from .cache import Manifest, file_digest, payload_digest
 from .naming import Workspace
 from .spec import RenderSpec, runtime_seconds
 
 LRA_TARGET = 11.0
+
+# Stage C's single manifest key. The whole stage is one cache unit rather
+# than seven: its seven ffmpeg invocations form one chain (place -> measure
+# -> conform -> duck -> mix -> loudnorm pass 1 -> loudnorm pass 2) in which
+# every step consumes the previous step's output, so no proper subset of them
+# can be skipped independently.
+CACHE_KEY = "audio/stage-c"
 
 # Deviation from the plan's regex (see task-10-report.md for detail): the
 # plan anchored the match to the end of the string (`\s*$`), reasoning that
@@ -103,6 +111,129 @@ def audio_omissions(spec: RenderSpec, missing_audio: list[str]) -> tuple[list[di
             omitted.append({"file": item.file, "role": "sfx"})
     silent = [stem.file for stem in spec.audio.stems if stem.file in missing_audio]
     return omitted, silent
+
+
+def audio_cache_key(
+    spec: RenderSpec,
+    ws: Workspace,
+    mode: str,
+    ffmpeg_build: str,
+    missing_audio: list[str],
+) -> str:
+    """Everything that determines this stage's artifacts (spec §5).
+
+    Spec §5 requires "the relevant spec fragment, the content hash of every
+    input asset, ... the ffmpeg build string, and the run mode". Here that is:
+
+    - `spec.audio` in full -- stems (file/at/gain_db/duration_s), the bed
+      (gain/duck/attack/release/windows/fades) and its sfx, and the loudness
+      targets, which are the two loudnorm passes' entire argument set;
+    - the content digest of every input file, in the exact order the stage
+      feeds them to ffmpeg, so reordering two stems invalidates as surely as
+      editing one. `file_digest` hashes a MISSING file to a stable sentinel,
+      so a file appearing or disappearing moves the key too;
+    - `runtime`, because it is the bed's `-t`, the mix's `apad`/`atrim`
+      length, and nothing in `spec.audio` carries it (it comes from the last
+      shot's `out`);
+    - `missing_audio`, which decides silence substitution vs. omission and is
+      preflight's judgement, not a property of the files alone;
+    - `LRA_TARGET`, which is a module constant sitting directly in both
+      loudnorm command lines;
+    - the ffmpeg build and the run mode.
+
+    Deliberately NOT included: this module's own filter-construction code and
+    envelope.py's constants. No stage hashes its own source (stage A does not
+    either), and a cache that silently served a stale artifact would be worse
+    than no cache -- so the rule is that anything a SPEC EDIT can change is in
+    the key, and a code edit is expected to be followed by `clean` or
+    `--force`. Said out loud here rather than left as an omission to discover.
+    """
+    stems = [file_digest(ws.asset(stem.file)) for stem in spec.audio.stems]
+    bed = file_digest(ws.asset(spec.audio.bed.file)) if spec.audio.bed else None
+    sfx = [file_digest(ws.asset(item.file)) for item in spec.audio.sfx]
+    return payload_digest(
+        spec.audio.model_dump(by_alias=True),
+        stems,
+        bed,
+        sfx,
+        runtime_seconds(spec),
+        sorted(missing_audio),
+        LRA_TARGET,
+        ffmpeg_build,
+        mode,
+    )
+
+
+def _cache_artifacts(ws: Workspace, bed_built: bool) -> list[Path]:
+    """Every artifact a later stage reads out of stage C's output set.
+
+    A cache hit has to leave the workspace indistinguishable from a fresh
+    run, so all of these must survive for the hit to be honest: stage D reads
+    the mix, and stage F reads the mix (true peak), both bed intermediates
+    (duck depth), the pass-2 record (linearity) and the audio report
+    (preview_audio, audio_omissions). Missing any one of them would downgrade
+    a QA check to UNAVAILABLE on a run that reported a cache hit.
+    """
+    required = [
+        ws.audio_step("06", "mix_final"),
+        ws.audio_report_path,
+        ws.work_dir / "loudnorm_pass2.json",
+    ]
+    if bed_built:
+        required += [
+            ws.audio_step("04a", "bed_conformed"),
+            ws.audio_step("04b", "bed_ducked"),
+        ]
+    return required
+
+
+def cached_audio(
+    spec: RenderSpec, ws: Workspace, manifest: Manifest | None, digest: str | None
+) -> AudioResult | None:
+    """Rebuild the AudioResult from work/ when the key still matches.
+
+    Everything the AudioResult carries is already durable: the mix and the
+    two bed intermediates are files, and the voice reference, the omission
+    list and the preview flag live in work/<mode>/audio_report.json (wave A
+    made that record durable precisely so stage F could read it without stage
+    C in hand). The pass-2 loudnorm dict comes from its own record. So a hit
+    reconstructs the full result rather than returning a thinner one.
+
+    Any unreadable or malformed record is a MISS, never a partial hit: a
+    stale or half-written artifact is worse than re-running the stage.
+    """
+    if manifest is None or digest is None:
+        return None
+    mix = ws.audio_step("06", "mix_final")
+    if not manifest.is_fresh(CACHE_KEY, digest, mix):
+        return None
+
+    try:
+        record = json.loads(ws.audio_report_path.read_text(encoding="utf-8"))
+        loudnorm = json.loads((ws.work_dir / "loudnorm_pass2.json").read_text("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(record, dict) or not isinstance(loudnorm, dict):
+        return None
+
+    bed_built = bool(record.get("bed_built"))
+    if not all(path.is_file() for path in _cache_artifacts(ws, bed_built)):
+        return None
+
+    conformed = ws.audio_step("04a", "bed_conformed") if bed_built else None
+    ducked = ws.audio_step("04b", "bed_ducked") if bed_built else None
+    reference = record.get("voice_reference_lufs")
+    return AudioResult(
+        mix,
+        conformed,
+        ducked,
+        # audio_report.json writes null rather than a bare -Infinity literal
+        # (invalid JSON for anything but Python), so restore the float here.
+        -math.inf if reference is None else float(reference),
+        loudnorm,
+        list(record.get("omitted", [])),
+        list(record.get("silent_stems", [])),
+    )
 
 
 def parse_loudnorm_json(stderr: str) -> dict:
@@ -218,8 +349,27 @@ def build_audio(
     mode: str,
     log_path: Path,
     missing_audio: list[str],
+    manifest: Manifest | None = None,
 ) -> AudioResult:
+    """Stage C, manifest-cached as a unit (spec §4: "each stage is
+    independently cacheable"; spec §5's worked example pointedly re-runs only
+    B, D, E and F for a copy edit).
+
+    `manifest` is optional and defaults to None -- with no manifest the stage
+    always rebuilds, which is what every direct caller in the tests wants.
+    cmd_render always passes one.
+    """
     runtime = runtime_seconds(spec)
+
+    digest = (
+        audio_cache_key(spec, ws, mode, ffmpeg.ffmpeg_version(), missing_audio)
+        if manifest is not None
+        else None
+    )
+    hit = cached_audio(spec, ws, manifest, digest)
+    if hit is not None:
+        return hit
+
     voice, durations = _place_stems(spec, ws, log_path, missing_audio)
     voice_measured = ffmpeg.measure_loudness(voice, log_path)
     voice_lufs = voice_measured["input_i"]
@@ -385,6 +535,13 @@ def build_audio(
             "the determinism guarantee. Lower the true-peak target or reduce input "
             "level so limiting is not required."
         )
+
+    # Recorded LAST, after the linearity gate: the key is only written for a
+    # run that actually completed, so a stage that raised can never be
+    # replayed from cache as though it had succeeded.
+    if manifest is not None and digest is not None:
+        manifest.set(CACHE_KEY, digest)
+        manifest.save()
 
     return AudioResult(
         final, conformed, ducked, voice_lufs, pass2, omitted, silent_stems

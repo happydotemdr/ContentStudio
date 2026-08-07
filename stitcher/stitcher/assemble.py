@@ -10,11 +10,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import ffmpeg
+from .cache import Manifest, file_digest, payload_digest
 from .naming import Workspace
-from .spec import RenderSpec
+from .spec import Overlay, RenderSpec
 
 DRAFT_CRF = 30
 DRAFT_PRESET = "ultrafast"
+
+# Stage D produces exactly one artifact from one ffmpeg invocation, so it is
+# one manifest key.
+CACHE_KEY = "assemble/master"
 
 # The filtergraph is written to work/<mode>/graph_assemble.txt and read from
 # there rather than embedded inline, per spec §4 stage D.
@@ -101,6 +106,52 @@ def build_graph(overlay_count: int, enables: list[str]) -> str:
     return ";".join(steps)
 
 
+def assemble_cache_key(
+    spec: RenderSpec,
+    mode: str,
+    clips: list[Path],
+    ordered: list[Overlay],
+    overlay_pngs: dict[str, Path],
+    mix: Path,
+    ffmpeg_build: str,
+) -> str:
+    """Everything that determines work/<mode>/master.mp4 (spec §5).
+
+    - the clip list, by content digest in timeline ORDER, which is what makes
+      both a re-rendered shot (same filename, new bytes) and a swapped pair of
+      shots invalidate. The names ride along beside the digests because they
+      are what concat.txt actually records; they are not what carries the
+      ordering -- verified by removing them and confirming the reorder test
+      still fails on the ordered digest list alone;
+    - every overlay this run composites, by content digest AND by its model
+      (the `in`/`out` pair is the `enable=` gate, and the ORDER is the
+      overlay-chain order), so a card that only moved in time still
+      invalidates;
+    - the mix, by content digest -- this is what makes a stage C rebuild
+      cascade into stage D;
+    - `spec.delivery` in full (codec/crf/preset/profile/pix_fmt and the whole
+      audio side) and `spec.canvas` (fps is the `-r` value);
+    - the run mode, which overrides crf/preset and gates the High-profile
+      `-x264-params` fix;
+    - the ffmpeg build.
+
+    Deliberately NOT included: this module's own argv construction. Same rule
+    as stage C -- a spec edit invalidates, a code edit needs `clean` or
+    `--force`.
+    """
+    return payload_digest(
+        [clip.name for clip in clips],
+        [file_digest(clip) for clip in clips],
+        [overlay.model_dump(by_alias=True) for overlay in ordered],
+        [file_digest(overlay_pngs[overlay.id]) for overlay in ordered],
+        file_digest(mix),
+        spec.delivery.model_dump(),
+        spec.canvas.model_dump(),
+        mode,
+        ffmpeg_build,
+    )
+
+
 def normalize_graph(graph: str, replacements: dict[str, str]) -> str:
     """Tokenize absolute paths so filtergraph goldens are machine-independent."""
     normalized = graph
@@ -117,8 +168,17 @@ def assemble(
     overlay_pngs: dict[str, Path],
     mix: Path,
     log_path: Path,
+    manifest: Manifest | None = None,
 ) -> Path:
     """Concat -> overlay chain -> mux mix -> final encode, in one ffmpeg call.
+
+    Manifest-cached (spec §4: "each stage is independently cacheable").
+    `manifest` is optional and defaults to None, in which case the stage
+    always re-encodes; cmd_render always passes one. concat.txt and
+    graph_assemble.txt are rewritten either way -- spec §2 keeps both in
+    work/ as the record of what was assembled, they cost two small file
+    writes, and a hit that left a stale graph on disk next to a current
+    master would be actively misleading.
 
     Verified against the real 9.0 binary (see module docstrings above for
     each piece): the concat demuxer accepts stage A's bt709-tagged, yuv444p
@@ -143,7 +203,21 @@ def assemble(
     graph = build_graph(len(ordered), enables)
     ws.graph_path.write_text(graph, encoding="utf-8")
 
-    inputs = ["-f", "concat", "-safe", "0", "-i", str(concat)]
+    digest = (
+        assemble_cache_key(
+            spec, mode, clips, ordered, overlay_pngs, mix, ffmpeg.ffmpeg_version()
+        )
+        if manifest is not None
+        else None
+    )
+    if (
+        manifest is not None
+        and digest is not None
+        and manifest.is_fresh(CACHE_KEY, digest, ws.master_path)
+    ):
+        return ws.master_path
+
+    inputs =["-f", "concat", "-safe", "0", "-i", str(concat)]
     for overlay in ordered:
         inputs += ["-i", str(overlay_pngs[overlay.id])]
     audio_index = 1 + len(ordered)
@@ -214,4 +288,8 @@ def assemble(
         ],
         log_path,
     )
+    # Recorded only after the encode returned successfully.
+    if manifest is not None and digest is not None:
+        manifest.set(CACHE_KEY, digest)
+        manifest.save()
     return ws.master_path
