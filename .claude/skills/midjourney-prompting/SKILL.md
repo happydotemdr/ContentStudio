@@ -138,14 +138,24 @@ submission. 24 images at 512px for **0.4 GPU minutes — half the cost of SD**
 `[T] (verified 2026-07-26)`, so one job samples 24 aesthetics for free.
 
 Never `--hd`, never `--q 2`+, never `--oref` here (`--oref` is Draft-incompatible anyway). Emit the
-draft command, tell the user to harvest the winning thumbnail's style code, and **stop for their pick**.
+draft command and **stop for their pick**. What happens to that pick depends on
+which job this is `[I]`:
+
+- **Style discovery** (`stage: moodboard` / `explore`) — harvest the winning thumbnail's
+  style code; it becomes a Style Library entry, and the ladder terminates here.
+- **Asset rendering in the ContentStudio pipeline** — do *not* harvest. The style is
+  already bound from the Library via the sheet's `{style:…}` slot and is present from the
+  draft onward, so the pick chooses a *composition*, not a style. Drafting off-style would
+  make the pick meaningless.
 
 **`stage: moodboard`, `explore`, and `profile` terminate here.** They never escalate. That is the core
 token-discipline promise, and Gate A enforces it.
 
 ### Step 4 — Phase 2, compositional lock (standard)
 
-Drop `--draft`, stay `--sd`. Substitute the harvested `--sref <code>` or moodboard `--p <code>`. Attach
+Drop `--draft`, stay `--sd`. Carry the same style reference the draft ran under — the harvested `--sref <code>` in a
+discovery job, or the Library-bound `{style:…}` slot in a pipeline job. Changing the style
+between rungs invalidates the composition you just chose `[I]`. Attach
 `--oref --ow 50–150` if subject-lock was chosen. Add optics and lighting specificity. Drop `--c` toward
 0. Validate framing and lighting **here**, at 0.8 GPU minutes, not at 1.3.
 
@@ -222,7 +232,8 @@ ARCHIVE
   prompt / seed / --sref or --p code / --oref url + --ow / model version / date
 
 NEXT
-  [harvest a style code → lock composition → production, or the pipeline handoff]
+  [discovery job: harvest a style code → lock composition → production. Pipeline job: no
+  harvest — style already bound; proceed to the pipeline handoff.]
 ```
 
 In pipeline mode, collapse this to the prompt + parameters + one-line why — `visual-prompts` owns
