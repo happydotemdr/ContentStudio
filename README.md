@@ -9,13 +9,14 @@ Every corpus is fetched fresh from its public source (or, for youth-sports,
 copied from a local checkout — see the note in that section). The downloaded
 texts land in a git-ignored `output/` folder and are never committed.
 
-**Scope note:** ContentStudio's six generic shorts-production skills (see the
+**Scope note:** ContentStudio's eight generic shorts-production skills (see the
 top-level `CLAUDE.md`) are built entirely from the **Brand-intel / headless
-YouTube** row below — the `docs/` guides and `output/brand-intel/`. Two
-**tool-specialist** skills sit alongside them — `elevenlabs-audio` and
-`midjourney-prompting` — and are **not** corpus-derived: they are built from
-web-verified vendor documentation captured in `docs/elevenlabs-production-runbook.md`
-and the Midjourney guide, and carry their own provenance markers. The
+YouTube** row below — the `docs/` guides and `output/brand-intel/`. Three
+**tool-specialist** skills sit alongside them — `elevenlabs-audio`,
+`midjourney-prompting`, and `elevenlabs-music` — and are **not** corpus-derived: they are built
+from web-verified vendor documentation captured in `docs/elevenlabs-production-runbook.md`,
+the Midjourney guide, and `docs/elevenlabs-music-runbook.md`, and carry their own provenance
+markers. The
 **Thinkers** and **Youth sports** rows feed two RaisingGoodSports-only skills,
 `rgs-grounding` and `rgs-pairing-review` (see `.claude/skills/rgs-grounding/`
 and `.claude/skills/rgs-pairing-review/`) — carried over as a toolkit-wide

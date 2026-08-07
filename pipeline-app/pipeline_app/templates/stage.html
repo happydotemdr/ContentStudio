@@ -32,10 +32,35 @@
 <section class="output-panel">
   <h2>Output</h2>
   {% if output_html %}<div class="rendered-markdown">{{ output_html | safe }}</div>{% else %}<p>No output yet.</p>{% endif %}
+  {% if output_gates %}
+  <div class="gates-panel">
+    <h3>Gates</h3>
+    {% for gate in output_gates %}
+    <div class="gate-result">
+      <span class="status status-{{ gate.status }}">{{ gate.name }}: {{ gate.status }}</span>
+      {% if gate.findings %}
+      <ul class="gate-findings">
+        {% for finding in gate.findings %}
+        {% if finding.kind == "skipped" %}
+        <li class="gate-finding gate-finding-skipped">[skipped] {{ finding.check }}{% if finding.beat %} ({{ finding.beat }}){% endif %}: {{ finding.message }}</li>
+        {% else %}
+        <li class="gate-finding gate-finding-blocking">[{{ finding.check }}]{% if finding.beat %} ({{ finding.beat }}){% endif %}: {{ finding.message }}</li>
+        {% endif %}
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% if stage_status == "stale" %}
   <p class="stale-override-note">This stage is stale (built on a since-changed upstream input). Approving now will override the staleness cascade instead of regenerating.</p>
   {% endif %}
   <form method="post" action="/projects/{{ project.id }}/stages/{{ stage_id }}/approve">
+    {% if has_failing_gate %}
+    <label for="override_reason">Override reason (a gate above is failing/erroring)</label>
+    <input type="text" id="override_reason" name="override_reason" placeholder="e.g. dash is inside a verbatim 1886 quote">
+    {% endif %}
     <button type="submit">Mark Approved</button>
   </form>
 </section>

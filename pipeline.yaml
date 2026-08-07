@@ -12,6 +12,10 @@ stages:
     skill: shorts-scripting
     dir_prefix: "02"
     depends_on: [ideation]
+  - id: styleboard
+    skill: shorts-styleboard
+    dir_prefix: "02b"
+    depends_on: [scripting]
   - id: voiceover
     skill: voiceover-brief
     specialist: elevenlabs-audio
@@ -23,7 +27,13 @@ stages:
     specialist: midjourney-prompting
     specialist_mode: auto
     dir_prefix: "03"
-    depends_on: [scripting]
+    depends_on: [scripting, styleboard]
+  - id: music
+    skill: music-brief
+    specialist: elevenlabs-music
+    specialist_mode: manual
+    dir_prefix: "03"
+    depends_on: [scripting, voiceover]
   - id: assembly
     skill: shorts-assembly
     dir_prefix: "04"

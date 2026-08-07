@@ -11,6 +11,7 @@ STAGE_ID_BY_SKILL = {
     "shorts-scripting": "scripting",
     "voiceover-brief": "voiceover",
     "visual-prompts": "visual",
+    "music-brief": "music",
     "shorts-assembly": "assembly",
     "social-repurpose": "repurpose",
     "rgs-pairing-review": None,

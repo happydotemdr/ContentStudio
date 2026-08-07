@@ -1,0 +1,37 @@
+---
+version: 1
+---
+=== SHORT SCRIPT — let-kids-play-act-specialization-01 ===
+Concept brief source: shorts-ideation, "The Trade Nobody Names" (rgs-briefs/2026-07-25-let-kids-play-act-specialization-concept-brief.md)
+Working title:   NFL Stat Kills the 'Specialize Early' Advice
+Single premise:  The specific future payoff early single-sport specialization is traded for (an elite/scholarship outcome) frequently doesn't arrive — a reversal finding, not the more commonly-covered injury-risk claim — framed against a 260-year-old warning against trading a child's present joy for a speculative future.
+Constraint/stake: Binding demonetization constraint carried from the concept brief — no sponsor names, no party references, no "Congress"/"Senate"/committee-status/political framing. Going further than the constraint requires: the pending federal bill is omitted from this script entirely, per the concept brief's own guidance to treat it as optional and non-load-bearing — the promise below is fully deliverable without it, so it doesn't earn a beat.
+Net-info-gain check: Existing youth-sports-parenting content on specialization is almost entirely injury-risk framing ("specializing raises injury risk"), a well-covered claim. This script adds the less-covered reversal finding — early specialization predicts junior success but not world-class senior success, so the specific payoff (the elite outcome) is frequently the thing that doesn't arrive, independent of injury — paired with Rousseau's century-old naming of exactly this trade-off. [C]
+
+HOOK        (0–3s  | 13 words): "Multi-sport NFL players had longer, safer careers than the ones who specialized early."
+SETUP       (3–8s  | 19 words): "Over 260 years ago, Rousseau warned about trading a kid's present joy for a future that might never come."
+BUILD/VALUE (8–28s | 46 words): "That's the exact trade a family makes cutting three sports down to one by age nine, chasing 'the path.'"
+  [re-hook beat @ ~15s]: "But the medical establishment's own position on this is blunt: there's no evidence early specializing is needed for elite success — just extra injury and burnout risk."
+PAYOFF      (28–38s | 18 words): "A review of six thousand athletes found the twist: early specializing predicts junior success, not senior, world-class success."
+LOOP/CTA    (38–45s | 8 words, mirrors hook): "So does specializing early actually get them there?"
+Comment-bait question: "Did your kid ever ask to keep playing a second sport and get told to pick one — what did you decide?"
+Next-video bridge: none available (no existing published RGS Short identified to bridge to — flagging per the corpus's strongly-supported rule rather than leaving this silently blank)
+Total word count: ~104 words (150–170 wpm)
+
+Visual notes (for visual-prompts downstream):
+  Hook: Split-frame open — one side a kid in three different sports' gear stacked/overlapping, the other a single uniform in sharp focus, everything else faded; slow few-percent push-in signals "something's coming"; on-screen text renders the comparative claim ("longer, safer careers") since it's a spoken stat.
+  Setup: On-screen date-stamp graphic ("Rousseau, 1762") over a child playing freely and unstructured (no equipment, no coach) — carries the "260 years" detail visually, paraphrase text only, no quote card.
+  Build: A simple narrowing-icon graphic — three sport icons collapsing into one, with an "age 9" label — visualizing the trade named in the main line.
+  Re-hook: On-screen motion-text card rendering the medical-consensus line as it's spoken (flagged — spoken stat/claim), paired with a generic clinical/plus-sign motif — no institutional logo or named organization on screen.
+  Payoff: On-screen motion graphic of two diverging paths/lines labeled "junior" and "world-class senior" splitting apart — visualizing the reversal finding as it's spoken (flagged — spoken statistic).
+  Loop/CTA: Return to the Hook's split-frame shot, now with the single-sport side visibly isolated/smaller — closes the visual loop to match the mirrored VO line.
+
+Delivery notes: Muted-friendly — confirmed every beat's visual note carries the beat's meaning independent of audio. Medium-confidence techniques used (Jenny Hoyos, structural-observation-only, not stated advice): mirrored closing line for the seamless loop-to-start (Loop/CTA echoes Hook's "specialized early" phrase); escalation framing in the Build (small, concrete NFL stat in Hook → general medical-consensus claim in the re-hook → the bigger, more surprising reversal finding in Payoff). Humanize pass: sentence lengths vary 8–46 words across beats, no AI-fingerprint phrases or buzzwords, contrast words used ("but," "so"). Fact-check flag: the NFL-cohort figures (~12 more games, ~0.7 more career years) and the Güllich et al. 2022 meta-analysis figures (6,096 athletes, 772 world-class) were confirmed against `output/youth-sports/raisinggoodsports/rgs-r2-specialization.md` during grounding — re-verify only if that file's edition has changed since 2026-07-18. Association-only framing checked: "predicts" and "linked to" language used throughout, no causal claim made from either the NFL cohort (retrospective) or the specialization meta-analysis. Early-peak-sport exception check: this script names one specific sport (NFL/football), which is not an early-peak sport (gymnastics/figure skating/diving), so the general anti-specialization finding applies without needing the exception caveat on screen.
+
+Citation markers used in this script:
+  [THINKER: Rousseau, Émile, paraphrase-caution] — Setup only (paraphrased; no on-screen quote card at any point).
+  [RESEARCH: R2 Source 3 (NFL cohort), Quality Medium–High (retrospective cohort of pros)] — Hook.
+  [RESEARCH: R2 Source 1 + synthesis (AAP/AOSSM/AMSSM consensus), Quality High] — Build re-hook.
+  [RESEARCH: R2 Source 5 (Güllich et al. 2022 meta-analysis), Quality High] — Payoff.
+
+Constraints that survive to publish (copied verbatim from the companion grounding artifact): paraphrase-caution (Rousseau) — never render as an on-screen quote card, voiceover paraphrase only (manifest-level flag; this brief's specific anchor is Book II, not the Book V material the caution was written for, but the flag is recorded at the whole-work level per the manifest). Frame R2's specialization findings as association/balance-of-evidence, not settled causal science — the file's own synthesis explicitly names Mosher (2022) and the Kliethermes/AMSSM summit (2021) as honest dissent from the consensus. Name the early-peak-sport exception (gymnastics, figure skating, diving) if the script names any specific sport, so the claim doesn't overgeneralize. R2's edition is dated 2026-07-18 — if this Short ships well after that date, spot-check the file for a refresh before publishing. Additional constraint added at the concept-brief stage: no sponsor names, no party references, no "Congress"/"Senate"/committee-status framing — moot here since the bill was omitted entirely, but binding if a future revision reintroduces it.

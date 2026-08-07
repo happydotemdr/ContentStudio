@@ -5,20 +5,38 @@ description: Turns a faceless-YouTube-Shorts script plus its voiceover brief and
 
 # Shorts Assembly
 
-Produces the **edit plan** for one Short: the fifth of six atomic ContentStudio skills. It does not touch ideation, scripting, voice, or visual-asset generation — those are separate skills. It does not write post copy — that is `social-repurpose`, next.
+Produces the **edit plan** for one Short: the stage of ContentStudio's eight-skill pipeline that follows `shorts-scripting`, `voiceover-brief`, `visual-prompts`, and `music-brief`, and precedes `social-repurpose`. It does not touch ideation, scripting, voice, or visual-asset generation — those are separate skills. It does not write post copy — that is `social-repurpose`, next.
 
 ## Pipeline position
 
 | Upstream | This skill | Downstream |
 |---|---|---|
-| `shorts-scripting` (script + beat timing), `voiceover-brief` (ElevenLabs voice spec), `visual-prompts` (Midjourney/Kling/Ideogram prompt sheet keyed to beats) | **`shorts-assembly`** → edit plan | `social-repurpose` (finished Short + script/packaging → multi-surface post copy) |
+| `shorts-scripting` (script + beat timing), `voiceover-brief` (ElevenLabs voice spec), `visual-prompts` (Midjourney/Kling/Ideogram prompt sheet keyed to beats), `music-brief` (bed arc — **optional**) | **`shorts-assembly`** → edit plan | `social-repurpose` (finished Short + script/packaging → multi-surface post copy) |
 
 **Inputs required to run this skill:**
 1. The shot-ready script with beat timing (Hook/Setup/Build/Payoff/Loop, seconds + word counts).
 2. The voiceover brief (voice pick, pacing wpm, take count) — or at minimum the VO's target wpm and total duration.
 3. The visual prompt sheet keyed to script beats (which shot uses which asset, generated vs. stock).
+4. **Optional — the music bed brief** (from `music-brief`, and its `elevenlabs-music` MIX HANDOFF
+   if one exists). If present, use its bed arc, hook hold-out and asset filename in the loudness/mix
+   section instead of leaving the bed unspecified. **If absent, carry the existing rights-note
+   checkpoint unchanged** — a Short with a library track or no bed at all is a legitimate outcome,
+   and the corpus is explicit that no music beats the wrong music
+   `[C] (Kallaway, i7upRL4H1FM)`.
 
-If any of the three is missing, ask for it rather than inventing shot content — this skill assembles what upstream produced, it doesn't re-derive the script or the visuals.
+If any of the first three is missing, ask for it rather than inventing shot content — this skill
+assembles what upstream produced, it doesn't re-derive the script or the visuals. **The fourth is
+genuinely optional and its absence is never a blocker.**
+
+**Before pasting any prompt from input 3, resolve its slot token — this is a manual step until
+the render console exists `[I]`.** Every prompt in the sheet ends in an unresolved
+`{style:register_a}` / `{style:register_b}` / `{char:<name>}` token, never a literal `--sref`/`--p`
+code — `visual-prompts`' Gate C rejects a literal invented code, so the code was deliberately never
+written into the sheet. Before a prompt is run in Midjourney, look up the styleboard's `BINDINGS`
+line for that slot, find the actual harvested code for the Style Library entry it names, and replace
+the whole token with the real flag(s) — `--sref <code>`, `--p <code>`, `--oref <url> --ow <n>`, or
+nothing at all for a personalization binding. Pasting the token as literal text renders the words
+"style register a" into the image instead of applying a look.
 
 **Optional: constraints that survive to publish.** `[I]` If the incoming script's Delivery notes field
 carries a "constraints that survive to publish" line (e.g. a quotability restriction on a
@@ -75,12 +93,19 @@ This skill participates in ContentStudio's file-based pipeline handoff (see
 exactly — write only to the named path, overwrite it each turn as instructed. Do not also write
 to `rgs-briefs/` in this mode.
 
+**App-driven note.** The `music` stage is not one of this stage's `depends_on`, so a music brief is
+not passed in automatically. If the user references a bed, look for the run's
+`03-music/artifact.v*.md` (highest version wins) and read it; if there is none, proceed with the
+rights-note checkpoint as normal `[I]`.
+
 **Standalone** (no output path was given):
 
 1. Resolve the three upstream inputs: run `python scripts/resolve_brief_version.py --slug <slug>
    --kind script`, `... --kind voiceover-brief`, and `... --kind visual-prompts` from the repo
    root. Read each file the resolver reports.
-   **Staleness check:** re-run all three resolver calls again right before you finish — if a
+   Also try an optional fourth resolve, `... --kind music`; its absence is not an error — if it
+   prints `NONE`, proceed without a music brief.
+   **Staleness check:** re-run all three required resolver calls again right before you finish — if a
    newer version now exists for any of them than the one you read, tell the user before
    proceeding.
 2. Before writing the assembly file, run
@@ -103,6 +128,7 @@ to `rgs-briefs/` in this mode.
    script: <the script file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative, don't prepend rgs-briefs/ again>
    voiceover_brief: <the voiceover-brief file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative>
    visual_prompts: <the visual-prompts file's path, exactly as the resolver printed it in step 1 — already rgs-briefs/-relative>
+   music: <the music file's path as the resolver printed it, if one exists — omit the key entirely if not>
    visual_system: <carried through from the visual-prompts file, if present>
    archetype: <carried through from the script / concept brief, if present>
    status: complete

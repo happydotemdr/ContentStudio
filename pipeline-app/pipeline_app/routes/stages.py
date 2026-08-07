@@ -5,7 +5,7 @@ import markdown
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
-from pipeline_app import approval_service, artifacts, db as db_mod, grounding_service, turn_service
+from pipeline_app import approval_service, artifacts, db as db_mod, gates, grounding_service, turn_service
 from pipeline_app.pipeline_config import build_stage_nav, stage_dir_name
 from pipeline_app.state_machine import is_locked_or_running
 
@@ -94,10 +94,18 @@ def stage_page(request: Request, project_id: int, stage_id: str):
     grounding_input_html = markdown.markdown(grounding_input_body) if grounding_input_body else None
 
     output_body = None
+    output_gates = []
     latest = artifacts.resolve_latest_artifact(request.app.state.repo_root, stage_id, stage_dir)
     if latest is not None:
-        _, output_body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+        output_meta, output_body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+        output_gates = output_meta.get("gates") or []
     output_html = markdown.markdown(output_body) if output_body else None
+    # Only surface the override input when there is something to override --
+    # keeps a healthy stage's approve form free of the word "override" (the
+    # stale-cue paragraph above already owns that word for the staleness
+    # case) and matches the "known unknown, not a failure" treatment: a
+    # `skipped` finding alone must not invite an override.
+    has_failing_gate = any(g.get("status") in ("fail", "error") for g in output_gates)
 
     transcript = _load_transcript(stage_dir)
     stage_rows = db_mod.list_stages(request.app.state.conn, project_id)
@@ -110,6 +118,7 @@ def stage_page(request: Request, project_id: int, stage_id: str):
             "input_body": input_body, "input_html": input_html,
             "grounding_input_body": grounding_input_body, "grounding_input_html": grounding_input_html,
             "output_body": output_body, "output_html": output_html,
+            "output_gates": output_gates, "has_failing_gate": has_failing_gate,
             "transcript": transcript, "nav": nav,
             "active_nav": "projects",
             "cli_available": request.app.state.cli_available,
@@ -193,18 +202,26 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
 
 
 @router.post("/projects/{project_id}/stages/{stage_id}/approve")
-def approve_stage_route(request: Request, project_id: int, stage_id: str):
+def approve_stage_route(
+    request: Request,
+    project_id: int,
+    stage_id: str,
+    override_reason: str = Form(""),
+):
     project, _stage_def, _stage_row = _resolve_project_stage(request, project_id, stage_id)
     conn = request.app.state.conn
     repo_root = request.app.state.repo_root
     stage_defs = request.app.state.stage_defs
     run_dir = repo_root / "runs" / project["run_id"]
     try:
-        approval_service.approve_stage(conn, repo_root, run_dir, project_id, stage_defs, stage_id)
+        approval_service.approve_stage(
+            conn, repo_root, run_dir, project_id, stage_defs, stage_id,
+            override_reason=override_reason.strip() or None,
+        )
     except ValueError as exc:
-        # Nothing to approve yet, or the locked/running invariant --
-        # approval_service raises for both; an explicit conflict state,
-        # never a 500.
+        # Nothing to approve yet, the locked/running invariant, or a failing
+        # gate -- approval_service raises for all three; an explicit conflict
+        # state, never a 500.
         return PlainTextResponse(str(exc), status_code=409)
     return RedirectResponse(url=f"/projects/{project_id}/stages/{stage_id}", status_code=303)
 
@@ -234,6 +251,20 @@ def edit_stage_output_route(request: Request, project_id: int, stage_id: str, bo
         prior_meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
 
     version = artifacts.next_version_number(stage_dir)
+
+    # Fail-closed extends to a hand edit, not just a turn: the edited content
+    # must be re-gated exactly as turn_service.run_stage_turn re-gates
+    # raw_output.md after a turn, or a hand edit that introduces a Gate D/C
+    # failure would carry forward a stale (or entirely absent) `gates` result
+    # and approval_service would see nothing to block on -- a silent pass of
+    # an unknown gate result. raw_output.md is overwritten with the saved
+    # body FIRST so the gate reads the content the user just saved, not a
+    # previous turn's leftover output.
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    raw_output_path = stage_dir / "raw_output.md"
+    raw_output_path.write_text(body, encoding="utf-8")
+    gate_results = gates.run_gates_for_stage(repo_root, stage_id, raw_output_path)
+
     meta = {
         "schema_version": 1,
         "run_id": project["run_id"],
@@ -244,6 +275,7 @@ def edit_stage_output_route(request: Request, project_id: int, stage_id: str, bo
         "finalized_at": None,
         "supersedes": f"artifact.v{version - 1}.md" if version > 1 else None,
         "depends_on": prior_meta.get("depends_on", []),
+        "gates": gate_results,
     }
     artifacts.write_artifact(stage_dir, version, meta, body)
 

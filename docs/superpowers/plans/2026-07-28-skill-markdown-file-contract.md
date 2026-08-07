@@ -31,7 +31,7 @@ Claude Code `PreToolUse` hooks, Markdown-formatted Claude Code skills.
 - Files under `rgs-briefs/` are immutable once written — never `Edit`, never
   overwrite via `Write`. A revision is always a new, higher-version file.
 - Naming: `YYYY-MM-DD-<slug>-<kind>.md` for stage artifacts (`<kind>` ∈
-  `concept-brief, script, voiceover-brief, visual-prompts, assembly,
+  `concept-brief, script, voiceover-brief, visual-prompts, music, assembly,
   social-repurpose`); `YYYY-MM-DD-<topic-slug>.md` for grounding briefs. A
   revision appends `-v2`, `-v3`, … before `.md`.
 - Frontmatter always carries an integer `version:` field; `supersedes:` is

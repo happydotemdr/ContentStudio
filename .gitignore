@@ -10,7 +10,7 @@ __pycache__/
 cowork-plugin/
 dist/
 
-# Pipeline app (local control app for the six-skill pipeline)
+# Pipeline app (local control app for the seven-skill pipeline)
 runs/
 pipeline-app/pipeline.db
 pipeline-app/pipeline.db-wal
@@ -22,6 +22,10 @@ pipeline-app/tests/__pycache__/
 pipeline-app/pipeline_app.egg-info/
 rgs-briefs/.superseded/
 
+# Rendered Midjourney assets for each Short — large binaries, local only.
+# Untracked but previously un-ignored, so a stray `git add .` would have committed them.
+Generated Assets/
+
 # YouTube session cookies for yt-dlp auth (live credentials -- never commit)
 pipeline-app/cookies.txt
 
@@ -30,6 +34,9 @@ pipeline-app/youtube_api_key.txt
 
 # Resend API key for discovery email notifications (never commit)
 pipeline-app/resend_api_key.txt
+
+# Bright Data API key for Instagram discovery adapter (never commit)
+pipeline-app/brightdata_api_key.txt
 
 # Automated asset stitcher workspaces — inputs, intermediates, and deliverables
 renders/

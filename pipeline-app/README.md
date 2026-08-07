@@ -1,6 +1,6 @@
 # ContentStudio Pipeline App
 
-Local-only control app for the ContentStudio six-skill pipeline (plus the RaisingGoodSports
+Local-only control app for the ContentStudio seven-skill pipeline (plus the RaisingGoodSports
 grounding stage). Reachable only from `127.0.0.1` — never deploy this.
 
 ## Setup

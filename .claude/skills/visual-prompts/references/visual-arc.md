@@ -162,17 +162,25 @@ tooling, not extracted from the corpus.
 | **C8** | Every Register A prompt names the world lock's `register_a_sport` and contains at least one of its `register_a_signature_objects`. |
 | **C9** | No Register A prompt contains a banned generic-venue string (`empty gym`, `empty youth gym`). |
 | **C10** | No Register B prompt contains banned photographic vocabulary (`DSLR`, `shot on 35mm film`, `documentary`, any `<n>mm` token, any `f/<n>` token) — this is the vocabulary-disjunction rule from `visual-registers.md` §2, enforced mechanically. |
-| **C11** | No two shots share more than 5 identical prompt-body clauses — consistency belongs in `--sref`, not in a cloned prompt body. |
+| **C11** | No two shots share more than 5 identical prompt-body clauses — consistency belongs in the register's style slot, not in a cloned prompt body. |
 | **C12** | Every prompt body has at least 10 clauses and at least 60 words — density enough that all layers carry concrete renderable content. |
 | **C13** | Copy-paste format: prompt is one contiguous line, `No Text.` appears immediately before the flags, a parameter block exists, `--ar` is present, and no stray punctuation (`,` `;` `.`) sits inside the parameter block. |
 | **C14** | Register parameter bands: Register A requires `--raw` and `--s` in 80–120; Register B must not carry `--raw` and requires `--s` in 400–700. |
 | **C15** | Shot class, scale, and camera height are each members of their closed vocabulary: Register A shot class ∈ `{ESTABLISHING, ACTION-ADJACENT, DETAIL, HUMAN-COST}`, Register B shot class ∈ `{FIGURE, WORLD, ARTIFACT}`, PLATE shot class must be literally `PLATE`; scale ∈ `{XWIDE, WIDE, MID-WIDE, MID, CLOSE, MACRO}`; camera height ∈ `{LOW, EYE, HIGH, OVERHEAD}`. Catches typos (`MIDWIDE` for `MID-WIDE`) that would otherwise dodge C2 and inflate C4's distinct-scale count `[I]`. |
+| **C16** | Every literal `--sref` value is a real code (a number, a URL, or the literal `random`) and every literal `--p` value is a plausible pID/mID/resolved code (alphanumeric, no separators) — not an invented placeholder (`--sref SREF-RGS-A-DL01`, `--p mj-INVENTED-01`). A `{style:...}`/`{char:...}` slot used *as* an `--sref`/`--p` value also fails — a slot expands to the whole flag group, not a single value. A `--sref` written with no value at all (nothing before the next flag or end of prompt) fails too, since it references nothing; a bare `--p` is exempt, because Midjourney's own syntax uses it alone to mean "apply my active personalization profile" `[I]`. |
+| **C17** | Every non-PLATE shot carries some style mechanism in its parameter block — a literal `--sref`, a literal `--p`, or a `{style:...}` slot — or it renders in whatever look the model defaults to. PLATE shots are exempt (no register look to lock) `[I]`. |
+| **C18** | Every `{style:...}`/`{char:...}` slot sits after at least one literal flag, never in the prompt body, and is declared in the styleboard's `WORLD LOCK` as a `slot_*` line. That line's *value* must itself be a Style Library entry label (e.g. `rgs-present-soccer-a`) — not a raw Midjourney code or an invented placeholder (`SREF-RGS-A-DL01`) — because the code is resolved later, at render time, against the Library `[I]`. |
+| **C19** | The sheet states its cover decision exactly once — either a `### Cover — ...` block or an explicit `Cover = Hook beat still #1` declaration — never zero, never more than one `[I]`. |
 
 ## 9. How to run Gate C `[I]`
 
 ```bash
-python scripts/lint_prompt_sheet.py <path-to-sheet.md>
+python scripts/lint_prompt_sheet.py <path-to-sheet.md> --styleboard <path-to-styleboard.md>
 ```
+
+**`--styleboard` is required, not optional** — the sheet no longer carries its own
+`WORLD LOCK` block, so omitting it resolves an empty world lock and produces a wall of
+false C8/C18 findings instead of a clear error `[I]`.
 
 Exit 0 clean · exit 1 findings · exit 2 nothing parsed (usually a format error — see
 `prompt-sheet-format.md`). `[I]` — this skill's own operational rule: a failing gate
