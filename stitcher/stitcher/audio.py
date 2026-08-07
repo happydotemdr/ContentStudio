@@ -203,10 +203,20 @@ def build_audio(
         )
         count += 1
 
+    # `apad` before `atrim` is what makes the mix exactly `runtime` long
+    # rather than "at most runtime". atrim only ever SHORTENS: verified
+    # against the real 9.0 binary that a 2.0s input through
+    # `amix=inputs=1,atrim=0:6.0` comes back 2.000000s, not 6. A bed-less
+    # spec (audio.bed is Optional and a supported shape) whose voice ends
+    # before the last shot therefore produced a short mix, and stage D's
+    # `-shortest` then truncated the VIDEO to it -- confirmed on the same
+    # binary: 3.000000s of video plus 1s of audio muxes to a 1.000000s
+    # master. With a bed present the bed already runs the full runtime, which
+    # is why only the bed-less path could show this.
     labels = "".join(f"[m{i}]" for i in range(count))
     graph = ";".join(chains) + (
         f";{labels}amix=inputs={count}:normalize=0:dropout_transition=0,"
-        f"atrim=0:{runtime:.6f},aresample=48000[mix]"
+        f"apad,atrim=0:{runtime:.6f},aresample=48000[mix]"
     )
 
     pre = ws.audio_step("05", "mix_pre-loudnorm")

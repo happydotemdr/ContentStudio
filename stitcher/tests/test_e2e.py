@@ -1,5 +1,6 @@
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,69 @@ def test_a_second_identical_render_is_a_no_op(rendered):
     ws = Workspace(root=root, slug="e2e", mode="final")
     assert cli.cmd_render("e2e", root, "final", force=False) == cli.EXIT_OK
     assert not ws.out_master(2).exists()
+
+
+# --- the second fixture: a real clip source, no bed, a short voice ----------
+
+
+@pytest.fixture(scope="module")
+def rendered_clip(tmp_path_factory):
+    root = tmp_path_factory.mktemp("clip")
+    make_fixture.build_clip(root)
+    code = cli.cmd_render(make_fixture.CLIP_SLUG, root, "final", force=False)
+    return root, code
+
+
+def count_frames(path: Path) -> int:
+    completed = subprocess.run(
+        ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+         "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=True,
+    )
+    return int(completed.stdout.strip().rstrip(","))
+
+
+@needs_ffmpeg
+@needs_font
+def test_a_clip_shot_renders_and_passes_qa(rendered_clip):
+    root, code = rendered_clip
+    ws = Workspace(root=root, slug=make_fixture.CLIP_SLUG, mode="final")
+    payload = (
+        json.loads(ws.out_qa_json(1).read_text(encoding="utf-8"))
+        if ws.out_qa_json(1).is_file() else {"checks": "no QA report written"}
+    )
+    assert code == cli.EXIT_OK, json.dumps(payload, indent=2)
+    assert payload["status"] == "pass", json.dumps(payload["checks"], indent=2)
+
+
+@needs_ffmpeg
+@needs_font
+def test_a_clip_shot_emits_exactly_its_timeline_slot_of_frames(rendered_clip):
+    """`trim=start=0.5` on a 25fps source snaps to the source's frame grid and
+    lands short; `-frames:v` cannot invent the missing frame. Measured against
+    the real binary before the clone pad: 44 frames where the 0.0-1.5s slot at
+    30fps asks for 45. Every later shot would then start one frame early
+    against authored overlay/caption/audio times."""
+    root, _ = rendered_clip
+    ws = Workspace(root=root, slug=make_fixture.CLIP_SLUG, mode="final")
+    clip = ws.shot_clip(1, "C-01", "Hook")
+    assert clip.is_file(), f"stage A wrote no clip at {clip}"
+    assert count_frames(clip) == 45
+
+
+@needs_ffmpeg
+@needs_font
+def test_a_bedless_spec_with_a_short_voice_is_not_truncated(rendered_clip):
+    """`atrim=0:runtime` trims but never pads, so a 2.0s voice in a 3.0s
+    bed-less spec left the mix 2.0s long and stage D's `-shortest` then cut the
+    master down to it."""
+    from stitcher import ffmpeg
+    root, _ = rendered_clip
+    ws = Workspace(root=root, slug=make_fixture.CLIP_SLUG, mode="final")
+    assert abs(ffmpeg.probe(ws.audio_step("06", "mix_final")).duration
+               - make_fixture.CLIP_RUNTIME) <= 0.01
+    probed = ffmpeg.probe(ws.out_master(1))
+    assert abs(probed.duration - make_fixture.CLIP_RUNTIME) <= 1 / 30
 
 
 @needs_ffmpeg

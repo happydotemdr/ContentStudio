@@ -111,7 +111,7 @@ def test_still_filters_and_clip_filters_stamp_frame_colour_with_setparams():
     assert "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709" in still_joined
 
     clip = shot(kind="clip", source="a.mp4", source_in=1.0, source_out=4.0)
-    clip_joined = ";".join(sh.clip_filters(clip, CANVAS, None, None))
+    clip_joined = ";".join(sh.clip_filters(clip, CANVAS, 90, None, None))
     assert "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709" in clip_joined
 
 
@@ -123,10 +123,60 @@ def test_still_filters_use_a_fixed_size_crop():
 
 def test_clip_filters_trim_to_the_source_window_and_conform_fps():
     clip = shot(kind="clip", source="a.mp4", source_in=1.0, source_out=4.0)
-    joined = ";".join(sh.clip_filters(clip, CANVAS, None, None))
+    joined = ";".join(sh.clip_filters(clip, CANVAS, 90, None, None))
     assert "trim=start=1.0:end=4.0" in joined
     assert "setpts=PTS-STARTPTS" in joined
     assert "fps=30" in joined
+
+
+def test_clip_filters_pad_to_the_exact_frame_count_after_conforming_fps():
+    """`trim=start=X` snaps to the SOURCE's frame grid, so a source_in off that
+    grid yields a short span and `-frames:v` cannot invent the missing frame --
+    ffmpeg writes fewer frames and exits 0, shifting every later shot one frame
+    early. The clone pad is what makes the frame count exact; it has to sit
+    after `fps` (so it pads at canvas.fps) and before the whip (so the tail
+    whip's frame gate counts against the final length)."""
+    clip = shot(kind="clip", source="a.mp4", source_in=0.5, source_out=3.5)
+    filters = sh.clip_filters(
+        clip, CANVAS, 90, None, Transition(kind="whip", direction="left", frames=4)
+    )
+    assert sh.CLIP_PAD in filters
+    assert filters.index("fps=30") < filters.index(sh.CLIP_PAD)
+    whip_index = next(i for i, f in enumerate(filters) if "avgblur" in f)
+    assert filters.index(sh.CLIP_PAD) < whip_index
+
+
+def test_the_clip_tail_whip_gates_against_the_timeline_slot_not_the_source_window():
+    """The tail whip's window is gte(n, total_frames - frames) and total_frames
+    is now the shot's own slot, so the gate lands on the last four frames the
+    clip actually emits."""
+    clip = shot(kind="clip", source="a.mp4", source_in=0.5, source_out=3.5)
+    joined = ";".join(
+        sh.clip_filters(
+            clip, CANVAS, 90, None, Transition(kind="whip", direction="left", frames=4)
+        )
+    )
+    assert "enable='gte(n,86)'" in joined
+
+
+def test_render_shot_passes_the_slot_frame_count_to_a_clip(tmp_path: Path, monkeypatch):
+    payload = json.loads(json.dumps(MINIMAL))
+    payload["shots"][0]["kind"] = "clip"
+    payload["shots"][0]["source"] = "a.mp4"
+    payload["shots"][0]["source_in"] = 0.5
+    payload["shots"][0]["source_out"] = 3.5
+    spec, _ = load_spec(write(tmp_path, payload))
+    ws = Workspace(root=tmp_path / "r", slug="demo", mode="final")
+    ws.ensure_dirs()
+    ws.asset("a.mp4").write_bytes(b"mp4")
+    captured: list[list[str]] = []
+    monkeypatch.setattr(sh.ffmpeg, "run", lambda args, log_path: captured.append(args) or "")
+    monkeypatch.setattr(sh.ffmpeg, "ffmpeg_version", lambda: "ffmpeg version 9.0")
+    sh.render_shot(spec, ws, 1, spec.shots[0], None, 4, "final",
+                   Manifest(ws.manifest_path), ws.log_path("t"), False)
+    args = captured[0]
+    assert args[args.index("-frames:v") + 1] == "90"
+    assert sh.CLIP_PAD in args[args.index("-vf") + 1]
 
 
 def test_whip_at_the_head_is_gated_to_the_opening_frames():

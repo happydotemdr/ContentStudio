@@ -106,6 +106,19 @@ def test_pass_two_always_follows_loudnorm_with_an_explicit_resample(spec, worksp
     assert joined.index("loudnorm") < joined.index("aresample=48000")
 
 
+def test_the_final_mix_is_padded_to_the_runtime_before_it_is_trimmed(
+    spec, workspace, monkeypatch
+):
+    """atrim only shortens. Without a pad in front of it, a mix whose sources
+    all end before the runtime stays short, and stage D's `-shortest` then cuts
+    the video down to the audio."""
+    calls = wire(monkeypatch)
+    au.build_audio(spec, workspace, "final", workspace.log_path("t"), [])
+    pre = [c for c in calls if c[-1].endswith("05_mix_pre-loudnorm.wav")][-1]
+    graph = pre[pre.index("-filter_complex") + 1]
+    assert "apad,atrim=0:" in graph
+
+
 def test_a_dynamic_loudnorm_fallback_is_a_hard_failure(spec, workspace, monkeypatch):
     wire(monkeypatch, pass2=PASS2_DYNAMIC)
     with pytest.raises(au.LoudnormNotLinearError):

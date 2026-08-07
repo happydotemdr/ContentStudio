@@ -22,6 +22,11 @@ from .spec import Canvas, Motion, RenderSpec, Shot, Transition, shot_frame_bound
 
 WHIP_BLUR_PX = 40
 
+# Clones the last frame indefinitely so `-frames:v total_frames` always has a
+# frame to take. See clip_filters' docstring for the measurement that made
+# this necessary and for why the pad is unbounded.
+CLIP_PAD = "tpad=stop=-1:stop_mode=clone"
+
 INTERMEDIATE_PIX_FMT = "yuv444p"
 INTERMEDIATE_CRF_FINAL = 12
 INTERMEDIATE_CRF_DRAFT = 28
@@ -151,9 +156,51 @@ def still_filters(
 
 
 def clip_filters(
-    shot: Shot, canvas: Canvas, whip_in: Transition | None, whip_out: Transition | None
+    shot: Shot,
+    canvas: Canvas,
+    total_frames: int,
+    whip_in: Transition | None,
+    whip_out: Transition | None,
 ) -> list[str]:
-    # `fps` must precede the whip, whose enable window counts frames.
+    """Trim a clip's source window and conform it to exactly total_frames.
+
+    `total_frames` is the shot's own timeline slot (shot_frame_bounds), not
+    the source window re-measured: those are equal by validation (spec.py
+    requires source_out - source_in == out - in exactly), and the slot is the
+    one that stage D's concat timeline, the overlay `enable=` expressions and
+    the audio `adelay`s are all authored against.
+
+    CLIP_PAD is why they stay equal in the output. `trim=start=X` snaps to the
+    SOURCE's frame grid, so a source_in that does not land on a source frame
+    boundary yields a span shorter than requested -- and `-frames:v` cannot
+    invent the missing frame, so ffmpeg writes fewer and exits 0. Reproduced
+    against the installed 9.0 binary on a 25fps source, requesting 45 frames
+    at 30fps:
+
+        source_in=0.0   source_out=1.5    -> 45 frames
+        source_in=0.5   source_out=2.0    -> 44 frames   <-- one short
+        source_in=0.04  source_out=1.54   -> 45 frames
+
+    Every subsequent shot then starts one frame early against authored
+    overlay/caption/audio times, and the drift accumulates until
+    timeline_integrity's slack fires -- below which it ships misaligned.
+
+    Padding was chosen over frame-aligning the trim window at preflight. The
+    alignment route would have to reject a spec whose source_in is off the
+    source's own frame grid, which is a property of the asset the author
+    generally does not know (and cannot express for a variable-frame-rate
+    source at all); the worst case here is instead one cloned tail frame,
+    which is what the concat timeline needs anyway. The pad is INFINITE and
+    bounded by `-frames:v total_frames` rather than being sized to a computed
+    shortfall: an exact frame count is the guarantee this fix exists to make,
+    and computing the shortfall would mean re-deriving the source's own frame
+    grid -- the very thing that is unreliable here. Verified on the same
+    binary that all three cases above then emit exactly 45 frames and that
+    the command still terminates.
+    """
+    # `fps` must precede the pad and the whip, both of which count frames at
+    # canvas.fps; the pad must precede the whip so the whip's tail window
+    # (gte(n, total_frames - frames)) gates against the final, exact length.
     filters = [
         f"trim=start={shot.source_in}:end={shot.source_out}",
         "setpts=PTS-STARTPTS",
@@ -161,11 +208,11 @@ def clip_filters(
         ":force_original_aspect_ratio=increase:flags=lanczos",
         f"crop={canvas.width}:{canvas.height}",
         f"fps={canvas.fps}",
+        CLIP_PAD,
         _colour_scale(canvas),
         f"format={INTERMEDIATE_PIX_FMT}",
         _SETPARAMS_BT709,
     ]
-    total_frames = round((shot.source_out - shot.source_in) * canvas.fps)
     filters.extend(_whip_stack(whip_in, whip_out, total_frames, canvas))
     filters.append("setsar=1")
     return filters
@@ -269,7 +316,7 @@ def render_shot(
             "-t", f"{total_frames / canvas.fps:.6f}", "-i", str(source),
         ]
     else:
-        filters = clip_filters(shot, canvas, whip_in, whip_out)
+        filters = clip_filters(shot, canvas, total_frames, whip_in, whip_out)
         inputs = ["-i", str(source)]
 
     crf = INTERMEDIATE_CRF_DRAFT if mode == "draft" else INTERMEDIATE_CRF_FINAL

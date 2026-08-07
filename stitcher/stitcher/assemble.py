@@ -206,6 +206,10 @@ def assemble(
             "-c:a", delivery.audio_codec, "-b:a", delivery.audio_bitrate,
             "-ar", str(delivery.audio_rate),
             "-movflags", "+faststart",
+            # `-shortest` truncates the LONGER stream to the shorter one, so
+            # it can only ever be safe because stage C pads the mix to exactly
+            # the runtime (audio.build_audio's `apad` before `atrim`). Do not
+            # drop that pad on the assumption this flag is harmless.
             "-shortest", str(ws.master_path),
         ],
         log_path,
