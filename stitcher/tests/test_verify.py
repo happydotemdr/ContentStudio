@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from stitcher import envelope, verify as vf
 from stitcher.ffmpeg import ProbeResult
@@ -610,3 +611,68 @@ def test_a_preview_report_carries_a_banner_above_the_table(tmp_path: Path):
     markdown = md_path.read_text(encoding="utf-8")
     assert vf.PREVIEW_BANNER in markdown
     assert markdown.index(vf.PREVIEW_BANNER) < markdown.index("| Check |")
+
+
+# --- contact sheet scratch handling -------------------------------------
+
+
+def _frame_writer(seen: list[Path], fail_on: int | None = None):
+    """Stands in for the per-frame ffmpeg extraction, writing a real PNG."""
+    calls = {"n": 0}
+
+    def run(args, log_path):
+        calls["n"] += 1
+        target = Path(args[-1])
+        seen.append(target.parent)
+        Image.new("RGB", (216, 384), (7, 9, 11)).save(target)
+        if fail_on is not None and calls["n"] == fail_on:
+            raise vf.ffmpeg.FFmpegError("frame extraction failed")
+        return ""
+
+    return run
+
+
+def test_the_contact_sheet_leaves_no_scratch_behind_in_out(ready, monkeypatch, tmp_path):
+    """contact_sheet wrote its per-shot frames to `out_png.parent / "_contact"`
+    -- the DELIVERABLES directory -- and never removed them. Spec §2 makes
+    out/ versioned deliverables only and names work/ and logs/ as the
+    safe-to-delete directories, and `stitcher clean` removes only work/, so
+    every successful render left an out/_contact/ behind whose stale frames
+    also survived into the next run."""
+    ws, master = ready
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    seen: list[Path] = []
+    monkeypatch.setattr(vf.ffmpeg, "run", _frame_writer(seen))
+
+    out_png = ws.out_contact_sheet(1)
+    assert vf.contact_sheet(spec, master, out_png, ws.log_path("t")) == out_png
+
+    assert [p.name for p in ws.out_dir.iterdir()] == [out_png.name]
+    assert not (ws.out_dir / "_contact").exists()
+    # The scratch is really gone, not merely moved somewhere else. On Windows
+    # this also proves the Image handles were closed: an open handle would
+    # make the directory removal raise.
+    assert len(seen) == len(spec.shots)
+    assert len(set(seen)) == 1
+    assert not seen[0].exists()
+    assert ws.out_dir not in seen[0].parents
+
+
+def test_the_contact_sheet_scratch_is_removed_even_when_a_frame_fails(
+    ready, monkeypatch, tmp_path
+):
+    """cli.py treats an FFmpegError here as a rollback path, so the failure
+    branch is reachable and must not leak the scratch directory either. The
+    failure fires on the SECOND frame so the first frame's Image handle has
+    already been opened and closed by the time cleanup runs."""
+    ws, master = ready
+    spec, _ = load_spec(write(tmp_path, MINIMAL))
+    assert len(spec.shots) >= 2
+    seen: list[Path] = []
+    monkeypatch.setattr(vf.ffmpeg, "run", _frame_writer(seen, fail_on=2))
+
+    with pytest.raises(vf.ffmpeg.FFmpegError):
+        vf.contact_sheet(spec, master, ws.out_contact_sheet(1), ws.log_path("t"))
+
+    assert seen and not seen[0].exists()
+    assert list(ws.out_dir.iterdir()) == []

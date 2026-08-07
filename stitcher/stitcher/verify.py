@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -451,21 +452,40 @@ def _check_audio_omissions(ws: Workspace, record: dict | None) -> Check:
 def contact_sheet(
     spec: RenderSpec, master: Path, out_png: Path, log_path: Path
 ) -> Path | None:
-    """One frame from each shot's midpoint, tiled. Informational only."""
+    """One frame from each shot's midpoint, tiled. Informational only.
+
+    The per-shot frames are scratch, so they go in a real temporary directory
+    that is removed on the way out -- including when a frame extraction
+    raises, which is a reachable path (cli.py rolls a contact-sheet failure
+    back). They used to be written to `out_png.parent / "_contact"`, i.e.
+    straight into the DELIVERABLES directory, and were never removed: spec §2
+    makes out/ versioned deliverables only and names work/ and logs/ as the
+    safe-to-delete directories, and `stitcher clean` removes only work/ -- so
+    every successful render left an out/_contact/ behind. Those frames also
+    survived across runs, so a later spec with fewer shots left orphans the
+    next contact sheet could pick up.
+
+    Each frame is opened inside a `with` block and converted to a fresh
+    in-memory image before the block exits. On Windows an Image still holding
+    its file handle would keep a lock on the frame and make the directory
+    removal below fail, so the handles are closed explicitly rather than left
+    to the garbage collector.
+    """
     frames: list[Image.Image] = []
-    temp_dir = out_png.parent / "_contact"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    for index, shot in enumerate(spec.shots, start=1):
-        midpoint = (shot.start + shot.end) / 2
-        frame = temp_dir / f"{index:03d}.png"
-        ffmpeg.run(
-            ["ffmpeg", "-hide_banner", "-y", "-ss", f"{midpoint:.3f}",
-             "-i", str(master), "-frames:v", "1", "-update", "1",
-             "-vf", "scale=216:384", str(frame)],
-            log_path,
-        )
-        if frame.is_file():
-            frames.append(Image.open(frame).convert("RGB"))
+    with tempfile.TemporaryDirectory(prefix="stitcher-contact-") as scratch:
+        temp_dir = Path(scratch)
+        for index, shot in enumerate(spec.shots, start=1):
+            midpoint = (shot.start + shot.end) / 2
+            frame = temp_dir / f"{index:03d}.png"
+            ffmpeg.run(
+                ["ffmpeg", "-hide_banner", "-y", "-ss", f"{midpoint:.3f}",
+                 "-i", str(master), "-frames:v", "1", "-update", "1",
+                 "-vf", "scale=216:384", str(frame)],
+                log_path,
+            )
+            if frame.is_file():
+                with Image.open(frame) as opened:
+                    frames.append(opened.convert("RGB"))
     if not frames:
         return None
 
