@@ -11,7 +11,7 @@ def test_run_writes_the_command_to_the_log_before_executing(tmp_path: Path, monk
     log = tmp_path / "run.log"
     seen: dict[str, bool] = {}
 
-    def fake_run(args, capture_output, text, check, cwd=None):
+    def fake_run(args, capture_output, text, check, cwd=None, timeout=None):
         # The log must already exist and name the command by the time we execute.
         seen["logged"] = log.exists() and "-version" in log.read_text(encoding="utf-8")
         return subprocess.CompletedProcess(args, 0, "", "ok")
@@ -22,7 +22,7 @@ def test_run_writes_the_command_to_the_log_before_executing(tmp_path: Path, monk
 
 
 def test_run_raises_with_the_command_and_stderr_tail(tmp_path: Path, monkeypatch):
-    def fake_run(args, capture_output, text, check, cwd=None):
+    def fake_run(args, capture_output, text, check, cwd=None, timeout=None):
         return subprocess.CompletedProcess(args, 1, "", "boom: invalid argument")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -35,7 +35,7 @@ def test_run_raises_with_the_command_and_stderr_tail(tmp_path: Path, monkeypatch
 def test_run_never_uses_a_shell(tmp_path: Path, monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_run(args, capture_output, text, check, cwd=None):
+    def fake_run(args, capture_output, text, check, cwd=None, timeout=None):
         captured["args"] = args
         return subprocess.CompletedProcess(args, 0, "", "")
 
@@ -199,7 +199,7 @@ def test_probe_json_builds_the_expected_ffprobe_argv(tmp_path: Path, monkeypatch
     captured: dict[str, object] = {}
     payload = {"format": {"duration": "1.0"}, "streams": []}
 
-    def fake_run(args, capture_output, text, check, cwd=None):
+    def fake_run(args, capture_output, text, check, cwd=None, timeout=None):
         captured["args"] = args
         return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
 
@@ -219,7 +219,7 @@ def test_ffmpeg_version_argv_is_just_dash_version(monkeypatch):
         "the FFmpeg developers\n"
     )
 
-    def fake_run(args, capture_output, text, check, cwd=None):
+    def fake_run(args, capture_output, text, check, cwd=None, timeout=None):
         captured["args"] = args
         return subprocess.CompletedProcess(args, 0, banner, "")
 
@@ -244,7 +244,7 @@ def test_has_encoder_argv_and_exact_token_match(monkeypatch):
         " A....D aac                  AAC (Advanced Audio Coding)\n"
     )
 
-    def fake_run(args, capture_output, text, check, cwd=None):
+    def fake_run(args, capture_output, text, check, cwd=None, timeout=None):
         captured["args"] = args
         return subprocess.CompletedProcess(args, 0, stdout, "")
 
@@ -256,6 +256,113 @@ def test_has_encoder_argv_and_exact_token_match(monkeypatch):
     # NVENC, which is the constraint this function has to hold the line on.
     assert ff.has_encoder("h264") is False
     assert captured["args"] == ["ffmpeg", "-hide_banner", "-encoders"]
+
+
+# --- every child process is bounded -----------------------------------------
+#
+# `subprocess.run` without `timeout=` waits forever. That is how a bare `apad`
+# bounded only by a downstream `atrim` became an unrecoverable hang earlier in
+# this project: 13+ minutes at 100% CPU with the output frozen and no
+# diagnostic naming which of ~19 invocations had stopped. These tests hold the
+# line on the bound existing, on it being generous enough never to fire on a
+# legitimate render, and on the failure naming what an operator needs.
+
+
+def test_run_passes_a_positive_timeout_to_subprocess(tmp_path: Path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_run(args, capture_output, text, check, cwd=None, timeout=None):
+        captured["timeout"] = timeout
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ff.run(["ffmpeg", "-version"], tmp_path / "run.log")
+    assert captured["timeout"] == ff.FFMPEG_TIMEOUT_S
+    assert isinstance(captured["timeout"], float) and captured["timeout"] > 0
+
+
+def test_the_metadata_calls_are_bounded_too(tmp_path: Path, monkeypatch):
+    seen: list[float | None] = []
+
+    def fake_run(args, capture_output, text, check, cwd=None, timeout=None):
+        seen.append(timeout)
+        return subprocess.CompletedProcess(
+            args, 0, json.dumps({"format": {}, "streams": []}), ""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ff._probe_json(tmp_path / "clip.mp4")
+    ff.ffmpeg_version()
+    ff.has_encoder("libx264")
+    assert seen == [ff.FFPROBE_TIMEOUT_S] * 3
+
+
+def test_the_encode_bound_clears_a_three_minute_1080x1920_short():
+    """Spec section 1 allows a 3-minute Short. ~5,400 frames of 2.07 Mpx at
+    the `slow` preset is single-digit minutes on a modest machine; the default
+    must sit far enough above that that a slow machine cannot trip it."""
+    assert ff.FFMPEG_TIMEOUT_S >= 1800.0
+    # The metadata calls do no input-proportional work and get a tighter bound,
+    # but one still loose enough for a cold binary on a network share.
+    assert 10.0 <= ff.FFPROBE_TIMEOUT_S < ff.FFMPEG_TIMEOUT_S
+
+
+def test_a_timed_out_command_names_the_timeout_log_and_command(tmp_path, monkeypatch):
+    log = tmp_path / "run.log"
+
+    def fake_run(args, capture_output, text, check, cwd=None, timeout=None):
+        raise subprocess.TimeoutExpired(args, timeout)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ff.FFmpegTimeout) as exc:
+        ff.run(["ffmpeg", "-i", "in.wav", "-af", "apad", "out.wav"], log)
+
+    message = str(exc.value)
+    assert f"{ff.FFMPEG_TIMEOUT_S:g}s" in message
+    assert str(log) in message
+    # The WHOLE command line, so the operator can paste it and reproduce.
+    assert "-af apad" in message
+    assert ff.FFMPEG_TIMEOUT_ENV in message
+    # A timeout is a render failure like any other, so the existing handlers
+    # keep catching it.
+    assert isinstance(exc.value, ff.FFmpegError)
+    # And the log records the bound that was hit, beside the command it hit on.
+    logged = log.read_text(encoding="utf-8")
+    assert "-af apad" in logged and "TIMED OUT" in logged
+
+
+def test_a_timed_out_metadata_call_says_there_is_no_log(monkeypatch):
+    def fake_run(args, capture_output, text, check, cwd=None, timeout=None):
+        raise subprocess.TimeoutExpired(args, timeout)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(ff.FFmpegTimeout) as exc:
+        ff.ffmpeg_version()
+    message = str(exc.value)
+    assert "ffmpeg -version" in message
+    assert "log: none" in message
+    assert ff.FFPROBE_TIMEOUT_ENV in message
+
+
+def test_the_timeout_is_overridable_from_the_environment(monkeypatch):
+    monkeypatch.setenv(ff.FFMPEG_TIMEOUT_ENV, "42.5")
+    assert ff._timeout(ff.FFMPEG_TIMEOUT_ENV, ff.FFMPEG_TIMEOUT_S) == 42.5
+
+
+@pytest.mark.parametrize("bad", ["nonsense", "0", "-5"])
+def test_an_unusable_override_warns_and_falls_back(bad, monkeypatch, capsys):
+    """A typo must not abort a render -- but it must not be swallowed either,
+    or someone concludes the timeout does not work."""
+    monkeypatch.setenv(ff.FFMPEG_TIMEOUT_ENV, bad)
+    assert ff._timeout(ff.FFMPEG_TIMEOUT_ENV, 99.0) == 99.0
+    assert ff.FFMPEG_TIMEOUT_ENV in capsys.readouterr().err
+
+
+def test_an_unset_or_blank_override_is_simply_the_default(monkeypatch):
+    monkeypatch.delenv(ff.FFMPEG_TIMEOUT_ENV, raising=False)
+    assert ff._timeout(ff.FFMPEG_TIMEOUT_ENV, 7.0) == 7.0
+    monkeypatch.setenv(ff.FFMPEG_TIMEOUT_ENV, "   ")
+    assert ff._timeout(ff.FFMPEG_TIMEOUT_ENV, 7.0) == 7.0
 
 
 def test_measure_loudness_builds_the_expected_ebur128_argv(tmp_path: Path, monkeypatch):
@@ -270,7 +377,7 @@ def test_measure_loudness_builds_the_expected_ebur128_argv(tmp_path: Path, monke
         "    Peak:       -2.0 dBFS\n"
     )
 
-    def fake_run(args, capture_output, text, check, cwd=None):
+    def fake_run(args, capture_output, text, check, cwd=None, timeout=None):
         captured["args"] = args
         return subprocess.CompletedProcess(args, 0, "", stderr)
 
