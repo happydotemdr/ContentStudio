@@ -170,7 +170,7 @@ def test_notify_exception_does_not_propagate_or_change_exit_code(monkeypatch, re
 def test_build_adapters_includes_every_platform():
     adapters = cron.build_adapters()
     assert set(adapters.keys()) == {
-        "youtube", "bluesky", "instagram", "linkedin-profile", "linkedin-company",
+        "youtube", "bluesky", "instagram", "linkedin-profile", "linkedin-company", "x",
     }
 
 
@@ -193,3 +193,28 @@ def test_linkedin_platforms_are_excluded_from_backfill():
 
     assert "linkedin-profile" not in BACKFILL_SUPPORTED_PLATFORMS
     assert "linkedin-company" not in BACKFILL_SUPPORTED_PLATFORMS
+
+
+def test_x_is_registered_as_an_adapter():
+    from pipeline_app import discovery_x
+
+    assert cron.build_adapters()["x"] is discovery_x
+
+
+def test_x_is_excluded_from_backfill():
+    """discovery_engine rejects any platform outside this whitelist before an
+    adapter is called, so a backfill request can never trigger a paid X job.
+    That matters more here than for LinkedIn: X's start_date/end_date were
+    tested and return an error row, so there is no backfill path at all."""
+    from pipeline_app.discovery_engine import BACKFILL_SUPPORTED_PLATFORMS
+
+    assert "x" not in BACKFILL_SUPPORTED_PLATFORMS
+
+
+def test_x_adapter_satisfies_the_platform_adapter_protocol():
+    """The protocol is structural, so a missing function surfaces only at
+    runtime, mid-run, after a job has been billed."""
+    adapter = cron.build_adapters()["x"]
+    for name in ("enumerate_newest_first", "on_disk_ids", "peek_upload_date",
+                 "download_item"):
+        assert callable(getattr(adapter, name)), name
