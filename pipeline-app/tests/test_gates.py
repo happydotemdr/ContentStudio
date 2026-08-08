@@ -171,3 +171,32 @@ def test_visual_gate_rejects_placeholder_sref_codes():
     c16 = [f for f in result["findings"] if f["check"] == "C16"]
     assert len(c16) == 2, [f["message"] for f in c16]
     assert all("SREF-RGS-" in f["message"] for f in c16)
+
+
+def test_visual_gate_resolves_slot_labels_against_the_style_library(tmp_path):
+    """C20 in app mode. The gate docstring's promise is that the app and the CLI are
+    one gate, not a stricter CLI and a laxer app -- so a label typo the CLI fails on
+    must fail here too. Before C20, this sheet passed both and failed at paste time,
+    when a human pasted a token resolving to no Library entry."""
+    text = (FIXTURES / "passing_styleboard.md").read_text(encoding="utf-8")
+    styleboard = tmp_path / "artifact.v1.md"
+    styleboard.write_text(
+        text.replace("rgs-sourceera-painterly-b", "rgs-sourceera-painterly-c"),
+        encoding="utf-8",
+    )
+    result = _visual_gate(FIXTURES / "passing_sheet.md", {"styleboard": styleboard})
+    assert result["status"] == "fail"
+    c20 = [f for f in result["findings"] if f["check"] == "C20"]
+    assert c20, result["findings"]
+    assert "rgs-sourceera-painterly-c" in c20[0]["message"]
+    assert "docs/style-library.md" in c20[0]["message"]
+
+
+def test_visual_gate_passes_the_real_fixture_against_the_real_library():
+    """C20 must not fire on the fixtures' real labels -- the regression guard for the
+    rename that made `rgs-sourceera-painterly-b` resolvable."""
+    result = _visual_gate(
+        FIXTURES / "passing_sheet.md",
+        {"styleboard": FIXTURES / "passing_styleboard.md"},
+    )
+    assert result["status"] == "pass", result["findings"]

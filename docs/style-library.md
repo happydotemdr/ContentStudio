@@ -186,9 +186,20 @@ teal-ink ground and check the first renders for warm drift.
    band. What changes is whether *medium* is still one of the cues. Note that assembly v3 §0.1
    records what happened last time medium stopped carrying the split: the register read
    collapsed and had to be rescued by a colour grade the renderer cannot apply.
-2. **Nothing validates a code against this file.** C18 checks a slot's value looks like a
-   Library label; it cannot check the label *exists* here, because nothing parses this file.
-   A label typo passes Gate C and fails at paste time.
+2. ~~**Nothing validates a code against this file.**~~ **RESOLVED 2026-08-08 — Gate C's C20.**
+   `scripts/lint_prompt_sheet.py:parse_style_library` reads the `## Entries` section of this
+   file, and **C20** fails any sheet whose slot label names no entry here. Both Gate C entry
+   points run it — the CLI and `pipeline-app`'s app-mode gate — so the two stay one gate.
+
+   C20's first act was catching a live instance: this file's Register B entry was created as
+   `rgs-source-era-b` while all fourteen consumers, both green fixtures included, bound
+   `rgs-sourceera-painterly-b`. See the rename note under that entry.
+
+   **Deliberately still lenient in one place:** an entry recorded with `code: UNHARVESTED`
+   counts as existing and passes C20. Gate C runs on the sheet, before any render, so binding
+   to a world whose harvest is pending is a legitimate intermediate state — that is what the
+   styleboard's `DISCOVERY REQUESTS` block carries forward. The detection is already written;
+   only the policy is lenient, so tightening it later is a one-line change.
 3. **`--oref` is rejected for this pool** (`visual-system.md:104`): it forces V7 regardless of
    requested version, costs 2× GPU, accepts one reference image, and is Draft-incompatible.
    The pool has no recurring face to lock — only the style must hold constant. Recorded so the

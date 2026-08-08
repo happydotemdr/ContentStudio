@@ -96,9 +96,31 @@ def run_prompt_sheet_gate(
             )
 
     cover = linter.parse_cover(sheet_text)
+
+    # C20 resolves each slot label against the Style Library. Read it only when the
+    # sheet has slots -- a PLATE-only sheet never consults it, and failing such a run
+    # for a missing file would be the gate reporting the wrong problem.
+    library = None
+    if linter.sheet_declares_slots(shots, cover):
+        library_path = repo_root / "docs" / "style-library.md"
+        if not library_path.is_file():
+            raise ValueError(
+                f"Style Library not found at {library_path} -- Gate C cannot resolve "
+                f"{artifact_path.name}'s slot labels"
+            )
+        library = linter.parse_style_library(library_path.read_text(encoding="utf-8"))
+        if not library:
+            # Same reasoning as the empty-styleboard branch above: linting against an
+            # empty Library would report every slot as unknown, naming the wrong
+            # problem. Fail closed and say which file is empty.
+            raise ValueError(
+                f"no entries parsed from {library_path} -- Gate C cannot check "
+                f"{artifact_path.name}'s slot labels against an empty Library"
+            )
+
     findings = [
         *linter.check_cover_present(sheet_text),
-        *linter.lint(shots, world, cover=cover),
+        *linter.lint(shots, world, cover=cover, library=library),
     ]
     return _as_dicts(findings)
 
