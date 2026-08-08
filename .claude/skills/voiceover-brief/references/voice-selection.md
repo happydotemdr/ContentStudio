@@ -2,13 +2,19 @@
 
 Distilled from `docs/elevenlabs-voiceover-guide.md` §2 and `docs/headless-youtube-audit.md` §5.
 Markers: `[C]` corpus-cited `(Channel, video_id)` · `[I]` industry practice · `[T]` web-verified
-tool/policy fact, dated 2026-07-23 — re-verify before relying on it.
+tool/policy fact, dated 2026-07-23 — re-verify before relying on it · `[P]` project/operator
+decision.
 
 ## The one rule
 
 **Pick ONE voice and keep it consistent across every video on the channel.** That voice *is*
 the channel's identity `[T]` `[I]`. Switching voices between uploads reads as a different
 creator and breaks the consistency the algorithm and audience both reward.
+
+**That voice has been picked** — see `channel-voice.md` for the pinned `voice_id` and its
+recorded rationale `[P]`. It is fix #1 below (a cloned own voice), so the pin satisfies this
+section rather than excepting it. Everything that follows applies to **non-narrator casting**
+and to an explicit override; do not re-run it to re-derive the channel narrator.
 
 ## Do NOT use a default/popular library voice
 

@@ -42,6 +42,23 @@ sourced. If the corpus is thin on a topic, the skill says so explicitly rather t
 filling the gap with generic advice — that discipline is the entire point of this
 project (see "Anti-generic guarantee" below).
 
+**One more marker, for decisions rather than evidence:**
+
+- **`[P]` Project/operator decision** — a call made by this project's owner and
+  recorded in the repo. It states *what was decided*, never *why it is correct*.
+  **Never cite a `[P]` line as corpus or vendor support for anything**, and never
+  let one absorb an adjacent claim: a decision recorded beside a `[C]` rationale
+  does not inherit that rationale's authority. `[P]` exists for the same reason
+  `[REF]` does in `rgs-briefs/` — so a non-corpus source can never masquerade as
+  corpus grounding.
+
+The one `[P]` fact in the repo today is the **pinned channel narrator voice**
+(`.claude/skills/voiceover-brief/references/channel-voice.md`): a fixed ElevenLabs
+`voice_id`, an IVC clone of the operator's own voice, used for every Short across
+all brands. `voiceover-brief` reads it before its selection doctrine and
+`elevenlabs-audio` skips its audition stage on the strength of it. The pin covers
+the narrator only — per-Short casting of any second voice is unaffected.
+
 **Partially in scope:** the toolkit also carries two additional corpora — `thinkers`
 (AnchorAndWave public-domain library) and `youth-sports` (RaisingGoodSports) — plus one
 general-interest roster entry (`@bigthink`/Adam Grant) inside `output/brand-intel/`. Both
@@ -117,6 +134,12 @@ cover something, the skill must say so and flag it, not silently substitute
 generic advice. When editing or extending a skill: every new normative line needs
 a `[C]`/`[I]`/`[T]` marker that traces to real corpus text (or is honestly
 flagged as a gap).
+
+`[P]` is **not** an escape hatch from this. It may only record a concrete choice
+the owner actually made (a pinned `voice_id`, a fixed brand parameter) — never a
+craft rule, a recommendation, or a "best practice." If you find yourself reaching
+for `[P]` to justify advice, that is the invented-content bug this guarantee
+exists to catch.
 
 The same discipline applies to the tool-specialist skills, with vendor
 documentation in place of the corpus: every normative line needs a marker
