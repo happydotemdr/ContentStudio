@@ -137,7 +137,11 @@ def _render_text(summary: dict) -> str:
         lines += [f"- {name}" for name in errored]
         lines.append("")
 
-    if not items and not errored and not summary["has_issues"]:
+    # spotlight is in the guard, not just items/errored/has_issues: a spotlight
+    # with an empty items list can't arise from select_spotlight, which draws
+    # from that same items list, but this renderer must not depend on that
+    # upstream invariant holding -- it has to stay correct on its own terms.
+    if not items and not errored and not summary["has_issues"] and spotlight is None:
         return NO_CONTENT_TEXT
     return "\n".join(lines).rstrip() + "\n"
 
@@ -193,7 +197,7 @@ def _render_html(summary: dict) -> str:
         parts += [f"<li>{esc(name)}</li>" for name in errored]
         parts.append("</ul>")
 
-    if not items and not errored and not summary["has_issues"]:
+    if not items and not errored and not summary["has_issues"] and spotlight is None:
         return f"<p>{NO_CONTENT_TEXT}</p>"
     return "\n".join(parts)
 

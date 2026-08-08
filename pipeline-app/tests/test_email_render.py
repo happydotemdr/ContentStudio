@@ -132,6 +132,19 @@ def test_inventory_groups_by_handle_then_newest_first():
     assert text.index("Alpha New") < text.index("Alpha Old") < text.index("Beta Old")
 
 
+def test_spotlight_survives_an_empty_inventory():
+    spot = _item()
+    drafts = ["Draft one is here."]
+    result = email_render.render_email(
+        _summary(items=[], spotlight=spot, drafts=drafts), "2026-08-08")
+    assert result["text"] != "No new content today."
+    assert "How To Actually Finish A Video" in result["text"]
+    assert "Draft one is here." in result["text"]
+    assert "No new content today." not in result["html"]
+    assert "How To Actually Finish A Video" in result["html"]
+    assert "Draft one is here." in result["html"]
+
+
 def test_text_and_html_list_the_same_titles():
     items = [_item(), _item(item_id="vid2", title="Second Video", url="https://youtu.be/vid2")]
     result = email_render.render_email(_summary(items=items), "2026-08-08")
