@@ -286,3 +286,151 @@ def test_api_key_prefers_env_var_then_file(monkeypatch, tmp_path):
 
     monkeypatch.delenv(fb.KEY_ENV_VAR, raising=False)
     assert fb.api_key() == "from-file"
+
+
+def _row(post_id, date, content="hello", post_type="Post"):
+    return _raw_row(post_id=post_id, date_posted=f"{date}T00:00:00.000Z",
+                    content=content, post_type=post_type)
+
+
+def _stub_job(monkeypatch, rows):
+    monkeypatch.setattr(fb, "_run_collection_job", lambda handle: rows)
+
+
+def test_enumerate_returns_engine_shaped_items(monkeypatch):
+    _stub_job(monkeypatch, [_row("p1", "2026-07-06")])
+    items = fb.enumerate_newest_first("NASA", keyword_filter=None)
+    assert items == [{"id": "p1", "title": "hello", "published": "2026-07-06",
+                      "content_type": "post"}]
+
+
+def test_enumerate_sorts_newest_first(monkeypatch):
+    _stub_job(monkeypatch, [
+        _row("older", "2025-08-08"),
+        _row("newest", "2026-07-06"),
+        _row("middle", "2026-05-28"),
+    ])
+    items = fb.enumerate_newest_first("NASA", keyword_filter=None)
+    assert [i["id"] for i in items] == ["newest", "middle", "older"]
+
+
+def test_enumerate_sorts_same_day_rows_by_time_not_just_date(monkeypatch):
+    """The sort MUST key on the full timestamp. Python's sort is stable, so
+    a date-truncated key leaves same-day rows in Bright Data's arrival
+    order, which can put a genuinely newer post behind ones already on disk
+    and trip discovery_engine's early-stop dedup before reaching it. Both
+    sibling adapters carry a published_ts for exactly this reason."""
+    _stub_job(monkeypatch, [
+        _raw_row(post_id="morning", date_posted="2026-07-06T08:00:00.000Z"),
+        _raw_row(post_id="evening", date_posted="2026-07-06T20:00:00.000Z"),
+    ])
+    items = fb.enumerate_newest_first("NASA", keyword_filter=None)
+    assert [i["id"] for i in items] == ["evening", "morning"]
+
+
+def test_enumerate_caps_retained_items(monkeypatch):
+    _stub_job(monkeypatch, [_row(f"p{i}", f"2026-07-{i:02d}") for i in range(1, 21)])
+    items = fb.enumerate_newest_first("NASA", keyword_filter=None)
+    assert len(items) == fb.MAX_ITEMS_PER_RUN
+
+
+def test_enumerate_applies_keyword_filter_against_content(monkeypatch):
+    _stub_job(monkeypatch, [
+        _row("hit", "2026-07-06", content="Artemis launch today"),
+        _row("miss", "2026-07-05", content="Something else"),
+    ])
+    items = fb.enumerate_newest_first("NASA", keyword_filter="artemis")
+    assert [i["id"] for i in items] == ["hit"]
+
+
+def test_enumerate_drops_unusable_rows_and_logs_the_count(monkeypatch, capsys):
+    _stub_job(monkeypatch, [_row("good", "2026-07-06"), _raw_row(post_id="")])
+    items = fb.enumerate_newest_first("NASA", keyword_filter=None)
+    assert [i["id"] for i in items] == ["good"]
+    assert "dropped 1" in capsys.readouterr().err
+
+
+def test_enumerate_logs_the_vendor_error_code_not_just_a_count(monkeypatch, capsys):
+    """With include_errors=true Bright Data tells us WHY. Logging
+    'dead_page' instead of a bare drop count is the difference between a
+    diagnosable dead slug and a mystery."""
+    _stub_job(monkeypatch, [_row("good", "2026-07-06"), _error_row(code="dead_page")])
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    assert "dead_page" in capsys.readouterr().err
+
+
+def test_enumerate_warns_loudly_when_rows_returned_but_none_survive(monkeypatch, capsys):
+    """A billed job that captured nothing would otherwise be recorded by
+    process_handle as the healthy status 'no_new_content' -- indistinguishable
+    from a quiet day."""
+    _stub_job(monkeypatch, [_error_row(code="dead_page")])
+    assert fb.enumerate_newest_first("NASA", keyword_filter=None) == []
+    err = capsys.readouterr().err
+    assert "none survived" in err
+    assert "dead_page" in err
+
+
+def test_enumerate_returns_empty_without_warning_for_a_genuinely_empty_job(monkeypatch, capsys):
+    _stub_job(monkeypatch, [])
+    assert fb.enumerate_newest_first("NASA", keyword_filter=None) == []
+    assert "none survived" not in capsys.readouterr().err
+
+
+def test_enumerate_overwrites_rather_than_merges_the_cache(monkeypatch):
+    """A fresh successful enumerate replaces whatever this handle held, so
+    download_item never reads a stale id from an earlier run."""
+    _stub_job(monkeypatch, [_row("old", "2026-07-01")])
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    _stub_job(monkeypatch, [_row("new", "2026-07-06")])
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    assert set(fb._ENUMERATE_CACHE["NASA"]) == {"new"}
+
+
+def test_enumerate_caches_per_handle(monkeypatch):
+    _stub_job(monkeypatch, [_row("a1", "2026-07-06")])
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    _stub_job(monkeypatch, [_row("b1", "2026-07-06")])
+    fb.enumerate_newest_first("zuck", keyword_filter=None)
+    assert set(fb._ENUMERATE_CACHE["NASA"]) == {"a1"}
+    assert set(fb._ENUMERATE_CACHE["zuck"]) == {"b1"}
+
+
+def test_enumerate_caches_items_filtered_out_by_keyword(monkeypatch):
+    """keyword_filter narrows what the ENGINE walks, not what was collected
+    and paid for. The cache must hold the full retained batch."""
+    _stub_job(monkeypatch, [
+        _row("hit", "2026-07-06", content="Artemis launch"),
+        _row("miss", "2026-07-05", content="Other"),
+    ])
+    fb.enumerate_newest_first("NASA", keyword_filter="artemis")
+    assert set(fb._ENUMERATE_CACHE["NASA"]) == {"hit", "miss"}
+
+
+def test_enumerate_does_not_filter_by_author(monkeypatch):
+    """Unlike linkedin-profile, this adapter must NOT drop rows whose
+    profile_handle differs from the tracked handle. Across 17 live records
+    profile_handle always matched, and filtering would be actively wrong: a
+    numeric handle returns the VANITY profile_handle ('NASA'), so the
+    comparison would discard every row for handle '100044561550831'."""
+    _stub_job(monkeypatch, [_raw_row(post_id="p1", profile_handle="NASA")])
+    items = fb.enumerate_newest_first("100044561550831", keyword_filter=None)
+    assert [i["id"] for i in items] == ["p1"]
+    assert fb._ENUMERATE_CACHE["100044561550831"]["p1"]["author"] == "NASA"
+
+
+def test_enumerate_propagates_job_timeout(monkeypatch):
+    def raise_timeout(handle):
+        raise brightdata_job.BrightDataJobTimeout("timed out")
+
+    monkeypatch.setattr(fb, "_run_collection_job", raise_timeout)
+    with pytest.raises(brightdata_job.BrightDataJobTimeout):
+        fb.enumerate_newest_first("NASA", keyword_filter=None)
+
+
+def test_enumerate_propagates_job_failure(monkeypatch):
+    def raise_failed(handle):
+        raise brightdata_job.BrightDataJobFailed("failed")
+
+    monkeypatch.setattr(fb, "_run_collection_job", raise_failed)
+    with pytest.raises(brightdata_job.BrightDataJobFailed):
+        fb.enumerate_newest_first("NASA", keyword_filter=None)

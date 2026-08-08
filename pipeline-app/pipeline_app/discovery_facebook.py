@@ -203,3 +203,60 @@ def _run_collection_job(handle: str) -> list[dict]:
         poll_timeout_s=POLL_TIMEOUT_S,
         poll_interval_s=POLL_INTERVAL_S,
     )
+
+
+# handle -> item_id -> normalized row. Populated by enumerate_newest_first,
+# read by download_item. Calling Bright Data again per item would double-pay
+# for posts already collected. Per-process: run_discovery_cron is always
+# invoked as a subprocess, so no entry outlives a single run.
+_ENUMERATE_CACHE: dict[str, dict[str, dict]] = {}
+
+
+def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
+    # Raises BrightDataJobTimeout/BrightDataJobFailed -- never swallowed here.
+    # An empty return must mean "the job completed and there was nothing",
+    # nothing else.
+    raw_rows = _run_collection_job(handle)
+
+    normalized = [_normalize_row(r) for r in raw_rows]
+    unusable = sum(1 for n in normalized if n is None)
+    kept = [n for n in normalized if n is not None]
+    codes = _error_codes(raw_rows)
+
+    if unusable:
+        detail = f" ({', '.join(sorted(set(codes)))})" if codes else ""
+        print(f"  ! {PLATFORM}/{handle}: dropped {unusable} unusable row(s){detail}",
+              file=sys.stderr)
+
+    if raw_rows and not kept:
+        # This run was billed and produced nothing, but process_handle will
+        # record the healthy status 'no_new_content' -- indistinguishable
+        # from a quiet day unless it is loud here.
+        detail = f" Bright Data reported: {', '.join(sorted(set(codes)))}." if codes else ""
+        print(f"  !! {PLATFORM}/{handle}: Bright Data returned {len(raw_rows)} "
+              f"row(s) but none survived filtering. This run was billed and "
+              f"captured nothing -- check whether this handle is still valid."
+              f"{detail}", file=sys.stderr)
+
+    # Sort on the full timestamp, not the date-truncated 'published': Python's
+    # sort is stable, so same-day rows sorted on 'published' alone would keep
+    # Bright Data's arrival order, which can put a genuinely newer post behind
+    # ones already on disk and trip the early-stop dedup before reaching it.
+    # Cap AFTER sorting so it bounds retained items.
+    kept.sort(key=lambda n: n["published_ts"], reverse=True)
+    kept = kept[:MAX_ITEMS_PER_RUN]
+
+    # Overwrite, not merge: a fresh successful enumerate replaces whatever
+    # this handle held, so download_item never reads a stale id. Cached
+    # BEFORE keyword_filter -- the filter narrows what the engine walks, not
+    # what was collected and paid for.
+    _ENUMERATE_CACHE[handle] = {n["id"]: n for n in kept}
+
+    items = kept
+    if keyword_filter:
+        items = [i for i in items if keyword_filter.lower() in i["body"].lower()]
+    return [
+        {"id": i["id"], "title": i["title"], "published": i["published"],
+         "content_type": i["content_type"]}
+        for i in items
+    ]
