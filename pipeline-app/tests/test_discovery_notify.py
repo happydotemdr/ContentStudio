@@ -74,146 +74,6 @@ def notify_db(tmp_path):
     conn.close()
 
 
-def test_build_summary_includes_headlines_within_watermark(notify_db):
-    conn, repo_root = notify_db
-    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
-    handle_id = _make_handle(conn)
-    db.record_handle_result(conn, run_row_id, handle_id, "ok", 2)
-    _write_youtube_video(repo_root, "@somechannel", "vid1", "First New Video", "2026-08-01T06:01:00+00:00")
-    _write_youtube_video(repo_root, "@somechannel", "vid2", "Second New Video", "2026-08-01T06:02:00+00:00")
-    # Left over from a prior run's same handle -- must be excluded by the watermark.
-    _write_youtube_video(repo_root, "@somechannel", "vid0", "Old Video From Yesterday", "2026-07-31T06:01:00+00:00")
-
-    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
-
-    assert summary["run_status"] == "completed"
-    assert summary["has_issues"] is False
-    assert len(summary["channels"]) == 1
-    channel = summary["channels"][0]
-    assert channel["name"] == "Some Channel"
-    assert channel["count"] == 2
-    assert set(channel["headlines"]) == {"First New Video", "Second New Video"}
-    assert summary["errored"] == []
-
-
-def test_build_summary_excludes_file_with_no_fetched_at(notify_db):
-    conn, repo_root = notify_db
-    run_row_id = _make_run(conn)
-    handle_id = _make_handle(conn)
-    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
-    _write_youtube_video(repo_root, "@somechannel", "vid1", "Good Video", "2026-08-01T06:01:00+00:00")
-    # A malformed file with no frontmatter at all -- must be silently excluded, not crash the run.
-    from pipeline_app import discovery_paths
-    out_dir = discovery_paths.handle_dir(repo_root, "youtube", "@somechannel")
-    (out_dir / "vid2__broken.md").write_text("no frontmatter here", encoding="utf-8")
-
-    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
-
-    headlines = summary["channels"][0]["headlines"]
-    assert headlines == ["Good Video"]
-
-
-def test_build_summary_excludes_file_with_invalid_yaml_frontmatter(notify_db):
-    conn, repo_root = notify_db
-    run_row_id = _make_run(conn)
-    handle_id = _make_handle(conn)
-    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
-    _write_youtube_video(repo_root, "@somechannel", "vid1", "Good Video", "2026-08-01T06:01:00+00:00")
-    # A file with a --- delimited block but genuinely invalid YAML inside it (unquoted value
-    # starting with a reserved indicator character) -- parse_frontmatter's yaml.safe_load call
-    # raises for this; build_summary must catch it and drop just this file, not crash the run.
-    from pipeline_app import discovery_paths
-    out_dir = discovery_paths.handle_dir(repo_root, "youtube", "@somechannel")
-    bad_text = (
-        "---\n"
-        "video_id: vid2\n"
-        "fetched_at: @not-quoted-and-invalid\n"
-        "---\n\n"
-        "# Broken Video\n"
-    )
-    (out_dir / "vid2__broken-yaml.md").write_text(bad_text, encoding="utf-8")
-
-    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
-
-    assert summary["channels"][0]["headlines"] == ["Good Video"]
-
-
-def test_build_summary_excludes_file_with_non_dict_frontmatter(notify_db):
-    conn, repo_root = notify_db
-    run_row_id = _make_run(conn)
-    handle_id = _make_handle(conn)
-    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
-    _write_youtube_video(repo_root, "@somechannel", "vid1", "Good Video", "2026-08-01T06:01:00+00:00")
-    # A file whose frontmatter block is syntactically valid YAML but does not parse to a
-    # mapping (e.g. a plain scalar string) -- yaml.safe_load succeeds so parse_frontmatter
-    # doesn't raise YAMLError, but meta.get("fetched_at") would raise AttributeError if not
-    # guarded. build_summary must catch this shape too and drop just this file.
-    from pipeline_app import discovery_paths
-    out_dir = discovery_paths.handle_dir(repo_root, "youtube", "@somechannel")
-    bad_text = (
-        "---\n"
-        "just some plain text, not a mapping\n"
-        "---\n\n"
-        "# Some Title\n"
-    )
-    (out_dir / "vid2__non-dict-yaml.md").write_text(bad_text, encoding="utf-8")
-
-    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
-
-    assert summary["channels"][0]["headlines"] == ["Good Video"]
-
-
-def test_build_summary_bluesky_handle_has_no_headlines_but_has_count(notify_db):
-    conn, repo_root = notify_db
-    run_row_id = _make_run(conn)
-    handle_id = _make_handle(conn, platform="bluesky", handle="did:plc:abc", display_name="A Bluesky Handle")
-    db.record_handle_result(conn, run_row_id, handle_id, "ok", 3)
-
-    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
-
-    channel = summary["channels"][0]
-    assert channel["name"] == "A Bluesky Handle"
-    assert channel["headlines"] == []
-    assert channel["count"] == 3
-
-
-def test_build_summary_omits_channels_with_zero_new_items(notify_db):
-    conn, repo_root = notify_db
-    run_row_id = _make_run(conn)
-    handle_id = _make_handle(conn)
-    db.record_handle_result(conn, run_row_id, handle_id, "no_new_content", 0)
-
-    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
-
-    assert summary["channels"] == []
-
-
-def test_build_summary_collects_errored_handles_with_display_name_fallback(notify_db):
-    conn, repo_root = notify_db
-    run_row_id = _make_run(conn, status="completed_with_errors")
-    handle_id = db.create_handle(conn, "youtube", "@dead-handle", None, "guru", None, "2026-07-01T00:00:00+00:00")
-    db.record_handle_result(conn, run_row_id, handle_id, "error", 0, "enumerate returned no results")
-
-    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
-
-    assert summary["has_issues"] is True
-    assert summary["errored"] == ["@dead-handle"]  # display_name is None -> falls back to handle
-
-
-def test_build_summary_warns_on_count_mismatch_but_does_not_raise(notify_db, capsys):
-    conn, repo_root = notify_db
-    run_row_id = _make_run(conn)
-    handle_id = _make_handle(conn)
-    # DB says 2 items downloaded but only 1 file actually matches the watermark.
-    db.record_handle_result(conn, run_row_id, handle_id, "ok", 2)
-    _write_youtube_video(repo_root, "@somechannel", "vid1", "Only One Video", "2026-08-01T06:01:00+00:00")
-
-    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
-
-    assert summary["channels"][0]["headlines"] == ["Only One Video"]
-    assert "mismatch" in capsys.readouterr().err.lower()
-
-
 def test_send_email_returns_false_without_key(monkeypatch, tmp_path):
     monkeypatch.setattr(discovery_notify, "KEY_FILE", tmp_path / "missing.txt")
     calls = []
@@ -283,73 +143,25 @@ def test_send_email_catches_non_2xx_response(monkeypatch):
     assert discovery_notify.send_email("subject", "body") is False
 
 
-def test_render_email_no_new_content():
-    summary = {"run_status": "completed", "has_issues": False, "channels": [], "errored": []}
-    result = discovery_notify.render_email(summary, "2026-08-01")
-    assert result["subject"] == "ContentStudio Discovery 2026-08-01: 0 new video(s)"
-    assert result["text"] == "No new content today."
-
-
-def test_render_email_with_headlines_and_bluesky_count():
-    summary = {
-        "run_status": "completed",
-        "has_issues": False,
-        "channels": [
-            {"name": "Some Channel", "headlines": ["Video One", "Video Two"], "count": 2},
-            {"name": "A Bluesky Handle", "headlines": [], "count": 3},
-        ],
-        "errored": [],
-    }
-    result = discovery_notify.render_email(summary, "2026-08-01")
-    assert result["subject"] == "ContentStudio Discovery 2026-08-01: 5 new video(s)"
-    assert "Some Channel" in result["text"]
-    assert "- Video One" in result["text"]
-    assert "- Video Two" in result["text"]
-    assert "A Bluesky Handle" in result["text"]
-    assert "3 new post(s)" in result["text"]
-
-
-def test_render_email_issue_prefixes_subject_and_lists_errors():
-    summary = {
-        "run_status": "completed_with_errors",
-        "has_issues": True,
-        "channels": [],
-        "errored": ["@dead-handle"],
-    }
-    result = discovery_notify.render_email(summary, "2026-08-01")
-    assert result["subject"].startswith("[ISSUE] ")
-    assert "Run status: completed_with_errors" in result["text"]
-    assert "Errors:" in result["text"]
-    assert "@dead-handle" in result["text"]
-
-
-def test_render_email_failed_run_states_status_even_with_empty_body():
-    # A failed run with no handle results at all must never silently render
-    # as "No new content today." under an [ISSUE] subject.
-    summary = {"run_status": "failed", "has_issues": True, "channels": [], "errored": []}
-    result = discovery_notify.render_email(summary, "2026-08-01")
-    assert result["subject"].startswith("[ISSUE] ")
-    assert "Run status: failed" in result["text"]
-
-
 def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
     conn, repo_root = notify_db
     run_row_id = _make_run(conn, started_at="2026-08-01T11:00:00+00:00")  # 06:00 America/Chicago (UTC-5)
 
     calls = {}
     monkeypatch.setattr(discovery_notify, "build_summary",
-                         lambda c, r, rid: (calls.setdefault("build_args", (c, r, rid)), {"fake": "summary"})[1])
-    monkeypatch.setattr(discovery_notify, "render_email",
-                         lambda summary, run_date: (calls.setdefault("render_args", (summary, run_date)), {"subject": "s", "text": "t"})[1])
+                         lambda c, r, rid: (calls.setdefault("build_args", (c, r, rid)), {"fake": "summary", "items": []})[1])
+    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight", lambda items: None)
+    monkeypatch.setattr(discovery_notify.email_render, "render_email",
+                         lambda summary, run_date: (calls.setdefault("render_args", (summary, run_date)), {"subject": "s", "text": "t", "html": "h"})[1])
     monkeypatch.setattr(discovery_notify, "send_email",
-                         lambda subject, text: (calls.setdefault("send_args", (subject, text)), True)[1])
+                         lambda subject, text, html: (calls.setdefault("send_args", (subject, text, html)), True)[1])
 
     result = discovery_notify.notify(conn, repo_root, run_row_id)
 
     assert result is True
     assert calls["build_args"] == (conn, repo_root, run_row_id)
-    assert calls["render_args"] == ({"fake": "summary"}, "2026-08-01")
-    assert calls["send_args"] == ("s", "t")
+    assert calls["render_args"] == ({"fake": "summary", "items": [], "spotlight": None, "drafts": []}, "2026-08-01")
+    assert calls["send_args"] == ("s", "t", "h")
 
 
 def test_notify_end_to_end_uses_real_build_summary_and_render_email(monkeypatch, notify_db):
@@ -364,7 +176,7 @@ def test_notify_end_to_end_uses_real_build_summary_and_render_email(monkeypatch,
     captured = {}
     monkeypatch.setattr(
         discovery_notify, "send_email",
-        lambda subject, text: (captured.setdefault("subject", subject), captured.setdefault("text", text), True)[-1],
+        lambda subject, text, html: (captured.setdefault("subject", subject), captured.setdefault("text", text), True)[-1],
     )
 
     result = discovery_notify.notify(conn, repo_root, run_row_id)
@@ -383,3 +195,153 @@ def test_notify_never_raises_when_build_summary_fails(monkeypatch, notify_db):
     # this test documents that notify() doesn't add its own extra failure mode.
     with pytest.raises(RuntimeError):
         discovery_notify.notify(conn, repo_root, run_row_id)
+
+
+def _write_post(repo_root, platform, handle, name, meta_lines, body):
+    from pipeline_app import discovery_paths
+    out = discovery_paths.handle_dir(repo_root, platform, handle)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / name).write_text("---\n" + "\n".join(meta_lines) + "\n---\n\n" + body, encoding="utf-8")
+
+
+def test_build_summary_collects_items_from_every_platform(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    yt = _make_handle(conn, "youtube", "@chan", "Some Channel")
+    li = _make_handle(conn, "linkedin-profile", "bettywliu", "Betty Liu")
+    db.record_handle_result(conn, run_row_id, yt, "ok", 1)
+    db.record_handle_result(conn, run_row_id, li, "ok", 1)
+    _write_post(repo_root, "youtube", "@chan", "vid1__slug.md",
+                ["url: 'https://youtu.be/vid1'", "view_count: 900",
+                 "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "# A Video Title\n\n## transcript\n\nWords here.\n")
+    _write_post(repo_root, "linkedin-profile", "bettywliu", "7358.md",
+                ["url: 'https://example.com/li'", "like_count: 12",
+                 "fetched_at: '2026-08-01T06:02:00+00:00'"],
+                "A LinkedIn post body.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert {i["platform"] for i in summary["items"]} == {"youtube", "linkedin-profile"}
+    assert summary["has_issues"] is False
+    assert summary["errored"] == []
+
+
+def test_build_summary_scans_an_errored_handle_that_downloaded_partially(notify_db):
+    # discovery_engine records error/0 when process_handle raises AFTER some
+    # downloads succeeded. The old status gate discarded exactly this row, so
+    # those files reached no email at all.
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, status="completed_with_errors")
+    handle_id = _make_handle(conn, "instagram", "someone", "Someone")
+    db.record_handle_result(conn, run_row_id, handle_id, "error", 0, "boom")
+    _write_post(repo_root, "instagram", "someone", "p1.md",
+                ["url: 'https://instagram.com/p/1'",
+                 "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A caption that did land.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert len(summary["items"]) == 1
+    assert summary["errored"] == ["Someone"]
+    assert summary["has_issues"] is True
+
+
+def test_build_summary_scans_a_handle_recorded_with_zero_items(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    handle_id = _make_handle(conn, "bluesky", "someone.bsky.social", "Someone BS")
+    db.record_handle_result(conn, run_row_id, handle_id, "no_new_content", 0)
+    _write_post(repo_root, "bluesky", "someone.bsky.social", "abc.md",
+                ["url: 'https://bsky.app/x'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A post that the count missed.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+    assert len(summary["items"]) == 1
+
+
+def test_build_summary_warns_on_count_mismatch_but_does_not_raise(notify_db, capsys):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    handle_id = _make_handle(conn, "linkedin-profile", "bettywliu", "Betty Liu")
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 2)
+    _write_post(repo_root, "linkedin-profile", "bettywliu", "one.md",
+                ["url: 'https://example.com/x'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "Only one of the two.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert len(summary["items"]) == 1
+    assert "mismatch" in capsys.readouterr().err.lower()
+
+
+def test_build_summary_uses_handle_fallback_for_errored_handle_without_display_name(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, status="completed_with_errors")
+    handle_id = db.create_handle(conn, "youtube", "@dead-handle", None, "guru", None,
+                                 "2026-07-01T00:00:00+00:00")
+    db.record_handle_result(conn, run_row_id, handle_id, "error", 0, "gone")
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+    assert summary["errored"] == ["@dead-handle"]
+
+
+def test_send_email_includes_an_html_part(monkeypatch):
+    monkeypatch.setenv(discovery_notify.KEY_ENV_VAR, "test-key")
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        def raise_for_status(self):
+            pass
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr(discovery_notify.requests, "post", fake_post)
+    assert discovery_notify.send_email("Subj", "plain body", "<p>html body</p>") is True
+    assert captured["json"]["text"] == "plain body"
+    assert captured["json"]["html"] == "<p>html body</p>"
+
+
+def test_notify_threads_spotlight_and_drafts_into_render(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    seen = {}
+
+    monkeypatch.setattr(discovery_notify, "build_summary",
+                        lambda *a: {"run_status": "completed", "has_issues": False,
+                                    "items": [{"marker": "the-item"}], "errored": []})
+    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight",
+                        lambda items: {"marker": "the-spotlight"})
+    monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments",
+                        lambda item, **kw: ["d1", "d2", "d3"])
+
+    def fake_render(summary, run_date):
+        seen["summary"] = summary
+        seen["run_date"] = run_date
+        return {"subject": "S", "text": "T", "html": "<p>H</p>"}
+
+    monkeypatch.setattr(discovery_notify.email_render, "render_email", fake_render)
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a: True)
+
+    assert discovery_notify.notify(conn, repo_root, run_row_id) is True
+    assert seen["summary"]["spotlight"] == {"marker": "the-spotlight"}
+    assert seen["summary"]["drafts"] == ["d1", "d2", "d3"]
+    assert seen["run_date"] == "2026-08-01"
+
+
+def test_notify_skips_drafting_when_there_is_no_spotlight(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    calls = []
+    monkeypatch.setattr(discovery_notify, "build_summary",
+                        lambda *a: {"run_status": "completed", "has_issues": False,
+                                    "items": [], "errored": []})
+    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight", lambda items: None)
+    monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments",
+                        lambda item, **kw: calls.append(item) or [])
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a: True)
+
+    assert discovery_notify.notify(conn, repo_root, run_row_id) is True
+    assert calls == []

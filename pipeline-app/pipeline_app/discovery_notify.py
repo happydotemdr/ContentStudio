@@ -1,8 +1,15 @@
 """Post-run email notification for the discovery pipeline. Deliberately has
 no dependency on discovery_engine.py -- it reads only what a finished run
-already persisted (DB rows via db.py, files via discovery_paths.py /
-artifacts.py) and is invoked by run_discovery_cron.py after run_discovery()
-returns. See docs/superpowers/specs/2026-08-01-discovery-email-summary-design.md.
+already persisted (DB rows via db.py, files via discovery_digest.py) and is
+invoked by run_discovery_cron.py after run_discovery() returns.
+
+This module does NOT catch. tests/test_discovery_notify.py documents that
+contract: the cron call site (run_discovery_cron.py:100) is the single catch
+point, and notify() adding its own would be a second, redundant failure
+boundary. The collaborators carry the burden instead -- comment_draft never
+raises, and per-item parse failures are contained inside collect_new_items.
+
+See docs/superpowers/specs/2026-08-08-morning-email-social-expansion-design.md.
 """
 from __future__ import annotations
 
@@ -13,11 +20,11 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
-import yaml
 
+from pipeline_app import comment_draft
 from pipeline_app import db as db_mod
-from pipeline_app import discovery_paths
-from pipeline_app import artifacts
+from pipeline_app import discovery_digest
+from pipeline_app import email_render
 
 RESEND_API_URL = "https://api.resend.com/emails"
 KEY_ENV_VAR = "RESEND_API_KEY"
@@ -45,7 +52,7 @@ def api_key() -> str | None:
     return None
 
 
-def send_email(subject: str, text: str) -> bool:
+def send_email(subject: str, text: str, html: str | None = None) -> bool:
     """POST one email via Resend's HTTP API. Never raises -- returns False on
     any failure (no key configured, network error, non-2xx response) so a
     caller can log and move on rather than letting a notification failure
@@ -54,11 +61,14 @@ def send_email(subject: str, text: str) -> bool:
     if not key:
         print("discovery_notify: no RESEND_API_KEY configured, skipping send", file=sys.stderr)
         return False
+    payload = {"from": SENDER, "to": [RECIPIENT], "subject": subject, "text": text}
+    if html:
+        payload["html"] = html
     try:
         response = requests.post(
             RESEND_API_URL,
             headers={"Authorization": f"Bearer {key}"},
-            json={"from": SENDER, "to": [RECIPIENT], "subject": subject, "text": text},
+            json=payload,
             timeout=REQUEST_TIMEOUT_S,
         )
         response.raise_for_status()
@@ -68,112 +78,66 @@ def send_email(subject: str, text: str) -> bool:
         return False
 
 
-def _youtube_headlines_for_handle(repo_root, platform_handle: str, started_at: str) -> list[str]:
-    directory = discovery_paths.handle_dir(repo_root, "youtube", platform_handle)
-    if not directory.exists():
-        return []
-    headlines = []
-    for path in sorted(directory.glob("*__*.md")):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        try:
-            meta, body = artifacts.parse_frontmatter(text)
-        except yaml.YAMLError:
-            continue
-        if not isinstance(meta, dict):
-            continue
-        fetched_at = meta.get("fetched_at")
-        if not fetched_at or fetched_at < started_at:
-            continue
-        first_line = next((line for line in body.splitlines() if line.strip()), "")
-        title = first_line.lstrip("#").strip() if first_line.startswith("#") else None
-        if title:
-            headlines.append(title)
-    return headlines
-
-
 def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
+    """The run's new items, flat, plus its status and errored handles.
+
+    EVERY handle in the run is scanned, regardless of its recorded status or
+    items_downloaded. Both gates this function used to apply are deliberately
+    gone: discovery_engine.py:346 records error/0 for a handle whose
+    process_handle raised AFTER some downloads succeeded, which is precisely
+    the case the fetched_at watermark exists to self-correct. Keeping the gates
+    and keeping the watermark's rationale are mutually exclusive.
+
+    An errored handle with partial downloads therefore appears BOTH in `items`
+    and in `errored`. That is intended: "this handle broke, and here are the
+    three posts it got before it broke" beats either half alone.
+
+    `items` is flat rather than pre-grouped -- select_spotlight needs the flat
+    list, and email_render owns grouping so that adding a platform never
+    requires a second place to be taught about it.
+    """
     run_row = db_mod.get_run(conn, run_row_id)
     handle_results = db_mod.list_run_handle_results(conn, run_row_id)
+    started_at = run_row["started_at"]
 
-    channels = []
-    errored = []
+    items: list[dict] = []
+    errored: list[str] = []
     for result in handle_results:
         handle_row = db_mod.get_handle(conn, result["handle_id"])
         label = handle_row["display_name"] or handle_row["handle"]
 
         if result["status"] == "error":
             errored.append(label)
-            continue
 
-        if result["items_downloaded"] <= 0:
-            continue
-
-        if handle_row["platform"] == "youtube":
-            headlines = _youtube_headlines_for_handle(repo_root, handle_row["handle"], run_row["started_at"])
-            if len(headlines) != result["items_downloaded"]:
-                print(
-                    f"discovery_notify: headline count mismatch for {label}: "
-                    f"db says {result['items_downloaded']}, found {len(headlines)} on disk",
-                    file=sys.stderr,
-                )
-            channels.append({"name": label, "headlines": headlines, "count": len(headlines)})
-        else:
-            channels.append({"name": label, "headlines": [], "count": result["items_downloaded"]})
+        found = discovery_digest.collect_new_items(repo_root, handle_row, started_at)
+        if len(found) != result["items_downloaded"]:
+            print(f"discovery_notify: item count mismatch for {label}: "
+                  f"db says {result['items_downloaded']}, found {len(found)} on disk",
+                  file=sys.stderr)
+        items.extend(found)
 
     has_issues = run_row["status"] != "completed" or bool(errored)
     return {
         "run_status": run_row["status"],
         "has_issues": has_issues,
-        "channels": channels,
+        "items": items,
         "errored": errored,
     }
 
 
-def render_email(summary: dict, run_date: str) -> dict:
-    total = sum(c["count"] for c in summary["channels"])
-    subject = f"ContentStudio Discovery {run_date}: {total} new video(s)"
-    if summary["has_issues"]:
-        subject = f"[ISSUE] {subject}"
-
-    lines: list[str] = []
-    if summary["has_issues"]:
-        lines.append(f"Run status: {summary['run_status']}")
-        lines.append("")
-
-    for channel in summary["channels"]:
-        lines.append(channel["name"])
-        if channel["headlines"]:
-            for headline in channel["headlines"]:
-                lines.append(f"- {headline}")
-        else:
-            lines.append(f"- {channel['count']} new post(s)")
-        lines.append("")
-
-    if summary["errored"]:
-        lines.append("Errors:")
-        for name in summary["errored"]:
-            lines.append(f"- {name}")
-        lines.append("")
-
-    if not summary["channels"] and not summary["errored"]:
-        if summary["has_issues"]:
-            text = "\n".join(lines).rstrip() + "\n"
-        else:
-            text = "No new content today."
-    else:
-        text = "\n".join(lines).rstrip() + "\n"
-
-    return {"subject": subject, "text": text}
-
-
 def notify(conn, repo_root: Path, run_row_id: int) -> bool:
     summary = build_summary(conn, repo_root, run_row_id)
+
+    spotlight = discovery_digest.select_spotlight(summary["items"])
+    # draft_comments never raises and returns [] on every failure path, so a
+    # drafting problem costs three drafts, never the day's inventory.
+    summary["spotlight"] = spotlight
+    summary["drafts"] = comment_draft.draft_comments(spotlight) if spotlight else []
+
     run_row = db_mod.get_run(conn, run_row_id)
     timezone_name = db_mod.get_settings(conn)["timezone"]
     started_at = _dt.datetime.fromisoformat(run_row["started_at"])
     run_date = started_at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
-    rendered = render_email(summary, run_date)
-    return send_email(rendered["subject"], rendered["text"])
+
+    rendered = email_render.render_email(summary, run_date)
+    return send_email(rendered["subject"], rendered["text"], rendered["html"])
