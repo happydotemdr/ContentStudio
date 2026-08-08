@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from pipeline_app import artifacts
 from pipeline_app.discovery_paths import handle_dir
 
 BLUESKY_API = "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
@@ -95,15 +96,23 @@ def download_item(repo_root: Path, handle: str, rkey: str, title: str,
     fetched_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
     dest = out_dir / f"{rkey}.md"
-    md = [
-        f"# bluesky post {rkey}", "",
-        f"- url: {purl}", f"- author: {handle}",
-        f"- created: {published or ''}", f"- fetched_at: {fetched_at}", "",
-        full_text or "(empty)", "",
-    ]
+    meta = {
+        "post_id": rkey,
+        "url": purl,
+        "handle": handle,
+        # Bluesky's getAuthorFeed is scoped to one author, so author == handle
+        # by construction. Recorded anyway to match every other adapter's
+        # frontmatter shape, which is what discovery_digest reads generically.
+        "author": handle,
+        "published": published,
+        "fetched_at": fetched_at,
+    }
+    # No like/comment counts: getAuthorFeed does not surface them, so Bluesky
+    # items always score 0 in the spotlight ranking. Deliberate, not an omission.
+    body = full_text or "(empty)"
     # Write-temp-then-rename, same as discovery_youtube.download_item (Task 7)
     # -- see that task's comment for why.
     tmp_dest = dest.with_name(dest.name + ".tmp")
-    tmp_dest.write_text("\n".join(md), encoding="utf-8")
+    tmp_dest.write_text(artifacts.render_frontmatter(meta, body), encoding="utf-8")
     tmp_dest.replace(dest)
     return {"id": rkey, "ok": True, "published": published}

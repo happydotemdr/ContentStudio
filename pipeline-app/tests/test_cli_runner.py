@@ -149,18 +149,18 @@ def test_extract_turn_result_marks_failure_on_is_error():
 
 
 def test_platform_argv_wraps_cmd_shim_on_windows(monkeypatch):
-    from pipeline_app.cli_runner import _platform_argv
+    from pipeline_app.cli_runner import platform_argv
 
     monkeypatch.setattr("pipeline_app.cli_runner.os.name", "nt")
-    argv = _platform_argv([r"C:\Users\me\AppData\Roaming\npm\claude.CMD", "-p", "hi"])
+    argv = platform_argv([r"C:\Users\me\AppData\Roaming\npm\claude.CMD", "-p", "hi"])
     assert argv == ["cmd", "/c", r"C:\Users\me\AppData\Roaming\npm\claude.CMD", "-p", "hi"]
 
 
 def test_platform_argv_passes_through_non_windows_or_non_shim(monkeypatch):
-    from pipeline_app.cli_runner import _platform_argv
+    from pipeline_app.cli_runner import platform_argv
 
     monkeypatch.setattr("pipeline_app.cli_runner.os.name", "posix")
-    argv = _platform_argv(["/usr/local/bin/claude", "-p", "hi"])
+    argv = platform_argv(["/usr/local/bin/claude", "-p", "hi"])
     assert argv == ["/usr/local/bin/claude", "-p", "hi"]
 
 
@@ -304,7 +304,7 @@ async def test_stream_claude_turn_passes_strict_mcp_config(monkeypatch, tmp_path
 def test_injection_shaped_prompt_never_reaches_cmd_shim_command_line(monkeypatch):
     """Even with the Windows `cmd /c` wrapper applied, nothing from the prompt
     appears in the command list, so cmd.exe has nothing to re-parse."""
-    from pipeline_app.cli_runner import _platform_argv
+    from pipeline_app.cli_runner import platform_argv
 
     monkeypatch.setattr("pipeline_app.cli_runner.os.name", "nt")
     argv = build_claude_argv(
@@ -314,7 +314,7 @@ def test_injection_shaped_prompt_never_reaches_cmd_shim_command_line(monkeypatch
         settings_path=None,
         which_fn=lambda name: r"C:\npm\claude.CMD",
     )
-    wrapped = _platform_argv(argv)
+    wrapped = platform_argv(argv)
     assert wrapped[:2] == ["cmd", "/c"]
     joined = " ".join(wrapped)
     assert "pwned" not in joined
@@ -390,11 +390,11 @@ async def _await_marker(marker: Path, timeout: float) -> bool:
 @pytest.mark.skipif(os.name != "nt", reason="cmd.exe shim process-tree kill is Windows-only")
 @pytest.mark.asyncio
 async def test_kill_process_tree_kills_the_child_behind_the_cmd_shim(tmp_path: Path):
-    """On Windows `claude` runs through `cmd /c` (see _platform_argv), so the
+    """On Windows `claude` runs through `cmd /c` (see platform_argv), so the
     process object we hold is cmd.exe and the real work is a descendant.
     process.kill() would terminate only cmd.exe and leave the descendant running
-    to completion; _kill_process_tree must take the whole tree down."""
-    from pipeline_app.cli_runner import _kill_process_tree
+    to completion; kill_process_tree must take the whole tree down."""
+    from pipeline_app.cli_runner import kill_process_tree
 
     shim, started, completed = _write_cmd_shim_that_spawns_a_slow_child(tmp_path)
     process = await asyncio.create_subprocess_exec(
@@ -408,7 +408,7 @@ async def test_kill_process_tree_kills_the_child_behind_the_cmd_shim(tmp_path: P
         assert await _await_marker(started, timeout=10.0), "slow child never started"
 
         kill_started = time.monotonic()
-        _kill_process_tree(process)
+        kill_process_tree(process)
         await process.wait()
         elapsed = time.monotonic() - kill_started
 
@@ -419,7 +419,7 @@ async def test_kill_process_tree_kills_the_child_behind_the_cmd_shim(tmp_path: P
         assert not completed.exists(), "descendant survived the kill and ran to completion"
     finally:
         if process.returncode is None:
-            _kill_process_tree(process)
+            kill_process_tree(process)
             await process.wait()
 
 
@@ -427,7 +427,7 @@ async def test_kill_process_tree_kills_the_child_behind_the_cmd_shim(tmp_path: P
 def test_kill_process_tree_tolerates_an_already_exited_pid():
     """Race: the process can exit between the returncode check and the kill.
     taskkill then returns nonzero, which must not raise."""
-    from pipeline_app.cli_runner import _kill_process_tree
+    from pipeline_app.cli_runner import kill_process_tree
 
     class _GoneProcess:
         pid = 999999  # not a live PID
@@ -435,7 +435,7 @@ def test_kill_process_tree_tolerates_an_already_exited_pid():
         def kill(self) -> None:  # pragma: no cover - must not be reached on nt
             raise AssertionError("should have gone through taskkill")
 
-    _kill_process_tree(_GoneProcess())
+    kill_process_tree(_GoneProcess())
 
 
 def test_kill_process_tree_uses_plain_kill_off_windows(monkeypatch):
@@ -451,7 +451,7 @@ def test_kill_process_tree_uses_plain_kill_off_windows(monkeypatch):
             self.killed = True
 
     proc = _Proc()
-    cli_runner._kill_process_tree(proc)
+    cli_runner.kill_process_tree(proc)
     assert proc.killed is True
 
 
