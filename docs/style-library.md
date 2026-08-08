@@ -164,12 +164,15 @@ teal-ink ground and check the first renders for warm drift.
    came out photographic — so this will not be caught mechanically. It shows up as diluted
    renders that do not look like the code that was picked.
 
-   Two coherent options:
-   - **Keep the bands.** `--raw` + `--s 80-120` dilute the artistic code toward photographic.
-     Cheapest, but it partly wastes the code the run owner chose.
-   - **Re-spec Register A** — drop `needs_raw` and raise the stylize band in `REGISTER_BANDS`,
-     and update `visual-prompts/references/visual-registers.md` §2 to match. The register split
-     then rests on palette, subject and era rather than on medium.
+   **DECIDED 2026-08-08 (run owner): keep the bands unchanged for now.** Run the first Short
+   end to end on `--raw` + `--s 80-120` and judge the actual renders before touching a gate
+   three skills depend on. The alternative — dropping `needs_raw` and raising the stylize band
+   in `REGISTER_BANDS`, with `visual-prompts/references/visual-registers.md` §2 updated to
+   match — stays on the table and is the fix if Register A comes back diluted.
+
+   **What to look at when the first Register A renders land:** whether they read as the code
+   that was picked, or as generic photographic stock with a faint stylization. If the latter,
+   `--raw` is the thing to drop first.
 
    The mechanical separation Gate C enforces (C6/C7/C9/C10, and the disjoint `--s` bands)
    survives either choice — the two registers still share no palette family and no parameter
