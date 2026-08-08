@@ -31,7 +31,7 @@ class TurnResult:
 # not an oversight.
 #
 # PowerShell and Bash are both denied: this app is Windows-targeted (see
-# _platform_argv's cmd-shim handling below), and a real recorded turn's
+# platform_argv's cmd-shim handling below), and a real recorded turn's
 # system/init event shows PowerShell present and usable in the tool list --
 # denying Bash alone does not stop a pipeline turn from shelling out on
 # Windows. NotebookEdit is denied alongside Write/Edit as another unscoped
@@ -65,7 +65,7 @@ def build_claude_argv(
     """Build the claude argv WITHOUT the prompt.
 
     The prompt is deliberately not placed on the command line. On Windows
-    `claude` resolves to an npm .cmd shim, which _platform_argv has to run
+    `claude` resolves to an npm .cmd shim, which platform_argv has to run
     through `cmd /c`; cmd.exe does not honour subprocess's `\\"` escaping (a
     backslash is literal and a quote just toggles quoting), so any `"` in a
     user-supplied prompt would break out of quoting and let the rest of the
@@ -154,7 +154,7 @@ def extract_turn_result(events: list[dict]) -> TurnResult:
     return TurnResult(session_id=session_id, result_text=result_text, cost_usd=cost_usd, success=success)
 
 
-def _platform_argv(argv: list[str]) -> list[str]:
+def platform_argv(argv: list[str]) -> list[str]:
     """On Windows, `claude` resolves via shutil.which to an npm .cmd/.bat shim,
     which asyncio.create_subprocess_exec cannot exec directly (it is not a real
     PE executable) — it must be run through the shell via `cmd /c`. Other
@@ -164,10 +164,10 @@ def _platform_argv(argv: list[str]) -> list[str]:
     return argv
 
 
-def _kill_process_tree(process) -> None:
+def kill_process_tree(process) -> None:
     """Terminate the child *and every process it spawned*.
 
-    On Windows `claude` resolves to an npm .cmd shim that _platform_argv has to
+    On Windows `claude` resolves to an npm .cmd shim that platform_argv has to
     run through `cmd /c`, so `process` is cmd.exe and the real claude/node
     process is a descendant. process.kill() sends the kill to cmd.exe only,
     orphaning that descendant to run to completion — it would keep writing into
@@ -231,7 +231,7 @@ async def stream_claude_turn(
     disallowed_tools: str = PIPELINE_DISALLOWED_TOOLS,
     settings_path: str | None = None,
 ) -> AsyncIterator[dict]:
-    argv = _platform_argv(build_claude_argv(
+    argv = platform_argv(build_claude_argv(
         prompt, resume_session_id, allowed_tools, settings_path, disallowed_tools,
     ))
     env = dict(os.environ)
@@ -261,5 +261,5 @@ async def stream_claude_turn(
         # closed early (client disconnect, exception in the caller) — see
         # run_stage_turn's use of contextlib.aclosing in Task 8.
         if process.returncode is None:
-            _kill_process_tree(process)
+            kill_process_tree(process)
             await process.wait()
