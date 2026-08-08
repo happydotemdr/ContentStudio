@@ -1,3 +1,5 @@
+import pytest
+
 from pipeline_app import discovery_x as x
 
 
@@ -134,3 +136,152 @@ def test_normalize_row_coerces_missing_list_fields_to_empty_lists():
     assert n["hashtags"] == []
     assert n["photos"] == []
     assert n["videos"] == []
+
+
+def test_api_key_prefers_env_var(monkeypatch, tmp_path):
+    monkeypatch.setenv(x.KEY_ENV_VAR, "env-key")
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("file-key", encoding="utf-8")
+    monkeypatch.setattr(x, "KEY_FILE", key_file)
+    assert x.api_key() == "env-key"
+
+
+def test_api_key_falls_back_to_file(monkeypatch, tmp_path):
+    monkeypatch.delenv(x.KEY_ENV_VAR, raising=False)
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("  file-key\n", encoding="utf-8")
+    monkeypatch.setattr(x, "KEY_FILE", key_file)
+    assert x.api_key() == "file-key"
+
+
+def test_api_key_none_when_unconfigured(monkeypatch, tmp_path):
+    monkeypatch.delenv(x.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(x, "KEY_FILE", tmp_path / "absent.txt")
+    assert x.api_key() is None
+
+
+def test_profile_url_strips_the_at_sign():
+    assert x.profile_url("@CNN") == "https://x.com/CNN"
+    assert x.profile_url("elonmusk") == "https://x.com/elonmusk"
+
+
+def _fake_key(monkeypatch, value="test-key"):
+    monkeypatch.setattr(x, "api_key", lambda: value)
+
+
+def test_trigger_job_requests_a_discovery_job_not_a_single_page_collect(monkeypatch):
+    """Without type=discover_new/discover_by=profile_url, Bright Data reads
+    the input url as a single page to collect -- the wrong product mode
+    entirely, and a silently useless one."""
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"snapshot_id": "snap1"}
+
+    def fake_post(url, params=None, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["params"] = params
+        captured["headers"] = headers
+        captured["json"] = json
+        return _Resp()
+
+    monkeypatch.setattr(x.requests, "post", fake_post)
+    assert x._trigger_job("CNN", "test-key") == "snap1"
+
+    assert captured["url"].endswith("/trigger")
+    assert captured["params"]["dataset_id"] == "gd_lwxkxvnf1cynvib9co"
+    assert captured["params"]["type"] == "discover_new"
+    assert captured["params"]["discover_by"] == "profile_url"
+    assert captured["params"]["limit_per_input"] == x.MAX_ITEMS_PER_RUN
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    # A bare array, not {"input": [...]} -- the dashboard's object form
+    # belongs to the synchronous /scrape endpoint, which no adapter uses.
+    assert captured["json"] == [{"url": "https://x.com/CNN"}]
+
+
+def test_trigger_job_does_not_send_date_filters(monkeypatch):
+    """start_date/end_date are PROVEN broken on this dataset -- a two-day
+    window against an account posting hundreds of times a day returned a
+    single error row, error_code 'dead_page' (snapshot sd_mskdls3f26klcqyxk9).
+    Sending empty strings would be harmless but misleading; sending real ones
+    would break collection. Pin that neither key is present."""
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"snapshot_id": "snap1"}
+
+    def fake_post(url, params=None, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _Resp()
+
+    monkeypatch.setattr(x.requests, "post", fake_post)
+    x._trigger_job("CNN", "test-key")
+    assert "start_date" not in captured["json"][0]
+    assert "end_date" not in captured["json"][0]
+
+
+def test_run_collection_job_returns_results_on_ready(monkeypatch):
+    _fake_key(monkeypatch)
+    monkeypatch.setattr(x, "_trigger_job", lambda handle, key: "job1")
+    monkeypatch.setattr(x, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(x, "_fetch_job_results", lambda job_id, key: [{"id": "p1"}])
+    monkeypatch.setattr(x.time, "sleep", lambda s: None)
+    assert x._run_collection_job("CNN") == [{"id": "p1"}]
+
+
+def test_run_collection_job_polls_until_ready(monkeypatch):
+    _fake_key(monkeypatch)
+    statuses = iter(["running", "running", "ready"])
+    monkeypatch.setattr(x, "_trigger_job", lambda handle, key: "job1")
+    monkeypatch.setattr(x, "_poll_job_status", lambda job_id, key: next(statuses))
+    monkeypatch.setattr(x, "_fetch_job_results", lambda job_id, key: [{"id": "p1"}])
+    monkeypatch.setattr(x.time, "sleep", lambda s: None)
+    assert x._run_collection_job("CNN") == [{"id": "p1"}]
+
+
+def test_run_collection_job_raises_on_failed_status(monkeypatch):
+    """A failed job must NEVER return [] -- the engine would record the
+    healthy status 'no_new_content' for a job that was billed and failed."""
+    _fake_key(monkeypatch)
+    monkeypatch.setattr(x, "_trigger_job", lambda handle, key: "job1")
+    monkeypatch.setattr(x, "_poll_job_status", lambda job_id, key: "failed")
+    monkeypatch.setattr(x.time, "sleep", lambda s: None)
+    with pytest.raises(x.BrightDataJobFailed):
+        x._run_collection_job("CNN")
+
+
+def test_run_collection_job_raises_on_timeout(monkeypatch):
+    _fake_key(monkeypatch)
+    monkeypatch.setattr(x, "_trigger_job", lambda handle, key: "job1")
+    monkeypatch.setattr(x, "_poll_job_status", lambda job_id, key: "running")
+    monkeypatch.setattr(x.time, "sleep", lambda s: None)
+    monkeypatch.setattr(x, "POLL_TIMEOUT_S", 0)
+    with pytest.raises(x.BrightDataJobTimeout):
+        x._run_collection_job("CNN")
+
+
+def test_run_collection_job_raises_clear_error_when_key_missing(monkeypatch):
+    monkeypatch.setattr(x, "api_key", lambda: None)
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("must not trigger a paid job with no key")
+
+    monkeypatch.setattr(x, "_trigger_job", _fail_if_called)
+    with pytest.raises(RuntimeError, match="Bright Data API key not configured"):
+        x._run_collection_job("CNN")
+
+
+def test_poll_timeout_is_600_not_the_inherited_300():
+    """Deliberate divergence from Instagram and LinkedIn. Measured latency
+    was 243s at limit_per_input=10, the production setting, so 300s leaves
+    under a minute of margin. This test exists to fail a well-meaning 'make
+    the constants consistent' edit."""
+    assert x.POLL_TIMEOUT_S == 600
