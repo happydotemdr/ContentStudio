@@ -82,7 +82,7 @@ Midjourney session is not recoverable by anyone else.
 
 ## Entries
 
-### rgs-source-era-b
+### rgs-sourceera-painterly-b
 
 ```
 brand:        raisinggoodsports
@@ -107,6 +107,13 @@ Use as `--sref 6930382708`. Channel-wide and durable: reuse this exact value on 
 subsequent Short's Register B shots, unchanged, so the historical register reads as one
 continuous world across the catalogue. Do not re-enter its session to "improve" it — a
 re-entry stacks a second code rather than replacing this one.
+
+**Renamed 2026-08-08, was `rgs-source-era-b`.** The label this entry was created with was the
+only one in the repo: every styleboard, both Gate C fixtures, `visual-registers.md` §7 and
+`visual-prompts`' worked example all bound Register B to `rgs-sourceera-painterly-b`, so the
+binding resolved to nothing and Gate C passed it anyway — precisely the failure C20 now catches.
+The surviving name is also the one that matches `rgs-present-soccer-a`'s
+brand-register-subject-letter shape. The code, scope and harvest date are unchanged.
 
 **Anchor reference:** the do-less run produced two frames that already carry this look —
 `Generated Assets/do-less-20260728-190724/visuals/Shot 5_HD.png` (true oil painting, visible
