@@ -106,3 +106,30 @@ def test_download_item_returns_ok_false_when_refetch_finds_no_match(tmp_path, mo
     assert not (out_dir / "target_rkey.md").exists()
     # Also check no temp file lingering
     assert not (out_dir / "target_rkey.md.tmp").exists()
+
+
+def test_download_item_writes_parseable_frontmatter(tmp_path, monkeypatch):
+    from pipeline_app import artifacts, discovery_bluesky
+    from pipeline_app.discovery_paths import handle_dir
+
+    monkeypatch.setattr(
+        discovery_bluesky, "enumerate_newest_first",
+        lambda handle, keyword_filter=None, page_limit=5: [
+            {"id": "abc123", "title": "Hello there", "text": "Hello there, full post text.",
+             "published": "2026-08-01"}
+        ],
+    )
+
+    result = discovery_bluesky.download_item(tmp_path, "someone.bsky.social", "abc123", "Hello there")
+
+    assert result["ok"] is True
+    dest = handle_dir(tmp_path, "bluesky", "someone.bsky.social") / "abc123.md"
+    meta, body = artifacts.parse_frontmatter(dest.read_text(encoding="utf-8"))
+    assert meta["post_id"] == "abc123"
+    assert meta["url"] == "https://bsky.app/profile/someone.bsky.social/post/abc123"
+    assert meta["handle"] == "someone.bsky.social"
+    assert meta["author"] == "someone.bsky.social"
+    assert meta["published"] == "2026-08-01"
+    assert isinstance(meta["fetched_at"], str)
+    assert meta["fetched_at"].endswith("+00:00")
+    assert body.strip() == "Hello there, full post text."
