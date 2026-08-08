@@ -20,7 +20,8 @@ import sys
 from pathlib import Path
 
 from pipeline_app import db
-from pipeline_app import discovery_bluesky, discovery_instagram, discovery_linkedin, discovery_youtube
+from pipeline_app import (discovery_bluesky, discovery_instagram, discovery_linkedin,
+                          discovery_x, discovery_youtube)
 from pipeline_app.discovery_engine import run_discovery
 from pipeline_app.discovery_notify import notify
 from pipeline_app.discovery_scheduling import is_due
@@ -38,6 +39,9 @@ def build_adapters():
         "instagram": discovery_instagram,
         "linkedin-profile": discovery_linkedin.profile_adapter(),
         "linkedin-company": discovery_linkedin.company_adapter(),
+        # A plain module, not an instance: X has one working mode, so it needs
+        # neither LinkedIn's per-instance cache nor its bound-mode class.
+        "x": discovery_x,
     }
 
 
