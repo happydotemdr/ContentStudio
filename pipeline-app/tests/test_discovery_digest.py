@@ -163,6 +163,17 @@ def test_collect_new_items_excludes_malformed_yaml_without_raising(tmp_path):
     assert digest.collect_new_items(tmp_path, _handle_row(), RUN_START) == []
 
 
+def test_collect_new_items_excludes_frontmatter_that_is_not_a_mapping(tmp_path):
+    # Valid YAML that parses to a bare scalar, not a dict. This is the only
+    # thing that reaches the isinstance(meta, dict) guard: a file with NO
+    # frontmatter yields {}, which is already a dict. meta.get() on a str
+    # would raise AttributeError, so the guard must hold.
+    out = discovery_paths.handle_dir(tmp_path, "linkedin-profile", "bettywliu")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "scalar.md").write_text("---\njust a bare string\n---\n\nBody.", encoding="utf-8")
+    assert digest.collect_new_items(tmp_path, _handle_row(), RUN_START) == []
+
+
 def test_collect_new_items_missing_url_yields_none_not_a_dropped_item(tmp_path):
     _write(tmp_path, "linkedin-profile", "bettywliu", "nourl.md", [
         f"fetched_at: '{RUN_START}'",

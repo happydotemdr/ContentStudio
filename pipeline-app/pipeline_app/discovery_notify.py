@@ -83,7 +83,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
 
     EVERY handle in the run is scanned, regardless of its recorded status or
     items_downloaded. Both gates this function used to apply are deliberately
-    gone: discovery_engine.py:346 records error/0 for a handle whose
+    gone: discovery_engine.py:347 records error/0 for a handle whose
     process_handle raised AFTER some downloads succeeded, which is precisely
     the case the fetched_at watermark exists to self-correct. Keeping the gates
     and keeping the watermark's rationale are mutually exclusive.

@@ -106,6 +106,17 @@ def test_non_http_url_never_becomes_an_anchor():
     assert "Click here to view" not in result["html"]
 
 
+def test_href_escapes_quotes_and_cannot_break_out_of_the_attribute():
+    # Pins quote=True on the href escape. A URL is scraped frontmatter, so a
+    # raw double quote in it would close the attribute and let the rest of the
+    # string become markup.
+    hostile = 'https://example.com/a?b="c onmouseover="alert(1)'
+    result = email_render.render_email(_summary(items=[_item(url=hostile)]), "2026-08-08")
+    assert 'href="https://example.com/a?b=&quot;c onmouseover=&quot;alert(1)"' in result["html"]
+    assert 'b="c' not in result["html"]
+    assert "onmouseover=\"alert" not in result["html"]
+
+
 def test_html_escapes_untrusted_title_and_excerpt():
     spot = _item(title='A <script>alert("x")</script> & more',
                  body='Body with <b>tags</b> & "quotes".')

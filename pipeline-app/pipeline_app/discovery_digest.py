@@ -5,11 +5,16 @@ Filesystem only -- no network, no DB, no LLM. Deliberately has no dependency
 on discovery_engine.py, same as discovery_notify.py.
 
 THE PLATFORM CONTRACT. A discovery adapter's download_item must write YAML
-frontmatter containing at minimum `url` and `fetched_at`, with the post's text
-as the markdown body. An adapter that does this appears in the daily email --
-inventory entry, link, title, and spotlight eligibility -- with no change to
-any email-side module. `like_count`, `comment_count`, `view_count`, and
-`published` are optional; each is omitted from the render when absent.
+frontmatter containing `fetched_at`, with the post's text as the markdown body.
+An adapter that does this appears in the daily email -- inventory entry, link,
+title, and spotlight eligibility -- with no change to any email-side module.
+
+`fetched_at` is the one MANDATORY field: it is the watermark, and an item
+without it is excluded from the run entirely. `url` is strongly expected but
+not required -- an item missing it is still collected and still rendered, just
+without a link, and collect_new_items warns to stderr. `like_count`,
+`comment_count`, `view_count`, and `published` are optional; each is omitted
+from the render when absent.
 `fetched_at` must be an aware-UTC isoformat(timespec="seconds") STRING.
 
 One known exception: download_brandintel.py, the manual toolkit script at repo
@@ -198,7 +203,7 @@ def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[
     Selection is a WATERMARK -- frontmatter fetched_at >= run_started_at -- not
     a top-N. It self-corrects when the DB's items_downloaded under-reports,
     which is what happens when process_handle raises after some downloads
-    already succeeded and discovery_engine.py:346 records error/0 for a handle
+    already succeeded and discovery_engine.py:347 records error/0 for a handle
     that has files on disk.
     """
     directory = handle_dir(repo_root, handle_row["platform"], handle_row["handle"])

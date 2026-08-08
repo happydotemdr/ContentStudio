@@ -115,7 +115,7 @@ scanned regardless of its recorded status or count.
 This is not tidiness. The watermark's entire justification is that it self-corrects when
 `items_downloaded` under-reports — and the case where that happens is a handle whose
 `process_handle` raised *after* some downloads already succeeded, which
-`discovery_engine.py:346` records as `status="error", items_downloaded=0`. That is precisely the row
+`discovery_engine.py:347` records as `status="error", items_downloaded=0`. That is precisely the row
 the `status == "error"` gate discards. Keeping the gates and keeping the self-correction rationale
 are mutually exclusive; the rationale is the one worth keeping, because the alternative is files on
 disk that no email ever mentions.
@@ -639,7 +639,7 @@ rather than deferred.
    stating the intended consequence (an errored handle appears in the inventory *and* under
    `Errors:`), and adding an mtime pre-filter so scanning every directory daily does not grow
    unbounded against a corpus already at 740 files. (The inherited line citation was also stale —
-   the record happens at `discovery_engine.py:346`, not `:327`.)
+   the record happens at `discovery_engine.py:347`, not `:327`.)
 2. **`subprocess.run` cannot deliver the timeout guarantee the spec claimed.** It handles
    `TimeoutExpired` with an internal `process.kill()` and never exposes the pid, and
    `cli_runner.py:167` records empirically that `process.kill()` on Windows orphans the real

@@ -118,7 +118,9 @@ def _render_text(summary: dict) -> str:
             lines += [f"{n}. {d}" for n, d in enumerate(drafts, start=1)]
         else:
             lines.append(DRAFTS_UNAVAILABLE)
-        lines += ["", "---", ""]
+        # Underscores, not hyphens: the no-dash rule applies to the email's own
+        # chrome too, and "---" here would contradict it in the plain-text part.
+        lines += ["", "___", ""]
 
     for platform, group in _grouped(items):
         lines.append(_label(platform))
