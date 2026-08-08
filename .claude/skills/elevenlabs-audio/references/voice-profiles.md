@@ -14,15 +14,22 @@ No setting fixes a voice that cannot perform what the script asks for. That make
 **upstream of tag choice**, not a parallel decision — pick the voice, then write to what it can do.
 
 For IVC voices destined for `eleven_v3`, prefer a reference recording with **broad emotional
-range** `[T]` — v3 can only perform emotions the source demonstrates.
+range** `[T]` — v3 can only perform emotions the source demonstrates. This bites on the pinned
+ContentStudio narrator, which is an IVC: its card's known-good/known-bad tag rows are still
+empty, so confirm tag behavior with one short v3 probe before a first master render.
 
 ## Exploration workflow (`voice: explore`)
 
 1. **State the performance requirement first**, in plain words: what must this voice be able to do?
    (Shout? Whisper? Sustain 40 minutes of neutral narration? Carry a sarcastic aside?)
 2. **Shortlist 3–5 candidates** and say what each is *for* — not a ranked list, a set of distinct
-   options. If the job is a ContentStudio Short, `voiceover-brief` has already made this call; do
-   not redo it.
+   options. **If the job is a ContentStudio Short, skip this entire workflow**: the channel
+   narrator is pinned to a fixed `voice_id` and its card is committed at
+   `voiceover-brief/references/channel-voice.md`. Load that card and go straight to Stage C. Do
+   not audition, do not shortlist, do not redo the call. The card's settings block is not yet
+   filled — derive settings from the brief, and do not read the empty rows as "no constraints."
+   The pin covers the **narrator only**; a Short casting a second voice runs this workflow
+   normally for that voice, under whatever constraints its brief carries.
 3. **Audition on `eleven_flash_v2_5` with a 250–500 character excerpt** `[I]`. Never audition on the
    flagship — auditioning is the single easiest place to waste credits, and voice *fit* is audible
    on Flash.
