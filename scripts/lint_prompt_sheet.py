@@ -204,7 +204,9 @@ def check_cover_present(text: str) -> list[Finding]:
     return findings
 
 
-def lint_cover(cover: Shot, world: dict[str, str]) -> list[Finding]:
+def lint_cover(
+    cover: Shot, world: dict[str, str], *, library: dict[str, str] | None = None
+) -> list[Finding]:
     """Every per-shot check, and none of the whole-sequence ones.
 
     C1-C7 are adjacency, scale-spread and register-balance checks over an ordered arc;
@@ -221,6 +223,7 @@ def lint_cover(cover: Shot, world: dict[str, str]) -> list[Finding]:
         *check_style_reference(single),
         *check_style_mechanism(single),
         *check_slots(single, world),
+        *check_slot_labels(single, world, library),
     ]
 
 
@@ -827,11 +830,108 @@ def check_slots(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
     return findings
 
 
+# The Library's `## Entry format` section documents an entry's shape with a literal
+# `### <label>` line inside a fence, so a document-wide `^### ` scan would ingest the
+# placeholder as a real entry. The walk is scoped to `## Entries` and every heading
+# must match VALID_SLOT_VALUE_RE -- the same pattern C18 uses on the styleboard side,
+# reused rather than restated so the two halves of "is this a label" cannot drift.
+ENTRY_HEADING_RE = re.compile(r"^###\s+(\S+)\s*$")
+LIBRARY_CODE_RE = re.compile(r"^\s*code:\s*(.+?)\s*$")
+
+
+def parse_style_library(text: str) -> dict[str, str]:
+    """Every entry label in docs/style-library.md, mapped to its harvested code.
+
+    The code is carried for reporting only -- C20 asks whether a label *exists*, not
+    whether it has been harvested yet. An entry with `code: UNHARVESTED`, or a
+    `scope: per-short` entry whose codes live in a table rather than a `code:` line,
+    maps to a falsy code and still counts as present: Gate C runs on the sheet, before
+    any render, so binding to a recorded-but-unharvested world is a legitimate
+    intermediate state. What C20 catches is a label naming no entry at all.
+    """
+    library: dict[str, str] = {}
+    in_entries = False
+    in_fence = False
+    label: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            # Inside an entry's own block: take the first `code:` line, so a later
+            # commented-out or superseded value cannot overwrite the live one.
+            if in_entries and label is not None and not library[label]:
+                code = LIBRARY_CODE_RE.match(line)
+                if code:
+                    library[label] = code.group(1)
+            continue
+        if stripped.startswith("## "):
+            in_entries = stripped == "## Entries"
+            label = None
+            continue
+        if not in_entries:
+            continue
+        heading = ENTRY_HEADING_RE.match(stripped)
+        if heading and VALID_SLOT_VALUE_RE.match(heading.group(1)):
+            label = heading.group(1)
+            library[label] = ""
+    return library
+
+
+def check_slot_labels(
+    shots: list[Shot], world: dict[str, str], library: dict[str, str] | None
+) -> list[Finding]:
+    """C20: each slot's declared value names an entry that actually exists.
+
+    C18 checks that a `slot_*` value *looks* like a Library label. It cannot check that
+    the label *exists*, because nothing parsed the Library -- so a typo cleared Gate C
+    and failed at paste time, when a human pasted a token that resolved to nothing.
+    That was not hypothetical: the Library's Register B entry was created as
+    `rgs-source-era-b` while all fourteen consumers, both green fixtures included, bound
+    `rgs-sourceera-painterly-b`.
+
+    Deliberately silent on everything C18 already owns -- a slot in body position, an
+    undeclared slot, and a value shaped like an invented code all return early. An
+    invented code is trivially absent from the Library too, and reporting it twice would
+    point the author at the wrong fix: the problem is the invented code, not a missing
+    entry.
+    """
+    if library is None:
+        return []
+    known = ", ".join(sorted(library)) or "(the Library has no entries)"
+    findings: list[Finding] = []
+    for shot in shots:
+        flags_start = shot.prompt.find(" --")
+        for pattern, _kind, prefix in SLOT_KINDS:
+            for match in pattern.finditer(shot.prompt):
+                if flags_start == -1 or match.start() < flags_start:
+                    continue
+                key = f"{prefix}{match.group(1)}"
+                value = world.get(key, "").strip()
+                if not value or not VALID_SLOT_VALUE_RE.match(value):
+                    continue
+                if value in library:
+                    continue
+                findings.append(
+                    Finding(
+                        "C20",
+                        shot.index,
+                        f"{key!r} = {value!r} is not an entry in docs/style-library.md, so the "
+                        f"slot resolves to nothing and the shot renders with no style lock. "
+                        f"Known entries: {known}. Fix the label, or harvest the world and add "
+                        f"an entry.",
+                    )
+                )
+    return findings
+
+
 def lint(
     shots: list[Shot],
     world: dict[str, str],
     *,
     cover: Shot | None = None,
+    library: dict[str, str] | None = None,
 ) -> list[Finding]:
     """Run every Gate C check, in check order."""
     findings = [
@@ -844,10 +944,22 @@ def lint(
         *check_style_reference(shots),
         *check_style_mechanism(shots),
         *check_slots(shots, world),
+        *check_slot_labels(shots, world, library),
     ]
     if cover is not None:
-        findings.extend(lint_cover(cover, world))
+        findings.extend(lint_cover(cover, world, library=library))
     return findings
+
+
+DEFAULT_STYLE_LIBRARY = Path(__file__).resolve().parents[1] / "docs" / "style-library.md"
+
+
+def sheet_declares_slots(shots: list[Shot], cover: Shot | None = None) -> bool:
+    """Whether anything on the sheet needs a Library lookup at all."""
+    prompts = [shot.prompt for shot in shots] + ([cover.prompt] if cover else [])
+    return any(
+        pattern.search(prompt) for prompt in prompts for pattern, _kind, _prefix in SLOT_KINDS
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -863,6 +975,13 @@ def main(argv: list[str] | None = None) -> int:
         help="path to the styleboard artifact holding the WORLD LOCK block. Omit for a "
              "legacy sheet that still carries its own block.",
     )
+    parser.add_argument(
+        "--style-library",
+        type=Path,
+        default=DEFAULT_STYLE_LIBRARY,
+        help="path to the Style Library C20 resolves slot labels against "
+             f"(default: {DEFAULT_STYLE_LIBRARY}). Only read when the sheet has slots.",
+    )
     args = parser.parse_args(argv)
 
     sheet_text = args.sheet.read_text(encoding="utf-8")
@@ -877,7 +996,30 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     cover = parse_cover(sheet_text)
-    findings = [*check_cover_present(sheet_text), *lint(shots, world, cover=cover)]
+
+    # Read the Library only when something actually needs resolving: a PLATE-only sheet
+    # carries no slots, and failing it for a file it never consults would be a gate
+    # reporting the wrong problem.
+    library = None
+    if sheet_declares_slots(shots, cover):
+        if not args.style_library.is_file():
+            print(
+                f"Gate C: Style Library not found at {args.style_library}. C20 cannot "
+                f"resolve this sheet's slot labels. Pass --style-library."
+            )
+            return 2
+        library = parse_style_library(args.style_library.read_text(encoding="utf-8"))
+        if not library:
+            print(
+                f"Gate C: no entries parsed from {args.style_library}. C20 cannot check "
+                f"this sheet's slot labels against an empty Library."
+            )
+            return 2
+
+    findings = [
+        *check_cover_present(sheet_text),
+        *lint(shots, world, cover=cover, library=library),
+    ]
     if not findings:
         print(f"Gate C: PASS — {len(shots)} shots, 0 findings.")
         return 0

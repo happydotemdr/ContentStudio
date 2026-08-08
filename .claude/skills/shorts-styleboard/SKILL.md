@@ -69,8 +69,11 @@ what it costs.
 | Subject-free b-roll/background plates | `consistency: none` |
 
 **`style-lock` is the default for both registers under the dual-register system, with two `--sref`
-codes** — one harvested per Short for Register A, one fixed and harvested once channel-wide for
-Register B, reused unchanged on every subsequent Short (`references/visual-registers.md` §3–§4) `[I]`.
+codes** — one per register (`references/visual-registers.md` §3–§4) `[I]`. **Each code's scope is
+whatever its entry in `docs/style-library.md` records, not something to assume** `[I]`: for
+RaisingGoodSports both registers are `scope: channel` as of 2026-08-08 — one durable code each,
+reused unchanged on every subsequent Short. Register A was originally specified as harvested per
+Short; the Library supersedes that.
 Register B's archetype-figure treatment — unnamed, face averted or in shadow, dressed to the role, never
 a specific likeness — is precisely what makes `subject-lock` unnecessary there: there is no likeness to
 lock `[I]`.
@@ -85,10 +88,15 @@ them, because it may change whether the Short wants a recurring character at all
 
 ### 3. Bind each register to a Style Library entry
 
+**The Style Library is `docs/style-library.md`. Read it before binding anything** `[I]` — it is
+the only record of which worlds already have an entry, so neither decision in this step can be
+made without it.
+
 Name the Library entry each register binds to, as a `slot_*` line in the world lock and
 a one-line rationale under `BINDINGS` `[I]`. If a world has no Library entry yet, say so
 under `DISCOVERY REQUESTS` rather than inventing a code — an invented `--sref` is the
-exact defect this stage exists to eliminate `[I]`.
+exact defect this stage exists to eliminate `[I]`. A discovery request raised without reading
+`docs/style-library.md` first is a guess, not a finding: the world may already be covered `[I]`.
 
 ### 4. Emit the styleboard artifact
 

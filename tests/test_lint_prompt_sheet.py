@@ -28,6 +28,8 @@ from lint_prompt_sheet import (  # noqa: E402
     check_style_reference,
     check_style_mechanism,
     check_slots,
+    check_slot_labels,
+    parse_style_library,
     check_cover_present,
     lint_cover,
     lint,
@@ -934,3 +936,195 @@ def test_the_two_fixtures_cover_both_cover_branches():
     worked = (FIXTURES / "worked_example_sheet.md").read_text(encoding="utf-8")
     assert parse_cover(worked) is None
     assert declares_cover_reuse(worked) is True
+
+
+# --- C20: the slot label must exist in the Style Library ----------------------
+#
+# C18 checks that a slot_* value *looks* like a Library label. It cannot check
+# that the label *exists*, because nothing parsed docs/style-library.md. A typo
+# cleared Gate C and failed at paste time -- and that was not hypothetical: the
+# Library's Register B entry was created as `rgs-source-era-b` while all fourteen
+# consumers, both green fixtures included, bound `rgs-sourceera-painterly-b`.
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+STYLE_LIBRARY = REPO_ROOT / "docs" / "style-library.md"
+
+LIBRARY_DOC = """\
+# Style Library
+
+## Entry format
+
+```
+### <label>                       kebab-case; this is the styleboard slot_* value
+  code:         <value> | UNHARVESTED
+```
+
+## Entries
+
+### rgs-present-soccer-a
+
+```
+brand:        raisinggoodsports
+code:         832507909
+```
+
+### rgs-unharvested-world-b
+
+```
+brand:        raisinggoodsports
+code:         UNHARVESTED
+```
+
+## Open questions
+
+### a stray subsection heading
+"""
+
+
+def test_parse_style_library_reads_the_entry_labels():
+    library = parse_style_library(LIBRARY_DOC)
+    assert set(library) == {"rgs-present-soccer-a", "rgs-unharvested-world-b"}
+    assert library["rgs-present-soccer-a"] == "832507909"
+
+
+def test_parse_style_library_ignores_the_placeholder_inside_the_entry_format_fence():
+    """`## Entry format` documents the shape with a literal `### <label>` line. A
+    naive `^### ` scan ingests it as an entry, so the walk is scoped to `## Entries`
+    and every heading must match the kebab-case label pattern C18 already uses."""
+    library = parse_style_library(LIBRARY_DOC)
+    assert "<label>" not in library
+    assert not any("<" in label for label in library)
+
+
+def test_parse_style_library_stops_at_the_next_top_level_heading():
+    """A `###` under `## Open questions` is prose structure, not an entry."""
+    assert "a stray subsection heading" not in parse_style_library(LIBRARY_DOC)
+
+
+def test_parse_style_library_reads_the_real_file():
+    library = parse_style_library(STYLE_LIBRARY.read_text(encoding="utf-8"))
+    assert "rgs-present-soccer-a" in library
+    assert "rgs-sourceera-painterly-b" in library
+
+
+def test_c20_rejects_a_label_that_is_not_in_the_library():
+    """The typo case: a value shaped like a label but naming no entry. This is what
+    cleared Gate C and failed at paste time."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    world = {**SLOT_WORLD, "slot_register_a": "rgs-present-socer-a"}
+    findings = check_slot_labels([shot], world, {"rgs-present-soccer-a": "832507909"})
+    assert [f.check for f in findings] == ["C20"]
+    assert "rgs-present-socer-a" in findings[0].message
+    assert "docs/style-library.md" in findings[0].message
+
+
+def test_c20_accepts_a_label_that_is_in_the_library():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    world = {**SLOT_WORLD, "slot_register_a": "rgs-present-soccer-a"}
+    assert check_slot_labels([shot], world, {"rgs-present-soccer-a": "832507909"}) == []
+
+
+def test_c20_accepts_an_entry_whose_code_is_unharvested():
+    """An entry with no code yet still *exists*. Gate C runs on the sheet, before any
+    render, so binding to a recorded-but-unharvested world is a legitimate
+    intermediate state -- that is what DISCOVERY REQUESTS carries forward. C20's job
+    is to catch labels that name nothing at all."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    world = {**SLOT_WORLD, "slot_register_a": "rgs-unharvested-world-b"}
+    library = parse_style_library(LIBRARY_DOC)
+    assert check_slot_labels([shot], world, library) == []
+
+
+def test_c20_stays_silent_on_a_value_c18_already_rejected():
+    """`SREF-RGS-A-DL01` is not a label, so it is trivially absent from the Library.
+    Reporting it under C20 as well would name one defect twice and point the author
+    at the wrong fix -- the problem is the invented code, not a missing entry."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    world = {**SLOT_WORLD, "slot_register_a": "SREF-RGS-A-DL01"}
+    library = {"rgs-present-soccer-a": "832507909"}
+    assert [f.check for f in check_slots([shot], world)] == ["C18"]
+    assert check_slot_labels([shot], world, library) == []
+
+
+def test_c20_is_skipped_when_no_library_is_supplied():
+    """lint(..., library=None) must behave exactly as it did before C20 existed."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    world = {**SLOT_WORLD, "slot_register_a": "rgs-not-in-any-library"}
+    assert check_slot_labels([shot], world, None) == []
+
+
+def test_c20_ignores_a_slot_sitting_in_the_prompt_body():
+    """Position is C18's finding. A body-position slot must not also draw a C20."""
+    shot = _shot("{style:register_a} a strap pulled tight, No Text. --ar 9:16 --raw --s 95")
+    world = {**SLOT_WORLD, "slot_register_a": "rgs-not-in-the-library"}
+    assert check_slot_labels([shot], world, {"rgs-present-soccer-a": "832507909"}) == []
+
+
+@pytest.mark.parametrize("styleboard_name", ["passing_styleboard.md", "worked_example_styleboard.md"])
+def test_every_fixture_slot_value_exists_in_the_real_style_library(styleboard_name):
+    """The regression that would have caught the live mismatch. Both fixtures bound
+    `rgs-sourceera-painterly-b` while the Library's entry was `rgs-source-era-b`."""
+    world = parse_world_lock((FIXTURES / styleboard_name).read_text(encoding="utf-8"))
+    library = parse_style_library(STYLE_LIBRARY.read_text(encoding="utf-8"))
+    declared = {key: value for key, value in world.items() if key.startswith("slot_")}
+    assert declared, "the fixture must still declare at least one slot"
+    missing = {key: value for key, value in declared.items() if value not in library}
+    assert missing == {}, f"{styleboard_name} binds labels absent from the Library: {missing}"
+
+
+def _typoed_styleboard(tmp_path):
+    """The real passing styleboard with one character removed from a slot label."""
+    text = (FIXTURES / "passing_styleboard.md").read_text(encoding="utf-8")
+    typoed = text.replace("rgs-sourceera-painterly-b", "rgs-sourceera-painterly-c")
+    assert typoed != text
+    path = tmp_path / "typoed_styleboard.md"
+    path.write_text(typoed, encoding="utf-8")
+    return path
+
+
+def test_main_passes_the_real_fixture_against_the_real_library(capsys):
+    """The end-to-end green path: a correct sheet, its styleboard, and the Library
+    the labels actually resolve against."""
+    exit_code = main([
+        str(FIXTURES / "passing_sheet.md"),
+        "--styleboard", str(FIXTURES / "passing_styleboard.md"),
+    ])
+    assert exit_code == 0, capsys.readouterr().out
+
+
+def test_main_fails_a_sheet_whose_styleboard_names_an_unknown_label(tmp_path, capsys):
+    """The defect C20 exists for: a label typo that C18 waves through because it is
+    still shaped like a label. Before C20 this exited 0 and failed at paste time."""
+    exit_code = main([
+        str(FIXTURES / "passing_sheet.md"),
+        "--styleboard", str(_typoed_styleboard(tmp_path)),
+    ])
+    out = capsys.readouterr().out
+    assert exit_code == 1
+    assert "C20" in out
+    assert "rgs-sourceera-painterly-c" in out
+    assert "docs/style-library.md" in out
+
+
+def test_main_fails_closed_when_the_library_is_missing(tmp_path, capsys):
+    """A sheet with slots and no Library is unresolvable. Passing it would record a
+    check that never ran."""
+    exit_code = main([
+        str(FIXTURES / "passing_sheet.md"),
+        "--styleboard", str(FIXTURES / "passing_styleboard.md"),
+        "--style-library", str(tmp_path / "absent.md"),
+    ])
+    assert exit_code == 2
+    assert "Style Library not found" in capsys.readouterr().out
+
+
+def test_main_fails_closed_when_the_library_has_no_entries(tmp_path, capsys):
+    empty = tmp_path / "empty-library.md"
+    empty.write_text("# Style Library\n\n## Entries\n\nNothing harvested yet.\n", encoding="utf-8")
+    exit_code = main([
+        str(FIXTURES / "passing_sheet.md"),
+        "--styleboard", str(FIXTURES / "passing_styleboard.md"),
+        "--style-library", str(empty),
+    ])
+    assert exit_code == 2
+    assert "no entries parsed" in capsys.readouterr().out

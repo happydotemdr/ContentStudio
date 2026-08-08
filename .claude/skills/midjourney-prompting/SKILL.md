@@ -144,6 +144,9 @@ which job this is `[I]`:
 
 - **Style discovery** (`stage: moodboard` / `explore`) — harvest the winning thumbnail's
   style code; it becomes a Style Library entry, and the ladder terminates here.
+  **Record it in `docs/style-library.md` before the session closes, in that file's
+  `Entry format` shape** `[I]` — a harvested code that lives only in a Midjourney session
+  is not recoverable by anyone else, and the pipeline reads the Library, not the session.
 - **Asset rendering in the ContentStudio pipeline** — do *not* harvest. The style is
   already bound from the Library via the sheet's `{style:…}` slot and is present from the
   draft onward, so the pick chooses a *composition*, not a style. Drafting off-style would

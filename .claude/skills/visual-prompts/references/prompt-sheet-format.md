@@ -22,8 +22,9 @@ Two concrete reasons, not a style preference:
   exists:** every emitted prompt ends in an unresolved `{style:register_a}` /
   `{style:register_b}` / `{char:<name>}` slot token, not a literal code. Before pasting, look
   up the actual harvested code for the Style Library entry the styleboard's `BINDINGS`
-  section names for that slot, and replace the whole token with the real flag(s) it stands
-  for (`--sref <code>`, `--p <code>`, an `--oref <url> --ow <n>` pair, or nothing at all for
+  section names for that slot — the Library is `docs/style-library.md` — and replace the whole
+  token with the real flag(s) it stands for (`--sref <code>`, `--p <code>`, an
+  `--oref <url> --ow <n>` pair, or nothing at all for
   a personalization binding). Paste the token as-is and Midjourney renders the literal words
   "style register a" into the image instead of applying a look `[I]`.
 - **(b) Gate C needs a machine-parseable artifact.** A checklist an agent can read and

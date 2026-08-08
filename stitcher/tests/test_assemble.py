@@ -19,6 +19,24 @@ def test_write_concat_uses_forward_slashes_and_quotes(tmp_path: Path):
     assert body.count("file '") == 2
 
 
+def test_write_concat_absolutizes_a_relative_clip_path(tmp_path: Path, monkeypatch):
+    """The concat demuxer resolves a relative entry against the CONCAT FILE's
+    directory, not the process CWD. `--root` defaults to a relative
+    `Path("renders")`, so every clip path reaching this function was relative
+    and every entry resolved to
+    `<root>/<slug>/work/<mode>/renders/<slug>/work/<mode>/shots/...` -- a
+    doubled path that does not exist. Absolute entries are what the demuxer
+    needs and what this function's own docstring already assumes."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "renders" / "work").mkdir(parents=True)
+    clips = [Path("renders") / "work" / "001.mkv"]
+    target = asm.write_concat(clips, tmp_path / "renders" / "work" / "concat.txt")
+
+    entry = target.read_text(encoding="utf-8").strip()
+    assert entry == f"file '{(tmp_path / 'renders' / 'work' / '001.mkv').as_posix()}'"
+    assert Path(entry[len("file '"):-1]).is_absolute()
+
+
 def test_overlay_enable_is_half_open_not_between():
     enable = asm.overlay_enable(0.0, 2.0)
     assert "gte(t,0.0)" in enable

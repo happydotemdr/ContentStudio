@@ -64,9 +64,19 @@ def write_concat(clips: list[Path], path: Path) -> Path:
     has no notion of that mount-point syntax. Nothing in this codebase
     produces that form; `pathlib.Path.as_posix()` on a `WindowsPath` never
     does either.
+
+    Entries are absolutized first. The concat demuxer resolves a RELATIVE entry
+    against the directory holding concat.txt, not against the process CWD --
+    and `--root` defaults to a relative `Path("renders")`, so the clip paths
+    arriving here are relative whenever the caller did not pass an absolute
+    root. Written as-is they resolved to
+    `<root>/<slug>/work/<mode>/renders/<slug>/work/<mode>/shots/...` and stage
+    D died on a missing input. Every test reached this function through
+    `tmp_path`, which is absolute, so the default invocation was the one path
+    never covered.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"file '{clip.as_posix()}'" for clip in clips]
+    lines = [f"file '{clip.resolve().as_posix()}'" for clip in clips]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 

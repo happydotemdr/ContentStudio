@@ -226,4 +226,12 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
   `python scripts/lint_prompt_sheet.py <sheet> --styleboard <styleboard>` on any emitted sheet
   before handing off to `shorts-assembly`; a failing gate blocks emission. The sheet carries
   `{style:...}` slots, never literal `--sref` codes — C16 rejects an invented code and C17
-  rejects a shot with no style mechanism at all. Tests: `python -m pytest tests/ -v`.
+  rejects a shot with no style mechanism at all. C20 resolves each slot's declared label
+  against `docs/style-library.md`, read from the repo by default (`--style-library` overrides),
+  so a label naming no entry fails the gate instead of failing at paste time.
+- **Tests live in two suites, each run from its own directory.** Repo root:
+  `python -m pytest tests/ -v` (the linters and skill provenance). App:
+  `cd pipeline-app && python -m pytest`. Run each from the directory named — `pipeline-app`
+  has its own `scripts/` package, and invoking its suite from the repo root shadows it with
+  the root `scripts/` and raises `ModuleNotFoundError`. A `pytest.ini` at each level pins the
+  rootdir so a bare `pytest` does the right thing in both places.

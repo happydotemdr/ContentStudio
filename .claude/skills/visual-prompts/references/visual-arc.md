@@ -169,8 +169,9 @@ tooling, not extracted from the corpus.
 | **C15** | Shot class, scale, and camera height are each members of their closed vocabulary: Register A shot class ∈ `{ESTABLISHING, ACTION-ADJACENT, DETAIL, HUMAN-COST}`, Register B shot class ∈ `{FIGURE, WORLD, ARTIFACT}`, PLATE shot class must be literally `PLATE`; scale ∈ `{XWIDE, WIDE, MID-WIDE, MID, CLOSE, MACRO}`; camera height ∈ `{LOW, EYE, HIGH, OVERHEAD}`. Catches typos (`MIDWIDE` for `MID-WIDE`) that would otherwise dodge C2 and inflate C4's distinct-scale count `[I]`. |
 | **C16** | Every literal `--sref` value is a real code (a number, a URL, or the literal `random`) and every literal `--p` value is a plausible pID/mID/resolved code (alphanumeric, no separators) — not an invented placeholder (`--sref SREF-RGS-A-DL01`, `--p mj-INVENTED-01`). A `{style:...}`/`{char:...}` slot used *as* an `--sref`/`--p` value also fails — a slot expands to the whole flag group, not a single value. A `--sref` written with no value at all (nothing before the next flag or end of prompt) fails too, since it references nothing; a bare `--p` is exempt, because Midjourney's own syntax uses it alone to mean "apply my active personalization profile" `[I]`. |
 | **C17** | Every non-PLATE shot carries some style mechanism in its parameter block — a literal `--sref`, a literal `--p`, or a `{style:...}` slot — or it renders in whatever look the model defaults to. PLATE shots are exempt (no register look to lock) `[I]`. |
-| **C18** | Every `{style:...}`/`{char:...}` slot sits after at least one literal flag, never in the prompt body, and is declared in the styleboard's `WORLD LOCK` as a `slot_*` line. That line's *value* must itself be a Style Library entry label (e.g. `rgs-present-soccer-a`) — not a raw Midjourney code or an invented placeholder (`SREF-RGS-A-DL01`) — because the code is resolved later, at render time, against the Library `[I]`. |
+| **C18** | Every `{style:...}`/`{char:...}` slot sits after at least one literal flag, never in the prompt body, and is declared in the styleboard's `WORLD LOCK` as a `slot_*` line. That line's *value* must itself be a Style Library entry label (e.g. `rgs-present-soccer-a`) — not a raw Midjourney code or an invented placeholder (`SREF-RGS-A-DL01`) — because the code is resolved later, at render time, against the Library (`docs/style-library.md`) `[I]`. |
 | **C19** | The sheet states its cover decision exactly once — either a `### Cover — ...` block or an explicit `Cover = Hook beat still #1` declaration — never zero, never more than one `[I]`. |
+| **C20** | Every slot's declared value names an entry that actually **exists** in the Style Library (`docs/style-library.md`). C18 checks the value is *shaped* like a label; C20 resolves it. A typo that clears C18 (`rgs-present-socer-a`) otherwise survives to paste time, where the token resolves to nothing and the shot renders with no style lock. An entry recorded with `code: UNHARVESTED` still counts as existing — Gate C runs before any render, so binding to a world whose harvest is still pending is legitimate `[I]`. |
 
 ## 9. How to run Gate C `[I]`
 
@@ -182,6 +183,12 @@ python scripts/lint_prompt_sheet.py <path-to-sheet.md> --styleboard <path-to-sty
 `WORLD LOCK` block, so omitting it resolves an empty world lock and produces a wall of
 false C8/C18 findings instead of a clear error `[I]`.
 
+**The Style Library needs no flag.** C20 reads `docs/style-library.md` from the repo by
+default; `--style-library <path>` overrides it. It is read only when the sheet declares a
+slot, so a PLATE-only sheet never touches it `[I]`.
+
 Exit 0 clean · exit 1 findings · exit 2 nothing parsed (usually a format error — see
-`prompt-sheet-format.md`). `[I]` — this skill's own operational rule: a failing gate
-**blocks emission**. Never report Gate C as passed without running it.
+`prompt-sheet-format.md`) **or the Style Library is missing/empty while the sheet has
+slots**, which fails closed rather than silently skipping C20 `[I]`. This skill's own
+operational rule: a failing gate **blocks emission**. Never report Gate C as passed
+without running it.
