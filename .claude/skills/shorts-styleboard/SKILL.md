@@ -85,10 +85,15 @@ them, because it may change whether the Short wants a recurring character at all
 
 ### 3. Bind each register to a Style Library entry
 
+**The Style Library is `docs/style-library.md`. Read it before binding anything** `[I]` — it is
+the only record of which worlds already have an entry, so neither decision in this step can be
+made without it.
+
 Name the Library entry each register binds to, as a `slot_*` line in the world lock and
 a one-line rationale under `BINDINGS` `[I]`. If a world has no Library entry yet, say so
 under `DISCOVERY REQUESTS` rather than inventing a code — an invented `--sref` is the
-exact defect this stage exists to eliminate `[I]`.
+exact defect this stage exists to eliminate `[I]`. A discovery request raised without reading
+`docs/style-library.md` first is a guess, not a finding: the world may already be covered `[I]`.
 
 ### 4. Emit the styleboard artifact
 

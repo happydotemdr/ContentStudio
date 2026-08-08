@@ -24,7 +24,9 @@ prompt sheet: heading on its own line, two-space-indented `snake_case_key: value
 block ends at the first line that doesn't match `[a-z][a-z0-9_]*: value` `[I]`.
 
 `BINDINGS` and `DISCOVERY REQUESTS` sit outside the parser — Gate C never reads them —
-but they travel downstream to the render console and must always be present `[I]`.
+but they travel downstream to the render console and must always be present `[I]`. Both are
+written against `docs/style-library.md`: every `BINDINGS` line names an entry that exists
+there, and a `DISCOVERY REQUESTS` line asserts that no entry there covers that world `[I]`.
 
 ## Why the code is not written here `[I]`
 

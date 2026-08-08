@@ -33,7 +33,8 @@ the render console exists `[I]`.** Every prompt in the sheet ends in an unresolv
 `{style:register_a}` / `{style:register_b}` / `{char:<name>}` token, never a literal `--sref`/`--p`
 code — `visual-prompts`' Gate C rejects a literal invented code, so the code was deliberately never
 written into the sheet. Before a prompt is run in Midjourney, look up the styleboard's `BINDINGS`
-line for that slot, find the actual harvested code for the Style Library entry it names, and replace
+line for that slot, find the actual harvested code for the Style Library entry it names — the
+Library is `docs/style-library.md`, and its `Entries` section is where the code lives — and replace
 the whole token with the real flag(s) — `--sref <code>`, `--p <code>`, `--oref <url> --ow <n>`, or
 nothing at all for a personalization binding. Pasting the token as literal text renders the words
 "style register a" into the image instead of applying a look.
