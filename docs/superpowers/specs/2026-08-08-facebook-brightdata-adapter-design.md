@@ -28,9 +28,16 @@ on evidence.
 
 This design was likewise written *after* five live Bright Data jobs (17 records
 total), not before. **The verification changed the scope**: one of the two
-datasets originally requested was dropped, and two capabilities neither prior
-adapter has were discovered. Every field mapping below is `[T]`-marked from
-observed data, not from the published field list.
+datasets originally requested was dropped on evidence.
+
+A review pass then rejected a second thing — a vendor feature that verified
+clean and still could not be used, because the defect was in how it interacts
+with this engine rather than in the vendor's behavior. That analysis is kept in
+full under "Rejected on analysis"; verifying a capability works is not the same
+as verifying it helps.
+
+Every field mapping below is `[T]`-marked from observed data, not from the
+published field list.
 
 ## Scope
 
@@ -39,7 +46,9 @@ observed data, not from the published field list.
   Incremental (`process_handle`) and single-item validation
   (`process_handle_validate`) modes only.
 - **Out of scope:** the Reels dataset (**dropped on evidence** — see "Live
-  verification"); historical backfill (**deferred to its own spec** — the
+  verification"); server-side dedup via `posts_to_not_include` (**rejected on
+  analysis** — verified working, unusable against this engine, see "Rejected on
+  analysis"); historical backfill (**deferred to its own spec** — the
   capability is proven and the evidence is recorded under "Backfill"); the
   Profiles, Posts-by-post-URL, Comments, Group Posts, Events, and Marketplace
   datasets; media download; comment capture; and which specific handles to
@@ -48,7 +57,8 @@ observed data, not from the published field list.
 ## Live verification (2026-08-08)
 
 Five real jobs via the same async `/trigger` → `/progress` → `/snapshot` path
-the adapter will use, `num_of_posts: 3`:
+the adapter will use, at `num_of_posts: 3` per input except job 4, which used
+`2`:
 
 | # | Dataset | Input | Snapshot | Result |
 |---|---|---|---|---|
@@ -74,7 +84,8 @@ the adapter will use, `num_of_posts: 3`:
   products. This matters: `on_disk_ids()` compares against filename stems, so a
   numeric id would never match and every run would re-download and re-pay in
   silence.
-- **`[T]` `num_of_posts` is honored** per input object — `3` returned exactly 3.
+- **`[T]` `num_of_posts` is honored exactly** per input object — `3` returned 3
+  (jobs 2, 5) and `2` returned 2 (job 4, twice). Not merely an upper bound.
 - **`[T]` Job latency 3–56s**, well inside a 300s poll timeout.
 - **`[T]` No `type` or `discover_by` parameter is required.** This product has
   no discovery mode; the input URL is the account and the collector walks it.
@@ -110,17 +121,59 @@ valid Page `invalid` and auto-exclude it at registration. The adapter is
 structured so a second mode remains an additive change if that cost profile
 ever appears.
 
-### New capability — server-side dedup (`posts_to_not_include`)
+### Rejected on analysis — server-side dedup (`posts_to_not_include`)
 
 **`[T]` `posts_to_not_include` is honored.** Job 3 requested `num_of_posts: 3`
 from `/MrBeast6000` while excluding the three ids Job 2 had already returned. It
 returned **1 record** — `1200229695239406`, dated `2025-07-24`, strictly older
 than all three excluded posts, and none of the excluded ids came back.
 
-This is the structural break from the two prior Bright Data adapters, whose
-designs both concede that every run re-pays for the same top-N forever. Here the
-on-disk ids can be pushed into the request and **the posts already held are
-never billed**. See "Cost model" for how it is wired and what it risks.
+This looked like the structural break from the two prior Bright Data adapters,
+whose designs both concede that every run re-pays for the same top-N forever.
+**It is not usable, and the reason is in this engine, not in the vendor.**
+
+`process_handle` has exactly two termination conditions:
+
+- the early-stop counter, which increments only when an already-on-disk id
+  **appears** in the enumeration (`discovery_engine.py:54-57`);
+- the `NEW_HANDLE_LOOKBACK_DAYS` cutoff, which applies only while `is_new` —
+  the handle's first run ever (`:44-45`, `:61-70`).
+
+Excluding on-disk ids server-side removes them from the response, so the first
+never fires. After run 1 the handle is no longer new, so the second never
+applies. Every subsequent run therefore downloads `MAX_ITEMS_PER_RUN`
+progressively **older** posts, daily, until the account's entire back-catalogue
+is captured — an unbounded historical walk in the mode whose whole purpose is to
+fetch only new content, pulling in exactly the years-old material
+`NEW_HANDLE_LOOKBACK_DAYS` exists to keep out.
+
+Job 3 is the evidence for this, read correctly: excluding the newest 3 returned
+the *4th*-newest. That is the walk-further behavior, observed. It was initially
+mistaken for a self-correcting backlog fill.
+
+Capping the exclusion list does not fix it, only swaps the failure mode. Past
+the cap, the newest non-excluded posts are ones already on disk, so they are
+returned and billed on every run while the engine correctly declines to download
+them: full freight, with extra steps.
+
+Two further costs, moot now but recorded so the idea is not re-proposed
+unexamined:
+
+- `enumerate_newest_first(handle, keyword_filter)` receives no `repo_root`, so
+  the exclusion list could only be built by reusing what `on_disk_ids()` had
+  already computed — depending on a call ordering (`discovery_engine.py:43`
+  before `:47`) that is an implementation detail of `process_handle`, not part
+  of the `PlatformAdapter` protocol.
+- A cache that ever returned **another handle's** ids would exclude posts never
+  captured, which Bright Data would then never return — silent, permanent
+  content loss, as opposed to the merely expensive failure of sending none.
+
+A bounded variant is plausible: `start_date` set a few days before the newest
+captured post, which keeps on-disk items visible in the response so the early
+stop still fires. It needs a date source `on_disk_ids()` does not provide, and a
+too-recent `start_date` loses posts silently. It belongs with backfill, in a
+spec that changes the protocol deliberately rather than leaning on an ordering
+accident.
 
 ### Available but deferred — date-ranged collection
 
@@ -176,7 +229,7 @@ one implementation and each required its own enumerate cache; Facebook has one
 mode, so it matches `discovery_instagram`'s module shape.
 
 It holds only the Facebook-specific parts: dataset id, URL construction, row
-normalization, the exclusion-list builder, and the enumerate cache.
+normalization, and the enumerate cache.
 
 ### Modified
 
@@ -224,8 +277,12 @@ what makes a future regression detectable.
 
 ```
 POST /trigger?dataset_id=gd_lkaxegm826bjpoo9m5&include_errors=true&notify=false
-[{"url": "...", "num_of_posts": 10, "posts_to_not_include": ["...", ...]}]
+[{"url": "...", "num_of_posts": 10}]
 ```
+
+No `posts_to_not_include`, no `start_date`, no `end_date` — all three verified
+working, all three deliberately unused. Dedup is the engine's job, client-side,
+exactly as it is for Instagram and LinkedIn.
 
 ## Data contract
 
@@ -233,6 +290,7 @@ POST /trigger?dataset_id=gd_lkaxegm826bjpoo9m5&include_errors=true&notify=false
 |---|---|---|
 | `id` | `post_id` | string; stable across products; the sole identity key |
 | `published` | `date_posted[:10]` | genuine ISO 8601 Z, verified |
+| `published_ts` | `date_posted` (full) | internal sort key only; never written to frontmatter |
 | body | `content` | the caption |
 | `title` | first line of `content`, else `post_id`; truncated to 60 | no `headline` equivalent exists |
 | `content_type` | `post_type`, lowercased | `post`, `reel` |
@@ -259,13 +317,21 @@ scope), and the page-metadata block (`page_category`, `page_intro`,
 **A row is dropped if** it has no `post_id` or no parseable `date_posted`. Drop
 counts and any `error_code` are logged to stderr.
 
-**Order of operations:** normalize → drop → **sort newest-first** → cap to
-`MAX_ITEMS_PER_RUN` → apply `keyword_filter`. The sort is defensive: rows
-arrived sorted here, but a sibling Bright Data product returned them unsorted
-and the engine's early-stop dedup assumes newest-first. The cap is applied
-after filtering so it bounds retained items. `keyword_filter` is a
+**Order of operations:** normalize → drop → **sort newest-first on
+`published_ts`** → cap to `MAX_ITEMS_PER_RUN` → apply `keyword_filter`. The cap
+is applied after filtering so it bounds retained items. `keyword_filter` is a
 case-insensitive substring match against `content`, matching
 `discovery_bluesky.py`.
+
+The sort is defensive — rows arrived newest-first here, but a sibling Bright
+Data product returned them unsorted. **It must key on the full timestamp, not
+on `published`.** Python's sort is stable, so a date-truncated key leaves
+same-day rows in Bright Data's arbitrary arrival order, which can place a
+genuinely newer post behind ones already on disk and trip the early-stop dedup
+before reaching it. Both sibling adapters carry a separate `published_ts` for
+exactly this reason (`discovery_linkedin.py:93-101`,
+`discovery_instagram.py:227-231`); a contract exposing only `published` would
+reintroduce a bug those two already paid for.
 
 ### File format
 
@@ -300,61 +366,33 @@ rather than a defensive branch.
 ## Cost model
 
 `MAX_ITEMS_PER_RUN = 10`, daily — one constant, one cadence, matching Instagram
-and LinkedIn, no engine change.
+and LinkedIn, no engine change. That is 300 records/month per handle; at
+$1.50/1k, **$0.45/month per handle**. The 5K/month free tier covers roughly 16
+handles at that rate.
 
-Without dedup that is 300 records/month per handle ≈ **$0.45**. With
-`posts_to_not_include`, only genuinely new posts are billed: a 3-posts-a-day
-page costs ~90 records ≈ **$0.14**; a weekly poster ~4 records ≈ **$0.006**.
-Most handles stay inside the 5K/month free tier indefinitely.
+**Every run re-pays for the same top-N**, including on days with no new posts.
+`on_disk_ids` prevents re-*writing* files, but only after collection has been
+billed. The cap bounds this; nothing removes it. This is the same concession
+Instagram and LinkedIn make, and "Rejected on analysis" above records in detail
+why the apparent escape from it does not work — the saving was real, and it
+bought an unbounded historical walk.
 
-### How the exclusion list is wired, and what it risks
-
-`enumerate_newest_first(handle, keyword_filter)` receives no `repo_root`, so it
-cannot read the on-disk ids it needs. It reuses what
-`on_disk_ids(repo_root, handle)` already computed — which works only because
-`process_handle` calls that first (`discovery_engine.py:43` before `:47`).
-
-**That ordering is an implementation detail of `process_handle`, not part of
-the `PlatformAdapter` protocol**, and this adapter is the first to depend on
-it. `process_handle_validate` (`:108`) calls `enumerate_newest_first` *without*
-any prior `on_disk_ids` call at all.
-
-The two failure modes are not symmetric, and the asymmetry is what makes the
-coupling acceptable:
-
-- Ordering changes, or validate mode runs → exclusion list is **empty** → full
-  freight is paid and nothing is lost.
-- The cache returns **another handle's** ids → posts we do not hold are
-  excluded → Bright Data never returns them → **silent, permanent content
-  loss.**
-
-The cache is therefore a `{handle: frozenset}` read with
-`.get(handle, frozenset())` — never a bare shared set, never a stale fallback.
-A miss must degrade to empty, never to another handle's data. This is pinned by
-test.
-
-### Two unverified cost assumptions
-
-- **`[T-unverified, 2026-08-08]` Exclusion-list cap of 100, sorted numerically
-  descending.** `post_id` rose monotonically with date *within* every account
-  observed (NASA `1207935230701851` Mar 2025 → `1596499905178713` Aug 2026;
-  MrBeast four-for-four). That is a strong pattern, not a documented guarantee.
-  If it is wrong, a suboptimal subset is excluded and slightly more is paid —
-  the engine's own `on_disk` check still catches anything re-returned before
-  download. The cap exists because the list would otherwise grow without bound
-  (a year of daily capture is ~3,650 ids in every request body).
-- **`[T-unverified, 2026-08-08]` `num_of_posts` × `posts_to_not_include`
-  interaction.** Job 3 requested 3 while excluding the newest 3 and returned 1,
-  strictly older than all three. Exclusion is honored; the exact walk semantics
-  are not pinned. Consequence: a run may return fewer new items than exist. It
-  self-corrects — the next run excludes what was just captured and walks
-  further — so a fresh handle with a large backlog fills in over several days
-  rather than one.
-
-Relationship to tune against: `monthly ≈ handles × 30 × new_posts_per_day ×
-per_record_cost`, bounded above by `handles × 30 × MAX_ITEMS_PER_RUN ×
+Relationship to tune against: `monthly ≈ handles × 30 × MAX_ITEMS_PER_RUN ×
 per_record_cost`. Re-tuning is a manual judgment call at registration time; the
 adapter does not enforce a budget.
+
+### Duplicate-handle double capture
+
+One account can be registered twice under two different handles — its vanity
+slug (`NASA`) and its numeric id (`100044561550831`) — because
+`UNIQUE(platform, handle)` sees two distinct strings. The result is two
+directories, two daily jobs, and double billing for one account.
+
+No dedup is proposed. The adapter cannot learn the numeric id behind a slug
+without running a job, which would make registration itself billable. The
+frontmatter records both `author` (`profile_handle`) and `profile_id` on every
+row, so the duplication is greppable after the fact even though it cannot be
+prevented at registration.
 
 ## Error handling
 
@@ -412,6 +450,10 @@ Bright Data calls. Each item marked "pin" is a regression test for something
 live verification actually caught:
 
 - Trigger sends a bare array with `num_of_posts`, and no `type`/`discover_by`.
+- **Pin:** the trigger body carries **no** `posts_to_not_include`,
+  `start_date`, or `end_date` key. All three verified working and all three
+  deliberately unused; a well-meaning future edit adding the first would
+  reintroduce the unbounded walk described under "Rejected on analysis".
 - **Pin:** numeric handle → `profile.php?id=`; non-numeric → `/<slug>`.
 - **Pin:** `date_posted` in the verified ISO-Z form normalizes to
   `YYYY-MM-DD`; a malformed value drops the row rather than raising.
@@ -423,11 +465,11 @@ live verification actually caught:
   `error_code` reaches the log.
 - **Pin:** rows returned but all dropped → returns `[]` **and** logs the
   distinct all-dropped warning.
-- **Pin:** the exclusion list for handle B never contains handle A's ids.
-- **Pin:** `enumerate_newest_first` with no prior `on_disk_ids` call sends an
-  empty exclusion list, not a stale one.
-- **Pin:** the exclusion list caps at 100, numerically descending.
 - **Pin:** unsorted input returns newest-first.
+- **Pin:** two rows sharing a `published` date but differing in the full
+  `date_posted` timestamp sort by the timestamp, newest first — the
+  date-truncated-sort-key bug both sibling adapters carry a `published_ts` to
+  avoid.
 - Poll timeout raises; job `failed` raises; `ready` with zero rows returns `[]`.
 - `download_item` reads the cache with no second network call; a cache miss
   raises rather than degrading silently.
@@ -438,10 +480,12 @@ live verification actually caught:
 
 ## Non-goals
 
-The Reels dataset (dropped on evidence, above); backfill (deferred, above); the
-Profiles, Posts-by-post-URL, Comments, Group Posts, Events, and Marketplace
-datasets; image/video download; comment capture; reaction-mix and page-metadata
-capture; automatic re-tuning of `MAX_ITEMS_PER_RUN` as handles are added.
+The Reels dataset (dropped on evidence, above); `posts_to_not_include`
+(rejected on analysis, above); backfill (deferred, above); the Profiles,
+Posts-by-post-URL, Comments, Group Posts, Events, and Marketplace datasets;
+image/video download; comment capture; reaction-mix and page-metadata capture;
+duplicate-handle detection; automatic re-tuning of `MAX_ITEMS_PER_RUN` as
+handles are added.
 
 Like Instagram and LinkedIn, Facebook content enters the corpus as post text
 only — there is no transcript equivalent. This is a real asymmetry against the
