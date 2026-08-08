@@ -130,3 +130,76 @@ def _error_codes(raw_rows: list[dict]) -> list[str]:
     Data's own reason ('dead_page') instead of a bare drop count.
     """
     return [r.get("error_code") or "unknown" for r in raw_rows if r.get("error")]
+
+
+BRIGHTDATA_API_BASE = brightdata_job.BRIGHTDATA_API_BASE
+
+# Re-exported so `pytest.raises(discovery_facebook.BrightDataJobFailed)` works
+# and callers need not know where the exceptions live.
+BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
+BrightDataJobFailed = brightdata_job.BrightDataJobFailed
+
+
+def api_key() -> str | None:
+    """The Bright Data API token, or None if not configured. Reads this
+    module's KEY_ENV_VAR/KEY_FILE at call time so tests can patch them."""
+    return brightdata_job.read_key(KEY_ENV_VAR, KEY_FILE)
+
+
+def profile_url(handle: str) -> str:
+    """The Facebook URL for a tracked handle.
+
+    Two shapes, both verified live 2026-08-08. An all-digit handle is an
+    account id and goes through profile.php?id=, which is the form that was
+    tested; the bare facebook.com/<numeric-id> form was NOT tested and is
+    deliberately not used.
+    """
+    slug = handle.lstrip("@").strip()
+    if slug.isdigit():
+        return f"https://www.facebook.com/profile.php?id={slug}"
+    return f"https://www.facebook.com/{slug}"
+
+
+def _trigger_job(handle: str, key: str) -> str:
+    return brightdata_job.trigger(
+        BRIGHTDATA_API_BASE,
+        DATASET_ID,
+        {
+            # No type/discover_by: this product has no discovery mode. The
+            # input URL is the account and the collector walks it.
+            "include_errors": "true",
+            "notify": "false",
+        },
+        [{
+            # Server-side per-input record cap: the primary cost control.
+            # Verified honored exactly -- 3 returned 3, 2 returned 2.
+            "url": profile_url(handle),
+            "num_of_posts": MAX_ITEMS_PER_RUN,
+        }],
+        key,
+    )
+
+
+def _poll_job_status(job_id: str, key: str) -> str:
+    return brightdata_job.poll_status(BRIGHTDATA_API_BASE, job_id, key)
+
+
+def _fetch_job_results(job_id: str, key: str) -> list[dict]:
+    return brightdata_job.fetch_results(BRIGHTDATA_API_BASE, job_id, key)
+
+
+def _run_collection_job(handle: str) -> list[dict]:
+    key = api_key()
+    if key is None:
+        raise RuntimeError(
+            "Bright Data API key not configured "
+            f"(set {KEY_ENV_VAR} or {KEY_FILE.name})"
+        )
+    return brightdata_job.await_results(
+        trigger_fn=lambda: _trigger_job(handle, key),
+        poll_fn=lambda job_id: _poll_job_status(job_id, key),
+        fetch_fn=lambda job_id: _fetch_job_results(job_id, key),
+        label=f"for {PLATFORM}/{handle}",
+        poll_timeout_s=POLL_TIMEOUT_S,
+        poll_interval_s=POLL_INTERVAL_S,
+    )

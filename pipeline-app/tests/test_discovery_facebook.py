@@ -164,3 +164,125 @@ def test_error_codes_collects_vendor_reasons():
 
 def test_error_codes_is_empty_for_a_clean_batch():
     assert fb._error_codes([_raw_row()]) == []
+
+
+import pytest
+
+from pipeline_app import brightdata_job
+
+
+def test_profile_url_uses_the_vanity_slug_form_for_named_handles():
+    assert fb.profile_url("NASA") == "https://www.facebook.com/NASA"
+    assert fb.profile_url("MrBeast6000") == "https://www.facebook.com/MrBeast6000"
+    # A pasted @-prefixed handle still resolves.
+    assert fb.profile_url("@zuck") == "https://www.facebook.com/zuck"
+
+
+def test_profile_url_uses_profile_php_for_all_numeric_handles():
+    """VERIFIED LIVE: profile.php?id=100044561550831 resolved to NASA. The
+    bare facebook.com/<numeric-id> form was NOT tested, so it is not used --
+    there is no reason to guess when a verified form exists."""
+    assert fb.profile_url("100044561550831") == \
+        "https://www.facebook.com/profile.php?id=100044561550831"
+
+
+def test_trigger_job_sends_the_verified_request_shape(monkeypatch):
+    captured = {}
+
+    def fake_trigger(api_base, dataset_id, params, body, key):
+        captured.update(api_base=api_base, dataset_id=dataset_id, params=params,
+                        body=body, key=key)
+        return "snap1"
+
+    monkeypatch.setattr(brightdata_job, "trigger", fake_trigger)
+    assert fb._trigger_job("NASA", "the-key") == "snap1"
+
+    assert captured["dataset_id"] == fb.DATASET_ID
+    assert captured["key"] == "the-key"
+    assert captured["params"]["include_errors"] == "true"
+    assert captured["params"]["notify"] == "false"
+    # Bare array, not {"input": [...]} -- the object form belongs to the
+    # synchronous /scrape endpoint. Verified HTTP 200 with the bare array.
+    assert captured["body"] == [{
+        "url": "https://www.facebook.com/NASA",
+        "num_of_posts": fb.MAX_ITEMS_PER_RUN,
+    }]
+
+
+def test_trigger_job_sends_no_discovery_params(monkeypatch):
+    """Unlike the Instagram and LinkedIn datasets, this product has no
+    discovery mode. Sending type/discover_by would select a mode that does
+    not exist here."""
+    captured = {}
+    monkeypatch.setattr(brightdata_job, "trigger",
+                        lambda a, d, params, b, k: captured.update(params=params) or "s")
+    fb._trigger_job("NASA", "the-key")
+    assert "type" not in captured["params"]
+    assert "discover_by" not in captured["params"]
+
+
+def test_trigger_job_never_sends_exclusion_or_date_window_keys(monkeypatch):
+    """All three of posts_to_not_include / start_date / end_date verified
+    WORKING against the vendor and all three are deliberately unused.
+
+    posts_to_not_include is the dangerous one. Excluding on-disk ids
+    server-side removes them from the response, which disables BOTH of
+    process_handle's termination conditions -- the early-stop counter needs
+    on-disk ids to APPEAR (discovery_engine.py:54-57), and the lookback
+    cutoff only applies while is_new (:44-45, :61-70). Every later run would
+    then download MAX_ITEMS_PER_RUN progressively OLDER posts, daily, until
+    the account's whole back-catalogue landed -- in the mode whose only job
+    is new content. See the spec's "Rejected on analysis".
+    """
+    captured = {}
+    monkeypatch.setattr(brightdata_job, "trigger",
+                        lambda a, d, p, body, k: captured.update(body=body) or "s")
+    fb._trigger_job("NASA", "the-key")
+
+    for forbidden in ("posts_to_not_include", "start_date", "end_date"):
+        assert forbidden not in captured["body"][0]
+
+
+def test_run_collection_job_raises_clear_error_when_key_missing(monkeypatch):
+    monkeypatch.setattr(fb, "api_key", lambda: None)
+    with pytest.raises(RuntimeError, match="Bright Data API key not configured"):
+        fb._run_collection_job("NASA")
+
+
+def test_run_collection_job_drives_full_trigger_poll_fetch_cycle(monkeypatch):
+    """Nothing else exercises this wiring -- every other adapter test stubs
+    _run_collection_job wholesale. A transposed callable here would survive
+    the whole suite and fail on the first live run, after paying for a job.
+    Assert the snapshot id trigger() returns is threaded through to
+    poll_status() and fetch_results()."""
+    monkeypatch.setattr(fb, "api_key", lambda: "the-key")
+
+    poll_calls = []
+    fetch_calls = []
+    statuses = iter(["running", "ready"])
+
+    monkeypatch.setattr(brightdata_job, "trigger",
+                        lambda a, d, p, b, k: "snap-789")
+    monkeypatch.setattr(brightdata_job, "poll_status",
+                        lambda a, job_id, k: (poll_calls.append(job_id), next(statuses))[1])
+    monkeypatch.setattr(brightdata_job, "fetch_results",
+                        lambda a, job_id, k: (fetch_calls.append(job_id), [_raw_row()])[1])
+    monkeypatch.setattr(brightdata_job.time, "sleep", lambda s: None)
+
+    result = fb._run_collection_job("NASA")
+
+    assert result == [_raw_row()]
+    assert poll_calls == ["snap-789", "snap-789"]
+    assert fetch_calls == ["snap-789"]
+
+
+def test_api_key_prefers_env_var_then_file(monkeypatch, tmp_path):
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("from-file", encoding="utf-8")
+    monkeypatch.setattr(fb, "KEY_FILE", key_file)
+
+    monkeypatch.setenv(fb.KEY_ENV_VAR, "from-env")
+    assert fb.api_key() == "from-env"
+
+    monkeypatch.delenv(fb.KEY_ENV_VAR, raising=False)
+    assert fb.api_key() == "from-file"
