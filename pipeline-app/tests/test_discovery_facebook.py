@@ -434,3 +434,108 @@ def test_enumerate_propagates_job_failure(monkeypatch):
     monkeypatch.setattr(fb, "_run_collection_job", raise_failed)
     with pytest.raises(brightdata_job.BrightDataJobFailed):
         fb.enumerate_newest_first("NASA", keyword_filter=None)
+
+
+from pipeline_app import artifacts
+from pipeline_app.discovery_paths import handle_dir
+
+
+def test_on_disk_ids_is_empty_for_a_missing_directory(tmp_path):
+    assert fb.on_disk_ids(tmp_path, "NASA") == set()
+
+
+def test_on_disk_ids_reads_md_stems(tmp_path):
+    d = handle_dir(tmp_path, "facebook", "NASA")
+    d.mkdir(parents=True)
+    (d / "1596499905178713.md").write_text("x", encoding="utf-8")
+    (d / "1596305355198168.md").write_text("x", encoding="utf-8")
+    (d / "notes.txt").write_text("x", encoding="utf-8")
+    assert fb.on_disk_ids(tmp_path, "NASA") == {"1596499905178713", "1596305355198168"}
+
+
+def test_on_disk_ids_matches_the_string_post_id_exactly(tmp_path):
+    """post_id is a JSON string and on_disk_ids compares filename stems. A
+    numeric id would never match, and every run would re-download and re-pay
+    in silence."""
+    d = handle_dir(tmp_path, "facebook", "NASA")
+    d.mkdir(parents=True)
+    (d / "1596499905178713.md").write_text("x", encoding="utf-8")
+    assert "1596499905178713" in fb.on_disk_ids(tmp_path, "NASA")
+
+
+def test_peek_upload_date_is_dead_code_by_design():
+    """enumerate_newest_first only ever returns items carrying a normalized
+    'published', so process_handle never falls through to this."""
+    assert fb.peek_upload_date("anything") is None
+
+
+def test_download_item_writes_frontmatter_and_body(tmp_path, monkeypatch):
+    _stub_job(monkeypatch, [_raw_row()])
+    fb.enumerate_newest_first("MrBeast6000", keyword_filter=None)
+
+    result = fb.download_item(tmp_path, "MrBeast6000", "1479086397353733", "ignored")
+    assert result == {"id": "1479086397353733", "ok": True, "published": "2026-07-06"}
+
+    dest = handle_dir(tmp_path, "facebook", "MrBeast6000") / "1479086397353733.md"
+    meta, body = artifacts.parse_frontmatter(dest.read_text(encoding="utf-8"))
+
+    assert meta["post_id"] == "1479086397353733"
+    assert meta["handle"] == "MrBeast6000"
+    assert meta["author"] == "MrBeast6000"
+    assert meta["profile_id"] == "100057571594903"
+    assert meta["is_page"] is True
+    assert meta["content_type"] == "reel"
+    assert meta["published"] == "2026-07-06"
+    assert meta["like_count"] == 2836
+    assert meta["comment_count"] == 149
+    assert meta["share_count"] == 70
+    assert meta["view_count"] == 88381
+    assert meta["hashtags"] == []
+    assert "fetched_at" in meta
+    assert body.strip() == "$10,000 Every Boss You Beat"
+
+
+def test_download_item_writes_empty_placeholder_for_image_only_posts(tmp_path, monkeypatch):
+    """Image-only posts genuinely have empty content -- a real case."""
+    _stub_job(monkeypatch, [_raw_row(content="")])
+    fb.enumerate_newest_first("MrBeast6000", keyword_filter=None)
+    fb.download_item(tmp_path, "MrBeast6000", "1479086397353733", "ignored")
+
+    dest = handle_dir(tmp_path, "facebook", "MrBeast6000") / "1479086397353733.md"
+    _, body = artifacts.parse_frontmatter(dest.read_text(encoding="utf-8"))
+    assert body.strip() == "(empty)"
+
+
+def test_download_item_leaves_no_tmp_file(tmp_path, monkeypatch):
+    """Write-temp-then-rename: an interrupted write must never leave a
+    truncated file at a path on_disk_ids() would treat as captured."""
+    _stub_job(monkeypatch, [_raw_row()])
+    fb.enumerate_newest_first("MrBeast6000", keyword_filter=None)
+    fb.download_item(tmp_path, "MrBeast6000", "1479086397353733", "ignored")
+
+    d = handle_dir(tmp_path, "facebook", "MrBeast6000")
+    assert list(d.glob("*.tmp")) == []
+
+
+def test_download_item_raises_on_cache_miss_rather_than_degrading(tmp_path, monkeypatch):
+    """A missing entry is a programming error: every engine call path runs
+    enumerate_newest_first for this handle first. KeyError propagates to
+    run_discovery's per-handle error path instead of failing silently."""
+    _stub_job(monkeypatch, [_raw_row()])
+    fb.enumerate_newest_first("MrBeast6000", keyword_filter=None)
+    with pytest.raises(KeyError):
+        fb.download_item(tmp_path, "MrBeast6000", "nonexistent-id", "ignored")
+
+
+def test_download_item_makes_no_network_call(tmp_path, monkeypatch):
+    """download_item reads the cache. Calling Bright Data once per item
+    would double-pay for posts already collected."""
+    _stub_job(monkeypatch, [_raw_row()])
+    fb.enumerate_newest_first("MrBeast6000", keyword_filter=None)
+
+    def boom(*a, **k):
+        raise AssertionError("download_item must not call Bright Data")
+
+    monkeypatch.setattr(fb, "_run_collection_job", boom)
+    monkeypatch.setattr(brightdata_job, "trigger", boom)
+    assert fb.download_item(tmp_path, "MrBeast6000", "1479086397353733", "x")["ok"]

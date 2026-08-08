@@ -260,3 +260,60 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
          "content_type": i["content_type"]}
         for i in items
     ]
+
+
+def on_disk_ids(repo_root: Path, handle: str) -> set[str]:
+    directory = handle_dir(repo_root, PLATFORM, handle)
+    if not directory.exists():
+        return set()
+    return {p.stem for p in directory.glob("*.md")}
+
+
+def peek_upload_date(item_id: str) -> str | None:
+    # Dead code by design: enumerate_newest_first only ever returns items
+    # carrying a normalized 'published' date, so process_handle's
+    # `item.get("published") or adapter.peek_upload_date(...)` never falls
+    # through -- same as discovery_bluesky/instagram/linkedin.
+    return None
+
+
+def download_item(repo_root: Path, handle: str, item_id: str, title: str,
+                  content_type: str | None = None) -> dict:
+    # A missing handle or item_id is a programming error: every engine call
+    # path runs enumerate_newest_first for this handle first. KeyError
+    # propagates to run_discovery's per-handle error path rather than being
+    # caught here, so it surfaces as a normal 'error' instead of silently.
+    cached = _ENUMERATE_CACHE[handle][item_id]
+
+    out_dir = handle_dir(repo_root, PLATFORM, handle)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fetched_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    meta = {
+        "post_id": cached["id"],
+        "url": cached["url"],
+        "handle": handle,
+        # Recorded although never filtered on: it is what makes a regression
+        # (this dataset starting to return other accounts) detectable after
+        # the fact, and profile_id survives a vanity-slug rename.
+        "author": cached["author"],
+        "profile_id": cached["profile_id"],
+        "is_page": cached["is_page"],
+        "content_type": cached["content_type"],
+        "published": cached["published"],
+        "like_count": cached["like_count"],
+        "comment_count": cached["comment_count"],
+        "share_count": cached["share_count"],
+        "view_count": cached["view_count"],
+        "hashtags": cached["hashtags"],
+        "fetched_at": fetched_at,
+    }
+    body = cached["body"] or "(empty)"
+
+    dest = out_dir / f"{item_id}.md"
+    # Write-temp-then-rename, same as every other adapter: an interrupted
+    # write must never leave a truncated file at a path on_disk_ids() would
+    # treat as already-captured.
+    tmp_dest = dest.with_name(dest.name + ".tmp")
+    tmp_dest.write_text(artifacts.render_frontmatter(meta, body), encoding="utf-8")
+    tmp_dest.replace(dest)
+    return {"id": item_id, "ok": True, "published": cached["published"]}
