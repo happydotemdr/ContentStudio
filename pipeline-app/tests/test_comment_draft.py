@@ -68,3 +68,148 @@ def test_sanitize_drafts_rejects_when_one_draft_is_dropped():
 
 def test_sanitize_drafts_rejects_non_string_entries():
     assert comment_draft.sanitize_drafts(["fine and long enough to survive", 42, None]) == []
+
+
+import json
+import subprocess
+
+import pytest
+
+ARRAY = json.dumps([
+    "This lands, the teams that ship got boring about their process first.",
+    "Curious whether the same holds for teams under ten people, or does it shift?",
+    "The line about shipping being downstream of deciding is the one I will repeat.",
+])
+
+
+def _envelope(result_text, is_error=False):
+    return json.dumps({"type": "result", "result": result_text, "is_error": is_error})
+
+
+def _item(body="A real post body with enough text to comment on."):
+    return {"platform": "linkedin-profile", "handle": "bettywliu", "display_name": "Betty Liu",
+            "item_id": "7358", "title": "Moving fast", "url": "https://example.com/x",
+            "published": "2026-08-07", "views": None, "likes": 214, "comments": 37, "body": body}
+
+
+class FakePopen:
+    def __init__(self, stdout, returncode=0, timeout=False):
+        self._stdout, self.returncode, self._timeout = stdout, returncode, timeout
+        self.pid = 4242
+        self.killed = False
+        self.communicated = []
+
+    def communicate(self, input=None, timeout=None):
+        self.communicated.append(input)
+        if self._timeout and len(self.communicated) == 1:
+            raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
+        return self._stdout, ""
+
+    def kill(self):
+        self.killed = True
+
+
+@pytest.fixture
+def fake_claude(monkeypatch):
+    monkeypatch.setattr(comment_draft.cli_runner, "resolve_claude_binary", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(comment_draft.cli_runner, "kill_process_tree",
+                        lambda process: setattr(process, "killed", True))
+    captured = {}
+
+    def install(fake):
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return fake
+        monkeypatch.setattr(comment_draft.subprocess, "Popen", fake_popen)
+        return captured
+
+    return install
+
+
+def test_draft_comments_parses_drafts_out_of_the_result_envelope(fake_claude):
+    # The fixture MUST be the envelope, not a bare array: `claude -p
+    # --output-format json` never prints the model's text directly, and a
+    # bare-array fixture would pass against exactly the bug this avoids.
+    fake_claude(FakePopen(_envelope(ARRAY)))
+    assert len(comment_draft.draft_comments(_item())) == 3
+
+
+def test_draft_comments_strips_a_code_fence_around_the_inner_array(fake_claude):
+    fake_claude(FakePopen(_envelope("```json\n" + ARRAY + "\n```")))
+    assert len(comment_draft.draft_comments(_item())) == 3
+
+
+@pytest.mark.parametrize("stdout", [
+    "not json at all",
+    json.dumps(["a", "b", "c"]),          # bare array: envelope missing
+    json.dumps({"type": "result"}),        # no result field
+    _envelope(ARRAY, is_error=True),
+    _envelope("this is prose, not an array"),
+    _envelope(json.dumps(["only", "two"])),
+    _envelope(json.dumps([])),
+])
+def test_draft_comments_returns_empty_on_bad_output(fake_claude, stdout):
+    fake_claude(FakePopen(stdout))
+    assert comment_draft.draft_comments(_item()) == []
+
+
+def test_draft_comments_returns_empty_on_nonzero_exit(fake_claude):
+    fake_claude(FakePopen(_envelope(ARRAY), returncode=1))
+    assert comment_draft.draft_comments(_item()) == []
+
+
+def test_draft_comments_kills_the_process_tree_on_timeout(fake_claude):
+    fake = FakePopen(_envelope(ARRAY), timeout=True)
+    fake_claude(fake)
+    assert comment_draft.draft_comments(_item(), timeout_s=1) == []
+    assert fake.killed is True
+
+
+def test_draft_comments_returns_empty_when_the_binary_is_missing(monkeypatch):
+    def raise_missing():
+        raise FileNotFoundError("claude CLI not found on PATH.")
+    monkeypatch.setattr(comment_draft.cli_runner, "resolve_claude_binary", raise_missing)
+    assert comment_draft.draft_comments(_item()) == []
+
+
+def test_draft_comments_passes_the_prompt_over_stdin_never_in_argv(fake_claude):
+    fake = FakePopen(_envelope(ARRAY))
+    captured = fake_claude(fake)
+    item = _item(body='A post containing a " quote and & ampersand.')
+    comment_draft.draft_comments(item)
+    assert any('" quote' in (sent or "") for sent in fake.communicated)
+    assert not any('" quote' in arg for arg in captured["argv"])
+
+
+def test_draft_comments_sets_utf8_encoding_and_a_scratch_cwd(fake_claude):
+    captured = fake_claude(FakePopen(_envelope(ARRAY)))
+    comment_draft.draft_comments(_item())
+    kwargs = captured["kwargs"]
+    # cp1252 is the Windows default and social text is full of emoji; without
+    # this the drafter would fail silently every single morning.
+    assert kwargs["encoding"] == "utf-8"
+    # An empty scratch cwd stops `claude` discovering this repo's CLAUDE.md
+    # and eight skills by walking up from the working directory.
+    assert "ContentStudio" not in str(kwargs["cwd"])
+
+
+def test_draft_comments_denies_tools_and_loads_no_mcp_servers(fake_claude):
+    captured = fake_claude(FakePopen(_envelope(ARRAY)))
+    comment_draft.draft_comments(_item())
+    argv = captured["argv"]
+    assert "--strict-mcp-config" in argv
+    assert "--disallowedTools" in argv
+    assert "Bash" in argv[argv.index("--disallowedTools") + 1]
+
+
+def test_build_prompt_truncates_a_long_body_with_a_marker():
+    prompt = comment_draft.build_prompt(_item(body="x" * 40000))
+    assert "[transcript truncated]" in prompt
+    assert len(prompt) < 40000
+
+
+def test_build_prompt_states_the_dash_and_tone_rules_and_delimits_the_post():
+    prompt = comment_draft.build_prompt(_item())
+    assert "em dash" in prompt.lower()
+    assert comment_draft.POST_DELIMITER in prompt
