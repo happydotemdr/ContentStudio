@@ -136,6 +136,18 @@ def get_handle_by_platform_and_handle(conn: sqlite3.Connection, platform: str, h
     ).fetchone()
 
 
+def list_platform_handles(conn: sqlite3.Connection, platform: str) -> list[sqlite3.Row]:
+    """Every handle registered for one platform, included or not.
+
+    Excluded handles still own their output directory, so a collision check has
+    to see them too -- re-including one later must not silently start sharing
+    files with a handle registered in the meantime.
+    """
+    return conn.execute(
+        "SELECT * FROM handles WHERE platform = ? ORDER BY handle", (platform,)
+    ).fetchall()
+
+
 def list_handles(conn: sqlite3.Connection, included_only: bool = False) -> list[sqlite3.Row]:
     if included_only:
         return conn.execute("SELECT * FROM handles WHERE included = 1 ORDER BY cohort, handle").fetchall()
