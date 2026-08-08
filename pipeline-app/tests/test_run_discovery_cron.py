@@ -171,7 +171,8 @@ def test_notify_exception_does_not_propagate_or_change_exit_code(monkeypatch, re
 def test_build_adapters_includes_every_platform():
     adapters = cron.build_adapters()
     assert set(adapters.keys()) == {
-        "youtube", "bluesky", "instagram", "linkedin-profile", "linkedin-company", "x",
+        "youtube", "bluesky", "instagram", "linkedin-profile", "linkedin-company",
+        "facebook", "x",
     }
 
 
@@ -194,6 +195,26 @@ def test_linkedin_platforms_are_excluded_from_backfill():
 
     assert "linkedin-profile" not in BACKFILL_SUPPORTED_PLATFORMS
     assert "linkedin-company" not in BACKFILL_SUPPORTED_PLATFORMS
+
+
+def test_build_adapters_registers_facebook_as_a_module():
+    """One dataset serves both Pages and personal profiles, so unlike
+    LinkedIn there is no per-mode instance to construct -- the module itself
+    satisfies PlatformAdapter structurally, same as Instagram."""
+    from pipeline_app import discovery_facebook
+
+    assert cron.build_adapters()["facebook"] is discovery_facebook
+
+
+def test_facebook_is_excluded_from_backfill():
+    """No engine change is needed: BACKFILL_SUPPORTED_PLATFORMS is a
+    whitelist, so facebook is rejected before any adapter call. Backfill IS
+    possible for this product (start_date/end_date verified working
+    2026-08-08) but needs a PlatformAdapter protocol change, deferred to its
+    own spec."""
+    from pipeline_app.discovery_engine import BACKFILL_SUPPORTED_PLATFORMS
+
+    assert "facebook" not in BACKFILL_SUPPORTED_PLATFORMS
 
 
 def test_x_is_registered_as_an_adapter():
