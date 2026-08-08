@@ -22,12 +22,24 @@ See docs/superpowers/specs/2026-08-08-morning-email-social-expansion-design.md.
 from __future__ import annotations
 
 import re
+import datetime as _dt
+import sys
+from pathlib import Path
+
+import yaml
+
+from pipeline_app import artifacts
+from pipeline_app.discovery_paths import handle_dir
 
 # Written by the adapters when they have nothing. Treated as empty everywhere:
 # an excerpt reading "(no transcript available)" is worse than no excerpt.
 PLACEHOLDERS = frozenset({"(none)", "(empty)", "(no transcript available)"})
 
 TITLE_MAX_CHARS = 90
+
+# Seconds of slack on the mtime pre-filter, absorbing filesystem timestamp
+# granularity and clock skew between the run's recorded start and the write.
+MTIME_SLACK_S = 300
 
 # Preference order when a body is section-structured (YouTube's is: an H1, then
 # "## description", then "## transcript" -- discovery_youtube.py:289-293).
@@ -124,3 +136,107 @@ def published_rank(published: str | None) -> tuple[int, int]:
     if len(digits) != 8:
         return (1, 0)
     return (0, -int(digits))
+
+
+def _as_optional_str(value) -> str | None:
+    if isinstance(value, str):
+        return value.strip() or None
+    if value is None:
+        return None
+    # A YAML date/datetime, or an int. str() keeps the item usable rather than
+    # dropping it over a formatting detail the adapter got slightly wrong.
+    return str(value).strip() or None
+
+
+def _as_optional_int(value) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mtime_cutoff(run_started_at: str) -> float | None:
+    """Epoch seconds below which a file cannot belong to this run, or None to
+    disable the pre-filter.
+
+    Returning None on an unparseable run timestamp is a deliberate fail-open:
+    the pre-filter is an optimization, and a bad parse must never silently hide
+    every item. The frontmatter watermark below is the authority regardless.
+    """
+    try:
+        started = _dt.datetime.fromisoformat(run_started_at)
+    except (TypeError, ValueError):
+        return None
+    return started.timestamp() - MTIME_SLACK_S
+
+
+def _build_item(handle_row, path: Path, meta: dict, body: str) -> dict:
+    return {
+        "platform": handle_row["platform"],
+        "handle": handle_row["handle"],
+        "display_name": handle_row["display_name"] or handle_row["handle"],
+        # For YouTube this is "{video_id}__{slug}", not the bare id. It is used
+        # only as a stable identity and a final sort tie-break, never parsed.
+        "item_id": path.stem,
+        "title": derive_title(body, path.stem),
+        "url": _as_optional_str(meta.get("url")),
+        # YouTube writes upload_date; every other adapter writes published.
+        "published": _as_optional_str(meta.get("published") or meta.get("upload_date")),
+        "views": _as_optional_int(meta.get("view_count")),
+        "likes": _as_optional_int(meta.get("like_count")),
+        "comments": _as_optional_int(meta.get("comment_count")),
+        "body": extract_primary_text(body),
+    }
+
+
+def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[dict]:
+    """Every item this handle captured during the run identified by
+    run_started_at, newest-agnostic (the caller orders).
+
+    Selection is a WATERMARK -- frontmatter fetched_at >= run_started_at -- not
+    a top-N. It self-corrects when the DB's items_downloaded under-reports,
+    which is what happens when process_handle raises after some downloads
+    already succeeded and discovery_engine.py:346 records error/0 for a handle
+    that has files on disk.
+    """
+    directory = handle_dir(repo_root, handle_row["platform"], handle_row["handle"])
+    if not directory.exists():
+        return []
+
+    cutoff = _mtime_cutoff(run_started_at)
+    items: list[dict] = []
+    # glob("*.md") is non-recursive and does not match the ".md.tmp"
+    # write-temps. YouTube's _tmp/ scratch directory is a SIBLING of the handle
+    # directories (output/brand-intel/youtube/_tmp, discovery_youtube.py:205),
+    # so it is never reached either way.
+    for path in sorted(directory.glob("*.md")):
+        if cutoff is not None:
+            try:
+                if path.stat().st_mtime < cutoff:
+                    continue
+            except OSError:
+                continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        try:
+            meta, body = artifacts.parse_frontmatter(text)
+        except yaml.YAMLError:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        fetched_at = meta.get("fetched_at")
+        # Non-str includes an unquoted YAML timestamp, which parses to a
+        # datetime and would raise TypeError on the comparison below.
+        if not isinstance(fetched_at, str) or fetched_at < run_started_at:
+            continue
+        item = _build_item(handle_row, path, meta, body)
+        if item["url"] is None:
+            print(f"discovery_digest: no url in {path.name} "
+                  f"({handle_row['platform']}/{handle_row['handle']}), rendering without a link",
+                  file=sys.stderr)
+        items.append(item)
+    return items
