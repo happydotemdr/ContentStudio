@@ -21,7 +21,7 @@ from pathlib import Path
 
 from pipeline_app import db
 from pipeline_app import (discovery_bluesky, discovery_facebook, discovery_instagram,
-                          discovery_linkedin, discovery_youtube)
+                          discovery_linkedin, discovery_x, discovery_youtube)
 from pipeline_app.discovery_engine import run_discovery
 from pipeline_app.discovery_notify import notify
 from pipeline_app.discovery_scheduling import is_due
@@ -32,15 +32,18 @@ HERE = Path(__file__).resolve().parent
 def build_adapters():
     # LinkedIn's two modes are separate instances, not one shared object: each
     # keeps its own enumerate cache, and a person and a company can have the
-    # same URL slug. Facebook needs no such split -- one dataset serves both
-    # Pages and personal profiles.
+    # same URL slug.
     return {
         "youtube": discovery_youtube,
         "bluesky": discovery_bluesky,
         "instagram": discovery_instagram,
         "linkedin-profile": discovery_linkedin.profile_adapter(),
         "linkedin-company": discovery_linkedin.company_adapter(),
+        # Both plain modules, not instances: Facebook's one dataset serves Pages
+        # and personal profiles alike, and X has one working mode, so neither
+        # needs LinkedIn's per-instance cache or its bound-mode class.
         "facebook": discovery_facebook,
+        "x": discovery_x,
     }
 
 

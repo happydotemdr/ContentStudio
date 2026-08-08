@@ -1,3 +1,4 @@
+import inspect
 from pathlib import Path
 
 import pytest
@@ -171,7 +172,7 @@ def test_build_adapters_includes_every_platform():
     adapters = cron.build_adapters()
     assert set(adapters.keys()) == {
         "youtube", "bluesky", "instagram", "linkedin-profile", "linkedin-company",
-        "facebook",
+        "facebook", "x",
     }
 
 
@@ -214,3 +215,45 @@ def test_facebook_is_excluded_from_backfill():
     from pipeline_app.discovery_engine import BACKFILL_SUPPORTED_PLATFORMS
 
     assert "facebook" not in BACKFILL_SUPPORTED_PLATFORMS
+
+
+def test_x_is_registered_as_an_adapter():
+    from pipeline_app import discovery_x
+
+    assert cron.build_adapters()["x"] is discovery_x
+
+
+def test_x_is_excluded_from_backfill():
+    """discovery_engine rejects any platform outside this whitelist before an
+    adapter is called, so a backfill request can never trigger a paid X job.
+    That matters more here than for LinkedIn: X's start_date/end_date were
+    tested and return an error row, so there is no backfill path at all."""
+    from pipeline_app.discovery_engine import BACKFILL_SUPPORTED_PLATFORMS
+
+    assert "x" not in BACKFILL_SUPPORTED_PLATFORMS
+
+
+def test_x_adapter_satisfies_the_platform_adapter_protocol():
+    """The protocol is structural (typing.Protocol), so callable()/getattr()
+    alone would keep passing even if a parameter were dropped or renamed --
+    e.g. download_item's unused `title` param. That mismatch surfaces only at
+    runtime, mid-run, once discovery_engine.py's real positional call no
+    longer lines up: a TypeError raised per handle, AFTER that handle's
+    Bright Data job has already been billed. Pin the actual call shape
+    discovery_engine.py uses for each of the four protocol functions (via
+    inspect.signature(...).bind(...) against the engine's real call sites in
+    process_handle/process_handle_backfill/process_handle_validate), not just
+    that the attribute exists and is callable."""
+    adapter = cron.build_adapters()["x"]
+    for name in ("enumerate_newest_first", "on_disk_ids", "peek_upload_date",
+                 "download_item"):
+        assert callable(getattr(adapter, name)), name
+
+    # Argument counts/positions lifted verbatim from discovery_engine.py's
+    # real call sites -- these raise TypeError (failing the test) if a
+    # parameter the engine relies on is dropped, renamed, or reordered.
+    inspect.signature(adapter.on_disk_ids).bind(Path("."), "CNN")
+    inspect.signature(adapter.enumerate_newest_first).bind("CNN", None)
+    inspect.signature(adapter.peek_upload_date).bind("1")
+    inspect.signature(adapter.download_item).bind(
+        Path("."), "CNN", "1", "title", "post")

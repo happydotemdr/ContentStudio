@@ -58,9 +58,15 @@ instead of inventing a confident-sounding number.
 1. **Read the input script in full**, including any shot/timing markers from `shorts-scripting`.
    Note where the tone shifts (hook vs. body vs. CTA) — this drives both the voice settings and
    the TTS reformatting.
-2. **Pick the voice.** Read `references/voice-selection.md`. Default recommendation is a cloned
-   own voice; explain the reasoning (shadowban/reach risk of default voices) rather than just
-   naming a choice. Note the model (v3 vs. Multilingual v2 vs. Flash/Turbo) and why.
+2. **State the voice — it is already pinned.** Read `references/channel-voice.md` **first**.
+   The channel narrator is a fixed `voice_id`; name it and carry the rationale recorded there
+   (a cloned own voice, which is the corpus's top-ranked fix for the default-voice reach risk)
+   rather than re-arguing the casting call or auditioning. Note what the card leaves pending —
+   settings are not locked yet, so derive them per-script in step 3.
+   Fall through to `references/voice-selection.md`'s full selection doctrine **only** when
+   casting a *non-narrator* voice for this Short, or when the user explicitly overrides the pin
+   (say so in the brief if they do). Note the model (v3 vs. Multilingual v2 vs. Flash/Turbo)
+   and why.
 3. **Set the four settings + speaker boost**, per section if the script mixes content types.
    Read `references/settings-by-content-type.md` for the preset table and the mixed-script
    extrapolation rule.
@@ -104,7 +110,10 @@ it as a corpus or tool fact.
 
 ## Reference files
 
+- `references/channel-voice.md` — **the pinned channel narrator voice.** Read this before
+  `voice-selection.md`; the casting call is already made.
 - `references/voice-selection.md` — voice/cloning choice, the default-voice warning, model pick.
+  Applies to non-narrator casting and to overrides — see `channel-voice.md`.
 - `references/settings-by-content-type.md` — stability/similarity/style/speed, preset table,
   mixed-script guidance.
 - `references/scripting-for-tts.md` — sentence/punctuation/tag formatting rules for the script
