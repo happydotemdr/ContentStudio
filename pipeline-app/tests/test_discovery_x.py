@@ -208,7 +208,11 @@ def test_trigger_job_does_not_send_date_filters(monkeypatch):
     window against an account posting hundreds of times a day returned a
     single error row, error_code 'dead_page' (snapshot sd_mskdls3f26klcqyxk9).
     Sending empty strings would be harmless but misleading; sending real ones
-    would break collection. Pin that neither key is present."""
+    would break collection. Pin that neither key is present in EITHER channel
+    Bright Data reads them from: the JSON body (brightdata_job.trigger's
+    `body` arg) and the query params (its `params` arg, which is what
+    /trigger's `params={"dataset_id": dataset_id, **params}` sends) -- a date
+    filter added to either would slip past a body-only check."""
     captured = {}
 
     class _Resp:
@@ -220,12 +224,15 @@ def test_trigger_job_does_not_send_date_filters(monkeypatch):
 
     def fake_post(url, params=None, headers=None, json=None, timeout=None):
         captured["json"] = json
+        captured["params"] = params
         return _Resp()
 
     monkeypatch.setattr(x.requests, "post", fake_post)
     x._trigger_job("CNN", "test-key")
     assert "start_date" not in captured["json"][0]
     assert "end_date" not in captured["json"][0]
+    assert "start_date" not in captured["params"]
+    assert "end_date" not in captured["params"]
 
 
 def test_run_collection_job_returns_results_on_ready(monkeypatch):
@@ -361,15 +368,24 @@ def test_enumerate_caps_after_filtering_so_the_cap_bounds_retained_items(monkeyp
     keep the 10 newest raw rows (ids 15..6 from 15 total), drop the five
     foreign authors, and return only 5 items. Filter-then-cap (correct) keeps
     all 10 CNN rows and returns all 10 newest-first. This test fails if the
-    cap is applied before the author filter."""
+    cap is applied before the author filter.
+
+    The foreign (stranger) rows are appended to the fixture BEFORE the CNN
+    rows -- deliberate, not incidental. With CNN rows first (as this fixture
+    used to be ordered), a cap applied to raw INSERTION order (before any
+    sort or author filter) would coincidentally select exactly the 10 CNN
+    rows and pass this test for the wrong reason. With strangers first, that
+    same insertion-order-cap bug instead keeps the 5 strangers plus the 5
+    oldest CNN rows, then filters down to 5 -- failing both assertions below,
+    same as the sort-order and filter-order bugs this test already catches."""
     rows = []
-    # Ids 1-10: authored by CNN (will pass author filter)
-    for n in range(1, 11):
-        rows.append(_raw_row(id=str(n), user_posted="CNN",
-                             date_posted=f"2026-08-{n:02d}T00:00:00.000Z"))
-    # Ids 11-15: authored by stranger (will be filtered out)
+    # Ids 11-15: authored by stranger (will be filtered out). Appended first.
     for n in range(11, 16):
         rows.append(_raw_row(id=str(n), user_posted="stranger",
+                             date_posted=f"2026-08-{n:02d}T00:00:00.000Z"))
+    # Ids 1-10: authored by CNN (will pass author filter). Appended after.
+    for n in range(1, 11):
+        rows.append(_raw_row(id=str(n), user_posted="CNN",
                              date_posted=f"2026-08-{n:02d}T00:00:00.000Z"))
     _enumerate_with(monkeypatch, rows)
     items = x.enumerate_newest_first("CNN", None)
