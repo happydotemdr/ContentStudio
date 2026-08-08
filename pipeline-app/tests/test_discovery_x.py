@@ -483,3 +483,109 @@ def test_enumerate_returns_a_constant_content_type(monkeypatch):
     'post' and does not write it to disk."""
     _enumerate_with(monkeypatch, [_raw_row(id="1")])
     assert x.enumerate_newest_first("CNN", None)[0]["content_type"] == "post"
+
+
+def test_on_disk_ids_reads_filename_stems(tmp_path):
+    """The ids Bright Data returns are JSON strings, and on_disk_ids compares
+    against filename stems. A numeric id would never match, so every run
+    would re-download and re-pay in silence."""
+    directory = tmp_path / "output" / "brand-intel" / "x" / "cnn"
+    directory.mkdir(parents=True)
+    (directory / "2085896713185714235.md").write_text("x", encoding="utf-8")
+    (directory / "notes.txt").write_text("x", encoding="utf-8")
+    assert x.on_disk_ids(tmp_path, "CNN") == {"2085896713185714235"}
+
+
+def test_on_disk_ids_empty_when_directory_absent(tmp_path):
+    assert x.on_disk_ids(tmp_path, "CNN") == set()
+
+
+def test_peek_upload_date_is_none():
+    """Dead code by design: enumerate_newest_first only ever returns items
+    carrying a normalized 'published', so process_handle never falls through
+    to this -- same as discovery_bluesky/instagram/linkedin."""
+    assert x.peek_upload_date("1") is None
+
+
+def test_download_item_writes_frontmatter_and_body(monkeypatch, tmp_path):
+    _enumerate_with(monkeypatch, [_raw_row()])
+    x.enumerate_newest_first("CNN", None)
+    result = x.download_item(tmp_path, "CNN", "2085896713185714235", "title")
+
+    assert result == {"id": "2085896713185714235", "ok": True,
+                      "published": "2026-08-08"}
+    dest = tmp_path / "output" / "brand-intel" / "x" / "cnn" / "2085896713185714235.md"
+    text = dest.read_text(encoding="utf-8")
+    assert "post_id: '2085896713185714235'" in text
+    assert "author: CNN" in text
+    assert "published: '2026-08-08'" in text
+    assert "like_count: 310" in text
+    assert "comment_count: 85" in text
+    assert "repost_count: 64" in text
+    assert "view_count: 214564" in text
+    assert "bookmark_count: 16" in text
+    assert "quote_count: 6" in text
+    assert "external_url: https://cnn.it/45aXVbJ" in text
+    assert "https://pbs.twimg.com/media/HPKX_XjXUAAxkvS.jpg" in text
+    assert "A daring mission" in text
+
+
+def test_download_item_writes_empty_marker_for_media_only_posts(monkeypatch, tmp_path):
+    """A media-only post is kept with the '(empty)' body Instagram and
+    LinkedIn already use -- the media URLs and engagement counts are what
+    make the file worth having."""
+    _enumerate_with(monkeypatch, [_raw_row(
+        id="1", description=None, photos=None,
+        videos=[{"video_url": "https://video.twimg.com/a.mp4", "duration": 6041}])])
+    x.enumerate_newest_first("CNN", None)
+    x.download_item(tmp_path, "CNN", "1", "title")
+
+    text = (tmp_path / "output" / "brand-intel" / "x" / "cnn" / "1.md").read_text(
+        encoding="utf-8")
+    assert "(empty)" in text
+    assert "https://video.twimg.com/a.mp4" in text
+
+
+def test_download_item_does_not_write_content_type(monkeypatch, tmp_path):
+    """is_repost is unreliable, so no content_type is recorded. A key that
+    always said 'post' would assert that the account never reposts."""
+    _enumerate_with(monkeypatch, [_raw_row(id="1")])
+    x.enumerate_newest_first("CNN", None)
+    x.download_item(tmp_path, "CNN", "1", "title", content_type="post")
+    text = (tmp_path / "output" / "brand-intel" / "x" / "cnn" / "1.md").read_text(
+        encoding="utf-8")
+    assert "content_type" not in text
+
+
+def test_download_item_makes_no_second_network_call(monkeypatch, tmp_path):
+    """Calling Bright Data once per item would double-pay for posts already
+    collected by enumerate_newest_first."""
+    _enumerate_with(monkeypatch, [_raw_row(id="1")])
+    x.enumerate_newest_first("CNN", None)
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("download_item must read the cache, not the API")
+
+    monkeypatch.setattr(x, "_run_collection_job", _fail_if_called)
+    monkeypatch.setattr(x, "_trigger_job", _fail_if_called)
+    assert x.download_item(tmp_path, "CNN", "1", "title")["ok"] is True
+
+
+def test_download_item_raises_on_cache_miss(monkeypatch, tmp_path):
+    """A missing handle or id is a programming error. KeyError propagates to
+    run_discovery's per-handle error path, surfacing as a normal 'error'
+    rather than failing silently."""
+    _enumerate_with(monkeypatch, [_raw_row(id="1")])
+    x.enumerate_newest_first("CNN", None)
+    with pytest.raises(KeyError):
+        x.download_item(tmp_path, "CNN", "absent", "title")
+
+
+def test_download_item_leaves_no_tmp_file(monkeypatch, tmp_path):
+    """Write-temp-then-rename: an interrupted write must never leave a
+    truncated file at a path on_disk_ids() would treat as captured."""
+    _enumerate_with(monkeypatch, [_raw_row(id="1")])
+    x.enumerate_newest_first("CNN", None)
+    x.download_item(tmp_path, "CNN", "1", "title")
+    directory = tmp_path / "output" / "brand-intel" / "x" / "cnn"
+    assert [p.name for p in directory.iterdir()] == ["1.md"]
