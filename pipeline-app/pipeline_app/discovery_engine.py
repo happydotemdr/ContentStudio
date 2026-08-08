@@ -119,6 +119,7 @@ import sys
 import threading
 
 from pipeline_app import db as db_mod
+from pipeline_app.discovery_paths import group_slug_collisions
 from pipeline_app.discovery_records import write_run_record
 
 
@@ -198,6 +199,32 @@ def _process_one_handle(adapters: dict, repo_root, handle_row, mode, backfill_st
             end_date=_dt.datetime.strptime(backfill_end, "%Y-%m-%d").date(),
         )
     return process_handle(adapter, repo_root, handle_row, now=now)
+
+
+def _warn_on_directory_collisions(handle_rows) -> None:
+    """Name any two handles in this run that write to one output directory.
+
+    slugify() is lossy (it strips periods and lowercases), so two distinct
+    handles can share a directory -- see discovery_paths.handle_slug for why
+    that mapping is not being changed. The registration guard blocks new
+    collisions but cannot see ones registered before it existed, so a run
+    reports them: both handles are billed, and whichever runs second reads the
+    other's captures via on_disk_ids() and records the healthy 'no_new_content'.
+
+    Diagnostic only -- it never skips a handle. Silently dropping one would
+    stop capturing content the operator asked for, which is the failure this
+    is meant to surface, not cause.
+    """
+    by_platform: dict[str, list[str]] = {}
+    for row in handle_rows:
+        by_platform.setdefault(row["platform"], []).append(row["handle"])
+    for platform, handles in sorted(by_platform.items()):
+        for slug, colliding in sorted(group_slug_collisions(handles).items()):
+            print(f"  !! {platform}: handles {', '.join(colliding)} all share one "
+                  f"output directory (output/brand-intel/{platform}/{slug}). Each is "
+                  f"billed separately while writing to the same files, so all but "
+                  f"one will report 'no_new_content' after reading the others' "
+                  f"captures. Rename or remove all but one.", file=sys.stderr)
 
 
 def run_discovery(
@@ -311,6 +338,7 @@ def run_discovery(
     outer_crash: Exception | None = None
     try:
         handles = db_mod.list_handles(conn, included_only=True)
+        _warn_on_directory_collisions(handles)
         for handle_row in handles:
             try:
                 if mode == "backfill" and handle_row["platform"] not in BACKFILL_SUPPORTED_PLATFORMS:

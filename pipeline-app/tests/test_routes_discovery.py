@@ -45,6 +45,85 @@ def test_add_handle_creates_pending_row_and_spawns_validation(client: TestClient
     assert "validate_handle" in spawned["cmd"]
 
 
+def _no_spawn(monkeypatch):
+    """Stub the validate subprocess. A validate run costs a billable Bright Data
+    job on the paid platforms, so tests must never let one launch."""
+    spawned = []
+    monkeypatch.setattr(
+        "pipeline_app.routes.discovery.subprocess.Popen",
+        lambda cmd, **k: spawned.append(cmd) or type("P", (), {"pid": 1})(),
+    )
+    return spawned
+
+
+def _add(client: TestClient, platform: str, handle: str):
+    return client.post("/discovery/handles", data={
+        "platform": platform, "handle": handle, "display_name": "",
+        "cohort": "guru", "keyword_filter": "",
+    })
+
+
+def test_add_handle_rejects_a_handle_that_would_share_a_directory(client: TestClient, monkeypatch):
+    """slugify strips periods, so facebook/john.doe.5 and facebook/johndoe5 both
+    resolve to output/brand-intel/facebook/johndoe5. Registering both means two
+    billed jobs per run writing to one directory, and the second reports the
+    healthy 'no_new_content' after reading the first's files."""
+    _no_spawn(monkeypatch)
+    assert _add(client, "facebook", "johndoe5").status_code in (200, 303, 307)
+
+    response = _add(client, "facebook", "john.doe.5")
+    assert response.status_code == 400
+    # The message has to name both handles and the shared directory, or the
+    # operator cannot tell which existing registration is in the way.
+    assert "john.doe.5" in response.text
+    assert "johndoe5" in response.text
+
+
+def test_add_handle_rejects_a_case_only_difference(client: TestClient, monkeypatch):
+    _no_spawn(monkeypatch)
+    _add(client, "facebook", "NASA")
+    assert _add(client, "facebook", "nasa").status_code == 400
+
+
+def test_add_handle_does_not_spawn_validation_for_a_rejected_handle(client: TestClient, monkeypatch):
+    """A rejected registration must not launch a validate run -- on the Bright
+    Data platforms that is a billable job for a handle we refused to store."""
+    spawned = _no_spawn(monkeypatch)
+    _add(client, "facebook", "johndoe5")
+    spawned.clear()
+
+    assert _add(client, "facebook", "john.doe.5").status_code == 400
+    assert spawned == []
+
+
+def test_add_handle_does_not_store_a_rejected_handle(client: TestClient, monkeypatch):
+    _no_spawn(monkeypatch)
+    _add(client, "facebook", "johndoe5")
+    _add(client, "facebook", "john.doe.5")
+
+    listing = client.get("/discovery/handles")
+    assert "john.doe.5" not in listing.text
+
+
+def test_add_handle_allows_the_same_slug_on_a_different_platform(client: TestClient, monkeypatch):
+    """Directories are namespaced by platform, so facebook/nasa and
+    instagram/nasa never share one -- this must not be rejected."""
+    _no_spawn(monkeypatch)
+    assert _add(client, "facebook", "nasa").status_code in (200, 303, 307)
+    assert _add(client, "instagram", "NASA").status_code in (200, 303, 307)
+
+
+def test_add_handle_still_rejects_an_exact_duplicate_with_its_own_message(client: TestClient, monkeypatch):
+    """Regression: the pre-existing exact-match check keeps its own wording, so
+    'already registered' and 'shares a directory' stay distinguishable."""
+    _no_spawn(monkeypatch)
+    _add(client, "facebook", "nasa")
+
+    response = _add(client, "facebook", "nasa")
+    assert response.status_code == 400
+    assert "already exists" in response.text
+
+
 def test_toggle_include_flips_and_persists(client: TestClient, monkeypatch):
     monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", lambda *a, **k: type("P", (), {"pid": 1})())
     client.post("/discovery/handles", data={

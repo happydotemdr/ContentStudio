@@ -55,6 +55,58 @@ def test_migrate_seeds_all_16_handles_as_validated(conn, tmp_path):
     assert bluesky_row["cohort"] == "general-interest"
 
 
+def _manifest(tmp_path: Path, youtube: list[dict]) -> Path:
+    path = tmp_path / "brand_sources.json"
+    path.write_text(json.dumps({"youtube": youtube, "bluesky": [], "rss": []}), encoding="utf-8")
+    return path
+
+
+def test_migrate_skips_a_handle_colliding_with_one_already_registered(conn, tmp_path, capsys):
+    """slugify strips periods, so seeding 'john.doe.5' next to a registered
+    'johndoe5' would put two billed handles in one directory."""
+    db.create_handle(conn, "youtube", "johndoe5", "B", "guru", None, "2026-07-30T00:00:00Z")
+    manifest_path = _manifest(tmp_path, [
+        {"handle": "john.doe.5", "display_name": "A", "keyword_filter": None, "note": "guru channel"},
+    ])
+
+    count = migrate(conn, manifest_path, now="2026-07-30T00:00:00Z")
+
+    assert count == 0
+    assert db.get_handle_by_platform_and_handle(conn, "youtube", "john.doe.5") is None
+    err = capsys.readouterr().err
+    assert "john.doe.5" in err
+    assert "johndoe5" in err
+
+
+def test_migrate_skips_a_collision_between_two_manifest_entries(conn, tmp_path):
+    """The check must see rows inserted earlier in this same run, not just rows
+    that predate it."""
+    manifest_path = _manifest(tmp_path, [
+        {"handle": "john.doe.5", "display_name": "A", "keyword_filter": None, "note": "guru channel"},
+        {"handle": "johndoe5", "display_name": "B", "keyword_filter": None, "note": "guru channel"},
+    ])
+
+    count = migrate(conn, manifest_path, now="2026-07-30T00:00:00Z")
+
+    assert count == 1
+    assert db.get_handle_by_platform_and_handle(conn, "youtube", "john.doe.5") is not None
+    assert db.get_handle_by_platform_and_handle(conn, "youtube", "johndoe5") is None
+
+
+def test_migrate_seeds_the_rest_despite_one_collision(conn, tmp_path):
+    """One bad manifest row must not abort the whole import."""
+    db.create_handle(conn, "youtube", "johndoe5", "B", "guru", None, "2026-07-30T00:00:00Z")
+    manifest_path = _manifest(tmp_path, [
+        {"handle": "john.doe.5", "display_name": "A", "keyword_filter": None, "note": "guru channel"},
+        {"handle": "@Romayroh", "display_name": "R", "keyword_filter": None, "note": "guru channel"},
+    ])
+
+    count = migrate(conn, manifest_path, now="2026-07-30T00:00:00Z")
+
+    assert count == 1
+    assert db.get_handle_by_platform_and_handle(conn, "youtube", "@Romayroh") is not None
+
+
 def test_migrate_is_idempotent(conn, tmp_path):
     manifest_path = tmp_path / "brand_sources.json"
     manifest_path.write_text(json.dumps({

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 from pipeline_app import db as db_mod
+from pipeline_app.discovery_paths import find_slug_collision, handle_slug
 
 router = APIRouter()
 
@@ -44,6 +45,23 @@ def add_handle(
     repo_root = request.app.state.repo_root
     if db_mod.get_handle_by_platform_and_handle(conn, platform, handle) is not None:
         return PlainTextResponse(f"handle already exists: {platform}/{handle}", status_code=400)
+    # Reject before create_handle and before the validate spawn: on the Bright
+    # Data platforms that spawn is a billable job, so a handle we refuse to
+    # store must not be paid for either.
+    clash = find_slug_collision(
+        handle, [row["handle"] for row in db_mod.list_platform_handles(conn, platform)]
+    )
+    if clash is not None:
+        return PlainTextResponse(
+            f"handle shares a directory with an existing one: {platform}/{handle} and "
+            f"{platform}/{clash} both resolve to "
+            f"output/brand-intel/{platform}/{handle_slug(handle)}. They would be "
+            f"billed separately every run while writing to one directory, and "
+            f"whichever ran second would read the other's files and report "
+            f"'no_new_content'. Register one, or use handles differing by more "
+            f"than punctuation or capitalization.",
+            status_code=400,
+        )
     added_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     handle_id = db_mod.create_handle(
         conn, platform, handle, display_name or None, cohort, keyword_filter or None, added_at,
