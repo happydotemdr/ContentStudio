@@ -170,10 +170,11 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
 - Local only. No deploying, no external hosting, no cloud sync.
 - **Exceptions to "local only":** two outbound network dependencies, both in the daily discovery
   email path (`pipeline-app/pipeline_app/discovery_notify.py`), and both deliberate.
-  1. **Notification email, via Resend's HTTP API.** Sends the day's captured post titles, handles,
-     engagement metrics, and post URLs; a ~400 character excerpt of the one post the email
-     spotlights; and three AI-drafted comments on it. Never a full transcript, never a full post
-     body, never any other corpus content.
+  1. **Notification email, via Resend's HTTP API.** Sends the day's captured post titles, author
+     display names (a handle appears only when no display name is configured for that author),
+     engagement metrics, publish dates when known, and post URLs; a ~400 character excerpt of the
+     one post the email spotlights; and three AI-drafted comments on it. Never a full transcript,
+     never a full post body, never any other corpus content.
   2. **Comment drafting, via a `claude -p` subprocess** (`pipeline_app/comment_draft.py`). Sends
      the spotlighted post's full text, or a YouTube transcript truncated to 12,000 characters, to
      Anthropic. One post per day, only the spotlighted one. The turn runs with every tool denied,
