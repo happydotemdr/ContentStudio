@@ -2,8 +2,13 @@
 
 The lookup table that turns a styleboard `slot_*` label into a real Midjourney flag.
 
-**Status:** created 2026-08-07, **both entries unharvested.** No ContentStudio Short has
-ever rendered with a style lock applied — see "Why this file exists" below.
+**Status:** created 2026-08-07. **Both registers harvested 2026-08-08** — the first real style
+codes this project has ever had. Every Short before this one rendered with no style lock at
+all; see "Why this file exists" below.
+
+**Read `Open questions` §1 before authoring a Register A prompt.** Both harvested codes are
+artistic rather than photorealistic, which is a deliberate choice by the run owner and which
+puts Register A's `--raw` requirement in tension with its own style code.
 
 ---
 
@@ -94,9 +99,14 @@ world:        the thinker's own era and place — a lamplit writing study, a per
 seed:         the painterly source-era description ONLY — never the photographic palette.
               Warm, low-key, chiaroscuro; brass/leather/ink materials; anonymous presence,
               face turned into shadow, never a likeness of a named historical figure.
-code:         UNHARVESTED
-harvested_at: —
+code:         6930382708
+harvested_at: 2026-08-08
 ```
+
+Use as `--sref 6930382708`. Channel-wide and durable: reuse this exact value on every
+subsequent Short's Register B shots, unchanged, so the historical register reads as one
+continuous world across the catalogue. Do not re-enter its session to "improve" it — a
+re-entry stacks a second code rather than replacing this one.
 
 **Anchor reference:** the do-less run produced two frames that already carry this look —
 `Generated Assets/do-less-20260728-190724/visuals/Shot 5_HD.png` (true oil painting, visible
@@ -109,36 +119,63 @@ on-register.
 ```
 brand:        raisinggoodsports
 register:     A (present day)
-scope:        per-short        # harvested per Short -- see the codes table below and the
-                               # resolution caveat under "Open questions"
+scope:        channel          # CHANGED 2026-08-08 -- was per-short. See the note below.
 mechanism:    --sref
 world:        present-day youth sport — a municipal complex, clubhouse, sideline, pitch.
-              Photographic, cold: teal-ink ground (#0E3B43), amber (#F2A541) reserved as a
-              rim-light accent only, muted clay (#C1543A) reserved for claim-card framing and
-              never on a child or parent. Anonymous human presence — no identifiable faces.
-seed:         the photographic palette/mood description above: teal ground, amber accent,
-              anonymous-presence framing, muted clay reserved.
+              Cold palette: teal-ink ground (#0E3B43), amber (#F2A541) reserved as a rim-light
+              accent only, muted clay (#C1543A) reserved for claim-card framing and never on a
+              child or parent. Anonymous human presence — no identifiable faces.
+              NOT photorealistic — see "Medium" below.
+code:         832507909
+harvested_at: 2026-08-08
 ```
 
-| Short slug | Code | Harvested |
-|---|---|---|
-| `do-less-sold-as-win-more` | never harvested — shipped unlocked, see assembly v3 §0.1 | — |
-| *(next Short)* | UNHARVESTED | — |
+Use as `--sref 832507909`.
 
-**Known drift to correct at harvest:** every present-day render in the do-less Short came back
-warm golden-hour against a prompt asking for cold teal-grey (assembly v3 §0.1). Seed the
-session against the cold palette explicitly and reject warm candidates.
+**Scope changed to `channel`.** `rgs-briefs/2026-07-28-rgs-debut-visual-system.md:87` specifies
+Register A as harvested *per Short* (`SREF-RGS-A-<short>`), with only Register B channel-wide.
+The run owner supplied one durable code for the soccer world instead, which supersedes that
+line. Two consequences, both good: the two registers now follow the same one-code-per-register
+rule, and the label→code resolution ambiguity recorded here on 2026-08-07 disappears —
+`rgs-present-soccer-a` now maps to exactly one value regardless of Short.
+
+**Medium: artistic, not photographic** `[run owner, 2026-08-08]`. The code was chosen on its
+look and is more stylized than the photorealistic treatment the debut visual system assumed.
+That is a deliberate call, and it changes what carries the register split — see
+`Open questions` §1 before writing Register A prompts.
+
+**Known drift, still relevant:** every present-day render in the do-less Short came back warm
+golden-hour against a prompt asking for cold teal-grey (assembly v3 §0.1). The palette
+requirement above is unchanged by the medium change — hold the prompt body to the cold
+teal-ink ground and check the first renders for warm drift.
 
 ---
 
 ## Open questions
 
-1. **A `per-short` label does not resolve to one code.** `shorts-styleboard` binds a slot to a
-   label, and `rgs-present-soccer-a` maps to a different code per Short. Resolution therefore
-   needs the Short's slug as well as the label — which the sheet's `{style:register_a}` token
-   does not carry. Today a human reads the table above and picks the right row. A render
-   console would need the slug threaded through, or Register A labels would need to be
-   per-Short (`rgs-present-soccer-a-<slug>`), which is the simpler fix.
+1. **Register A's `--raw` requirement now fights its own style code. Decide before Track C's
+   prompt sheet is written.** `scripts/lint_prompt_sheet.py:557` sets
+   `REGISTER_BANDS = {"A": (80, 120, True), "B": (400, 700, False)}` — Register A **must**
+   carry `--raw` (C14) and must sit at `--s 80-120`. Both settings exist to push Register A
+   photographic, and both actively suppress a stylized `--sref`. Register B is the mirror:
+   `--raw` forbidden, `--s 400-700`.
+
+   Gate C will still PASS either way — C14 checks that the flag is present, not that the image
+   came out photographic — so this will not be caught mechanically. It shows up as diluted
+   renders that do not look like the code that was picked.
+
+   Two coherent options:
+   - **Keep the bands.** `--raw` + `--s 80-120` dilute the artistic code toward photographic.
+     Cheapest, but it partly wastes the code the run owner chose.
+   - **Re-spec Register A** — drop `needs_raw` and raise the stylize band in `REGISTER_BANDS`,
+     and update `visual-prompts/references/visual-registers.md` §2 to match. The register split
+     then rests on palette, subject and era rather than on medium.
+
+   The mechanical separation Gate C enforces (C6/C7/C9/C10, and the disjoint `--s` bands)
+   survives either choice — the two registers still share no palette family and no parameter
+   band. What changes is whether *medium* is still one of the cues. Note that assembly v3 §0.1
+   records what happened last time medium stopped carrying the split: the register read
+   collapsed and had to be rescued by a colour grade the renderer cannot apply.
 2. **Nothing validates a code against this file.** C18 checks a slot's value looks like a
    Library label; it cannot check the label *exists* here, because nothing parses this file.
    A label typo passes Gate C and fails at paste time.
