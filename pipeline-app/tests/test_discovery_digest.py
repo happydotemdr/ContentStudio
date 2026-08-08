@@ -207,3 +207,76 @@ def test_mtime_prefilter_disabled_when_run_started_at_is_unparseable(tmp_path):
     # only because the pre-filter was skipped entirely.
     items = digest.collect_new_items(tmp_path, _handle_row(), "not-a-timestamp")
     assert len(items) == 1
+
+
+def _item(platform="youtube", handle="h", item_id="i", likes=0, comments=0,
+          views=0, published="2026-08-01", body="Some body text.", display_name="D"):
+    return {"platform": platform, "handle": handle, "display_name": display_name,
+            "item_id": item_id, "title": "T", "url": "https://example.com/x",
+            "published": published, "views": views, "likes": likes,
+            "comments": comments, "body": body}
+
+
+def test_select_spotlight_returns_none_for_empty_input():
+    assert digest.select_spotlight([]) is None
+
+
+def test_select_spotlight_linkedin_beats_a_far_bigger_youtube_item():
+    linkedin = _item(platform="linkedin-profile", item_id="li", likes=3, views=None)
+    youtube = _item(platform="youtube", item_id="yt", likes=40000, views=1_000_000)
+    assert digest.select_spotlight([youtube, linkedin])["item_id"] == "li"
+
+
+def test_select_spotlight_treats_both_linkedin_modes_as_eligible():
+    company = _item(platform="linkedin-company", item_id="co", likes=90)
+    profile = _item(platform="linkedin-profile", item_id="pr", likes=10)
+    assert digest.select_spotlight([profile, company])["item_id"] == "co"
+
+
+def test_select_spotlight_ranks_by_likes_plus_comments():
+    a = _item(item_id="a", likes=100, comments=0)
+    b = _item(item_id="b", likes=60, comments=50)
+    assert digest.select_spotlight([a, b])["item_id"] == "b"
+
+
+def test_select_spotlight_breaks_interaction_tie_on_views():
+    a = _item(item_id="a", likes=10, views=5)
+    b = _item(item_id="b", likes=10, views=500)
+    assert digest.select_spotlight([a, b])["item_id"] == "b"
+
+
+def test_select_spotlight_breaks_view_tie_on_newest_published():
+    a = _item(item_id="a", published="2026-08-01")
+    b = _item(item_id="b", published="2026-08-07")
+    assert digest.select_spotlight([a, b])["item_id"] == "b"
+
+
+def test_select_spotlight_sorts_missing_published_last():
+    a = _item(item_id="a", published=None)
+    b = _item(item_id="b", published="2026-01-01")
+    assert digest.select_spotlight([a, b])["item_id"] == "b"
+
+
+def test_select_spotlight_key_is_total_across_same_stem_on_different_handles():
+    a = _item(handle="alpha", item_id="same")
+    b = _item(handle="beta", item_id="same")
+    assert digest.select_spotlight([b, a])["handle"] == "alpha"
+    assert digest.select_spotlight([a, b])["handle"] == "alpha"
+
+
+def test_select_spotlight_all_zero_metrics_resolves_to_newest():
+    a = _item(platform="bluesky", item_id="a", likes=None, comments=None,
+              views=None, published="2026-08-01")
+    b = _item(platform="bluesky", item_id="b", likes=None, comments=None,
+              views=None, published="2026-08-06")
+    assert digest.select_spotlight([a, b])["item_id"] == "b"
+
+
+def test_select_spotlight_excludes_empty_bodied_items():
+    linkedin = _item(platform="linkedin-profile", item_id="li", likes=500, body="")
+    youtube = _item(platform="youtube", item_id="yt", likes=1)
+    assert digest.select_spotlight([linkedin, youtube])["item_id"] == "yt"
+
+
+def test_select_spotlight_returns_none_when_every_item_is_empty_bodied():
+    assert digest.select_spotlight([_item(body=""), _item(item_id="b", body="")]) is None

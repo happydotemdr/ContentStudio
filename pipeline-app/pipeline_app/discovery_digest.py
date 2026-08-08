@@ -240,3 +240,49 @@ def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[
                   file=sys.stderr)
         items.append(item)
     return items
+
+
+# Both LinkedIn modes rank equally against each other and both outrank
+# everything else. This gate is absolute, by product decision: a LinkedIn post
+# with 3 likes wins over a YouTube video with 40,000.
+LINKEDIN_PLATFORMS = ("linkedin-profile", "linkedin-company")
+
+
+def _interactions(item: dict) -> int:
+    """The cross-platform ranking metric: likes + comments.
+
+    Deliberately NOT views. Only YouTube records a view count, so a literal
+    cross-platform "most viewed" would need an invented exchange rate between a
+    YouTube view and a LinkedIn like. Likes+comments is the only metric YouTube,
+    Instagram, and LinkedIn all actually record, so it is the honest common
+    currency. Views still break ties, and are still shown in the email.
+    """
+    return (item["likes"] or 0) + (item["comments"] or 0)
+
+
+def _spotlight_sort_key(item: dict):
+    # Ascending sort; negation carries the descending terms. (platform, handle,
+    # item_id) is a filesystem path, so the key is TOTAL -- no two items can
+    # collide, which is what makes selection reproducible. handle is required:
+    # item_id is a file stem, and two handles on one platform can share one.
+    return (
+        -_interactions(item),
+        -(item["views"] or 0),
+        published_rank(item["published"]),
+        item["platform"],
+        item["handle"],
+        item["item_id"],
+    )
+
+
+def select_spotlight(items: list[dict]) -> dict | None:
+    """The one item the email features, or None."""
+    # An item with no primary text gives the drafter nothing to read, so a
+    # comment drafted from it would be drafted from the title alone.
+    candidates = [i for i in items if i["body"]]
+    if not candidates:
+        return None
+    linkedin = [i for i in candidates if i["platform"] in LINKEDIN_PLATFORMS]
+    if linkedin:
+        candidates = linkedin
+    return min(candidates, key=_spotlight_sort_key)
