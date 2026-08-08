@@ -214,3 +214,81 @@ def _run_collection_job(handle: str) -> list[dict]:
         poll_timeout_s=POLL_TIMEOUT_S,
         poll_interval_s=POLL_INTERVAL_S,
     )
+
+
+# handle -> item_id -> normalized row. Populated by enumerate_newest_first,
+# read by download_item. Calling Bright Data again per item would double-pay
+# for posts already collected.
+_ENUMERATE_CACHE: dict[str, dict[str, dict]] = {}
+
+
+def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
+    # Raises BrightDataJobTimeout/BrightDataJobFailed -- never swallowed here.
+    # An empty return must mean "the job completed and there was nothing".
+    raw_rows = _run_collection_job(handle)
+
+    normalized = [_normalize_row(r) for r in raw_rows]
+    unusable = sum(1 for n in normalized if n is None)
+    kept = [n for n in normalized if n is not None]
+
+    # Authorship filter. discover_by=profile_url returns the account's
+    # timeline, including other people's posts (verified live). NOT is_repost,
+    # which was False even on the foreign row.
+    wanted = handle.lstrip("@").strip().lower()
+    before = len(kept)
+    kept = [n for n in kept if n["author"].lower() == wanted]
+    foreign = before - len(kept)
+
+    if unusable and foreign:
+        print(f"  ! {PLATFORM}/{handle}: dropped {unusable} unusable row(s), "
+              f"{foreign} row(s) by another author", file=sys.stderr)
+    elif unusable:
+        print(f"  ! {PLATFORM}/{handle}: dropped {unusable} unusable row(s)",
+              file=sys.stderr)
+    elif foreign:
+        print(f"  ! {PLATFORM}/{handle}: dropped {foreign} row(s) by another author",
+              file=sys.stderr)
+
+    if raw_rows and not kept:
+        # This run was billed and produced nothing, but process_handle will
+        # record the healthy status 'no_new_content' -- indistinguishable from
+        # a quiet day unless it is loud here. The advice depends on *why*
+        # nothing survived: an all-unusable batch (error rows carrying no id,
+        # with include_errors=true) points at a dead or renamed handle, not at
+        # authorship.
+        if unusable and not foreign:
+            advice = "check whether this handle is still valid"
+        elif foreign and not unusable:
+            advice = "check whether this account posts its own content"
+        else:
+            advice = "check whether this handle is valid and posts its own content"
+        print(f"  !! {PLATFORM}/{handle}: Bright Data returned {len(raw_rows)} "
+              f"row(s) but none survived filtering. This run was billed and "
+              f"captured nothing -- {advice}.", file=sys.stderr)
+
+    # Rows arrive unsorted (verified live); the engine's early-stop dedup
+    # assumes newest-first. Sort on the full timestamp, not the date-truncated
+    # 'published': Python's sort is stable, so same-day rows sorted on
+    # 'published' alone would keep Bright Data's arbitrary arrival order, which
+    # can put a genuinely newer post behind ones already on disk and trip the
+    # early-stop dedup before reaching it. Cap AFTER filtering so it bounds
+    # retained items.
+    kept.sort(key=lambda n: n["published_ts"], reverse=True)
+    kept = kept[:MAX_ITEMS_PER_RUN]
+
+    # Overwrite, not merge: a fresh successful enumerate replaces whatever this
+    # handle held, so download_item never reads a stale id.
+    _ENUMERATE_CACHE[handle] = {n["id"]: n for n in kept}
+
+    items = kept
+    if keyword_filter:
+        items = [i for i in items if keyword_filter.lower() in i["body"].lower()]
+    return [
+        # content_type is a constant. X's only type-like field is is_repost,
+        # which was False even on a post the account did not write; a field
+        # that is always False would be worse than absent, so it is neither
+        # reported nor written to disk.
+        {"id": i["id"], "title": i["title"], "published": i["published"],
+         "content_type": "post"}
+        for i in items
+    ]
