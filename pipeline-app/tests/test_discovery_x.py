@@ -357,10 +357,28 @@ def test_enumerate_sorts_same_day_rows_by_time_of_day(monkeypatch):
 
 
 def test_enumerate_caps_after_filtering_so_the_cap_bounds_retained_items(monkeypatch):
-    rows = [_raw_row(id=str(n), date_posted=f"2026-08-{n:02d}T00:00:00.000Z")
-            for n in range(1, 16)]
+    """The cap must bound RETAINED items, not raw rows. Cap-then-filter would
+    keep the 10 newest raw rows (ids 15..6 from 15 total), drop the five
+    foreign authors, and return only 5 items. Filter-then-cap (correct) keeps
+    all 10 CNN rows and returns all 10 newest-first. This test fails if the
+    cap is applied before the author filter."""
+    rows = []
+    # Ids 1-10: authored by CNN (will pass author filter)
+    for n in range(1, 11):
+        rows.append(_raw_row(id=str(n), user_posted="CNN",
+                             date_posted=f"2026-08-{n:02d}T00:00:00.000Z"))
+    # Ids 11-15: authored by stranger (will be filtered out)
+    for n in range(11, 16):
+        rows.append(_raw_row(id=str(n), user_posted="stranger",
+                             date_posted=f"2026-08-{n:02d}T00:00:00.000Z"))
     _enumerate_with(monkeypatch, rows)
-    assert len(x.enumerate_newest_first("CNN", None)) == x.MAX_ITEMS_PER_RUN
+    items = x.enumerate_newest_first("CNN", None)
+    # If cap is applied after filter (correct): 10 CNN rows remain, all returned
+    # newest-first as ["10", "9", "8", "7", "6", "5", "4", "3", "2", "1"].
+    # If cap is applied before filter (bug): 10 newest raw rows (ids 15..6) are
+    # kept, then five foreign rows are dropped, leaving only 5 items.
+    assert len(items) == x.MAX_ITEMS_PER_RUN
+    assert [i["id"] for i in items] == ["10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
 
 
 def test_enumerate_keeps_media_only_posts(monkeypatch):
