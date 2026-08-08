@@ -170,6 +170,26 @@ def test_set_handle_last_seen(conn):
     assert db.get_handle(conn, handle_id)["last_seen_published_at"] == "2026-07-28"
 
 
+def test_list_platform_handles_scopes_to_one_platform(conn):
+    """Output directories are namespaced by platform, so a collision check must
+    compare within one platform only."""
+    db.create_handle(conn, "facebook", "NASA", None, "guru", None, "2026-08-08T00:00:00Z")
+    db.create_handle(conn, "instagram", "nasa", None, "guru", None, "2026-08-08T00:00:00Z")
+    assert [r["handle"] for r in db.list_platform_handles(conn, "facebook")] == ["NASA"]
+
+
+def test_list_platform_handles_includes_excluded_handles(conn):
+    """An excluded handle still owns its directory: re-including it later must
+    not start silently sharing files with one registered in the meantime."""
+    handle_id = db.create_handle(conn, "facebook", "NASA", None, "guru", None, "2026-08-08T00:00:00Z")
+    db.set_handle_included(conn, handle_id, False)
+    assert [r["handle"] for r in db.list_platform_handles(conn, "facebook")] == ["NASA"]
+
+
+def test_list_platform_handles_is_empty_for_an_unregistered_platform(conn):
+    assert db.list_platform_handles(conn, "facebook") == []
+
+
 def test_upsert_handle_from_migration_is_idempotent(conn):
     first_id = db.upsert_handle_from_migration(
         conn, "youtube", "@a", "A Channel", "guru", None, "validated", True, "2026-07-30T00:00:00Z"

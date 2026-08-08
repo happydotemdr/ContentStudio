@@ -282,6 +282,68 @@ def test_run_discovery_completes_and_writes_record(engine_conn, tmp_path):
     assert db.get_handle(engine_conn, handle_id)["last_seen_published_at"] == "2026-07-29"
 
 
+def test_run_discovery_warns_when_two_handles_share_one_directory(engine_conn, tmp_path, capsys):
+    """The registration guard cannot see collisions registered before it landed,
+    so a run names them. Without this the second handle is billed and then
+    reports the healthy 'no_new_content' after reading the first's files."""
+    db.create_handle(engine_conn, "youtube", "john.doe.5", "A", "guru", None, now_iso())
+    db.create_handle(engine_conn, "youtube", "johndoe5", "B", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({
+        "john.doe.5": [{"id": "v1", "title": "x", "published": None}],
+        "johndoe5": [{"id": "v2", "title": "y", "published": None}],
+    })
+
+    run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental")
+
+    err = capsys.readouterr().err
+    assert "john.doe.5" in err
+    assert "johndoe5" in err
+    assert "johndoe5" in err  # the shared directory component
+
+
+def test_run_discovery_does_not_warn_when_every_handle_has_its_own_directory(
+        engine_conn, tmp_path, capsys):
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    db.create_handle(engine_conn, "youtube", "@b", "B", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({
+        "@a": [{"id": "v1", "title": "x", "published": None}],
+        "@b": [{"id": "v2", "title": "y", "published": None}],
+    })
+
+    run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental")
+
+    assert "share" not in capsys.readouterr().err
+
+
+def test_run_discovery_does_not_warn_across_platforms(engine_conn, tmp_path, capsys):
+    """Directories are namespaced by platform, so youtube/nasa and bluesky/nasa
+    are distinct and must not be reported."""
+    db.create_handle(engine_conn, "youtube", "nasa", "A", "guru", None, now_iso())
+    db.create_handle(engine_conn, "bluesky", "NASA", "B", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({})
+
+    run_discovery(engine_conn, tmp_path, {"youtube": adapter, "bluesky": adapter},
+                  trigger="manual", mode="incremental")
+
+    assert "share" not in capsys.readouterr().err
+
+
+def test_run_discovery_still_processes_both_colliding_handles(engine_conn, tmp_path):
+    """The warning is a diagnostic, not a gate: silently skipping a handle would
+    stop capturing content the operator asked for. Flag it, then proceed."""
+    db.create_handle(engine_conn, "youtube", "john.doe.5", "A", "guru", None, now_iso())
+    db.create_handle(engine_conn, "youtube", "johndoe5", "B", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({
+        "john.doe.5": [{"id": "v1", "title": "x", "published": None}],
+        "johndoe5": [{"id": "v2", "title": "y", "published": None}],
+    })
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter},
+                           trigger="manual", mode="incremental")
+
+    assert len(db.list_run_handle_results(engine_conn, result["run_row_id"])) == 2
+
+
 def test_run_discovery_excludes_handles_with_included_false(engine_conn, tmp_path):
     db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
     excluded_id = db.create_handle(engine_conn, "youtube", "@b", "B", "guru", None, now_iso())

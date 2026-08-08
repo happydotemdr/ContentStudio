@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import html
 import re
+from collections import defaultdict
+from collections.abc import Iterable
 from pathlib import Path
 
 
@@ -15,8 +17,65 @@ def slugify(value: str, maxlen: int = 80) -> str:
     return (value[:maxlen].rstrip("-")) or "untitled"
 
 
+def handle_slug(handle: str) -> str:
+    """The single directory-name component for a tracked handle.
+
+    Exists so a collision check and the real path can never drift apart: both
+    call this, so a guard cannot compute a slug that differs from the one the
+    engine writes to. See find_slug_collision for what that guard is for.
+
+    Deliberately lossy, and deliberately NOT fixed. slugify() strips periods
+    and lowercases, so 'john.doe.5' and 'johndoe5' both land here as
+    'johndoe5'. That mapping is load-bearing: directories written under it
+    already hold captured content (every Bluesky handle contains periods --
+    'adamgrant.bsky.social' is on disk as 'adamgrantbskysocial'). Making the
+    slug collision-preserving would repoint those handles at fresh
+    directories, on_disk_ids() would return an empty set, and the engine would
+    re-download and re-pay for each account's whole back-catalogue. So the
+    collision is fenced off at registration instead of being encoded away.
+    """
+    return slugify(handle.lstrip("@"))
+
+
+def find_slug_collision(handle: str, existing_handles: Iterable[str]) -> str | None:
+    """The first handle in existing_handles that would share a directory with
+    `handle` despite being a different string, or None.
+
+    Two handles colliding here are billed separately on every run while
+    writing to one directory, so whichever runs second reads the first's files
+    via on_disk_ids(), finds them already captured, and reports the healthy
+    'no_new_content'. Paid for, captured nothing, looks like a quiet day.
+
+    An exactly-equal handle is not reported: that is a plain duplicate, which
+    UNIQUE(platform, handle) and the route's own check already reject with a
+    clearer message. Compare within one platform only -- directories are
+    namespaced by platform, so facebook/nasa and instagram/nasa are distinct.
+    """
+    slug = handle_slug(handle)
+    for existing in existing_handles:
+        if existing != handle and handle_slug(existing) == slug:
+            return existing
+    return None
+
+
+def group_slug_collisions(handles: Iterable[str]) -> dict[str, list[str]]:
+    """slug -> the two-or-more distinct handles sharing it. Empty when clean.
+
+    For reporting collisions that are already registered, which the
+    registration guard cannot see because they predate it. Distinct handle
+    strings only: a repeated identical string is one account, not two
+    accounts sharing a directory.
+    """
+    by_slug: dict[str, list[str]] = defaultdict(list)
+    for handle in handles:
+        bucket = by_slug[handle_slug(handle)]
+        if handle not in bucket:
+            bucket.append(handle)
+    return {slug: found for slug, found in by_slug.items() if len(found) > 1}
+
+
 def handle_dir(repo_root: Path, platform: str, handle: str) -> Path:
-    return repo_root / "output" / "brand-intel" / platform / slugify(handle.lstrip("@"))
+    return repo_root / "output" / "brand-intel" / platform / handle_slug(handle)
 
 
 def run_record_path(repo_root: Path, run_id: str) -> Path:
