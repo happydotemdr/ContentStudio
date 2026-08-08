@@ -93,18 +93,52 @@ The call site in `run_discovery_cron.py` is unchanged.
 ### `collect_new_items(repo_root, handle_row, run_started_at) -> list[Item]`
 
 Globs `discovery_paths.handle_dir(repo_root, handle_row["platform"], handle_row["handle"])` for
-`*.md`. Non-recursive, which excludes YouTube's `_tmp/` scratch subdirectory by construction.
+`*.md`. Non-recursive, which also excludes the `.md.tmp` write-temps by construction. YouTube's
+`_tmp/` scratch directory is a *sibling* of the handle directories
+(`output/brand-intel/youtube/_tmp`, `discovery_youtube.py:205`), not a child of one, so it is never
+reached either way.
 
 Selection is the same **watermark** the current YouTube path uses: keep files whose frontmatter
-`fetched_at >= run_started_at` (both are UTC `isoformat(timespec="seconds")` strings, comparable
-lexicographically). This is deliberately not a top-N: it self-corrects when `items_downloaded`
-under-reports, which happens when `process_handle` raises after some downloads already succeeded
-and `discovery_engine.py:327` records `items_downloaded=0` for a handle that has files on disk.
+`fetched_at >= run_started_at`. Both are aware-UTC `isoformat(timespec="seconds")` strings — the
+engine's at `discovery_engine.py:126,210`, each adapter's at its `download_item` — so both are
+fixed-width with a `+00:00` suffix and lexicographic comparison is valid. A `fetched_at` that is
+missing, non-`str` (an unquoted YAML timestamp parses to a `datetime`, which would raise `TypeError`
+on comparison), or otherwise unparseable means the file is **excluded**, not sorted last: an item
+appears only when its provenance is unambiguous.
 
-A file whose `fetched_at` is missing or unparseable is **excluded**, not sorted last — an item
-appears only when its provenance is unambiguous. If the count of selected files disagrees with the
-handle's `items_downloaded`, log one line to stderr and continue; per-handle inventory completeness
-is not worth silencing the whole run's email.
+### Which handles get scanned, and why both current gates are dropped
+
+`build_summary` today skips a handle when `status == "error"` and again when `items_downloaded <= 0`
+(`discovery_notify.py:107-112`). Both gates are removed; every included handle's directory is
+scanned regardless of its recorded status or count.
+
+This is not tidiness. The watermark's entire justification is that it self-corrects when
+`items_downloaded` under-reports — and the case where that happens is a handle whose
+`process_handle` raised *after* some downloads already succeeded, which
+`discovery_engine.py:346` records as `status="error", items_downloaded=0`. That is precisely the row
+the `status == "error"` gate discards. Keeping the gates and keeping the self-correction rationale
+are mutually exclusive; the rationale is the one worth keeping, because the alternative is files on
+disk that no email ever mentions.
+
+**Consequence, intended:** a handle that errored mid-run appears in *both* the inventory (with the
+posts it did capture) and the `Errors:` list. "This handle broke, and here are the three posts it
+got before it broke" is strictly more useful than either half alone.
+
+**Cost control.** Dropping the gates means globbing every included handle's directory every morning.
+The corpus is 740 files today and 645 of those are YouTube, growing daily — parsing all of them to
+find roughly ten new ones is waste that compounds for as long as this cron runs. So the watermark
+gets a filesystem pre-filter: skip any file whose `st_mtime` is older than
+`run_started_at - 300 seconds` without opening it. A file written during the run necessarily has an
+mtime inside that window (the write-temp-then-rename preserves the temp's write time), and the
+five-minute slack absorbs filesystem timestamp granularity and clock skew.
+
+The pre-filter is **an optimization only**. Frontmatter `fetched_at` remains the sole authority for
+whether an item belongs to this run, so a file that is merely touched or copied cannot enter the
+email. Any file passing the mtime pre-filter is still parsed and still checked against the watermark.
+
+If the count of selected files disagrees with the handle's `items_downloaded`, log one line to
+stderr and continue — per-handle inventory completeness is not worth silencing the whole run's
+email. This warning is expected, not exceptional, on an errored handle with partial downloads.
 
 ### The `Item` shape
 
@@ -113,7 +147,8 @@ is not worth silencing the whole run's email.
     "platform": "linkedin-profile",   # from handle_row
     "handle": "bettywliu",            # from handle_row
     "display_name": "Betty Liu",      # handle_row["display_name"] or handle_row["handle"]
-    "item_id": "7358...",             # file stem
+    "item_id": "7358...",             # file stem — for YouTube this is
+                                      # "{video_id}__{slug}", not the bare id
     "title": "We keep telling founders to move fast",
     "url": "https://www.linkedin.com/posts/...",
     "published": "2026-08-07",
@@ -128,7 +163,7 @@ Normalization rules, all reading fields the adapters already write:
 
 | Field | Source | Missing → |
 |---|---|---|
-| `title` | body H1 if the first non-empty body line starts with `#` (YouTube), else that first non-empty line truncated to 90 chars at a word boundary | file stem |
+| `title` | body H1 if the first non-empty body line matches `# ` — **hash followed by a space** — else that first non-empty line truncated to 90 chars at a word boundary | file stem |
 | `url` | frontmatter `url` | `None` — entry renders with no link, one stderr line |
 | `published` | frontmatter `published`, else `upload_date` | `None` — omitted from render |
 | `views` | frontmatter `view_count` | `None` — omitted from render |
@@ -137,6 +172,12 @@ Normalization rules, all reading fields the adapters already write:
 
 `None` and `0` are distinct throughout: `None` means the platform does not report this metric and
 the render omits the segment; `0` means the platform reported zero and the render shows `0`.
+
+**The hash-space requirement in the title rule is load-bearing.** Social posts routinely open with
+a hashtag — `#MondayMotivation ...` — and a bare "starts with `#`" test would classify that as a
+markdown H1, then strip the line as a heading and lose the post's first sentence. Only `# ` counts,
+and only a line that was actually consumed as the title is eligible for stripping in step 1 of
+primary text extraction below.
 
 ### Primary text extraction
 
@@ -172,7 +213,12 @@ Stated as a `discovery_digest.py` module docstring and repeated in `CLAUDE.md`:
 > `fetched_at`, with the post's text as the markdown body. An adapter that does this appears in the
 > daily email — inventory entry, link, title, and spotlight eligibility — with no change to any
 > email-side module. `like_count`, `comment_count`, `view_count`, and `published` are optional; each
-> is omitted from the render when absent.
+> is omitted from the render when absent. `fetched_at` must be an aware-UTC
+> `isoformat(timespec="seconds")` **string**, matching every existing adapter.
+>
+> One known exception: `download_brandintel.py`, the manual toolkit script at repo root, does not
+> honor this contract and is deliberately left unmodified. Nothing it writes falls inside a
+> discovery run's watermark, so it never reaches the email.
 
 ### Bluesky format change
 
@@ -194,17 +240,23 @@ body = full_text or "(empty)"
 
 The write-temp-then-rename pattern is preserved exactly as-is.
 
-**Legacy fallback.** Bluesky files already on disk have no frontmatter. `collect_new_items` keeps
-one narrow legacy path: when `parse_frontmatter` returns an empty dict **and** the body's first
-line matches `^# bluesky post \S+$`, scrape `url` and `fetched_at` from the body's `- key: value`
-lines and treat the remaining text as the body. This path is marked in-code as transitional — it
-becomes dead the day the last pre-change file ages past the watermark, since the watermark only
-ever selects files fetched during the current run.
+**No legacy fallback is written.** An earlier draft of this spec specified one, for the ~25 Bluesky
+files already on disk in the old bare-markdown format. That code would be unreachable: the watermark
+selects only files whose `fetched_at >= run_started_at`, and every pre-change file was necessarily
+fetched before the first run of the new code. A legacy parser would be dead on the day it shipped,
+exercised by nothing but its own test. Those files stay on disk, remain readable by the browse UI,
+and simply never appear in an email — which is already true of every file from every previous run.
 
 **Known gap, accepted.** The Bluesky adapter's `app.bsky.feed.getAuthorFeed` call does not surface
-like or comment counts, so Bluesky items always score `0` in the ranking below and can win the
-spotlight only on a day when nothing else was captured. This is a data-availability limit, not a
-defect to fix in this spec.
+like or comment counts, so Bluesky items always score `0` on interactions. In practice that means
+Bluesky wins the spotlight only against other zero-metric items, where the `published`-descending
+tie-break decides — not literally "only when nothing else was captured," since a YouTube video with
+`likes: 0, views: 0` ties it. This is a data-availability limit, not a defect to fix in this spec.
+
+**One out-of-scope writer stays non-conforming.** `download_brandintel.py:295` — the manual toolkit
+script at repo root, which `CLAUDE.md` records as deliberately unmodified — still writes Bluesky
+files in the old format. Harmless here, since nothing it writes falls inside a run's watermark, but
+the platform contract text should note that it is a known exception rather than an oversight.
 
 ### `select_spotlight(items) -> Item | None`
 
@@ -217,8 +269,11 @@ Pure function over `summary["items"]`, the flattened list of every new item in t
    LinkedIn post with 3 likes outranks a YouTube video with 40,000 views.
 2. **Rank** by `interactions = (likes or 0) + (comments or 0)`, descending.
 3. **Tie-break**, in order: `views or 0` descending, `published` descending (missing sorts last),
-   `platform` ascending, `item_id` ascending. Fully deterministic — the same set of items always
-   yields the same spotlight.
+   `platform` ascending, `handle` ascending, `item_id` ascending. `handle` is required for the key
+   to be **total**: `item_id` is the file stem, and two different handles on the same platform can
+   hold the same stem, so platform+item_id alone is not unique. With `handle` included the key is
+   unique by construction — `(platform, handle, item_id)` is a filesystem path — and the same set of
+   items always yields the same spotlight.
 4. **Empty input** → `None`. The spotlight section is omitted and the rest of the email renders as
    it does today.
 
@@ -243,15 +298,45 @@ tie-breaks to the newest post. The spotlight still renders rather than vanishing
 
 Returns exactly three sanitized drafts, or `[]`. Never raises.
 
-**Invocation.** Reuses `cli_runner.resolve_claude_binary` and `cli_runner._platform_argv` — the
-Windows npm `.cmd`-shim handling documented at `cli_runner.py:157` must not be re-derived — but runs
-a blocking `subprocess.run` rather than the async streaming path, because the cron script is
-synchronous and needs nothing streamed.
+**Invocation.** Reuses `cli_runner`'s `resolve_claude_binary`, `_platform_argv`, and
+`_kill_process_tree` — the Windows npm `.cmd`-shim handling (`cli_runner.py:157`) and the
+process-tree kill (`cli_runner.py:167`) are both empirically-derived and must not be re-invented.
+Both are currently underscore-private; since this is a second in-package consumer, they are renamed
+to `platform_argv` and `kill_process_tree` and their existing call sites updated. Two modules
+depending on a name means it is not private.
 
-Argv is minimal: `claude -p --output-format json --strict-mcp-config` plus a `--disallowedTools`
-list denying every tool. This turn reads a string and returns a string; it needs no tool at all, so
-tools are denied wholesale rather than scoped. `--strict-mcp-config` with no `--mcp-config` loads
-zero MCP servers, which also keeps `CLAUDE.md`'s FamilyBrain firewall intact for this subprocess.
+**`subprocess.Popen` + `communicate(timeout=...)`, not `subprocess.run`.** This is a correctness
+requirement, not a preference. `subprocess.run` handles its own `TimeoutExpired` by calling
+`process.kill()` internally and never exposes the pid to the caller — and `cli_runner.py:167`
+records, from empirical observation, that `process.kill()` on Windows terminates only the `cmd.exe`
+shim and orphans the real `claude`/node descendant to run to completion. A `subprocess.run` design
+and a `taskkill /T /F` guarantee are mutually exclusive. `Popen` keeps the pid, so the `except
+subprocess.TimeoutExpired` branch can call `kill_process_tree(process)` and then `communicate()`
+again to reap.
+
+**`encoding="utf-8"` is mandatory on the pipe.** Python's default text encoding on Windows is
+cp1252; social post text contains emoji as a matter of course, so the default would raise
+`UnicodeEncodeError` writing the prompt to stdin and silently produce `[]` drafts every single day.
+`cli_runner.py:238` already sets `PYTHONIOENCODING` for the same reason on the async path.
+
+**Argv:** `claude -p --output-format json --strict-mcp-config --disallowedTools <enumerated list>`.
+`--strict-mcp-config` with no `--mcp-config` loads zero MCP servers, which keeps `CLAUDE.md`'s
+FamilyBrain firewall intact for this subprocess.
+
+There is **no all-tools wildcard** for `--disallowedTools`, so the list is enumerated explicitly
+(mirroring `cli_runner.PIPELINE_DISALLOWED_TOOLS`, but denying every entry rather than path-scoping
+writes) and carries an in-code note that a tool added by a future CLI release would not be covered
+until the list is updated. Omitting `--allowedTools` entirely already means nothing is
+pre-approved, so an un-enumerated tool would still require an approval that a `-p` run cannot
+obtain — the enumeration is defense in depth, not the only defense.
+
+**`cwd` must be pinned to an empty scratch directory** (a `tempfile.TemporaryDirectory()` for the
+call's lifetime). A Windows Scheduled Task inherits no meaningful working directory — the same trap
+`discovery_youtube.py:126-131` already documents — and `claude` discovers `CLAUDE.md`, `.claude/`
+settings, and skills by walking up from `cwd`. Launched at the repo root, every comment draft would
+load ContentStudio's `CLAUDE.md` and all eight pipeline skills into a turn that needs none of them:
+slower, more expensive, and liable to trigger a skill on a prompt containing scraped social copy.
+An empty temp dir discovers nothing above it inside this repo.
 
 **The prompt goes over stdin, not argv.** This is a security requirement, not a style choice.
 `cli_runner.build_claude_argv`'s docstring records that on Windows the prompt reaches `cmd.exe`,
@@ -272,6 +357,25 @@ is three short strings the user reads before using.
 
 **Requested output.** A JSON array of three strings, in three distinct registers — affirming,
 curious question, specific-detail callback — so parsing does not depend on prose formatting.
+
+### Parsing is two layers, not one
+
+`claude -p --output-format json` does **not** print the model's text on stdout. It prints a result
+*envelope* object — the same shape `cli_runner.extract_turn_result` reads, where the model's output
+is the `result` field. A naive `json.loads(stdout)` expecting an array would get a dict on every
+successful run, return `[]` every time, and the spotlight would silently never carry drafts while
+looking perfectly healthy. Parsing is therefore:
+
+1. `json.loads(stdout)` → envelope dict. Treat a non-dict, a missing `result`, or a truthy
+   `is_error` as failure.
+2. Take `envelope["result"]`, strip a surrounding ```` ``` ````/```` ```json ```` fence if present
+   (the model may fence its array despite instructions), then `json.loads` that.
+3. Require a `list` of three `str`. Anything else is failure.
+
+`--verbose` is **not** required here. `cli_runner.py:83-88` scopes that requirement specifically to
+`--output-format stream-json`; plain `json` with `-p` does not need it. This should still be
+re-verified against `claude --help` during implementation, since CLI flag behavior changes between
+releases.
 
 ### Guarantees enforced in code
 
@@ -296,10 +400,10 @@ over.
 
 ### Failure modes, all non-fatal
 
-Timeout, missing `claude` binary, non-zero exit, unparseable output, or fewer than three surviving
-drafts all return `[]`. On timeout the process tree is killed with `taskkill /T /F` on Windows —
-`process.kill()` alone would terminate the `cmd.exe` wrapper and orphan the real `claude`/node
-descendant, per `cli_runner.py:167`'s empirically-verified note.
+Timeout, missing `claude` binary, non-zero exit, an unparseable envelope, an unparseable inner
+array, or fewer than three surviving drafts all return `[]`. On timeout the `TimeoutExpired` branch
+calls `kill_process_tree(process)` and then reaps with a second `communicate()` — see the
+`Popen`-not-`run` requirement above for why this cannot be delegated to `subprocess.run`.
 
 When `draft_comments` returns `[]`, the spotlight section still renders with the post, metrics,
 excerpt, and link, plus one line noting drafting was unavailable. **The email always sends.**
@@ -330,9 +434,9 @@ excerpt of the body (whitespace-collapsed, cut at a word boundary, ellipsis appe
 drafts for review.
 
 **Inventory ordering.** Within a platform group, items sort by `display_name` ascending, then
-`published` descending (missing last), then `item_id` ascending — so one account's posts stay
-together and its newest is first. Deterministic at every level, for the same reason
-`select_spotlight`'s tie-breaks are.
+`handle` ascending, then `published` descending (missing last), then `item_id` ascending — so one
+account's posts stay together and its newest is first. `handle` is in the key for the same totality
+reason as in `select_spotlight`, and additionally because two handles can share a `display_name`.
 
 **Inventory entries** render: `display_name`, title, the metrics that are present, and the
 "Click here to view" link. The spotlight post is **not** removed from its platform group — it would
@@ -388,16 +492,26 @@ The 2026-08-01 invariant holds: a notification failure never affects `discovery_
 cron script's exit code. `run_discovery()` has already returned and persisted its result before
 `notify` is called, and `main()` returns `0` on every path.
 
+**`notify` still does not catch, and that stays deliberate.** The existing contract — documented in
+`tests/test_discovery_notify.py:377-385`, which asserts `notify` *propagates* a `build_summary`
+failure — is that `notify` adds no failure handling of its own; the cron call site
+(`run_discovery_cron.py:100`) is the single catch point. This spec does not change that. An earlier
+draft's failure table said "caught by `notify`'s and the cron's `try/except`", which would have
+quietly inverted a tested contract; the cron's catch alone is what makes the guarantee hold, and
+that test is left exactly as it is. The new modules take the burden instead: `draft_comments` never
+raises by construction, and per-item parse failures are contained inside `collect_new_items`.
+
 New failure modes, each degrading to something narrower than "no email":
 
 | Failure | Blast radius |
 |---|---|
-| One file's frontmatter malformed or `fetched_at` unparseable | that item only |
+| One file's frontmatter malformed, or `fetched_at` missing / non-`str` / unparseable | that item only |
 | One item missing `url` | that item's link only; stderr line |
 | Selected-file count ≠ `items_downloaded` | stderr warning; email sends |
-| `claude` binary missing, timeout, bad output | three drafts; spotlight still renders with a note |
-| Bluesky legacy file unparseable by both paths | that item only |
-| `render_email` or Resend raises | whole email — caught by `notify`'s and the cron's `try/except`, logged to stderr |
+| A handle errored mid-run with partial downloads | nothing — items listed *and* handle named under `Errors:` |
+| `claude` binary missing, timeout, bad exit, envelope or array unparseable | three drafts; spotlight still renders with a note |
+| Prompt contains characters unencodable on the pipe | nothing — `encoding="utf-8"` is set explicitly |
+| `build_summary` or `render_email` or Resend raises | whole email — propagates out of `notify` to the cron's `try/except` (`run_discovery_cron.py:100`), logged to stderr |
 
 The known gap from the 2026-08-01 spec is unchanged and still accepted: if `run_discovery()` itself
 raises before returning, `notify()` is never reached and that day gets no email.
@@ -414,21 +528,35 @@ New file `pipeline-app/tests/test_discovery_digest.py`:
   text; a YouTube body whose transcript is `(no transcript available)` falling through to the
   description; a body where both are placeholders yielding `""`; a flat Instagram/LinkedIn body
   passing through whole.
-- Bluesky legacy fallback parsing a pre-change file; a legacy file matching neither path excluded
-  without raising.
-- Malformed YAML excluded without raising.
+- Title rule: a body opening `#MondayMotivation` treated as text, not an H1, and its first line
+  surviving into `body`; a body opening `# Real Title` consumed as the title and stripped.
+- Malformed YAML excluded without raising; a non-`str` `fetched_at` (unquoted YAML timestamp →
+  `datetime`) excluded without raising `TypeError`.
+- mtime pre-filter: an old file with a fresh `fetched_at` still requires the watermark to pass, and
+  a file whose mtime is inside the window but whose `fetched_at` predates the run is excluded —
+  asserting the pre-filter is an optimization and never the authority.
+- Both dropped gates: an `items_downloaded == 0` handle and a `status == "error"` handle each still
+  scanned, with an errored handle's partial downloads appearing as items.
 - `items_downloaded` mismatch logging without raising.
 - `select_spotlight`: LinkedIn gate beating a higher-metric YouTube item; both LinkedIn modes
   eligible; ranking by likes+comments; each tie-break level exercised in isolation; all-zero input
   resolving to newest; empty input → `None`; an empty-`body` LinkedIn item excluded so a YouTube
   item wins instead; every candidate empty-bodied → `None`.
 
-New file `pipeline-app/tests/test_comment_draft.py`, `subprocess.run` monkeypatched, no real
+New file `pipeline-app/tests/test_comment_draft.py`, `subprocess.Popen` monkeypatched, no real
 process spawned:
 
-- Happy path: three drafts parsed from a JSON array.
-- Non-JSON output, two drafts, empty array, and an over-length-then-dropped draft each → `[]`.
-- Timeout, `FileNotFoundError` from `resolve_claude_binary`, and non-zero exit each → `[]`.
+- Happy path: three drafts parsed out of the **result envelope**, i.e. stdout is
+  `{"type":"result","result":"[\"a\",\"b\",\"c\"]","is_error":false}` — the test fixture must be the
+  envelope, not a bare array, or it would pass against the exact bug this design is avoiding.
+- A fenced inner payload (```` ```json ... ``` ````) parsed correctly.
+- Envelope not a dict, `result` missing, `is_error` true, inner text not a JSON array, array of two,
+  empty array, and an over-length-then-dropped draft each → `[]`.
+- Timeout: `communicate` raising `TimeoutExpired` asserts `kill_process_tree` is called with the
+  process and the result is `[]`.
+- `FileNotFoundError` from `resolve_claude_binary` and a non-zero exit each → `[]`.
+- `Popen` is constructed with `encoding="utf-8"` and a `cwd` that is not the repo root — asserted
+  directly, since both are silent-daily-failure modes rather than visible ones.
 - **Em-dash guarantee:** a fake returning drafts containing U+2014, U+2013, and `--` asserts none
   survive in the output.
 - Length cap: a 500-character draft truncated at a sentence boundary.
@@ -457,9 +585,19 @@ Updated `pipeline-app/tests/test_discovery_bluesky.py`:
 
 Updated `pipeline-app/tests/test_discovery_notify.py`:
 
-- `build_summary` calls the digest for every platform, not just YouTube.
+- `build_summary` calls the digest for every platform, not just YouTube, and for handles the old
+  gates would have skipped.
 - `send_email` payload includes `html` alongside `text`.
-- `notify` orchestration order, and `notify` not raising when a lower-level function does.
+- `notify` orchestration order, including `select_spotlight` → `draft_comments` feeding
+  `render_email`.
+- `test_notify_never_raises_when_build_summary_fails` is **left unchanged**. Despite its name it
+  asserts `notify` propagates, which is the contract this spec preserves; touching it would be
+  changing a contract under cover of a refactor.
+
+Updated `pipeline-app/tests/test_cli_runner.py`:
+
+- Call sites renamed for `platform_argv` / `kill_process_tree` losing their underscore prefixes. No
+  behavior change.
 
 Existing `run_discovery_cron.py`-level coverage is unchanged — the call site does not change.
 
@@ -487,3 +625,44 @@ One operational note: the `claude` binary must resolve on `PATH` inside the Wind
 environment the 06:00 run inherits. If it does not, `draft_comments` returns `[]` and the email
 sends without drafts — visible in the email itself as the unavailable note, and in the task's
 captured stderr.
+
+## Review notes
+
+Reviewed by a second model (Fable) against the actual code before implementation, following the
+same practice as the 2026-08-01 spec. Three blocking issues were found; all are resolved above
+rather than deferred.
+
+1. **The `build_summary` gates contradicted the watermark's own rationale.** The spec inherited the
+   "self-corrects when `items_downloaded` under-reports" argument while leaving in place the
+   `status == "error"` and `items_downloaded <= 0` gates that skip exactly the handle that argument
+   describes. Two implementers would have built different things. Resolved by dropping both gates,
+   stating the intended consequence (an errored handle appears in the inventory *and* under
+   `Errors:`), and adding an mtime pre-filter so scanning every directory daily does not grow
+   unbounded against a corpus already at 740 files. (The inherited line citation was also stale —
+   the record happens at `discovery_engine.py:346`, not `:327`.)
+2. **`subprocess.run` cannot deliver the timeout guarantee the spec claimed.** It handles
+   `TimeoutExpired` with an internal `process.kill()` and never exposes the pid, and
+   `cli_runner.py:167` records empirically that `process.kill()` on Windows orphans the real
+   `claude` process behind the `cmd.exe` shim. Resolved by respecifying as `Popen` +
+   `communicate(timeout=...)` + caller-side `kill_process_tree`.
+3. **`--output-format json` returns a result envelope, not the model's text.** A single
+   `json.loads(stdout)` expecting an array would have returned `[]` on every successful run — the
+   spotlight would have silently never carried drafts while appearing healthy. Resolved with an
+   explicit two-layer parse plus fence-stripping, and a test fixture required to be the envelope
+   shape so the test cannot pass against the bug.
+
+Should-fix items also folded in: the Bluesky legacy fallback deleted as unreachable-by-construction
+(the watermark can never select a pre-change file); the title rule tightened to `# ` so a post
+opening with a hashtag does not lose its first line; `encoding="utf-8"` mandated on the subprocess
+pipe against cp1252 versus emoji; `--disallowedTools` specified as an enumerated list with a note
+that no wildcard exists; `cwd` pinned to an empty temp directory so drafting turns do not load this
+repo's `CLAUDE.md` and eight skills; `handle` added to both sort keys to make them total;
+non-`str` `fetched_at` folded into "unparseable"; `cli_runner`'s `_platform_argv` and
+`_kill_process_tree` promoted out of underscore-private now that a second module consumes them; and
+the `notify` try/except contract corrected back to "does not catch," since an earlier draft would
+have inverted a tested and deliberately-documented behavior.
+
+Corrected NITs: `_tmp` is a sibling of the handle directories, not a child (the conclusion held, the
+justification did not); the Bluesky spotlight claim overstated the gap, since a zero-metric YouTube
+item ties rather than outranks; and `download_brandintel.py` is noted in the platform contract as a
+known non-conforming writer rather than being silently non-compliant.
