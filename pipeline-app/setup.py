@@ -19,9 +19,9 @@ from setuptools import find_packages, setup
 HERE = Path(__file__).resolve().parent
 
 
-def _runtime_requirements(here: Path = HERE) -> list[str]:
+def _runtime_requirements() -> list[str]:
     out = []
-    for raw in (here / "requirements.txt").read_text(encoding="utf-8").splitlines():
+    for raw in (HERE / "requirements.txt").read_text(encoding="utf-8").splitlines():
         line = raw.split("#", 1)[0].strip()
         if line and not line.startswith("-"):
             out.append(line)
