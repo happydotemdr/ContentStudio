@@ -21,14 +21,26 @@ if errorlevel 1 (
 
 netstat -ano -p tcp | findstr /c:"LISTENING" | findstr /c:":8420 " >nul
 if not errorlevel 1 (
-  echo [start_pipeline] ERROR: port 8420 is already in use.
-  echo [start_pipeline] An instance is already running -- refusing to launch a second
-  echo [start_pipeline] one that would die silently while the browser opens onto the first.
+  echo [start_pipeline] ERROR: a process is already listening on 127.0.0.1:8420.
+  echo [start_pipeline] netstat cannot tell whether that is this app -- it may be a
+  echo [start_pipeline] leftover instance, or it may be something unrelated that has
+  echo [start_pipeline] taken the port. Run "netstat -ano" and look for port 8420 to
+  echo [start_pipeline] find the PID, then check Task Manager for what it is before
+  echo [start_pipeline] assuming it is safe to close.
   exit /b 1
 )
 
-if "%PIPELINE_APP_LAUNCH_DRYRUN%"=="1" (
-  echo [start_pipeline] DRYRUN: preflight passed. OPENING BROWSER would follow.
+rem Preflight-only mode is an EXPLICIT CLI FLAG, never an ambient environment
+rem variable. An env var can leak: left set from a prior test run in the same
+rem shell, inherited from a parent process, or set globally. A leaked
+rem PIPELINE_APP_LAUNCH_DRYRUN would make a normal launch run the gates, print
+rem one line and exit 0 with nothing started -- and on a double-click launch
+rem (how an operator actually runs a .bat) the console closes before that line
+rem can be read, so there is no signal at all. That is F-78 exactly: a success
+rem exit code emitted without success, just relocated from a missing venv to a
+rem leaked variable. A flag is visible on the invocation and cannot leak.
+if /i "%~1"=="--check-only" (
+  echo [start_pipeline] --check-only: preflight passed. OPENING BROWSER would follow.
   exit /b 0
 )
 

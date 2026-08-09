@@ -374,10 +374,11 @@ _windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows batch file")
 
 def _run_bat(tmp_path: Path):
     (tmp_path / "start_pipeline.bat").write_text(BAT.read_text(encoding="utf-8"), encoding="utf-8")
+    # Preflight-only is requested by an explicit argv flag, not an env var --
+    # an env var can leak across shell sessions (see start_pipeline.bat).
     return subprocess.run(
-        ["cmd", "/c", str(tmp_path / "start_pipeline.bat")],
+        ["cmd", "/c", str(tmp_path / "start_pipeline.bat"), "--check-only"],
         capture_output=True, encoding="utf-8", errors="replace",
-        env={**os.environ, "PIPELINE_APP_LAUNCH_DRYRUN": "1"},
     )
 
 
