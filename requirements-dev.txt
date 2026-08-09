@@ -4,5 +4,5 @@
 # diagnostic only, never a gate (finding F-02).
 -r requirements.txt
 pytest==8.3.*
-pytest-cov==6.0.*
+pytest-cov==7.1.*
 hypothesis==6.*
