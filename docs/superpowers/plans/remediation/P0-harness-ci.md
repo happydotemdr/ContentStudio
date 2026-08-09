@@ -1163,12 +1163,26 @@ def test_setup_py_declares_install_requires_from_the_runtime_manifest():
     source = (APP_ROOT / "setup.py").read_text(encoding="utf-8")
     assert "install_requires" in source, "setup.py installs the package and none of its deps (F-75)"
 
-    namespace: dict = {}
     calls: list[dict] = []
+    # ONE namespace, used as both globals and locals. Passing separate dicts
+    # puts setup.py's module-level names (HERE) in locals while any function
+    # defined there resolves globals -- so _runtime_requirements() raises
+    # NameError on HERE. That is an artefact of this exec idiom, not a defect
+    # in setup.py, and it must not be "fixed" by contorting setup.py (e.g. a
+    # `here: Path = HERE` default parameter) to suit the test.
+    #
+    # The setuptools import is stubbed out entirely rather than partially:
+    # setuptools is not bundled with Python 3.12+, so importing it here makes
+    # the test depend on a package no manifest declares. A real `pip install`
+    # gets setuptools through PEP 517 build isolation, so it does NOT belong
+    # in a manifest either -- the right fix is for this test not to need it.
+    namespace: dict = {
+        "setup": lambda **kw: calls.append(kw),
+        "find_packages": lambda **kw: [],
+        "__file__": str(APP_ROOT / "setup.py"),
+    }
     exec(  # noqa: S102 -- executing our own setup.py with setup() stubbed
-        source.replace("from setuptools import find_packages, setup",
-                       "from setuptools import find_packages"),
-        {"setup": lambda **kw: calls.append(kw), "find_packages": lambda **kw: [], "__file__": str(APP_ROOT / "setup.py")},
+        source.replace("from setuptools import find_packages, setup", ""),
         namespace,
     )
     # the exec above records the setup() kwargs; assert the dependency list is real
