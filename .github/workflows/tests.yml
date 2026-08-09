@@ -23,11 +23,15 @@
 #
 # The actual F-76 signal -- "has yt-dlp / youtube-transcript-api shipped a
 # release we have not re-verified the mocked schema against" -- comes from
-# the pin-freshness step in root-suite below, gated to the scheduled run
-# only: it queries PyPI for each library's latest release and fails loudly
-# when the pin is behind, with an actionable message. That step, not the
-# suite rerun, is what closes F-76. It stays a step inside root-suite, not a
-# fourth job, and it never runs on the push/PR path.
+# scripts/check_pin_freshness.py, run below as a root-suite step gated to the
+# scheduled run only. It queries PyPI for each library's latest release and
+# fails when a pin is behind, and it fails closed (never a silent pass) when
+# a pin cannot be read at all -- see that module's docstring and
+# tests/test_check_pin_freshness.py for why it is a separate, unit-tested
+# file rather than a script embedded here: nothing inside this YAML can be
+# unit-tested. That step, not the suite rerun, is what closes F-76. It stays
+# a step inside root-suite, not a fourth job, and it never runs on the
+# push/PR path.
 name: tests
 
 on:
@@ -71,65 +75,7 @@ jobs:
         run: python -m pytest tests/ -q
       - name: Pin freshness vs PyPI (scheduled run only -- the real F-76 signal)
         if: github.event_name == 'schedule'
-        shell: bash
-        run: |
-          python - <<'PY'
-          import json
-          import re
-          import sys
-          import urllib.request
-
-          MANIFESTS = ["requirements.txt", "pipeline-app/requirements.txt"]
-          LIBRARIES = ("yt-dlp", "youtube-transcript-api")
-          VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
-
-          def pinned(text, name):
-              m = re.search(rf"^{re.escape(name)}==(\d[\d.]*)$", text, re.M)
-              return m.group(1) if m else None
-
-          def released_versions(name):
-              url = f"https://pypi.org/pypi/{name}/json"
-              with urllib.request.urlopen(url, timeout=30) as resp:
-                  data = json.load(resp)
-              versions = [v for v in data["releases"] if VERSION_RE.match(v)]
-              versions.sort(key=lambda v: tuple(int(p) for p in v.split(".")))
-              return versions
-
-          stale = []
-          checked = set()
-          for manifest in MANIFESTS:
-              text = open(manifest, encoding="utf-8").read()
-              for library in LIBRARIES:
-                  version = pinned(text, library)
-                  if version is None:
-                      continue
-                  checked.add(library)
-                  versions = released_versions(library)
-                  if version not in versions:
-                      stale.append(
-                          f"{manifest}: {library}=={version} is not a plain-numeric "
-                          f"release PyPI recognizes; re-verify the pin."
-                      )
-                      continue
-                  behind = len(versions) - 1 - versions.index(version)
-                  if behind > 0:
-                      stale.append(
-                          f"{manifest}: {library}=={version} is {behind} release"
-                          f"{'s' if behind != 1 else ''} behind PyPI latest "
-                          f"({versions[-1]}); re-verify the mocked schema before bumping."
-                      )
-
-          if not checked:
-              sys.exit("pin-freshness check found neither library pinned in any manifest")
-
-          if stale:
-              print("::error::Pin freshness check failed:")
-              for line in stale:
-                  print(f"::error::{line}")
-              sys.exit(1)
-
-          print("Pin freshness check passed: all pins match PyPI latest.")
-          PY
+        run: python -m scripts.check_pin_freshness
 
   app-suite:
     name: app-suite

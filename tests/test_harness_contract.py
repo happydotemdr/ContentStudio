@@ -415,35 +415,67 @@ def test_ci_weekly_comment_states_environment_drift_not_vendor_schema_detection(
     the suite structurally cannot back up (everything is mocked, and the
     autouse guard blocks any unstubbed network call). This locks in the
     correction: the comment must own what the weekly run actually catches
-    (environment drift) and must point at the pin-freshness step as the real
-    F-76 signal, not the rerun itself."""
+    (environment drift) and must point at the extracted pin-freshness script
+    as the real F-76 signal, not the rerun itself."""
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "environment drift" in text
     assert "structurally cannot" in text
-    assert "pin-freshness" in text.lower()
+    assert "check_pin_freshness" in text
 
 
-def test_ci_pin_freshness_step_checks_pypi_only_on_the_scheduled_run():
-    """Fix round 1, Important 1: the real F-76 signal. A step, not a fourth
-    job (the workflow stays at three), gated to `schedule` so it never runs
-    on the push/PR path, and it must check both pinned libraries against
-    PyPI."""
+def test_ci_pin_freshness_step_invokes_the_extracted_script_only_on_schedule():
+    """Fix round 2: the pin-freshness logic used to live inline in this YAML,
+    where nothing could unit-test it -- that is how the vacuous-pass bug (a
+    pin like `yt-dlp==2026.7.4rc1` was silently never checked) shipped in the
+    first place. It is now scripts/check_pin_freshness.py, covered by
+    tests/test_check_pin_freshness.py; this test only checks the thin
+    invocation left behind: exactly one step, in root-suite, gated to
+    `schedule`, running the extracted module and nothing else embedded."""
     workflow = _workflow()
     steps = workflow["jobs"]["root-suite"]["steps"]
     freshness = [s for s in steps if "pin freshness" in s.get("name", "").lower()]
     assert len(freshness) == 1, "expected exactly one pin-freshness step in root-suite"
     step = freshness[0]
     assert step.get("if") == "github.event_name == 'schedule'"
-    run_text = step["run"]
-    assert "pypi.org" in run_text
-    for library in ("yt-dlp", "youtube-transcript-api"):
-        assert library in run_text
+    assert step["run"].strip() == "python -m scripts.check_pin_freshness"
     for job_name, job in workflow["jobs"].items():
         if job_name == "root-suite":
             continue
         assert not any(
             "pin freshness" in s.get("name", "").lower() for s in job.get("steps", [])
         ), f"{job_name} must not also run the pin-freshness check"
+
+
+def test_check_pin_freshness_script_exists_checks_pypi_and_is_stdlib_only():
+    """The workflow step above only names a module by import path; this
+    confirms the module actually exists, references PyPI and both tracked
+    libraries, and -- per CONSTRAINTS.md's rule for repo-root scripts/**,
+    which are loaded by file path/`python -m` and must stay free of
+    third-party or app imports -- imports nothing beyond the standard
+    library. CI installs only requirements-dev.txt for the scheduled job;
+    a third-party import here would ImportError at runtime, not just violate
+    a convention."""
+    script = REPO_ROOT / "scripts" / "check_pin_freshness.py"
+    assert script.exists()
+    text = script.read_text(encoding="utf-8")
+    assert "pypi.org" in text
+    for library in ("yt-dlp", "youtube-transcript-api"):
+        assert library in text
+
+    import ast
+
+    stdlib_top_level = {
+        "json", "re", "sys", "urllib", "dataclasses", "pathlib", "typing", "__future__",
+    }
+    tree = ast.parse(text, filename=str(script))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                assert top in stdlib_top_level, f"non-stdlib import: {alias.name}"
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            top = node.module.split(".")[0]
+            assert top in stdlib_top_level, f"non-stdlib import: {node.module}"
 
 
 def test_no_live_credentials_selects_by_node_id_not_a_fragile_dash_k():
