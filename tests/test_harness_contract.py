@@ -209,6 +209,17 @@ def test_yt_dlp_and_transcript_api_are_pinned_exactly_in_both_manifests():
     tests stay green."""
     for path in (ROOT_REQ, APP_REQ):
         text = path.read_text(encoding="utf-8")
-        assert re.search(r"^yt-dlp==\d", text, re.M), f"{path.name}: yt-dlp is not pinned"
-        assert re.search(r"^youtube-transcript-api==\d", text, re.M)
-        assert ">=" not in re.search(r"^yt-dlp.*$", text, re.M).group(0)
+        for library in ("yt-dlp", "youtube-transcript-api"):
+            # Fully-anchored and digits/dots only, applied to BOTH libraries.
+            # `^<name>==\d` alone was not enough: it matches `yt-dlp==2026.*`,
+            # and yt-dlp versions calendar-style, so that wildcard floats
+            # across a whole year -- exactly what F-76 forbids. Every sibling
+            # in these manifests already uses that wildcard style
+            # (`pyyaml==6.0.*`, `fastapi==0.115.*`), so "regularizing" these
+            # two to match is a plausible way the pin silently dies. The `$`
+            # anchor also rejects a compound spec (`==1.2.4,>=1.0.0`), which
+            # the old one-sided `">=" not in ...` check only caught for yt-dlp.
+            assert re.search(rf"^{re.escape(library)}==\d[\d.]*$", text, re.M), (
+                f"{path.name}: {library} is not pinned to an exact version "
+                f"(no wildcard, no range, no compound spec)"
+            )
