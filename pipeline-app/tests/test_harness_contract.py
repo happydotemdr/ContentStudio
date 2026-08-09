@@ -301,3 +301,30 @@ def test_pytest_asyncio_supports_the_running_interpreter():
         f"pytest-asyncio {installed} predates Python 3.13; this interpreter is "
         f"{sys.version_info.major}.{sys.version_info.minor} (finding F-71)"
     )
+
+
+def test_setup_py_declares_install_requires_from_the_runtime_manifest():
+    import ast
+
+    source = (APP_ROOT / "setup.py").read_text(encoding="utf-8")
+    assert "install_requires" in source, "setup.py installs the package and none of its deps (F-75)"
+
+    namespace: dict = {}
+    calls: list[dict] = []
+    exec(  # noqa: S102 -- executing our own setup.py with setup() stubbed
+        source.replace("from setuptools import find_packages, setup",
+                       "from setuptools import find_packages"),
+        {"setup": lambda **kw: calls.append(kw), "find_packages": lambda **kw: [], "__file__": str(APP_ROOT / "setup.py")},
+        namespace,
+    )
+    # the exec above records the setup() kwargs; assert the dependency list is real
+    requires = calls[0]["install_requires"]
+    assert "fastapi==0.115.*" in requires
+    assert not any(r.startswith("pytest") for r in requires), "test deps must not be install_requires"
+
+
+def test_setup_py_records_the_unfinished_scripts_rename():
+    """F-64 residual: pipeline-app/scripts/ and run_discovery_cron.py are still
+    outside the distribution because their modules are owned by P8 and P10."""
+    source = (APP_ROOT / "setup.py").read_text(encoding="utf-8")
+    assert "F-64" in source
