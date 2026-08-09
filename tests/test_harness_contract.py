@@ -497,3 +497,20 @@ def test_no_live_credentials_selects_by_node_id_not_a_fragile_dash_k():
 def test_ci_configures_no_coverage_gate():
     """F-02: 95% coverage coexisted with 328 defects."""
     assert "--cov-fail-under" not in WORKFLOW.read_text(encoding="utf-8")
+
+
+TEMPLATE = REPO_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
+
+
+def test_pr_template_names_the_three_ci_jobs_as_checkboxes():
+    text = TEMPLATE.read_text(encoding="utf-8")
+    for job in ("root-suite", "app-suite", "no-live-credentials"):
+        assert f"- [ ] `{job}`" in text
+
+
+def test_pr_template_job_names_match_the_workflow_exactly():
+    """A checkbox naming a job that does not exist is worse than no checkbox."""
+    jobs = set(_workflow()["jobs"])
+    text = TEMPLATE.read_text(encoding="utf-8")
+    named = set(re.findall(r"- \[ \] `([a-z-]+)`", text))
+    assert named == jobs
