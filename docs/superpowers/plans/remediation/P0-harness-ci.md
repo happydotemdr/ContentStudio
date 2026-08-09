@@ -177,7 +177,7 @@ markers =
     allow_subprocess: this test may spawn a real child process. Justify in the docstring.
 ```
 
-- [ ] **Run it.** All 3 pass. Then run the whole root suite: `python -m pytest tests/ -q` — `--strict-markers` may reject an unregistered marker; if it does, register it here rather than dropping the flag.
+- [ ] **Run it.** 2 of 3 pass; `test_both_inis_register_both_opt_in_markers` stays red until Task 2 lands `pipeline-app/pytest.ini` — that is the deliberate T1↔T2 tripwire described in the RED step above, not a regression. Do **not** edit `pipeline-app/pytest.ini` here to make it green; that file is Task 2's. Then run the whole root suite: `python -m pytest tests/ -q` — `--strict-markers` may reject an unregistered marker; if it does, register it here rather than dropping the flag.
 - [ ] **Commit.** `test: pin the root pytest.ini contract (F-61, F-02)`
 
 ---
