@@ -366,3 +366,44 @@ def test_the_f64_scripts_rename_has_not_silently_landed():
         "scheduled-task registration path (setup_discovery_task.py), and the "
         "doc updates are one atomic change, not a follow-up."
     )
+
+
+BAT = APP_ROOT / "start_pipeline.bat"
+_windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows batch file")
+
+
+def _run_bat(tmp_path: Path):
+    (tmp_path / "start_pipeline.bat").write_text(BAT.read_text(encoding="utf-8"), encoding="utf-8")
+    return subprocess.run(
+        ["cmd", "/c", str(tmp_path / "start_pipeline.bat")],
+        capture_output=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "PIPELINE_APP_LAUNCH_DRYRUN": "1"},
+    )
+
+
+@_windows_only
+@pytest.mark.allow_subprocess
+def test_missing_venv_exits_nonzero_and_does_not_open_a_browser(tmp_path):
+    """Fault: on a missing venv the operator's only signal today is a browser
+    connection error while the real message sits in a background window."""
+    result = _run_bat(tmp_path)
+    assert result.returncode != 0
+    assert "venv" in result.stdout.lower()
+    assert "OPENING BROWSER" not in result.stdout
+
+
+@_windows_only
+@pytest.mark.allow_subprocess
+def test_a_healthy_launch_is_distinguishable_from_a_failed_one(tmp_path):
+    """Distinguishability: the two states must not both end in 'browser opens'."""
+    scripts = tmp_path / ".venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "activate.bat").write_text("@echo off\r\n", encoding="utf-8")
+    ok = _run_bat(tmp_path)
+
+    (tmp_path / "no-venv").mkdir()
+    broken = _run_bat(tmp_path / "no-venv")
+    assert ok.returncode == 0
+    assert "OPENING BROWSER" in ok.stdout
+    assert ok.returncode != broken.returncode
+    assert ok.stdout != broken.stdout
