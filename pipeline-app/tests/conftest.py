@@ -155,16 +155,19 @@ def _block_live_calls(request, monkeypatch):
 # whose dict is empty deletes the dict. Nothing may be ADDED to this list: a
 # new leak is a new defect and fails the test that produced it.
 _CONNECTION_LEAKS_BY_PACKAGE: dict[str, list[str]] = {
-    "P1": ["tests/test_main.py", "tests/test_routes_doctor.py"],
+    "P0": ["tests/test_routes_doctor.py"],
+    "P1": ["tests/test_main.py"],
     "P3": ["tests/test_routes_approve_edit.py", "tests/test_routes_stages.py"],
     "P4": ["tests/test_routes_chat_sse.py"],
-    "P5": ["tests/test_routes_skills.py"],
-    "P10": ["tests/test_routes_discovery.py"],
+    "P5": [
+        "tests/test_routes_inspector.py",
+        "tests/test_routes_projects.py",
+        "tests/test_routes_skills.py",
+    ],
+    "P8": ["tests/test_routes_discovery.py"],
     "P15": [
         "tests/test_header.py",
         "tests/test_routes_browse.py",
-        "tests/test_routes_inspector.py",
-        "tests/test_routes_projects.py",
     ],
 }
 
