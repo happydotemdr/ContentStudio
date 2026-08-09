@@ -1,0 +1,3 @@
+# Dev-only pins. This file does not exist yet as of P0/T11 (F-71) -- T12 owns
+# building it out and should keep this line when it does.
+pytest-asyncio==1.2.*

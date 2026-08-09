@@ -284,3 +284,20 @@ def test_a_repo_warning_fails_the_run_while_an_ignored_module_one_does_not(tmp_p
     assert "UserWarning" in repo_result.stdout
     assert ignorable_result.returncode == 0
     assert repo_result.returncode != ignorable_result.returncode
+
+
+def test_asyncio_mode_and_loop_scope_are_pinned_explicitly():
+    section = _ini(APP_INI)["pytest"]
+    assert section["asyncio_mode"] == "strict"
+    assert section["asyncio_default_fixture_loop_scope"] == "function"
+
+
+def test_pytest_asyncio_supports_the_running_interpreter():
+    import importlib.metadata
+
+    installed = importlib.metadata.version("pytest-asyncio")
+    major = int(installed.split(".")[0])
+    assert major >= 1, (
+        f"pytest-asyncio {installed} predates Python 3.13; this interpreter is "
+        f"{sys.version_info.major}.{sys.version_info.minor} (finding F-71)"
+    )
