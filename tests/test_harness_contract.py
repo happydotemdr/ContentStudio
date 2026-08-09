@@ -389,12 +389,77 @@ def test_ci_asserts_pipeline_app_is_never_installed():
     assert "pip install -e" not in text
 
 
-def test_ci_runs_weekly_so_floating_upstream_changes_surface():
-    """F-76: yt-dlp ships frequently; a weekly run turns an ambient break into
-    a dated, reviewable one."""
-    on = _workflow()[True] if True in _workflow() else _workflow()["on"]
+def test_ci_runs_weekly_and_covers_both_suites():
+    """Renamed from a claim CI cannot back up (fix round 1, Important 1): a
+    mocked weekly rerun cannot detect yt-dlp / youtube-transcript-api schema
+    drift -- both libraries are pinned exactly, every consuming test is
+    mocked, and the autouse guard blocks any unstubbed network call (no test
+    anywhere carries allow_network). This asserts only what the schedule
+    trigger and workflow structure actually guarantee: a weekly run exists,
+    and it still exercises both suites -- neither job opts itself out of the
+    schedule event. The real F-76 signal is the pin-freshness step, covered
+    by test_ci_pin_freshness_step_checks_pypi_only_on_the_scheduled_run."""
+    workflow = _workflow()
+    on = workflow[True] if True in workflow else workflow["on"]
     assert "schedule" in on
     assert on["schedule"][0]["cron"]
+    for job_name in ("root-suite", "app-suite"):
+        assert "if" not in workflow["jobs"][job_name], (
+            f"{job_name} must still run on the weekly schedule, not opt out of it"
+        )
+
+
+def test_ci_weekly_comment_states_environment_drift_not_vendor_schema_detection():
+    """Fix round 1, Important 1: the old comment claimed the weekly rerun
+    itself surfaces yt-dlp / youtube-transcript-api schema drift -- a claim
+    the suite structurally cannot back up (everything is mocked, and the
+    autouse guard blocks any unstubbed network call). This locks in the
+    correction: the comment must own what the weekly run actually catches
+    (environment drift) and must point at the pin-freshness step as the real
+    F-76 signal, not the rerun itself."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "environment drift" in text
+    assert "structurally cannot" in text
+    assert "pin-freshness" in text.lower()
+
+
+def test_ci_pin_freshness_step_checks_pypi_only_on_the_scheduled_run():
+    """Fix round 1, Important 1: the real F-76 signal. A step, not a fourth
+    job (the workflow stays at three), gated to `schedule` so it never runs
+    on the push/PR path, and it must check both pinned libraries against
+    PyPI."""
+    workflow = _workflow()
+    steps = workflow["jobs"]["root-suite"]["steps"]
+    freshness = [s for s in steps if "pin freshness" in s.get("name", "").lower()]
+    assert len(freshness) == 1, "expected exactly one pin-freshness step in root-suite"
+    step = freshness[0]
+    assert step.get("if") == "github.event_name == 'schedule'"
+    run_text = step["run"]
+    assert "pypi.org" in run_text
+    for library in ("yt-dlp", "youtube-transcript-api"):
+        assert library in run_text
+    for job_name, job in workflow["jobs"].items():
+        if job_name == "root-suite":
+            continue
+        assert not any(
+            "pin freshness" in s.get("name", "").lower() for s in job.get("steps", [])
+        ), f"{job_name} must not also run the pin-freshness check"
+
+
+def test_no_live_credentials_selects_by_node_id_not_a_fragile_dash_k():
+    """Fix round 1, Important 2: `-k "guard or blocked or vendor"` selects the
+    right tests today, but a rename that drops those substrings would just
+    silently narrow the match while the job still exits 0 -- pytest's
+    exit-5-on-zero-match only catches losing every match, never a partial
+    one. Explicit node IDs turn a rename into a collection error instead:
+    handed a node ID that no longer exists, pytest exits 4 with "ERROR: not
+    found", not 0 (verified by hand against both live suites)."""
+    workflow = _workflow()
+    job = workflow["jobs"]["no-live-credentials"]
+    run_steps = [s["run"] for s in job["steps"] if "run" in s]
+    combined = "\n".join(run_steps)
+    assert "-k" not in combined, "a `-k` substring filter can silently narrow on an unrelated rename"
+    assert "::test_guard_fires_even_when_every_vendor_key_is_present" in combined
 
 
 def test_ci_configures_no_coverage_gate():

@@ -6,9 +6,28 @@
 #   app-suite           -- pipeline-app/tests/ : the control app
 #   no-live-credentials -- proves the conftest guard fires with vendor keys set
 #
-# The weekly schedule exists for finding F-76: yt-dlp and youtube-transcript-api
-# change their JSON schema, and every test that consumes them is mocked against a
-# frozen copy, so the suite stays green while production breaks.
+# The weekly schedule exists for finding F-76, but NOT because re-running this
+# suite can detect yt-dlp / youtube-transcript-api's JSON-schema drift -- it
+# structurally cannot. Both libraries are pinned exactly, every test that
+# consumes them is mocked against a frozen copy, and the autouse live-call
+# guard raises on any unstubbed network call (no test anywhere carries
+# `allow_network`). A weekly rerun of a fully-mocked suite is deterministic:
+# it passes or fails identically forever, regardless of what the vendors
+# change. A schedule that claims to surface drift but structurally cannot is
+# a success signal emitted without checking success -- this programme's own
+# recurring defect, reproduced in its own CI.
+#
+# What the weekly run DOES catch is environment drift: an unpinned transitive
+# dependency resolving differently, a `windows-latest` runner-image change, a
+# deprecated Actions version. That is real and worth having on its own merits.
+#
+# The actual F-76 signal -- "has yt-dlp / youtube-transcript-api shipped a
+# release we have not re-verified the mocked schema against" -- comes from
+# the pin-freshness step in root-suite below, gated to the scheduled run
+# only: it queries PyPI for each library's latest release and fails loudly
+# when the pin is behind, with an actionable message. That step, not the
+# suite rerun, is what closes F-76. It stays a step inside root-suite, not a
+# fourth job, and it never runs on the push/PR path.
 name: tests
 
 on:
@@ -50,6 +69,67 @@ jobs:
           PY
       - name: Root suite
         run: python -m pytest tests/ -q
+      - name: Pin freshness vs PyPI (scheduled run only -- the real F-76 signal)
+        if: github.event_name == 'schedule'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          import sys
+          import urllib.request
+
+          MANIFESTS = ["requirements.txt", "pipeline-app/requirements.txt"]
+          LIBRARIES = ("yt-dlp", "youtube-transcript-api")
+          VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
+
+          def pinned(text, name):
+              m = re.search(rf"^{re.escape(name)}==(\d[\d.]*)$", text, re.M)
+              return m.group(1) if m else None
+
+          def released_versions(name):
+              url = f"https://pypi.org/pypi/{name}/json"
+              with urllib.request.urlopen(url, timeout=30) as resp:
+                  data = json.load(resp)
+              versions = [v for v in data["releases"] if VERSION_RE.match(v)]
+              versions.sort(key=lambda v: tuple(int(p) for p in v.split(".")))
+              return versions
+
+          stale = []
+          checked = set()
+          for manifest in MANIFESTS:
+              text = open(manifest, encoding="utf-8").read()
+              for library in LIBRARIES:
+                  version = pinned(text, library)
+                  if version is None:
+                      continue
+                  checked.add(library)
+                  versions = released_versions(library)
+                  if version not in versions:
+                      stale.append(
+                          f"{manifest}: {library}=={version} is not a plain-numeric "
+                          f"release PyPI recognizes; re-verify the pin."
+                      )
+                      continue
+                  behind = len(versions) - 1 - versions.index(version)
+                  if behind > 0:
+                      stale.append(
+                          f"{manifest}: {library}=={version} is {behind} release"
+                          f"{'s' if behind != 1 else ''} behind PyPI latest "
+                          f"({versions[-1]}); re-verify the mocked schema before bumping."
+                      )
+
+          if not checked:
+              sys.exit("pin-freshness check found neither library pinned in any manifest")
+
+          if stale:
+              print("::error::Pin freshness check failed:")
+              for line in stale:
+                  print(f"::error::{line}")
+              sys.exit(1)
+
+          print("Pin freshness check passed: all pins match PyPI latest.")
+          PY
 
   app-suite:
     name: app-suite
@@ -96,8 +176,24 @@ jobs:
         run: |
           python -m pip install -r requirements-dev.txt
           python -m pip install -r pipeline-app/requirements-dev.txt
+      # Explicit node IDs, not a `-k` substring filter: a `-k` expression that
+      # loses its match (e.g. this test gets renamed) just silently selects
+      # fewer tests and the job still exits 0 -- pytest's exit-5-on-zero-match
+      # only catches losing ALL matches, never a partial, silent narrowing. A
+      # node ID that no longer exists is a collection error instead: this job
+      # goes red the moment the guard test it depends on is renamed or
+      # removed, rather than quietly certifying nothing.
       - name: Root guard
-        run: python -m pytest tests/test_harness_contract.py -q -k "guard or blocked or vendor"
+        run: >
+          python -m pytest -q
+          tests/test_harness_contract.py::test_guard_blocks_are_identical_in_both_conftests
+          tests/test_harness_contract.py::test_guard_fires_even_when_every_vendor_key_is_present
       - name: App guard
         working-directory: pipeline-app
-        run: python -m pytest tests/test_harness_contract.py -q -k "guard or blocked or vendor"
+        run: >
+          python -m pytest -q
+          tests/test_harness_contract.py::test_unstubbed_requests_post_is_blocked
+          tests/test_harness_contract.py::test_unstubbed_urlopen_is_blocked
+          tests/test_harness_contract.py::test_unstubbed_subprocess_run_is_blocked
+          tests/test_harness_contract.py::test_a_stubbed_call_still_wins_over_the_guard
+          tests/test_harness_contract.py::test_guard_fires_even_when_every_vendor_key_is_present
