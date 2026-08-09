@@ -158,3 +158,45 @@ def test_a_repo_warning_fails_the_run_while_an_ignored_module_one_does_not(tmp_p
     assert "UserWarning" in repo_result.stdout
     assert ignorable_result.returncode == 0
     assert repo_result.returncode != ignorable_result.returncode
+
+
+ROOT_REQ = REPO_ROOT / "requirements.txt"
+ROOT_DEV = REPO_ROOT / "requirements-dev.txt"
+APP_REQ = REPO_ROOT / "pipeline-app" / "requirements.txt"
+APP_DEV = REPO_ROOT / "pipeline-app" / "requirements-dev.txt"
+
+
+def _names(path: Path) -> set[str]:
+    out = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line and not line.startswith("-"):
+            out.add(re.split(r"[<>=!\[]", line, maxsplit=1)[0].strip().lower())
+    return out
+
+
+def test_both_dev_manifests_carry_the_test_toolchain():
+    for path in (ROOT_DEV, APP_DEV):
+        names = _names(path)
+        assert {"pytest", "pytest-cov", "hypothesis"} <= names, f"{path.name} is missing tooling"
+
+
+def test_runtime_manifests_carry_no_test_only_dependencies():
+    for path in (ROOT_REQ, APP_REQ):
+        names = _names(path)
+        assert not ({"pytest", "pytest-asyncio", "pytest-cov", "httpx", "hypothesis"} & names), (
+            f"{path.name} mixes test-only deps into the runtime manifest (F-74)"
+        )
+
+
+def test_shared_libraries_use_one_constraint_style_across_the_two_manifests():
+    """F-75: pyyaml>=6.0 vs pyyaml==6.0.*, requests>=2.31 vs requests==2.31.*."""
+    def _spec(path: Path, name: str) -> str | None:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line.lower().startswith(name):
+                return line
+        return None
+
+    for lib in ("pyyaml", "requests", "yt-dlp", "youtube-transcript-api"):
+        assert _spec(ROOT_REQ, lib) == _spec(APP_REQ, lib), f"{lib} constraint styles disagree"
