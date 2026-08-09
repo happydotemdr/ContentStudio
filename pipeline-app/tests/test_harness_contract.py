@@ -405,6 +405,14 @@ def test_a_healthy_launch_is_distinguishable_from_a_failed_one(tmp_path):
     (tmp_path / "no-venv").mkdir()
     broken = _run_bat(tmp_path / "no-venv")
     assert ok.returncode == 0
-    assert "OPENING BROWSER" in ok.stdout
+    # "OPENING BROWSER" alone is NOT a distinguishing assertion: the substring
+    # appears in BOTH the --check-only message ("...OPENING BROWSER would
+    # follow.") and the genuine post-launch line ("OPENING BROWSER
+    # http://127.0.0.1:8420"). A test named for distinguishability has to pin
+    # which of the two it got, or it is asserting the shared representation
+    # this task exists to remove.
+    assert "--check-only" in ok.stdout            # the preflight exit, specifically
+    assert "OPENING BROWSER would follow" in ok.stdout
+    assert "OPENING BROWSER http://" not in ok.stdout  # the real launch did NOT happen
     assert ok.returncode != broken.returncode
     assert ok.stdout != broken.stdout
