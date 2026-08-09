@@ -416,3 +416,21 @@ def test_a_healthy_launch_is_distinguishable_from_a_failed_one(tmp_path):
     assert "OPENING BROWSER http://" not in ok.stdout  # the real launch did NOT happen
     assert ok.returncode != broken.returncode
     assert ok.stdout != broken.stdout
+
+
+def test_no_test_file_claims_e2e_coverage_it_does_not_have():
+    """F-72: test_real_cli_e2e.py covered 1 of 9 stages and asserted only that
+    a file existed."""
+    integration = APP_ROOT / "tests" / "integration"
+    assert not (integration / "test_real_cli_e2e.py").exists()
+    assert (integration / "test_real_cli_ideation_only.py").exists()
+
+
+def test_the_real_cli_test_never_writes_into_the_repo():
+    source = (APP_ROOT / "tests" / "integration" / "test_real_cli_ideation_only.py").read_text(
+        encoding="utf-8"
+    )
+    assert "create_project(conn, REPO_ROOT" not in source, (
+        "the opt-in test creates <repo>/runs/integration-test-topic-* in the working tree (F-72)"
+    )
+    assert "create_project(conn, tmp_path" in source
