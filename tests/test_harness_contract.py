@@ -31,8 +31,9 @@ def test_both_inis_register_both_opt_in_markers():
     test_git_helper.py and P6's byte-identity round-trip."""
     for path in (ROOT_INI, APP_INI):
         markers = _ini(path)["pytest"]["markers"]
-        assert "allow_network" in markers, f"{path.name} does not register allow_network"
-        assert "allow_subprocess" in markers, f"{path.name} does not register allow_subprocess"
+        rel = path.relative_to(REPO_ROOT)
+        assert "allow_network" in markers, f"{rel} does not register allow_network"
+        assert "allow_subprocess" in markers, f"{rel} does not register allow_subprocess"
 
 
 def test_root_ini_declares_coverage_diagnostic_and_configures_no_gate():
@@ -127,16 +128,23 @@ def test_filterwarnings_no_longer_carries_the_dead_pytest_asyncio_ignores():
             for line in _ini(path)["pytest"]["filterwarnings"].splitlines()
             if line.strip()
         ]
+        # ROOT_INI and APP_INI are both literally named "pytest.ini" --
+        # path.name alone would make a root-ini failure and an app-ini
+        # failure produce byte-identical messages, which is exactly the
+        # indistinguishable-representations defect this test exists to
+        # catch. relative_to(REPO_ROOT) renders "pytest.ini" vs
+        # "pipeline-app/pytest.ini", so the two are never confusable.
+        rel = path.relative_to(REPO_ROOT)
         assert filters == [
             "error",
             "ignore::DeprecationWarning:fastapi.routing",
             "ignore::ResourceWarning",
-        ], f"{path.name}: filterwarnings no longer matches the expected post-removal ignore list"
+        ], f"{rel}: filterwarnings no longer matches the expected post-removal ignore list"
         assert "ignore::DeprecationWarning:pytest_asyncio" not in filters, (
-            f"{path.name}: the dead ignore::DeprecationWarning:pytest_asyncio line has crept back in"
+            f"{rel}: the dead ignore::DeprecationWarning:pytest_asyncio line has crept back in"
         )
         assert "ignore::DeprecationWarning:pytest_asyncio.plugin" not in filters, (
-            f"{path.name}: the dead ignore::DeprecationWarning:pytest_asyncio.plugin line has crept back in"
+            f"{rel}: the dead ignore::DeprecationWarning:pytest_asyncio.plugin line has crept back in"
         )
 
 
