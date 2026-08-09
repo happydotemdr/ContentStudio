@@ -889,7 +889,7 @@ def test_both_inis_turn_unexpected_warnings_into_errors():
         assert filters.strip().splitlines()[0].strip() == "error"
 
 
-def test_third_party_asyncio_deprecations_are_ignored_by_name():
+def test_filterwarnings_no_longer_carries_the_dead_pytest_asyncio_ignores():
     filters = _ini(APP_INI)["pytest"]["filterwarnings"]
     assert "ignore::DeprecationWarning:pytest_asyncio" in filters
     assert "ignore::DeprecationWarning:fastapi.routing" in filters
@@ -916,7 +916,7 @@ def test_a_repo_warning_fails_the_run_while_an_ignored_module_one_does_not(tmp_p
 - Run pytest again with only the ignorable case collected and assert it **exits 0** — the warning was raised, and the module-scoped ignore is what let it through.
 - Assert the two return codes differ. That difference is the whole point: it is what proves a module-scoped ignore distinguishes its own module from every other, rather than the gate being globally on or globally off.
 
-Do **not** try to emit a warning attributable to the real `pytest_asyncio` or `fastapi.routing` modules by shadowing them in `tmp_path`; that fights the plugin loader and is flaky. The three real ignore strings are pinned by `test_third_party_asyncio_deprecations_are_ignored_by_name`, and the zero-warning full-suite run is the empirical evidence they match. This test pins the *mechanism*.
+Do **not** try to emit a warning attributable to the real `pytest_asyncio` or `fastapi.routing` modules by shadowing them in `tmp_path`; that fights the plugin loader and is flaky. The three real ignore strings are pinned by `test_filterwarnings_no_longer_carries_the_dead_pytest_asyncio_ignores`, and the zero-warning full-suite run is the empirical evidence they match. This test pins the *mechanism*.
 
 - [ ] **Run it.** All fail — no `filterwarnings` key in either ini.
 - [ ] **Implement.** Add to **both** ini files:
@@ -2176,7 +2176,7 @@ Every owned finding, the named test that proves it closed, and — for the seven
 | | | `::test_unclosed_does_not_flag_a_closed_connection` | **distinguishability** — leaked ≠ correctly-closed; no false positive |
 | | | `::test_a_leaking_test_fails_with_a_nonzero_exit` | **surfacing** — a failed test and non-zero exit, not a GC-time warning |
 | **F-70** | **silent** | `::test_a_repo_warning_fails_the_run_while_a_pytest_asyncio_one_does_not` | **fault** + **distinguishability** — a repo warning errors; the 58,169 third-party lines do not |
-| | | `tests/test_harness_contract.py::test_both_inis_turn_unexpected_warnings_into_errors` · `::test_third_party_asyncio_deprecations_are_ignored_by_name` | **surfacing** — non-zero exit is configured in both suites |
+| | | `tests/test_harness_contract.py::test_both_inis_turn_unexpected_warnings_into_errors` · `::test_filterwarnings_no_longer_carries_the_dead_pytest_asyncio_ignores` | **surfacing** — non-zero exit is configured in both suites |
 | **F-71** | latent | `pipeline-app/tests/test_harness_contract.py::test_asyncio_mode_and_loop_scope_are_pinned_explicitly` · `::test_pytest_asyncio_supports_the_running_interpreter` | — |
 | **F-72** | coverage-gap | `::test_no_test_file_claims_e2e_coverage_it_does_not_have` · `::test_the_real_cli_test_never_writes_into_the_repo` · `pipeline-app/tests/integration/test_stubbed_cli_e2e.py::test_the_walk_writes_nothing_outside_tmp_path` | — |
 | **F-74** | coverage-gap | `tests/test_harness_contract.py::test_both_dev_manifests_carry_the_test_toolchain` · `::test_runtime_manifests_carry_no_test_only_dependencies` | — |
