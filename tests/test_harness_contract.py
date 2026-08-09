@@ -75,3 +75,23 @@ def test_root_suite_blocks_an_unstubbed_subprocess():
 
     with pytest.raises(LiveCallBlocked):
         subprocess.run([sys.executable, "-c", "pass"])
+
+
+VENDOR_KEYS = ("BRIGHTDATA_API_KEY", "RESEND_API_KEY", "YOUTUBE_API_KEY")
+
+
+def test_guard_fires_even_when_every_vendor_key_is_present(monkeypatch):
+    """The `no-live-credentials` CI job runs exactly this with canary values in
+    the environment. A guard that only works when keys are absent is worthless:
+    keys are always present on the operator's machine."""
+    import requests
+
+    from tests.conftest import LiveCallBlocked
+
+    for key in VENDOR_KEYS:
+        monkeypatch.setenv(key, "ci-canary-must-never-be-used")
+
+    with pytest.raises(LiveCallBlocked):
+        requests.post("https://api.brightdata.com/datasets/v3/trigger", json={})
+    with pytest.raises(LiveCallBlocked):
+        subprocess.run(["curl", "https://api.resend.com/emails"])
