@@ -110,24 +110,51 @@ def test_third_party_asyncio_deprecations_are_ignored_by_name():
 
 
 @pytest.mark.allow_subprocess
-def test_a_repo_warning_fails_the_run_while_a_pytest_asyncio_one_does_not(tmp_path):
-    """Distinguishability: the 58,169 third-party lines are silenced, but the
-    repo's own warnings are not -- that was the whole defect (F-70)."""
-    (tmp_path / "pytest.ini").write_text(
-        (REPO_ROOT / "pipeline-app" / "pytest.ini").read_text(encoding="utf-8").replace(
-            "testpaths = tests", "testpaths = ."
-        ),
+def test_a_repo_warning_fails_the_run_while_an_ignored_module_one_does_not(tmp_path):
+    """Distinguishability: third-party lines are silenced, but the repo's own
+    warnings are not -- that was the whole defect (F-70).
+
+    Both halves are required. The single-half form of this test (emit a
+    UserWarning, assert the run fails) asserted only that `error` works: it
+    passed unchanged with every `ignore::` line deleted from the ini, so it
+    proved nothing about whether the ignore list is correctly scoped -- a test
+    whose name claims a comparison it never performs.
+    """
+    ini_text = ROOT_INI.read_text(encoding="utf-8").replace(
+        "testpaths = tests", "testpaths = ."
+    )
+    ini_text += "    ignore::UserWarning:ignorable_mod\n"
+    (tmp_path / "pytest.ini").write_text(ini_text, encoding="utf-8")
+
+    (tmp_path / "ignorable_mod.py").write_text(
+        "import warnings\n"
+        "def warn_here():\n"
+        "    warnings.warn('from a module the ignore list names', UserWarning)\n",
         encoding="utf-8",
     )
-    (tmp_path / "test_warn.py").write_text(
+    (tmp_path / "test_repo_warning.py").write_text(
         "import warnings\n"
         "def test_repo_warning():\n"
         "    warnings.warn('the app started emitting this', UserWarning)\n",
         encoding="utf-8",
     )
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
-        capture_output=True, encoding="utf-8", errors="replace", cwd=str(tmp_path),
+    (tmp_path / "test_ignorable_warning.py").write_text(
+        "import ignorable_mod\n"
+        "def test_ignorable_warning():\n"
+        "    ignorable_mod.warn_here()\n",
+        encoding="utf-8",
     )
-    assert result.returncode != 0
-    assert "UserWarning" in result.stdout
+
+    def _run(test_file):
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", test_file, "-q", "-p", "no:cacheprovider"],
+            capture_output=True, encoding="utf-8", errors="replace", cwd=str(tmp_path),
+        )
+
+    repo_result = _run("test_repo_warning.py")
+    ignorable_result = _run("test_ignorable_warning.py")
+
+    assert repo_result.returncode != 0
+    assert "UserWarning" in repo_result.stdout
+    assert ignorable_result.returncode == 0
+    assert repo_result.returncode != ignorable_result.returncode
