@@ -1016,7 +1016,10 @@ def _names(path: Path) -> set[str]:
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.split("#", 1)[0].strip()
         if line and not line.startswith("-"):
-            out.add(re.split(r"[<>=!\[]", line, 1)[0].strip().lower())
+            # maxsplit must be passed by keyword: positional maxsplit is
+            # deprecated in Python 3.14, and T10's `filterwarnings = error`
+            # turns that DeprecationWarning into a test failure.
+            out.add(re.split(r"[<>=!\[]", line, maxsplit=1)[0].strip().lower())
     return out
 
 
@@ -1071,7 +1074,7 @@ pyyaml==6.0.*
 # diagnostic only, never a gate (finding F-02).
 -r requirements.txt
 pytest==8.3.*
-pytest-cov==6.0.*
+pytest-cov==7.1.*
 hypothesis==6.*
 ```
 
@@ -1098,7 +1101,7 @@ tzdata>=2024.1
 -r requirements.txt
 pytest==8.3.*
 pytest-asyncio==1.2.*
-pytest-cov==6.0.*
+pytest-cov==7.1.*
 httpx==0.27.*
 # F-25: no property-based or mutation testing exists anywhere in either suite.
 # Provisioned here; the property tests for the two linters belong to P11
