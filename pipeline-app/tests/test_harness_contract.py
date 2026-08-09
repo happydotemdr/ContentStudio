@@ -116,3 +116,12 @@ def test_guard_fires_even_when_every_vendor_key_is_present(monkeypatch):
         requests.post("https://api.brightdata.com/datasets/v3/trigger", json={})
     with pytest.raises(conftest.LiveCallBlocked):
         subprocess.run(["curl", "https://api.resend.com/emails"])
+
+
+def test_shared_conn_fixture_is_initialised_and_closes(conn):
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='stages'").fetchone()
+    assert row is not None
+
+
+def test_shared_client_fixture_serves_the_app(client):
+    assert client.get("/doctor").status_code == 200

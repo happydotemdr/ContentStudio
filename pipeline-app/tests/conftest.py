@@ -145,3 +145,39 @@ def _block_live_calls(request, monkeypatch):
 
 
 # ------------------------------------------------------------------ END SHARED GUARD
+
+
+@pytest.fixture
+def conn(tmp_path):
+    """The canonical DB fixture. Duplicated in 11 test files today (F-65);
+    each package should delete its local copy and use this one.
+
+    yield + unconditional close: 9 of the 11 local copies return without
+    closing, which leaks the handle and -- on Windows -- can keep the tmp_path
+    file locked through teardown (F-66).
+    """
+    from pipeline_app import db
+
+    db_path = tmp_path / "pipeline.db"
+    schema_path = APP_ROOT / "pipeline_app" / "schema.sql"
+    db.init_db(db_path, schema_path)
+    connection = db.get_connection(db_path)
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    """The canonical FastAPI fixture. Duplicated in 9 test files today (F-65)."""
+    from fastapi.testclient import TestClient
+
+    from pipeline_app.main import create_app
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    with TestClient(app) as test_client:
+        yield test_client
