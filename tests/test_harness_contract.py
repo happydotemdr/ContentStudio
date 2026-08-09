@@ -51,3 +51,27 @@ def test_root_run_header_names_the_app_suite_command():
     joined = "\n".join(lines)
     assert "ROOT SUITE ONLY" in joined
     assert "cd pipeline-app && python -m pytest" in joined
+
+
+GUARD_BEGIN = "# ---------------------------------------------------------------- BEGIN SHARED GUARD"
+GUARD_END = "# ------------------------------------------------------------------ END SHARED GUARD"
+
+
+def _guard_block(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    start = text.index(GUARD_BEGIN)
+    end = text.index(GUARD_END) + len(GUARD_END)
+    return text[start:end]
+
+
+def test_guard_blocks_are_identical_in_both_conftests():
+    root = _guard_block(REPO_ROOT / "tests" / "conftest.py")
+    app = _guard_block(REPO_ROOT / "pipeline-app" / "tests" / "conftest.py")
+    assert root == app, "the two conftest guard blocks have drifted"
+
+
+def test_root_suite_blocks_an_unstubbed_subprocess():
+    from tests.conftest import LiveCallBlocked
+
+    with pytest.raises(LiveCallBlocked):
+        subprocess.run([sys.executable, "-c", "pass"])
