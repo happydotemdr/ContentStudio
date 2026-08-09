@@ -105,10 +105,30 @@ def test_both_inis_turn_unexpected_warnings_into_errors():
         assert filters.strip().splitlines()[0].strip() == "error"
 
 
-def test_third_party_asyncio_deprecations_are_ignored_by_name():
-    filters = _ini(APP_INI)["pytest"]["filterwarnings"]
-    assert "ignore::DeprecationWarning:pytest_asyncio" in filters
-    assert "ignore::DeprecationWarning:fastapi.routing" in filters
+def test_filterwarnings_no_longer_carries_the_dead_pytest_asyncio_ignores():
+    """pytest-asyncio 1.2.0 (pipeline-app/requirements-dev.txt) plus the
+    asyncio_mode / asyncio_default_fixture_loop_scope pins in the app ini
+    fixed the deprecation noise this suite used to ignore by name, at its
+    source (F-70, F-71). A module-scoped ignore that outlives the warning it
+    targeted is not inert: it keeps silencing every *future*
+    DeprecationWarning from that module too, which is exactly the signal
+    `filterwarnings = error` exists to surface. Both
+    `ignore::DeprecationWarning:pytest_asyncio[.plugin]` lines were removed
+    for that reason; this pins the remaining list exactly, so a future re-add
+    of either dead line fails this test instead of passing unnoticed.
+    """
+    filters = [
+        line.strip()
+        for line in _ini(APP_INI)["pytest"]["filterwarnings"].splitlines()
+        if line.strip()
+    ]
+    assert filters == [
+        "error",
+        "ignore::DeprecationWarning:fastapi.routing",
+        "ignore::ResourceWarning",
+    ]
+    assert "ignore::DeprecationWarning:pytest_asyncio" not in filters
+    assert "ignore::DeprecationWarning:pytest_asyncio.plugin" not in filters
 
 
 @pytest.mark.allow_subprocess
