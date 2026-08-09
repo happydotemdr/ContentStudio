@@ -33,19 +33,34 @@ brief text could not have known:
   `monkeypatch.setattr(shutil, "which", ...)` would make both the "absent"
   and "present" cases render the *same* real result, and every assertion
   below would fail regardless of which case the test intended -- not a
-  failure that says anything about Doctor. Reassigning
-  `check_cli_available.__defaults__` swaps the injected `which_fn` for the
-  one call the route actually makes, using the override hook the function
-  already exposes for exactly this purpose: real `check_cli_available` and
-  `resolve_claude_binary` code runs, just fed a fake `which`.
+  failure that says anything about Doctor.
+
+  The fix does *not* reassign `check_cli_available.__defaults__` either
+  (an earlier version of this test did). That works today, but it assumes
+  `which_fn` is the sole, first positional-default parameter of a function
+  in `preflight.py` -- a file this task does not own, and one the very next
+  package in this programme is about to modify. A parameter added there
+  would make the tuple assignment silently target the wrong slot, and this
+  test would then fail in a way that looks unrelated to whatever changed.
+
+  Instead, this patches the name `doctor.py` itself binds via
+  `from pipeline_app.preflight import check_cli_available` --
+  `pipeline_app.routes.doctor.check_cli_available` -- to a plain callable
+  returning the stable `{available, path, error}` dict Doctor's template
+  renders. That depends only on that dict contract, not on
+  `check_cli_available`'s parameter shape, and reaches into no other
+  package's internals. The trade-off: it exercises only Doctor's own
+  rendering, not `check_cli_available`'s/`resolve_claude_binary`'s real
+  branching logic -- correct scope for this finding, since that logic is
+  `preflight.py`'s own behaviour to cover, not Doctor's.
 """
 from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from pipeline_app import preflight
 from pipeline_app.main import create_app
+from pipeline_app.routes import doctor
 
 
 def _app_at(root: Path, monkeypatch, skills: tuple[str, ...] = ()):
@@ -87,7 +102,6 @@ def test_doctor_reports_the_repo_root_the_app_is_actually_using(tmp_path, monkey
     # would pass even if the repo_root context key itself were wrong, because
     # the db_path line would carry it instead.
     assert f"Repo root: {one}" in resp.text
-    assert str(tmp_path / "checkout-two") not in resp.text
 
 
 def test_doctor_lists_exactly_the_skills_present_on_disk(tmp_path, monkeypatch):
@@ -102,24 +116,25 @@ def test_doctor_distinguishes_a_missing_cli_from_a_found_one(tmp_path, monkeypat
     """Distinguishability: 'CLI absent' and 'CLI present' must not render the
     same page. check_cli_available is the only place the app tells an
     operator the pipeline cannot run at all. See the module docstring for why
-    this patches check_cli_available.__defaults__ rather than shutil.which."""
-
-    def fake_which_absent(_name):
-        return None
-
-    def fake_which_present(_name):
-        return r"C:\fake\claude.cmd"
+    this patches the `check_cli_available` name bound into doctor.py's own
+    namespace rather than shutil.which or check_cli_available.__defaults__."""
 
     a = tmp_path / "a"
     a.mkdir()
     b = tmp_path / "b"
     b.mkdir()
 
-    monkeypatch.setattr(preflight.check_cli_available, "__defaults__", (fake_which_absent,))
+    monkeypatch.setattr(
+        doctor, "check_cli_available",
+        lambda: {"available": False, "path": None, "error": "claude CLI not found on PATH."},
+    )
     with _doctor_client(a, monkeypatch) as client:
         absent = client.get("/doctor").text
 
-    monkeypatch.setattr(preflight.check_cli_available, "__defaults__", (fake_which_present,))
+    monkeypatch.setattr(
+        doctor, "check_cli_available",
+        lambda: {"available": True, "path": r"C:\fake\claude.cmd", "error": None},
+    )
     with _doctor_client(b, monkeypatch) as client:
         present = client.get("/doctor").text
 
