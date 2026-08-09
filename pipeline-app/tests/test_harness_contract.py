@@ -220,3 +220,40 @@ def test_a_leaking_test_fails_with_a_nonzero_exit(tmp_path):
     )
     assert result.returncode != 0
     assert "sqlite connection" in result.stdout
+
+
+def test_both_inis_turn_unexpected_warnings_into_errors():
+    """App suite asserts its own ini -- the root suite is the one that
+    legitimately inspects both files (see tests/test_harness_contract.py)."""
+    filters = _ini(APP_INI)["pytest"]["filterwarnings"]
+    assert filters.strip().splitlines()[0].strip() == "error"
+
+
+def test_third_party_asyncio_deprecations_are_ignored_by_name():
+    filters = _ini(APP_INI)["pytest"]["filterwarnings"]
+    assert "ignore::DeprecationWarning:pytest_asyncio" in filters
+    assert "ignore::DeprecationWarning:fastapi.routing" in filters
+
+
+@pytest.mark.allow_subprocess
+def test_a_repo_warning_fails_the_run_while_a_pytest_asyncio_one_does_not(tmp_path):
+    """Distinguishability: the 58,169 third-party lines are silenced, but the
+    repo's own warnings are not -- that was the whole defect (F-70)."""
+    (tmp_path / "pytest.ini").write_text(
+        (REPO_ROOT / "pipeline-app" / "pytest.ini").read_text(encoding="utf-8").replace(
+            "testpaths = tests", "testpaths = ."
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "test_warn.py").write_text(
+        "import warnings\n"
+        "def test_repo_warning():\n"
+        "    warnings.warn('the app started emitting this', UserWarning)\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        capture_output=True, encoding="utf-8", errors="replace", cwd=str(tmp_path),
+    )
+    assert result.returncode != 0
+    assert "UserWarning" in result.stdout

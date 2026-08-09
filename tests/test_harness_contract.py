@@ -95,3 +95,39 @@ def test_guard_fires_even_when_every_vendor_key_is_present(monkeypatch):
         requests.post("https://api.brightdata.com/datasets/v3/trigger", json={})
     with pytest.raises(LiveCallBlocked):
         subprocess.run(["curl", "https://api.resend.com/emails"])
+
+
+def test_both_inis_turn_unexpected_warnings_into_errors():
+    for path in (ROOT_INI, APP_INI):
+        filters = _ini(path)["pytest"]["filterwarnings"]
+        assert filters.strip().splitlines()[0].strip() == "error"
+
+
+def test_third_party_asyncio_deprecations_are_ignored_by_name():
+    filters = _ini(APP_INI)["pytest"]["filterwarnings"]
+    assert "ignore::DeprecationWarning:pytest_asyncio" in filters
+    assert "ignore::DeprecationWarning:fastapi.routing" in filters
+
+
+@pytest.mark.allow_subprocess
+def test_a_repo_warning_fails_the_run_while_a_pytest_asyncio_one_does_not(tmp_path):
+    """Distinguishability: the 58,169 third-party lines are silenced, but the
+    repo's own warnings are not -- that was the whole defect (F-70)."""
+    (tmp_path / "pytest.ini").write_text(
+        (REPO_ROOT / "pipeline-app" / "pytest.ini").read_text(encoding="utf-8").replace(
+            "testpaths = tests", "testpaths = ."
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "test_warn.py").write_text(
+        "import warnings\n"
+        "def test_repo_warning():\n"
+        "    warnings.warn('the app started emitting this', UserWarning)\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+        capture_output=True, encoding="utf-8", errors="replace", cwd=str(tmp_path),
+    )
+    assert result.returncode != 0
+    assert "UserWarning" in result.stdout
