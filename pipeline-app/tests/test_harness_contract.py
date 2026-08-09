@@ -1,6 +1,7 @@
 """Regression tests for the P0 harness contract, app-suite half."""
 import configparser
 import os
+import sqlite3
 import subprocess
 import sys
 import urllib.request
@@ -149,3 +150,67 @@ def test_shared_client_fixture_closes_its_connection_on_teardown(tmp_path, monke
 
     with pytest.raises(sqlite3.ProgrammingError):
         connection.execute("SELECT 1")
+
+
+def test_unclosed_detects_an_open_connection(tmp_path):
+    import conftest
+
+    connection = sqlite3.connect(tmp_path / "x.db")
+    try:
+        assert conftest._is_open(connection) is True
+    finally:
+        connection.close()
+
+
+def test_unclosed_does_not_flag_a_closed_connection(tmp_path):
+    import conftest
+
+    connection = sqlite3.connect(tmp_path / "x.db")
+    connection.close()
+    assert conftest._is_open(connection) is False
+
+
+def test_leak_allowlist_entries_all_still_exist():
+    """Shrink-only ratchet: an allowlisted module that has been renamed or
+    fixed must be removed from the list, not left to rot."""
+    import conftest
+
+    for rel in conftest._KNOWN_CONNECTION_LEAKS:
+        assert (APP_ROOT / rel).exists(), f"{rel} is allowlisted but does not exist"
+
+
+def test_both_allowlists_are_keyed_by_owning_package():
+    """Every remediation agent must be able to find its own entries with one
+    grep for its package id, without reading P0's plan."""
+    import conftest
+    import re as _re
+
+    for mapping in (conftest._CONNECTION_LEAKS_BY_PACKAGE, conftest._SUBPROCESS_ALLOWED_BY_PACKAGE):
+        assert mapping.keys(), "an empty allowlist must be deleted, not left as {}"
+        for package in mapping:
+            assert _re.fullmatch(r"P\d{1,2}", package), f"{package!r} is not a package id"
+
+
+@pytest.mark.allow_subprocess
+def test_a_leaking_test_fails_with_a_nonzero_exit(tmp_path):
+    """Surfacing: the operator-reachable signal is a failed test and a non-zero
+    process exit, not a ResourceWarning lost in 58,169 lines (F-70)."""
+    (tmp_path / "conftest.py").write_text(
+        "import importlib.util\n"
+        f"_spec = importlib.util.spec_from_file_location('p0conf', r'{APP_ROOT / 'tests' / 'conftest.py'}')\n"
+        "_m = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_m)\n"
+        "_no_leaked_sqlite_connections = _m._no_leaked_sqlite_connections\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_leak.py").write_text(
+        "import sqlite3\n"
+        "def test_leaks(tmp_path):\n"
+        "    sqlite3.connect(tmp_path / 'db.sqlite')\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", str(tmp_path), "-q", "-p", "no:cacheprovider"],
+        capture_output=True, encoding="utf-8", errors="replace", cwd=str(tmp_path),
+    )
+    assert result.returncode != 0
+    assert "sqlite connection" in result.stdout

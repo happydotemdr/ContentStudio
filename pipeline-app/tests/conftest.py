@@ -147,6 +147,82 @@ def _block_live_calls(request, monkeypatch):
 # ------------------------------------------------------------------ END SHARED GUARD
 
 
+# Modules that still leak a sqlite connection (finding F-66).
+#
+# KEYED BY OWNING PACKAGE: grep your package id here to find exactly what you
+# own. SHRINK ONLY -- when a package converts its local `conn` fixture to the
+# shared yield/close one in this file, it deletes its own entries. A package
+# whose dict is empty deletes the dict. Nothing may be ADDED to this list: a
+# new leak is a new defect and fails the test that produced it.
+_CONNECTION_LEAKS_BY_PACKAGE: dict[str, list[str]] = {
+    "P1": ["tests/test_main.py", "tests/test_routes_doctor.py"],
+    "P3": ["tests/test_routes_approve_edit.py", "tests/test_routes_stages.py"],
+    "P4": ["tests/test_routes_chat_sse.py"],
+    "P5": ["tests/test_routes_skills.py"],
+    "P10": ["tests/test_routes_discovery.py"],
+    "P15": [
+        "tests/test_header.py",
+        "tests/test_routes_browse.py",
+        "tests/test_routes_inspector.py",
+        "tests/test_routes_projects.py",
+    ],
+}
+
+_KNOWN_CONNECTION_LEAKS: dict[str, str] = {
+    module: package
+    for package, modules in _CONNECTION_LEAKS_BY_PACKAGE.items()
+    for module in modules
+}
+
+
+def _is_open(connection: sqlite3.Connection) -> bool:
+    try:
+        connection.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        return False
+    return True
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_sqlite_connections(request, monkeypatch):
+    """Deterministic replacement for ResourceWarning, which fires at GC and is
+    therefore untestable and unreadable (F-66, F-70)."""
+    opened: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def tracking_connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", tracking_connect)
+    yield
+
+    leaked = [c for c in opened if _is_open(c)]
+    for connection in leaked:
+        connection.close()
+    if not leaked:
+        return
+    try:
+        module_key = _module_key(request)
+    except ValueError:
+        # A test file outside APP_ROOT (e.g. the isolated harness spawned by
+        # test_a_leaking_test_fails_with_a_nonzero_exit) can never appear in
+        # _KNOWN_CONNECTION_LEAKS, which is keyed by paths relative to
+        # APP_ROOT. Treat "can't resolve a key" as "not allowlisted" rather
+        # than silently skipping the check -- a leak must fail by default.
+        module_key = None
+    if module_key in _KNOWN_CONNECTION_LEAKS:
+        return
+    pytest.fail(
+        f"{len(leaked)} sqlite connection(s) left open by {request.node.nodeid}. "
+        "Use the shared `conn` fixture from tests/conftest.py, which closes in "
+        "teardown (finding F-66). If this module is a known pre-existing leak, "
+        "its owning package adds it to _CONNECTION_LEAKS_BY_PACKAGE -- that list "
+        "shrinks only; a NEW leak is a new defect."
+    )
+
+
 @pytest.fixture
 def conn(tmp_path):
     """The canonical DB fixture. Duplicated in 11 test files today (F-65);
