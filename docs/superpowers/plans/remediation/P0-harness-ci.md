@@ -1445,7 +1445,7 @@ def _run_bat(tmp_path: Path):
     return subprocess.run(
         ["cmd", "/c", str(tmp_path / "start_pipeline.bat")],
         capture_output=True, encoding="utf-8", errors="replace",
-        env={**os.environ, "PIPELINE_APP_LAUNCH_DRYRUN": "1"},
+        # Preflight-only is requested by an explicit argv flag, not an env var.
     )
 
 
@@ -1511,8 +1511,17 @@ if not errorlevel 1 (
   exit /b 1
 )
 
-if "%PIPELINE_APP_LAUNCH_DRYRUN%"=="1" (
-  echo [start_pipeline] DRYRUN: preflight passed. OPENING BROWSER would follow.
+rem Preflight-only mode is an EXPLICIT CLI FLAG, never an ambient environment
+rem variable. An env var can leak: left set from a prior test run in the same
+rem shell, inherited from a parent process, or set globally. A leaked
+rem PIPELINE_APP_LAUNCH_DRYRUN would make a normal launch run the gates, print
+rem one line and exit 0 with nothing started -- and on a double-click launch
+rem (how an operator actually runs a .bat) the console closes before that line
+rem can be read, so there is no signal at all. That is F-78 exactly: a success
+rem exit code emitted without success, just relocated from a missing venv to a
+rem leaked variable. A flag is visible on the invocation and cannot leak.
+if /i "%~1"=="--check-only" (
+  echo [start_pipeline] --check-only: preflight passed. The browser would open next.
   exit /b 0
 )
 
