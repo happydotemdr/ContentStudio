@@ -3,6 +3,7 @@ import configparser
 import os
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -55,3 +56,43 @@ def test_session_start_rejects_a_pipeline_app_from_another_checkout(monkeypatch,
     assert str(foreign) in message                       # the wrong tree, named
     assert str(APP_ROOT / "pipeline_app") in message      # the right tree, named
     assert "pip uninstall" in message
+
+
+def test_unstubbed_requests_post_is_blocked():
+    import requests
+
+    import conftest
+
+    with pytest.raises(conftest.LiveCallBlocked) as excinfo:
+        requests.post("https://api.brightdata.com/datasets/v3/trigger", json={})
+    assert "BRIGHTDATA_API_KEY" in str(excinfo.value)
+
+
+def test_unstubbed_urlopen_is_blocked():
+    import conftest
+
+    with pytest.raises(conftest.LiveCallBlocked):
+        urllib.request.urlopen("https://www.googleapis.com/youtube/v3/search")
+
+
+def test_unstubbed_subprocess_run_is_blocked():
+    import conftest
+
+    with pytest.raises(conftest.LiveCallBlocked):
+        subprocess.run(["yt-dlp", "--dump-json", "https://youtube.com/watch?v=x"])
+
+
+@pytest.mark.allow_subprocess
+def test_marked_test_may_spawn_a_real_process():
+    result = subprocess.run(
+        [sys.executable, "-c", "print('ok')"],
+        capture_output=True, encoding="utf-8", errors="replace",
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_a_stubbed_call_still_wins_over_the_guard(monkeypatch):
+    """The guard must never defeat an explicit stub -- 40+ existing tests
+    monkeypatch subprocess.run and must keep working."""
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: "stubbed")
+    assert subprocess.run(["anything"]) == "stubbed"
