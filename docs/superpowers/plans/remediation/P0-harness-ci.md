@@ -837,7 +837,15 @@ def _no_leaked_sqlite_connections(request, monkeypatch):
     try:
         module_key = _module_key(request)
     except ValueError:
-        return
+        # A test file outside APP_ROOT (e.g. the isolated harness spawned by
+        # test_a_leaking_test_fails_with_a_nonzero_exit) can never appear in
+        # _KNOWN_CONNECTION_LEAKS, which is keyed by paths relative to
+        # APP_ROOT. Treat "can't resolve a key" as "not allowlisted" rather
+        # than silently skipping the check -- a leak must fail by default.
+        # (`return` here made an unresolvable path indistinguishable from a
+        # clean test, which is the recurring defect class this programme
+        # exists to eliminate, and it defeated this task's own surfacing test.)
+        module_key = None
     if module_key in _KNOWN_CONNECTION_LEAKS:
         return
     pytest.fail(
