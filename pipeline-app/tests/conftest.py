@@ -170,7 +170,14 @@ def conn(tmp_path):
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    """The canonical FastAPI fixture. Duplicated in 9 test files today (F-65)."""
+    """The canonical FastAPI fixture. Duplicated in 9 test files today (F-65).
+
+    create_app() unconditionally opens app.state.conn (pipeline_app/main.py)
+    and wires no shutdown handler to close it -- TestClient's own context
+    manager only drives ASGI startup/shutdown events, none of which touch
+    app.state.conn. Close it here, in a finally, so it closes on both the
+    passing and the raising path.
+    """
     from fastapi.testclient import TestClient
 
     from pipeline_app.main import create_app
@@ -179,5 +186,8 @@ def client(tmp_path, monkeypatch):
     (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
     (tmp_path / ".claude" / "skills").mkdir(parents=True)
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
-    with TestClient(app) as test_client:
-        yield test_client
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.state.conn.close()

@@ -125,3 +125,27 @@ def test_shared_conn_fixture_is_initialised_and_closes(conn):
 
 def test_shared_client_fixture_serves_the_app(client):
     assert client.get("/doctor").status_code == 200
+
+
+def test_shared_client_fixture_closes_its_connection_on_teardown(tmp_path, monkeypatch):
+    """create_app() opens app.state.conn (pipeline_app/main.py) and wires no
+    shutdown handler to close it. The client fixture must close it itself on
+    teardown -- on both the passing and the raising path -- or every test
+    that requests `client` leaks a sqlite handle, which is exactly the class
+    of leak this fixture exists to eliminate (F-65/F-66)."""
+    import sqlite3
+
+    import conftest
+
+    gen = conftest.client.__wrapped__(tmp_path, monkeypatch)
+    test_client = next(gen)
+    connection = test_client.app.state.conn
+
+    # Sanity: the connection is live while the fixture is active.
+    connection.execute("SELECT 1")
+
+    with pytest.raises(StopIteration):
+        next(gen)  # drive the fixture generator through its teardown
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("SELECT 1")
