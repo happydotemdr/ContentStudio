@@ -239,3 +239,34 @@ def test_root_scripts_is_not_a_regular_package():
 
 def test_root_scripts_modules_still_import_by_name():
     from scripts.resolve_brief_version import find_latest  # noqa: F401
+
+
+def test_coverage_artifacts_are_gitignored():
+    entries = set((REPO_ROOT / ".gitignore").read_text(encoding="utf-8").split())
+    assert {
+        ".coverage",
+        ".coverage.*",
+        "pipeline-app/.coverage",
+        "htmlcov/",
+        "coverage.xml",
+        ".pytest_cache/",
+    } <= entries
+
+
+def test_the_obs_log_directory_is_gitignored():
+    """P1's obs.log() writes pipeline-app/logs/app-YYYY-MM-DD.log on every
+    structured event. .gitignore is P0's file, so the entry lands here."""
+    entries = set((REPO_ROOT / ".gitignore").read_text(encoding="utf-8").split())
+    assert "pipeline-app/logs/" in entries
+
+
+@pytest.mark.allow_subprocess
+def test_git_status_is_clean_after_a_coverage_run(tmp_path):
+    """Surfacing: the two .coverage files exist untracked in the working tree
+    today and a `git add -A` sweeps them into a commit (finding F-79)."""
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=str(REPO_ROOT), capture_output=True, encoding="utf-8", errors="replace",
+    )
+    untracked = [line[3:] for line in result.stdout.splitlines() if line.startswith("??")]
+    assert not [p for p in untracked if ".coverage" in p or p.startswith("pipeline-app/logs/")]

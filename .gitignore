@@ -50,3 +50,18 @@ stitcher/tests/fixtures/goldens/
 
 # Superpowers SDD scratch directory (temporary working files)
 .superpowers/
+
+# Coverage and pytest artifacts. pytest-cov became a standard dependency with
+# finding F-74, so a coverage run now leaves these in every working tree; they
+# were previously untracked noise a `git add -A` could sweep in (finding F-79).
+# Both .coverage paths already exist untracked as of 2026-08-08.
+.coverage
+.coverage.*
+pipeline-app/.coverage
+htmlcov/
+coverage.xml
+.pytest_cache/
+
+# Structured application logs written by pipeline_app/obs.py (P1's error-
+# surfacing layer): one app-YYYY-MM-DD.log per day, local diagnostics only.
+pipeline-app/logs/
