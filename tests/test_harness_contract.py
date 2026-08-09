@@ -200,3 +200,15 @@ def test_shared_libraries_use_one_constraint_style_across_the_two_manifests():
 
     for lib in ("pyyaml", "requests", "yt-dlp", "youtube-transcript-api"):
         assert _spec(ROOT_REQ, lib) == _spec(APP_REQ, lib), f"{lib} constraint styles disagree"
+
+
+def test_yt_dlp_and_transcript_api_are_pinned_exactly_in_both_manifests():
+    """F-76: yt-dlp ships frequently and changes --dump-json field names.
+    test_discovery_youtube.py:249,309 pin `upload_date` and `duration`; a
+    floating requirement means a rename breaks production while the mocked
+    tests stay green."""
+    for path in (ROOT_REQ, APP_REQ):
+        text = path.read_text(encoding="utf-8")
+        assert re.search(r"^yt-dlp==\d", text, re.M), f"{path.name}: yt-dlp is not pinned"
+        assert re.search(r"^youtube-transcript-api==\d", text, re.M)
+        assert ">=" not in re.search(r"^yt-dlp.*$", text, re.M).group(0)
