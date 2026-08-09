@@ -108,27 +108,36 @@ def test_both_inis_turn_unexpected_warnings_into_errors():
 def test_filterwarnings_no_longer_carries_the_dead_pytest_asyncio_ignores():
     """pytest-asyncio 1.2.0 (pipeline-app/requirements-dev.txt) plus the
     asyncio_mode / asyncio_default_fixture_loop_scope pins in the app ini
-    fixed the deprecation noise this suite used to ignore by name, at its
+    fixed the deprecation noise both suites used to ignore by name, at its
     source (F-70, F-71). A module-scoped ignore that outlives the warning it
     targeted is not inert: it keeps silencing every *future*
     DeprecationWarning from that module too, which is exactly the signal
     `filterwarnings = error` exists to surface. Both
     `ignore::DeprecationWarning:pytest_asyncio[.plugin]` lines were removed
-    for that reason; this pins the remaining list exactly, so a future re-add
-    of either dead line fails this test instead of passing unnoticed.
+    for that reason -- from BOTH pytest.ini files, in the same commit -- so
+    this pins the remaining list exactly for each one, the way
+    test_both_inis_turn_unexpected_warnings_into_errors above does. The root
+    ini gets no async tests of its own, so a re-add there has no other
+    signal to surface it; this is the one test standing between that and
+    silence.
     """
-    filters = [
-        line.strip()
-        for line in _ini(APP_INI)["pytest"]["filterwarnings"].splitlines()
-        if line.strip()
-    ]
-    assert filters == [
-        "error",
-        "ignore::DeprecationWarning:fastapi.routing",
-        "ignore::ResourceWarning",
-    ]
-    assert "ignore::DeprecationWarning:pytest_asyncio" not in filters
-    assert "ignore::DeprecationWarning:pytest_asyncio.plugin" not in filters
+    for path in (ROOT_INI, APP_INI):
+        filters = [
+            line.strip()
+            for line in _ini(path)["pytest"]["filterwarnings"].splitlines()
+            if line.strip()
+        ]
+        assert filters == [
+            "error",
+            "ignore::DeprecationWarning:fastapi.routing",
+            "ignore::ResourceWarning",
+        ], f"{path.name}: filterwarnings no longer matches the expected post-removal ignore list"
+        assert "ignore::DeprecationWarning:pytest_asyncio" not in filters, (
+            f"{path.name}: the dead ignore::DeprecationWarning:pytest_asyncio line has crept back in"
+        )
+        assert "ignore::DeprecationWarning:pytest_asyncio.plugin" not in filters, (
+            f"{path.name}: the dead ignore::DeprecationWarning:pytest_asyncio.plugin line has crept back in"
+        )
 
 
 @pytest.mark.allow_subprocess
