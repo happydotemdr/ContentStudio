@@ -28,3 +28,30 @@ def test_app_ini_declares_coverage_diagnostic_and_configures_no_gate():
     text = APP_INI.read_text(encoding="utf-8")
     assert "Coverage is diagnostic only" in text
     assert "--cov-fail-under" not in text
+
+
+def test_session_start_accepts_the_working_tree():
+    import conftest
+
+    conftest.pytest_sessionstart(session=None)  # must not raise
+
+
+def test_session_start_rejects_a_pipeline_app_from_another_checkout(monkeypatch, tmp_path):
+    import types
+
+    import conftest
+
+    foreign = tmp_path / "other-checkout" / "pipeline-app" / "pipeline_app"
+    foreign.mkdir(parents=True)
+    (foreign / "__init__.py").write_text("", encoding="utf-8")
+    fake = types.ModuleType("pipeline_app")
+    fake.__file__ = str(foreign / "__init__.py")
+    monkeypatch.setitem(sys.modules, "pipeline_app", fake)
+
+    with pytest.raises(pytest.UsageError) as excinfo:
+        conftest.pytest_sessionstart(session=None)
+
+    message = str(excinfo.value)
+    assert str(foreign) in message                       # the wrong tree, named
+    assert str(APP_ROOT / "pipeline_app") in message      # the right tree, named
+    assert "pip uninstall" in message
