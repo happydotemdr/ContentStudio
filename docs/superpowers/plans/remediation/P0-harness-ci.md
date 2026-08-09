@@ -507,10 +507,17 @@ import asyncio
 # entry only when the child process is the thing under test; everything else
 # gets a stub. Entries may be added by the owning package as it needs them --
 # unlike _KNOWN_CONNECTION_LEAKS below, this list is not a defect backlog.
+#
+# There is deliberately NO "P0" entry for tests/test_harness_contract.py. A
+# module-level entry disables the guard for the WHOLE file, and that file is
+# where the guard's own negative tests live -- with the entry present,
+# test_unstubbed_subprocess_run_is_blocked stops asserting a block and instead
+# executes the real yt-dlp binary. (Observed during execution: real yt-dlp
+# stderr in the test output.) Every P0 test that legitimately spawns a child
+# carries @pytest.mark.allow_subprocess on the test itself instead, which is
+# the alternative this plan already sanctions in §6.4. Prefer the per-test
+# marker over a module entry wherever the file also contains guard tests.
 _SUBPROCESS_ALLOWED_BY_PACKAGE: dict[str, dict[str, str]] = {
-    "P0": {
-        "tests/test_harness_contract.py": "runs pytest, cmd.exe and git to prove the harness contract",
-    },
     "P4": {
         "tests/test_cli_runner.py": "one real asyncio child process at :400",
     },
@@ -588,9 +595,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Modules whose tests legitimately execute a real child process. Entries name
 # the owning package. This list may only shrink.
+#
+# No entry for tests/test_harness_contract.py, for the same reason the app-side
+# conftest has none: that file holds this guard's own negative tests, and a
+# module-level entry would exempt them, so the test that proves a subprocess is
+# blocked would instead spawn one. The P0 tests that genuinely need a child
+# process carry @pytest.mark.allow_subprocess individually.
 _SUBPROCESS_ALLOWED_MODULES = {
     "tests/test_resolve_brief_version.py": "P12 -- runs the resolver script as a real CLI at :89",
-    "tests/test_harness_contract.py": "P0 -- runs pytest in a subprocess to prove the CI contract",
 }
 
 
