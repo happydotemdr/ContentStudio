@@ -25,7 +25,11 @@ STAGES = [StageDef(id="ideation", skill="shorts-ideation", dir_prefix="01", depe
 
 
 @pytest.mark.asyncio
+@pytest.mark.allow_subprocess
 async def test_real_ideation_turn_produces_an_artifact(tmp_path: Path):
+    """Opts out of the live-call guard: the real Claude CLI child process,
+    spawned via asyncio.create_subprocess_exec in cli_runner.stream_claude_turn,
+    *is* the thing under test here -- there is nothing to stub."""
     db_path = tmp_path / "pipeline.db"
     schema_path = REPO_ROOT / "pipeline-app" / "pipeline_app" / "schema.sql"
     db.init_db(db_path, schema_path)
