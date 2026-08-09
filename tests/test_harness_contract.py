@@ -42,3 +42,12 @@ def test_root_ini_declares_coverage_diagnostic_and_configures_no_gate():
 def test_root_ini_states_that_a_bare_run_is_the_root_suite_only():
     first_lines = ROOT_INI.read_text(encoding="utf-8").splitlines()[:3]
     assert any("ROOT SUITE ONLY" in line for line in first_lines)
+
+
+def test_root_run_header_names_the_app_suite_command():
+    from tests.conftest import pytest_report_header
+
+    lines = pytest_report_header(config=None)
+    joined = "\n".join(lines)
+    assert "ROOT SUITE ONLY" in joined
+    assert "cd pipeline-app && python -m pytest" in joined
