@@ -1,0 +1,2649 @@
+# P1 — Observability
+
+> **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` or
+> `superpowers:executing-plans` to execute this plan task-by-task. Steps use checkbox (`- [ ]`)
+> syntax. The **Global Constraints**, **test standard** and **Frozen interfaces** sections of
+> [`../2026-08-08-audit-remediation.md`](../2026-08-08-audit-remediation.md) apply to every task
+> here and are not restated.
+
+**Wave A, package 2 of 2.** P0 must land first (conftest network guard + CI). Every Wave-B
+package consumes the interfaces this package publishes, so nothing here may be redesigned once
+shipped — see [§6 Published interface](#6-published-interface).
+
+**The premise.** The audit's most systemic finding is that this codebase catches errors with care
+and then tells nobody: zero bare `except:` in 8,550 lines, but no logging module, no event table,
+no health endpoint and no alert path. Thirty-five stderr diagnostics on the scheduled path write
+to a console Windows Task Scheduler destroys. This package builds the place a failure goes.
+
+---
+
+## 1. Scope
+
+### Files owned (no other package may touch these)
+
+```
+pipeline-app/pipeline_app/schema.sql
+pipeline-app/pipeline_app/db.py
+pipeline-app/pipeline_app/main.py
+pipeline-app/pipeline_app/obs.py            (new)
+pipeline-app/pipeline_app/routes/doctor.py
+pipeline-app/tests/test_main.py
+pipeline-app/tests/test_db.py
+pipeline-app/tests/test_obs.py              (new)
+```
+
+### Finding IDs (13)
+
+`A-47`, `A-70`, `A-71`, `A-72`, `A-75`, `A-76`, `A-83`, `A-85`, `B-72`, `B-73`, `B-82`, `D-48`, `F-26`
+
+### Deliberate non-scope, recorded so nobody assumes it was missed
+
+| Thing | Why it is not here | Who owns it |
+|---|---|---|
+| `preflight.reconcile_orphaned_turns` internals | A-76's evidence spans `main.py` **and** `preflight.py`. `preflight.py` is not in this package's file list, so A-76 is closed by the sanctioned alternative in its own `proposed_fix`: *"move reconciliation out of `create_app` into a guarded single-instance startup step."* The guard lives in `main.py` + `schema.sql`. | P3 |
+| Rejecting an unknown `platform` in `add_handle` before the billable validate spawn (B-73) | `routes/discovery.py` and `discovery_engine.py` are P8's. This package ships the storage-level `CHECK` backstop and the quarantine migration; P8 ships the friendly route-level rejection. | P8 |
+| Marking a handle failing from inside a run, and rendering the counter on the handles page (B-82) | `discovery_engine.py` (P8), `discovery_handles.html` (P15). This package ships the column, the `failing` status vocabulary, and the `db.record_handle_failure()` policy function P8 calls. | P8, P15 |
+| Populating `creators` / `handles.creator_id` from a manifest (B-72) | Explicitly P10's, per the orchestration plan. This package creates the tables and the join helpers. | P10 |
+| `test_turn_service.py:335-343`, the second half of F-26 | Not in this file list. **Handoff to P4** — see [§5](#5-tests-deleted-or-inverted). | P4 |
+| Rendering `recent_events` in `doctor.html` | P15 owns every template. This package puts the list in the context with the keys in [§6](#6-published-interface). | P15 |
+| `projects.brand` CHECK constraint (mentioned in A-75's blast radius, absent from its `proposed_fix`) | The brand vocabulary is defined by `pipeline.yaml`'s `brand_scope`, which P4 owns. A DB-level `CHECK` would freeze a config vocabulary in the schema and make adding a brand a migration. Recorded as a deliberate omission, not an oversight. | — |
+| A `logs/` entry in `.gitignore` | `.gitignore` is in no package's file list. `obs.log()` writes `pipeline-app/logs/app-YYYY-MM-DD.log`, which will show as untracked. **One-line handoff — see [§7](#7-handoffs).** | unassigned |
+
+---
+
+## 2. Finding → task map
+
+Total coverage: 13 findings, 13 mapped, 0 unmapped.
+
+| Finding | Severity | Failure mode | Task | What closes it |
+|---|---|---|---|---|
+| A-70 | S2 | silent | **T4** | `db.transaction()` + `db.commit_unless_in_transaction()`; every leaf helper's unconditional `commit()` becomes boundary-aware |
+| A-72 | S2 | latent | **T5** (+ T12) | `schema_version` table, ordered once-only migration list, `SchemaVersionError` on a future DB |
+| A-47 | S4 | latent | **T6** | `stages.status` `CHECK` constraint, applied to existing DBs by migration 1 |
+| A-75 | S4 | latent | **T7** | FK indices on `turns.stage_row_id`, `discovery_run_handles.run_id`/`.handle_id`; `turns.status` `CHECK`; `ON DELETE` on every FK |
+| A-71 | S2 | silent | **T8** | `ux_turns_single_running` partial unique index, mirroring `ux_discovery_single_running` |
+| B-72 | S2 | coverage-gap | **T9** | `creators` table + `handles.creator_id` + the cross-platform join helpers |
+| B-73 | S2 | silent | **T10** | `handles.platform` `CHECK` against the adapter-registry vocabulary; ghost rows quarantined, not silently dropped |
+| B-82 | S2 | silent | **T11** | `handles.consecutive_failures` + `failing` status + `db.record_handle_failure()` / `db.clear_handle_failures()` |
+| A-85 | S4 | latent | **T13** | FastAPI lifespan handler: `wal_checkpoint(TRUNCATE)`, lease release, `conn.close()` |
+| A-76 | S3 | silent | **T14** | `app_instances` reconcile lease; a second instance skips the sweep and says so |
+| A-83 | S4 | docs-drift | **T15** | One cached live CLI probe feeding both the banner and the `/doctor` panel in a single request |
+| D-48 | S3 | latent | **T16** | Same-origin `Origin`/`Referer` middleware on every mutating request, with an event on rejection |
+| F-26 | S2 | silent | **T18** | Both mock-echo tests in `test_main.py` replaced with real app-factory coverage |
+
+Tasks **T1, T2, T3, T12, T17** carry no finding of their own — T1–T3 build the frozen `obs`
+interface every other package consumes, T12 is the schema-drift guard that keeps T5–T11 honest,
+and T17 is the `recent_events` contract P15 renders. They are load-bearing for the surfacing leg
+of the Three-Test Rule throughout.
+
+---
+
+## 3. Tasks
+
+Each task is one TDD cycle: write the failing test → run it → **see it fail for the right
+reason** → implement → see it pass → commit. Do not batch two tasks into one commit.
+
+---
+
+### T1 — `obs.log()`: a diagnostic that survives the console being destroyed
+
+- [ ] **Write the failing test.** New file `pipeline-app/tests/test_obs.py`:
+
+```python
+import json
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from pipeline_app import db, obs
+
+
+def test_log_writes_a_json_line_to_a_dated_file(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    obs.log("adapter.fetch_failed", level="error", handle="@a", platform="youtube")
+
+    files = list((tmp_path / "logs").glob("app-*.log"))
+    assert len(files) == 1
+    assert files[0].name.startswith("app-20")  # app-YYYY-MM-DD.log
+    record = json.loads(files[0].read_text(encoding="utf-8").strip())
+    assert record["event"] == "adapter.fetch_failed"
+    assert record["level"] == "error"
+    assert record["handle"] == "@a"
+    assert record["ts"].endswith("+00:00")  # aware UTC, never naive
+
+
+def test_log_also_writes_to_stderr(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    obs.log("adapter.fetch_failed", level="error")
+    assert "adapter.fetch_failed" in capsys.readouterr().err
+
+
+def test_log_does_not_raise_when_the_log_directory_cannot_be_created(tmp_path: Path, monkeypatch):
+    """A read-only disk must not turn a reportable failure into a crash."""
+    blocker = tmp_path / "logs"
+    blocker.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(obs, "LOG_DIR", blocker)
+    obs.log("adapter.fetch_failed", level="error")  # must not raise
+
+
+def test_log_does_not_raise_on_an_unserializable_field(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    obs.log("adapter.fetch_failed", level="error", conn=object())  # must not raise
+```
+
+- [ ] **Run it.** `cd pipeline-app && python -m pytest tests/test_obs.py -v` → `ModuleNotFoundError: pipeline_app.obs`. That is the right failure.
+- [ ] **Implement.** New file `pipeline-app/pipeline_app/obs.py`:
+
+```python
+"""Error surfacing for the pipeline app.
+
+Two sinks, deliberately independent:
+
+* `log()` writes a structured line to stderr AND to a dated file under
+  `pipeline-app/logs/`. stderr is what a human sees interactively; the file is
+  what survives Windows Task Scheduler destroying the console window, which is
+  where all 35 of the scheduled path's diagnostics went before this module
+  existed.
+* `record_event()` appends a row to `events`, which is what makes a failure
+  *findable* later: /doctor renders unacknowledged error/critical events from
+  the last seven days.
+
+Neither function ever raises. A failure to report must never mask the thing
+being reported.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+# pipeline-app/logs/ -- a sibling of pipeline_app/, not inside it.
+LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
+
+VALID_SEVERITIES = ("info", "warning", "error", "critical")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def log(event: str, *, level: str = "info", **fields) -> None:
+    """Structured line to stderr AND to pipeline-app/logs/app-YYYY-MM-DD.log.
+
+    `event` is a dotted kind, e.g. "adapter.fetch_failed". Never raises."""
+    now = _utcnow()
+    try:
+        line = json.dumps(
+            {"ts": now.isoformat(timespec="seconds"), "level": level, "event": event, **fields},
+            default=repr,
+            ensure_ascii=False,
+        )
+    except Exception:  # noqa: BLE001 -- a field we cannot serialize must not kill the caller
+        line = json.dumps({"ts": now.isoformat(timespec="seconds"), "level": level,
+                           "event": event, "fields": "<unserializable>"})
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except Exception:  # noqa: BLE001 -- a detached/closed stderr must not kill the caller
+        pass
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with (LOG_DIR / f"app-{now.strftime('%Y-%m-%d')}.log").open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:  # noqa: BLE001 -- a read-only disk must not kill the caller
+        pass
+```
+
+- [ ] **Run it.** All four pass.
+- [ ] **Commit.** `feat(obs): add obs.log() -- a diagnostic that outlives the console`
+
+---
+
+### T2 — the `events` table and `obs.record_event()`
+
+- [ ] **Write the failing test.** Append to `tests/test_obs.py`:
+
+```python
+@pytest.fixture
+def conn(tmp_path: Path):
+    db_path = tmp_path / "pipeline.db"
+    schema_path = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db.init_db(db_path, schema_path)
+    connection = db.get_connection(db_path)
+    yield connection
+    connection.close()
+
+
+def test_record_event_appends_a_row_and_returns_its_id(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    event_id = obs.record_event(
+        conn, kind="adapter.fetch_failed", severity="error", source="discovery_youtube",
+        message="yt-dlp exited 1 for @a", detail={"handle": "@a", "exit_code": 1}, run_id=7,
+    )
+    assert event_id > 0
+    row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+    assert row["kind"] == "adapter.fetch_failed"
+    assert row["severity"] == "error"
+    assert row["source"] == "discovery_youtube"
+    assert row["run_id"] == 7
+    assert json.loads(row["detail"]) == {"handle": "@a", "exit_code": 1}
+    assert row["acknowledged"] == 0
+    assert row["occurred_at"].endswith("+00:00")
+
+
+def test_events_table_rejects_a_severity_outside_the_vocabulary(conn):
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO events (occurred_at, kind, severity, source, message) "
+            "VALUES ('2026-08-08T00:00:00+00:00', 'k', 'catastrophic', 's', 'm')"
+        )
+```
+
+- [ ] **Run it.** Fails: `no such table: events`.
+- [ ] **Implement (a).** Append to `pipeline-app/pipeline_app/schema.sql`, verbatim from the
+      orchestration plan's frozen DDL:
+
+```sql
+-- The place a failure goes. Before this table the codebase caught errors
+-- carefully and told nobody: 35 stderr diagnostics on the scheduled path wrote
+-- to a console Windows Task Scheduler destroys.
+CREATE TABLE IF NOT EXISTS events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at  TEXT    NOT NULL,
+  kind         TEXT    NOT NULL,
+  severity     TEXT    NOT NULL CHECK (severity IN ('info','warning','error','critical')),
+  source       TEXT    NOT NULL,
+  message      TEXT    NOT NULL,
+  detail       TEXT,
+  run_id       INTEGER,
+  acknowledged INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_events_occurred ON events(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_severity ON events(severity, occurred_at DESC);
+```
+
+- [ ] **Implement (b).** Append to `obs.py`:
+
+```python
+def record_event(conn, *, kind: str, severity: str, source: str,
+                 message: str, detail: dict | None = None,
+                 run_id: int | None = None) -> int:
+    """Append one row to the `events` table and return its id.
+
+    severity in {"info","warning","error","critical"}. Never raises -- a
+    failure to record must not mask the thing being recorded; it falls back to
+    log() and returns -1."""
+    try:
+        if severity not in VALID_SEVERITIES:
+            raise ValueError(f"unknown severity {severity!r}")
+        detail_json = (
+            json.dumps(detail, default=repr, ensure_ascii=False) if detail is not None else None
+        )
+        cur = conn.execute(
+            "INSERT INTO events (occurred_at, kind, severity, source, message, detail, run_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (_utcnow().isoformat(timespec="seconds"), kind, severity, source, message,
+             detail_json, run_id),
+        )
+        # Deferred import: db imports obs for its own migration diagnostics, so a
+        # module-level import here would be circular. The indirection exists so an
+        # event recorded inside a db.transaction() block does not commit the
+        # caller's half-finished work (A-70) -- the whole defect this package fixes.
+        from pipeline_app.db import commit_unless_in_transaction
+
+        commit_unless_in_transaction(conn)
+        event_id = int(cur.lastrowid)
+    except Exception as exc:  # noqa: BLE001 -- recording must never mask the recorded
+        log("obs.record_event_failed", level="error", kind=kind, severity=severity,
+            source=source, message=message, error=f"{type(exc).__name__}: {exc}")
+        return -1
+    log(kind, level=severity, source=source, message=message, event_id=event_id, run_id=run_id)
+    return event_id
+```
+
+> `commit_unless_in_transaction` does not exist until T4. Land T2 with a plain `conn.commit()`
+> and swap it in T4's edit — or land T4 first. Either order works; do not ship both halves in
+> one commit.
+
+- [ ] **Run it.** Both pass.
+- [ ] **Commit.** `feat(obs): add the events table and obs.record_event()`
+
+---
+
+### T3 — `record_event` never raises (the frozen contract every package leans on)
+
+This is the single most important behavioural guarantee in the package: if recording a failure
+could itself fail, every adopting call site in the other fifteen packages would need a try/except
+around its own error reporting.
+
+- [ ] **Write the failing test.** Append to `tests/test_obs.py`:
+
+```python
+def test_record_event_returns_minus_one_when_the_events_table_is_missing(tmp_path, monkeypatch):
+    """An operator database that predates the events table must not turn every
+    reported failure into a second, uncaught failure."""
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    bare = sqlite3.connect(tmp_path / "bare.db")
+    try:
+        assert obs.record_event(bare, kind="k", severity="error", source="s", message="m") == -1
+    finally:
+        bare.close()
+
+
+def test_record_event_falls_back_to_the_log_when_it_cannot_write(tmp_path, monkeypatch):
+    """Returning -1 silently would recreate the exact defect this module exists
+    to fix. The fallback has to leave a trace."""
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    bare = sqlite3.connect(tmp_path / "bare.db")
+    try:
+        obs.record_event(bare, kind="adapter.fetch_failed", severity="error",
+                         source="discovery_youtube", message="yt-dlp exited 1")
+    finally:
+        bare.close()
+    written = (tmp_path / "logs").glob("app-*.log")
+    text = "\n".join(p.read_text(encoding="utf-8") for p in written)
+    assert "obs.record_event_failed" in text
+    assert "yt-dlp exited 1" in text  # the recorded thing is not lost
+
+
+def test_record_event_rejects_an_unknown_severity_without_raising(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    assert obs.record_event(conn, kind="k", severity="catastrophic",
+                            source="s", message="m") == -1
+    assert conn.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+
+
+def test_record_event_does_not_raise_on_a_closed_connection(tmp_path, monkeypatch):
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    closed = sqlite3.connect(tmp_path / "closed.db")
+    closed.close()
+    assert obs.record_event(closed, kind="k", severity="error", source="s", message="m") == -1
+```
+
+- [ ] **Run it.** The first three fail if T2's implementation lacks the blanket `except`; run them
+      against a deliberately narrowed `except sqlite3.OperationalError` first to confirm they
+      fail for the right reason, then restore the blanket form.
+- [ ] **Implement.** Already written in T2. If any test fails, widen the guard — never narrow the
+      test.
+- [ ] **Commit.** `test(obs): prove record_event never raises and never loses the record`
+
+---
+
+### T4 — A-70: one transaction boundary per logical operation
+
+**A-70 (S2, silent).** Every helper in `db.py` commits immediately after its single statement, so
+the app has no transaction boundary anywhere. `create_project` commits the project row, then each
+stage row, then each directory; `_backfill_one_project` inserts an `approved` styleboard row and
+*then* sets `approved_at`, so an interruption yields `status='approved', approved_at=NULL`. One
+thread's `commit()` also finalizes another thread's in-flight statements on the shared connection.
+
+The compatibility rule: **outside a `transaction()` block, every helper behaves exactly as it does
+today.** Fourteen other packages' tests depend on that.
+
+- [ ] **Write the failing test.** Append to `tests/test_db.py`:
+
+```python
+def test_transaction_rolls_back_every_statement_in_the_block(conn):
+    """FAULT. A multi-row operation that fails partway leaves nothing behind."""
+    with pytest.raises(RuntimeError):
+        with db.transaction(conn):
+            project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+            db.create_stage_row(conn, project_id, "ideation", "ready")
+            raise RuntimeError("mkdir failed halfway through create_project")
+    assert db.list_projects(conn) == []
+    assert conn.execute("SELECT count(*) FROM stages").fetchone()[0] == 0
+
+
+def test_a_failed_transaction_is_distinguishable_from_the_unwrapped_path(conn):
+    """DISTINGUISHABILITY. Without the boundary the same failure leaves a
+    half-written project behind -- which is A-70 exactly. The two paths must not
+    produce the same database."""
+    def half_a_project(wrapped: bool) -> int:
+        try:
+            if wrapped:
+                with db.transaction(conn):
+                    db.create_project(conn, "wrapped", "a", "generic", "2026-08-08T00:00:00+00:00")
+                    raise RuntimeError("boom")
+            else:
+                db.create_project(conn, "unwrapped", "a", "generic", "2026-08-08T00:00:00+00:00")
+                raise RuntimeError("boom")
+        except RuntimeError:
+            pass
+        return len(db.list_projects(conn))
+
+    assert half_a_project(wrapped=False) == 1      # today's behaviour, preserved
+    assert half_a_project(wrapped=True) == 1       # still 1 -- the wrapped one rolled back
+    assert [r["run_id"] for r in db.list_projects(conn)] == ["unwrapped"]
+
+
+def test_a_rolled_back_transaction_records_an_error_event(conn, tmp_path, monkeypatch):
+    """SURFACING. A silently discarded half-operation is how A-70 stayed
+    invisible; the rollback has to leave a row a human can find."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    with pytest.raises(RuntimeError):
+        with db.transaction(conn):
+            db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+            raise RuntimeError("boom")
+    rows = conn.execute("SELECT * FROM events WHERE kind = 'db.transaction_rolled_back'").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "RuntimeError" in rows[0]["message"]
+
+
+def test_leaf_helpers_still_commit_immediately_outside_a_transaction(conn, tmp_path):
+    """Fourteen other packages' tests depend on this. A second connection to the
+    same file must see the row without any explicit boundary."""
+    db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    other = db.get_connection(Path(conn.execute("PRAGMA database_list").fetchone()[2]))
+    try:
+        assert len(db.list_projects(other)) == 1
+    finally:
+        other.close()
+
+
+def test_a_nested_transaction_joins_the_outer_one(conn):
+    with db.transaction(conn):
+        db.create_project(conn, "outer", "a", "generic", "2026-08-08T00:00:00+00:00")
+        with db.transaction(conn):
+            db.create_project(conn, "inner", "b", "generic", "2026-08-08T00:00:00+00:00")
+        assert len(db.list_projects(conn)) == 2  # inner did not commit on its own
+    assert len(db.list_projects(conn)) == 2
+
+
+def test_a_swallowed_inner_failure_still_rolls_the_outer_transaction_back(conn):
+    """A poisoned transaction must not be committable. Without this, an outer
+    block that catches its inner block's exception commits half a cascade --
+    the same defect one level up."""
+    with pytest.raises(db.TransactionPoisonedError):
+        with db.transaction(conn):
+            db.create_project(conn, "outer", "a", "generic", "2026-08-08T00:00:00+00:00")
+            try:
+                with db.transaction(conn):
+                    db.create_project(conn, "inner", "b", "generic", "2026-08-08T00:00:00+00:00")
+                    raise RuntimeError("boom")
+            except RuntimeError:
+                pass
+    assert db.list_projects(conn) == []
+```
+
+- [ ] **Run it.** `AttributeError: module 'pipeline_app.db' has no attribute 'transaction'`.
+- [ ] **Implement (a).** Add to the top of `db.py`:
+
+```python
+import sqlite3
+import threading
+from contextlib import contextmanager
+from pathlib import Path
+
+
+class TransactionPoisonedError(RuntimeError):
+    """An inner transaction failed and its exception was swallowed.
+
+    Committing the outer block would persist half a cascade -- exactly the
+    defect `transaction()` exists to prevent -- so the boundary rolls back and
+    raises this instead of silently succeeding."""
+
+
+# Keyed by connection identity, deliberately NOT by thread: the app shares one
+# connection between the threadpool routes and the event-loop chat route
+# (get_connection's check_same_thread=False), so a transaction is a property of
+# the connection, not of whoever happens to be running. The key is only present
+# while `transaction()` holds a strong reference to the connection, so id reuse
+# cannot collide.
+_TXN_DEPTH: dict[int, int] = {}
+_TXN_POISON: set[int] = set()
+_TXN_LOCK = threading.Lock()
+
+
+def commit_unless_in_transaction(conn: sqlite3.Connection) -> None:
+    """What every leaf helper in this module calls instead of `conn.commit()`.
+
+    Outside a `transaction()` block it commits immediately, byte-for-byte the
+    behaviour every existing caller already depends on. Inside one it is a
+    no-op, so the boundary owns the commit and a multi-row invariant is atomic
+    for the first time (A-70)."""
+    with _TXN_LOCK:
+        in_txn = _TXN_DEPTH.get(id(conn), 0) > 0
+    if not in_txn:
+        conn.commit()
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection):
+    """One explicit boundary around a multi-row invariant.
+
+    Wrap project creation, approval + unlock, the staleness cascade and each
+    per-project backfill in this. Nests: an inner block joins the outer one
+    rather than committing early."""
+    key = id(conn)
+    with _TXN_LOCK:
+        depth = _TXN_DEPTH.get(key, 0)
+        _TXN_DEPTH[key] = depth + 1
+    outermost = depth == 0
+    try:
+        yield conn
+    except BaseException as exc:
+        with _TXN_LOCK:
+            _TXN_POISON.add(key)
+        if outermost:
+            _rollback_and_report(conn, exc)
+        raise
+    else:
+        with _TXN_LOCK:
+            poisoned = key in _TXN_POISON
+        if outermost and poisoned:
+            exc = TransactionPoisonedError(
+                "an inner transaction failed and its exception was swallowed"
+            )
+            _rollback_and_report(conn, exc)
+            raise exc
+        if outermost:
+            conn.commit()
+    finally:
+        with _TXN_LOCK:
+            if outermost:
+                _TXN_DEPTH.pop(key, None)
+                _TXN_POISON.discard(key)
+            else:
+                _TXN_DEPTH[key] = depth
+
+
+def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException) -> None:
+    from pipeline_app import obs
+
+    try:
+        conn.rollback()
+    except Exception as rollback_exc:  # noqa: BLE001 -- report it, never mask the original
+        obs.log("db.rollback_failed", level="critical",
+                error=f"{type(rollback_exc).__name__}: {rollback_exc}")
+    obs.record_event(
+        conn, kind="db.transaction_rolled_back", severity="error", source="db.transaction",
+        message=f"rolled back after {type(exc).__name__}: {exc}",
+        detail={"exception": type(exc).__name__},
+    )
+```
+
+- [ ] **Implement (b).** Replace every one of the ~20 bare `conn.commit()` calls in `db.py`'s
+      helpers with `commit_unless_in_transaction(conn)`. Leave `init_db`'s own `conn.commit()`
+      alone — it owns a short-lived private connection and is never inside a caller's boundary.
+      Verify with `grep -n "conn.commit()" pipeline_app/db.py` — the only survivor is `init_db`'s.
+- [ ] **Run it.** All six pass. Then run the whole app suite: `cd pipeline-app && python -m pytest -q`.
+      **Zero existing tests may change behaviour.** If any fails, the compatibility rule was broken.
+- [ ] **Commit.** `fix(db): give every multi-row invariant a transaction boundary (A-70)`
+
+---
+
+### T5 — A-72: schema versioning and an ordered, once-only migration list
+
+**A-72 (S2, latent).** There is no `schema_version` table, no version stamp and no `ALTER TABLE`
+path: the entire strategy is re-running `schema.sql` on every boot, and every statement in it is
+`IF NOT EXISTS`. On a database that already has the table, a newly added column, `CHECK` or
+`UNIQUE` is silently skipped — `init_db` reports success and the first query touching it fails at
+runtime with `no such column` in whatever route happens to hit it first. T6–T11 all add exactly
+such constraints, so this task must land before any of them.
+
+- [ ] **Write the failing test.** Append to `tests/test_db.py`:
+
+```python
+LEGACY_SCHEMA_V0 = """
+CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL UNIQUE,
+  slug TEXT NOT NULL, brand TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE stages (id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id), stage_id TEXT NOT NULL,
+  status TEXT NOT NULL, claude_session_id TEXT, approved_at TEXT,
+  UNIQUE(project_id, stage_id));
+CREATE TABLE turns (id INTEGER PRIMARY KEY AUTOINCREMENT,
+  stage_row_id INTEGER NOT NULL REFERENCES stages(id), status TEXT NOT NULL,
+  created_at TEXT NOT NULL, finished_at TEXT, events_path TEXT NOT NULL, cost_usd REAL);
+CREATE TABLE handles (id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NULL,
+  handle TEXT NOT NULL, display_name TEXT, cohort TEXT NOT NULL, keyword_filter TEXT,
+  included INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'pending',
+  added_at TEXT NOT NULL, validated_at TEXT, last_seen_published_at TEXT,
+  UNIQUE(platform, handle));
+"""
+SCHEMA_PATH = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+
+
+def _legacy_db(tmp_path: Path) -> Path:
+    """A database written by the build that predates every constraint in this
+    package -- the operator's real pipeline.db."""
+    db_path = tmp_path / "pipeline.db"
+    c = sqlite3.connect(db_path)
+    c.executescript(LEGACY_SCHEMA_V0)
+    c.commit()
+    c.close()
+    return db_path
+
+
+def test_a_fresh_database_is_stamped_at_the_current_schema_version(tmp_path: Path):
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0] \
+            == db.SCHEMA_VERSION
+    finally:
+        c.close()
+
+
+def test_an_existing_database_is_migrated_not_silently_left_behind(tmp_path: Path):
+    """This is A-72: `CREATE TABLE IF NOT EXISTS` skips the new constraint and
+    init_db reports success anyway."""
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0] \
+            == db.SCHEMA_VERSION
+        ddl = c.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='handles'"
+        ).fetchone()[0]
+        assert "CHECK" in ddl  # the constraint actually landed on the existing table
+    finally:
+        c.close()
+
+
+def test_migrations_are_applied_exactly_once(tmp_path: Path):
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    db.init_db(db_path, SCHEMA_PATH)  # a second boot must be a no-op, not a re-run
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT count(*) FROM schema_version").fetchone()[0] == 1
+        assert c.execute("SELECT version FROM schema_version").fetchone()[0] == db.SCHEMA_VERSION
+    finally:
+        c.close()
+
+
+def test_a_database_from_a_newer_build_fails_loudly_instead_of_booting(tmp_path: Path):
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    c.execute("UPDATE schema_version SET version = ? WHERE id = 1", (db.SCHEMA_VERSION + 5,))
+    c.commit()
+    c.close()
+    with pytest.raises(db.SchemaVersionError):
+        db.init_db(db_path, SCHEMA_PATH)
+```
+
+- [ ] **Run it.** Fails: `no such table: schema_version`.
+- [ ] **Implement (a).** Prepend to `schema.sql`:
+
+```sql
+-- Schema versioning exists because everything below is `IF NOT EXISTS`: on a
+-- database that already has a table, a newly added column, CHECK or UNIQUE is
+-- silently skipped and the first query touching it fails at runtime with
+-- `no such column` in whatever route happens to hit it first (A-72). This file
+-- is the create-from-scratch path; db._MIGRATIONS is the upgrade path, and
+-- test_fresh_schema_matches_migrated_schema keeps the two identical.
+CREATE TABLE IF NOT EXISTS schema_version (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL
+);
+```
+
+- [ ] **Implement (b).** In `db.py`:
+
+```python
+SCHEMA_VERSION = 1
+
+
+class SchemaVersionError(RuntimeError):
+    """The database was written by a build newer than this code understands."""
+
+
+_MIGRATIONS: list[tuple[int, "Callable[[sqlite3.Connection], None]"]] = [
+    # (1, _migration_1_constrain_core_tables) -- registered in T6.
+]
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
+def init_db(db_path: Path, schema_path: Path) -> None:
+    conn = get_connection(db_path)
+    try:
+        # A database that already has `projects` predates versioning, so it is
+        # stamped 0 and every migration runs. A database that does not is being
+        # created right now by schema.sql at the target shape, so it is stamped
+        # at the current version and every migration is correctly skipped.
+        pre_existing = _table_exists(conn, "projects")
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+        conn.commit()
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, ?)",
+            (0 if pre_existing else SCHEMA_VERSION,),
+        )
+        conn.commit()
+        apply_migrations(conn)
+    finally:
+        conn.close()
+
+
+def apply_migrations(conn: sqlite3.Connection) -> list[int]:
+    """Run every registered migration the database has not seen, in order.
+
+    Returns the versions applied. Raises SchemaVersionError rather than booting
+    against a database a newer build has already upgraded -- silently running
+    old code over a new schema is how data gets destroyed."""
+    from pipeline_app import obs
+
+    current = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
+    if current > SCHEMA_VERSION:
+        obs.record_event(
+            conn, kind="schema.version_ahead_of_code", severity="critical", source="db.init_db",
+            message=f"database is at schema version {current}, this build understands "
+                    f"{SCHEMA_VERSION}",
+            detail={"db_version": current, "code_version": SCHEMA_VERSION},
+        )
+        raise SchemaVersionError(
+            f"database schema version {current} is newer than this build's {SCHEMA_VERSION}; "
+            f"upgrade the app or restore an older database"
+        )
+    applied: list[int] = []
+    for version, migrate in _MIGRATIONS:
+        if version <= current:
+            continue
+        migrate(conn)
+        conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (version,))
+        conn.commit()
+        applied.append(version)
+        obs.record_event(
+            conn, kind="schema.migration_applied", severity="info", source="db.apply_migrations",
+            message=f"applied schema migration {version}", detail={"version": version},
+        )
+    return applied
+```
+
+- [ ] **Run it.** The first, third and fourth pass. The second still fails (`CHECK` not in the
+      `handles` DDL) — that is T10's job and is the correct failure. Mark it
+      `@pytest.mark.xfail(reason="migration 1 lands in T10", strict=True)` and remove the marker
+      in T10.
+- [ ] **Commit.** `feat(db): version the schema and run migrations exactly once (A-72)`
+
+---
+
+### T6 — A-47: `stages.status` accepts any string
+
+**A-47 (S4, latent).** `update_stage_status` takes a bare `str` and the column accepts anything.
+Three call sites already pass string literals rather than `StageStatus` members, so a typo would
+persist a status no guard recognizes — `is_locked_or_running` returns `False` for it, making the
+stage chattable, editable and approvable regardless of what it was meant to mean.
+
+- [ ] **Write the failing test.** Append to `tests/test_db.py`:
+
+```python
+def test_stages_status_rejects_a_value_outside_the_enum(conn):
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_stage_row(conn, project_id, "ideation", "awaiting_reveiw")  # the typo
+
+
+def test_update_stage_status_rejects_a_value_outside_the_enum(conn):
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.update_stage_status(conn, stage_row_id, "aproved")
+    assert db.get_stage_by_row_id(conn, stage_row_id)["status"] == "ready"
+
+
+def test_every_StageStatus_member_is_accepted_by_the_check(conn):
+    """The constraint must not be narrower than the enum -- a CHECK that rejects
+    a legitimate status is worse than none."""
+    from pipeline_app.state_machine import StageStatus
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    for i, member in enumerate(StageStatus):
+        db.create_stage_row(conn, project_id, f"stage-{i}", member.value)
+
+
+def test_migration_coerces_a_ghost_stage_status_and_records_it(tmp_path: Path, monkeypatch):
+    """A legacy database can already contain the typo. The migration must not
+    brick the boot on it, and must not discard it silently either."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','awaiting_reveiw');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT status FROM stages WHERE id = 1").fetchone()[0] == "no_artifact"
+        ev = c.execute(
+            "SELECT * FROM events WHERE kind = 'schema.stage_status_coerced'"
+        ).fetchall()
+        assert len(ev) == 1
+        assert "awaiting_reveiw" in ev[0]["message"]
+    finally:
+        c.close()
+```
+
+- [ ] **Run it.** All four fail — no `CHECK` exists.
+- [ ] **Implement (a).** In `schema.sql`, replace the `stages` table with:
+
+```sql
+CREATE TABLE IF NOT EXISTS stages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    stage_id TEXT NOT NULL,
+    -- Mirrors state_machine.StageStatus. Without it a typo'd literal (three
+    -- call sites already pass bare strings) persists a status no guard
+    -- recognizes: is_locked_or_running returns False for it, so the stage stays
+    -- chattable, editable and approvable regardless of intent (A-47).
+    status TEXT NOT NULL CHECK (status IN
+        ('locked','ready','running','awaiting_review','approved','stale','no_artifact')),
+    claude_session_id TEXT,
+    approved_at TEXT,
+    UNIQUE(project_id, stage_id)
+);
+```
+
+- [ ] **Implement (b).** In `db.py`, add migration 1's first half and register it:
+
+```python
+STAGE_STATUSES = ("locked", "ready", "running", "awaiting_review", "approved",
+                  "stale", "no_artifact")
+
+
+def _coerce_unknown_stage_statuses(conn: sqlite3.Connection) -> None:
+    """A legacy row can already hold the typo the new CHECK exists to prevent,
+    and `INSERT ... SELECT` into the rebuilt table would abort on it -- bricking
+    the boot on the very defect being fixed. Coerce to 'no_artifact', which is
+    loud in the UI and destroys nothing, and record one event per row."""
+    from pipeline_app import obs
+
+    placeholders = ",".join("?" * len(STAGE_STATUSES))
+    rows = conn.execute(
+        f"SELECT id, project_id, stage_id, status FROM stages "
+        f"WHERE status NOT IN ({placeholders})", STAGE_STATUSES
+    ).fetchall()
+    for row in rows:
+        conn.execute("UPDATE stages SET status = 'no_artifact' WHERE id = ?", (row["id"],))
+        obs.record_event(
+            conn, kind="schema.stage_status_coerced", severity="warning",
+            source="db.migration_1",
+            message=f"stage {row['stage_id']} held unknown status {row['status']!r}; "
+                    f"coerced to 'no_artifact'",
+            detail={"stage_row_id": row["id"], "project_id": row["project_id"],
+                    "was": row["status"]},
+        )
+    if rows:
+        conn.commit()
+
+
+_MIGRATION_1_STAGES_SQL = """
+CREATE TABLE stages_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    stage_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN
+        ('locked','ready','running','awaiting_review','approved','stale','no_artifact')),
+    claude_session_id TEXT,
+    approved_at TEXT,
+    UNIQUE(project_id, stage_id)
+);
+INSERT INTO stages_new (id, project_id, stage_id, status, claude_session_id, approved_at)
+    SELECT id, project_id, stage_id, status, claude_session_id, approved_at FROM stages;
+DROP TABLE stages;
+ALTER TABLE stages_new RENAME TO stages;
+"""
+
+
+def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
+    """A-47/A-71/A-75/B-72/B-73/B-82 in one 12-step rebuild.
+
+    Every statement in schema.sql is `CREATE TABLE IF NOT EXISTS`, so none of
+    these constraints can reach a database that already has the table. This is
+    the only path that applies them, and it is why schema_version exists."""
+    conn.commit()
+    _coerce_unknown_stage_statuses(conn)
+    # PRAGMAs are no-ops inside a transaction, and executescript COMMITs first,
+    # so both are issued on a clean connection. legacy_alter_table keeps RENAME
+    # a pure rename instead of rewriting every referencing table's DDL midway
+    # through a rebuild, when half the referenced tables do not exist.
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.executescript(_MIGRATION_1_STAGES_SQL)
+        conn.commit()
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+        conn.execute("PRAGMA foreign_keys = ON")
+    violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        raise RuntimeError(f"migration 1 left {len(violations)} foreign key violations")
+
+
+_MIGRATIONS = [(1, _migration_1_constrain_core_tables)]
+```
+
+- [ ] **Run it.** All four pass. Then the full app suite — `create_stage_row` is called with
+      literals across many packages' tests; every literal already in the tree is a valid
+      `StageStatus` (verified: `approved`, `awaiting_review`, `locked`, `ready`, `running`).
+- [ ] **Commit.** `fix(schema): constrain stages.status to the StageStatus enum (A-47)`
+
+---
+
+### T7 — A-75: FK indices, `turns.status` CHECK, `ON DELETE` clauses
+
+**A-75 (S4, latent).** `turns.stage_row_id`, `discovery_run_handles.run_id` and
+`discovery_run_handles.handle_id` are declared as foreign keys with no covering index, so
+`list_turns` and every FK integrity check are full scans — harmless at current volumes but growing
+monotonically, since nothing prunes `turns`. No FK declares `ON DELETE`, so a future delete path
+would either fail or orphan rows depending on pragma state.
+
+- [ ] **Write the failing test.** Append to `tests/test_db.py`:
+
+```python
+def _indexed_columns(conn) -> set[tuple[str, str]]:
+    out = set()
+    for tbl, in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+        for idx in conn.execute(f"PRAGMA index_list('{tbl}')").fetchall():
+            for col in conn.execute(f"PRAGMA index_info('{idx['name']}')").fetchall():
+                out.add((tbl, col["name"]))
+    return out
+
+
+def test_every_foreign_key_column_is_covered_by_an_index(conn):
+    """An unindexed FK makes both the join and every integrity check a full
+    scan, and turns is never pruned."""
+    indexed = _indexed_columns(conn)
+    for table, column in [("turns", "stage_row_id"),
+                          ("discovery_run_handles", "run_id"),
+                          ("discovery_run_handles", "handle_id"),
+                          ("handles", "creator_id")]:
+        assert (table, column) in indexed, f"{table}.{column} is an unindexed foreign key"
+
+
+def test_turns_status_rejects_a_value_outside_the_vocabulary(conn):
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_turn(conn, stage_row_id, "complet", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+
+
+def test_every_turn_status_the_app_writes_is_accepted(conn):
+    """turn_service writes running/aborted/complete/failed; preflight writes
+    orphaned. A CHECK narrower than that would break the app at runtime."""
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    turn_id = db.create_turn(conn, stage_row_id, "running", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    for status in ("complete", "failed", "aborted", "orphaned"):
+        db.update_turn(conn, turn_id, status)
+
+
+def test_deleting_a_project_cascades_to_its_stages_and_turns(conn):
+    """No FK declared ON DELETE, so a future delete path would either fail or
+    orphan rows depending on pragma state. Pin the behaviour now."""
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    db.create_turn(conn, stage_row_id, "complete", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+    assert conn.execute("SELECT count(*) FROM stages").fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM turns").fetchone()[0] == 0
+```
+
+- [ ] **Run it.** All five fail.
+- [ ] **Implement.** In `schema.sql`, replace `turns` and add the FK indices; mirror the same DDL
+      into `_MIGRATION_1_TURNS_SQL` in `db.py` and call `_coerce_unknown_turn_statuses` (same
+      shape as `_coerce_unknown_stage_statuses`, coercing to `'orphaned'` with kind
+      `schema.turn_status_coerced` — a turn whose status cannot be interpreted *is* an orphan):
+
+```sql
+CREATE TABLE IF NOT EXISTS turns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stage_row_id INTEGER NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
+    -- turn_service writes running/aborted/complete/failed; preflight writes
+    -- orphaned. Anything else is a typo that every status comparison in the app
+    -- would silently answer False to (A-47's defect, same shape) (A-75).
+    status TEXT NOT NULL CHECK (status IN
+        ('running','complete','failed','aborted','orphaned')),
+    created_at TEXT NOT NULL,
+    finished_at TEXT,
+    events_path TEXT NOT NULL,
+    cost_usd REAL
+);
+CREATE INDEX IF NOT EXISTS idx_turns_stage_row ON turns(stage_row_id);
+
+CREATE INDEX IF NOT EXISTS idx_drh_run ON discovery_run_handles(run_id);
+CREATE INDEX IF NOT EXISTS idx_drh_handle ON discovery_run_handles(handle_id);
+```
+
+Also add `ON DELETE CASCADE` to `discovery_run_handles.run_id` and `ON DELETE CASCADE` to
+`discovery_run_handles.handle_id` in the same rebuild.
+
+- [ ] **Run it.** The `creator_id` assertion still fails — that is T9's, correct failure. All
+      others pass. Full app suite green.
+- [ ] **Commit.** `fix(schema): index every FK, constrain turns.status, declare ON DELETE (A-75)`
+
+---
+
+### T8 — A-71: the missing partial unique index on `turns`
+
+**A-71 (S2, silent).** The discovery subsystem enforces its single-running invariant in the schema
+(`ux_discovery_single_running`). The pipeline's identical invariant has no such backstop:
+`any_turn_running` is a plain `SELECT` followed by an unguarded `INSERT`. Two concurrent chat
+POSTs can both read zero running turns and both insert one, launching two Claude subprocesses that
+write the same `raw_output.md`.
+
+- [ ] **Write the failing test.** Append to `tests/test_db.py`:
+
+```python
+def test_a_second_running_turn_is_rejected_by_the_storage_layer(conn):
+    """FAULT. Mirrors test_insert_running_run_then_second_raises for the
+    pipeline's identical invariant."""
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    s1 = db.create_stage_row(conn, project_id, "ideation", "running")
+    s2 = db.create_stage_row(conn, project_id, "scripting", "running")
+    db.create_turn(conn, s1, "running", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_turn(conn, s2, "running", "2026-08-08T00:00:01+00:00", "e/2.jsonl")
+
+
+def test_one_running_turn_coexists_with_any_number_of_finished_ones(conn):
+    """DISTINGUISHABILITY. The rejected-second-turn state must be different from
+    'turns are broken' -- a partial index on the wrong expression would ban the
+    second turn outright."""
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    for i in range(5):
+        t = db.create_turn(conn, stage_row_id, "running", f"2026-08-08T00:0{i}:00+00:00",
+                           f"e/{i}.jsonl")
+        db.update_turn(conn, t, "complete", finished_at=f"2026-08-08T00:0{i}:30+00:00")
+    db.create_turn(conn, stage_row_id, "running", "2026-08-08T00:06:00+00:00", "e/9.jsonl")
+    assert len(db.list_turns(conn, stage_row_id)) == 6
+    assert len(db.list_running_turns(conn)) == 1
+
+
+def test_a_rejected_concurrent_turn_is_visible_as_an_error_event(conn, tmp_path, monkeypatch):
+    """SURFACING. A race the storage layer refuses must leave a row -- an
+    IntegrityError bubbling into a 500 tells the operator nothing findable."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    s1 = db.create_stage_row(conn, project_id, "ideation", "running")
+    s2 = db.create_stage_row(conn, project_id, "scripting", "running")
+    db.create_turn(conn, s1, "running", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_turn(conn, s2, "running", "2026-08-08T00:00:01+00:00", "e/2.jsonl")
+    rows = conn.execute(
+        "SELECT * FROM events WHERE kind = 'turn.concurrent_start_rejected'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert rows[0]["detail"] is not None and "scripting" not in rows[0]["message"] or True
+
+
+def test_migration_orphans_all_but_the_newest_running_turn(tmp_path: Path, monkeypatch):
+    """A legacy database can already hold two running turns -- the exact race
+    this index prevents. The index cannot be created over them, so the migration
+    resolves it loudly instead of failing to boot."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','running');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'scripting','running');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (1,'running','2026-08-08T00:00:00+00:00','e/1.jsonl');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (2,'running','2026-08-08T00:00:05+00:00','e/2.jsonl');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        assert [r["status"] for r in c.execute("SELECT status FROM turns ORDER BY id")] \
+            == ["orphaned", "running"]
+        assert c.execute(
+            "SELECT count(*) FROM events WHERE kind = 'schema.duplicate_running_turn_orphaned'"
+        ).fetchone()[0] == 1
+    finally:
+        c.close()
+```
+
+- [ ] **Run it.** All four fail.
+- [ ] **Implement (a).** Append to `schema.sql`, immediately after `turns`:
+
+```sql
+-- The pipeline's single-running invariant, at the storage layer where discovery
+-- already has it (ux_discovery_single_running). Two concurrent chat POSTs can
+-- both read zero running turns and both insert one, launching two Claude
+-- subprocesses that write the same raw_output.md (A-71).
+CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_single_running
+    ON turns(status) WHERE status = 'running';
+```
+
+- [ ] **Implement (b).** In `db.py`, wrap `create_turn`'s insert:
+
+```python
+def create_turn(conn: sqlite3.Connection, stage_row_id: int, status: str,
+                created_at: str, events_path: str) -> int:
+    from pipeline_app import obs
+
+    try:
+        cur = conn.execute(
+            "INSERT INTO turns (stage_row_id, status, created_at, events_path) "
+            "VALUES (?, ?, ?, ?)",
+            (stage_row_id, status, created_at, events_path),
+        )
+    except sqlite3.IntegrityError as exc:
+        # ux_turns_single_running fired: another turn is already running. The
+        # application-level checks (route pre-check and run_stage_turn) both
+        # read zero -- this is the race they cannot see (A-71).
+        obs.record_event(
+            conn, kind="turn.concurrent_start_rejected", severity="error",
+            source="db.create_turn",
+            message=f"refused a second running turn for stage_row_id={stage_row_id}",
+            detail={"stage_row_id": stage_row_id, "error": str(exc)},
+        )
+        raise
+    commit_unless_in_transaction(conn)
+    return cur.lastrowid
+```
+
+- [ ] **Implement (c).** Add `_orphan_all_but_newest_running_turn(conn)` to migration 1, before
+      the `turns` rebuild: select `running` turns ordered by `created_at DESC, id DESC`, keep the
+      first, `UPDATE ... SET status='orphaned'` on the rest, and `record_event` per row with kind
+      `schema.duplicate_running_turn_orphaned`, severity `warning`.
+- [ ] **Run it.** All four pass. Tidy the third test's trailing `or True` — it is a placeholder in
+      this plan, not shippable; assert on `rows[0]["detail"]` containing the stage row id instead.
+- [ ] **Commit.** `fix(schema): enforce one running turn at the storage layer (A-71)`
+
+---
+
+### T9 — B-72: cross-platform creator identity
+
+**B-72 (S2, coverage-gap).** `@jane` on YouTube and `@jane` on X are unrelated rows with no join
+key. Per-creator reporting is impossible, dedup is per platform+handle directory, and "did we miss
+this creator's new platform" — the operator's actual question — is unanswerable. Adam Grant is
+already registered twice, unlinked.
+
+- [ ] **Write the failing test.** Append to `tests/test_db.py`:
+
+```python
+def test_one_creator_can_own_handles_on_several_platforms(conn):
+    """The join key that does not exist today. Adam Grant is registered on two
+    platforms in manifests/brand_sources.json with nothing connecting them."""
+    creator_id = db.upsert_creator(conn, slug="adam-grant", display_name="Adam Grant")
+    yt = db.create_handle(conn, "youtube", "@bigthink", None, "guru", None,
+                          "2026-08-08T00:00:00+00:00")
+    x = db.create_handle(conn, "x", "@AdamMGrant", None, "guru", None,
+                         "2026-08-08T00:00:00+00:00")
+    db.link_handle_to_creator(conn, yt, creator_id)
+    db.link_handle_to_creator(conn, x, creator_id)
+    rows = db.list_handles_for_creator(conn, creator_id)
+    assert {(r["platform"], r["handle"]) for r in rows} == \
+        {("youtube", "@bigthink"), ("x", "@AdamMGrant")}
+
+
+def test_upsert_creator_is_idempotent_and_updates_the_display_name(conn):
+    first = db.upsert_creator(conn, slug="adam-grant", display_name="A Grant")
+    second = db.upsert_creator(conn, slug="adam-grant", display_name="Adam Grant")
+    assert second == first
+    assert db.get_creator_by_slug(conn, "adam-grant")["display_name"] == "Adam Grant"
+
+
+def test_an_unlinked_handle_is_distinguishable_from_a_linked_one(conn):
+    """Today every handle is unlinked and there is no way to tell. After P10
+    populates creators, an unlinked handle is a coverage gap the operator can
+    query for."""
+    db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-08T00:00:00+00:00")
+    linked = db.create_handle(conn, "x", "@b", None, "guru", None, "2026-08-08T00:00:00+00:00")
+    db.link_handle_to_creator(conn, linked,
+                              db.upsert_creator(conn, slug="b", display_name="B"))
+    assert [r["handle"] for r in db.list_unlinked_handles(conn)] == ["@a"]
+
+
+def test_deleting_a_creator_does_not_delete_its_handles(conn):
+    """ON DELETE SET NULL, not CASCADE: a roster edit must never destroy the
+    handle rows that own the downloaded corpus directories."""
+    creator_id = db.upsert_creator(conn, slug="a", display_name="A")
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    db.link_handle_to_creator(conn, handle_id, creator_id)
+    conn.execute("DELETE FROM creators WHERE id = ?", (creator_id,))
+    conn.commit()
+    assert db.get_handle(conn, handle_id)["creator_id"] is None
+```
+
+- [ ] **Run it.** `no such table: creators`.
+- [ ] **Implement (a).** Append to `schema.sql`, **above** `handles` (the FK target must exist
+      first), verbatim from the frozen DDL plus the index:
+
+```sql
+-- Cross-platform creator identity. Without it @jane on YouTube and @jane on X
+-- are unrelated rows: per-creator reporting is impossible, one creator's
+-- cross-post is counted three times in the daily inventory, and "did we miss
+-- this creator's new platform" is unanswerable (B-72). P10 populates this from
+-- the manifests; this package only creates it.
+CREATE TABLE IF NOT EXISTS creators (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug         TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_handles_creator ON handles(creator_id);
+```
+
+- [ ] **Implement (b).** Add `upsert_creator`, `get_creator_by_slug`, `link_handle_to_creator`,
+      `list_handles_for_creator`, `list_unlinked_handles` to `db.py`:
+
+```python
+def upsert_creator(conn: sqlite3.Connection, *, slug: str, display_name: str) -> int:
+    """One creator, keyed by a stable slug. P10 calls this from the manifests."""
+    with transaction(conn):
+        conn.execute(
+            "INSERT INTO creators (slug, display_name) VALUES (?, ?) "
+            "ON CONFLICT(slug) DO UPDATE SET display_name = excluded.display_name",
+            (slug, display_name),
+        )
+    return conn.execute("SELECT id FROM creators WHERE slug = ?", (slug,)).fetchone()["id"]
+
+
+def get_creator_by_slug(conn: sqlite3.Connection, slug: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM creators WHERE slug = ?", (slug,)).fetchone()
+
+
+def link_handle_to_creator(conn: sqlite3.Connection, handle_id: int, creator_id: int) -> None:
+    conn.execute("UPDATE handles SET creator_id = ? WHERE id = ?", (creator_id, handle_id))
+    commit_unless_in_transaction(conn)
+
+
+def list_handles_for_creator(conn: sqlite3.Connection, creator_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM handles WHERE creator_id = ? ORDER BY platform, handle", (creator_id,)
+    ).fetchall()
+
+
+def list_unlinked_handles(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Handles with no creator. After P10's migration this is the coverage gap
+    list: every row here is a creator the roster cannot report on."""
+    return conn.execute(
+        "SELECT * FROM handles WHERE creator_id IS NULL ORDER BY platform, handle"
+    ).fetchall()
+```
+
+- [ ] **Run it.** These four plus T7's `creator_id` index assertion now pass.
+- [ ] **Commit.** `feat(schema): add cross-platform creator identity (B-72)`
+
+---
+
+### T10 — B-73: `handles.platform` is unconstrained free text
+
+**B-73 (S2, silent).** `platform` is `TEXT NOT NULL` with no CHECK, no enum and no FK. A value the
+adapter registry does not know (`"instgram"`) is stored happily; the spawned validate run then does
+`adapters[handle_row["platform"]]` **outside** the guarding try/except, so it raises `KeyError` in a
+detached subprocess before `set_handle_status(..., "validating")` ever runs. The row is left
+`status='pending', included=1` forever: a ghost platform the operator sees as a tracked handle,
+polled indefinitely for a status that will never change, producing an `error` row on every daily run.
+
+- [ ] **Remove** the `xfail` marker added to `test_an_existing_database_is_migrated_not_silently_left_behind` in T5.
+- [ ] **Write the failing test.** Append to `tests/test_db.py`:
+
+```python
+def test_an_unknown_platform_is_rejected_at_the_storage_layer(conn):
+    """FAULT."""
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_handle(conn, "instgram", "@a", None, "guru", None, "2026-08-08T00:00:00+00:00")
+
+
+def test_a_rejected_platform_leaves_no_row_unlike_a_valid_one(conn):
+    """DISTINGUISHABILITY. The ghost-platform state -- a row that exists,
+    is included, and will never leave 'pending' -- must be impossible, and must
+    not be confused with the platform simply having no handles yet."""
+    db.create_handle(conn, "instagram", "@real", None, "guru", None, "2026-08-08T00:00:00+00:00")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_handle(conn, "instgram", "@ghost", None, "guru", None,
+                         "2026-08-08T00:00:00+00:00")
+    assert [r["handle"] for r in db.list_handles(conn)] == ["@real"]
+    assert db.list_platform_handles(conn, "instgram") == []
+
+
+def test_every_platform_the_adapter_registry_knows_is_accepted(conn):
+    for platform in ("youtube", "bluesky", "instagram", "linkedin-profile",
+                     "linkedin-company", "facebook", "x"):
+        db.create_handle(conn, platform, "@a", None, "guru", None, "2026-08-08T00:00:00+00:00")
+    assert len(db.list_handles(conn)) == 7
+
+
+def test_migration_quarantines_a_ghost_platform_row_and_records_it(tmp_path: Path, monkeypatch):
+    """SURFACING. A legacy database already contains the ghost the CHECK now
+    forbids. Dropping it silently would destroy the operator's only record of
+    what they typed; aborting the migration would brick the boot on the very
+    defect being fixed."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.execute(
+        "INSERT INTO handles (platform, handle, cohort, added_at) "
+        "VALUES ('instgram', '@ghost', 'guru', '2026-08-08T00:00:00+00:00')"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT count(*) FROM handles").fetchone()[0] == 0
+        quarantined = c.execute("SELECT * FROM handles_quarantine").fetchall()
+        assert [(r["platform"], r["handle"]) for r in quarantined] == [("instgram", "@ghost")]
+        ev = c.execute("SELECT * FROM events WHERE kind = 'schema.handle_quarantined'").fetchall()
+        assert len(ev) == 1
+        assert ev[0]["severity"] == "warning"
+        assert "instgram" in ev[0]["message"]
+    finally:
+        c.close()
+```
+
+- [ ] **Run it.** All four fail.
+- [ ] **Implement (a).** In `schema.sql`, replace `handles` (keeping it below `creators`):
+
+```sql
+CREATE TABLE IF NOT EXISTS handles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    creator_id INTEGER REFERENCES creators(id) ON DELETE SET NULL,
+    -- The adapter registry's vocabulary. Unconstrained, a mistyped or
+    -- hand-posted value is stored happily and then raises KeyError in a
+    -- detached validate subprocess, leaving the row 'pending'/included=1
+    -- forever: a ghost the handles page polls for a status that never
+    -- arrives (B-73).
+    platform TEXT NOT NULL CHECK (platform IN
+        ('youtube','bluesky','instagram','linkedin-profile','linkedin-company',
+         'facebook','x')),
+    handle TEXT NOT NULL,
+    display_name TEXT,
+    cohort TEXT NOT NULL,
+    keyword_filter TEXT,
+    included INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN
+        ('pending','validating','validated','invalid','failing')),
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    added_at TEXT NOT NULL,
+    validated_at TEXT,
+    last_seen_published_at TEXT,
+    UNIQUE(platform, handle)
+);
+
+-- Rows migration 1 could not carry across the platform CHECK. Kept, not
+-- dropped: this is the only record of what the operator actually typed.
+CREATE TABLE IF NOT EXISTS handles_quarantine (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    quarantined_at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    handle TEXT NOT NULL,
+    display_name TEXT,
+    cohort TEXT,
+    keyword_filter TEXT,
+    included INTEGER,
+    status TEXT,
+    added_at TEXT,
+    validated_at TEXT,
+    last_seen_published_at TEXT
+);
+```
+
+- [ ] **Implement (b).** In `db.py`, add `KNOWN_PLATFORMS`, `_quarantine_unknown_platforms`, and
+      `_MIGRATION_1_HANDLES_SQL`; call the quarantine step from
+      `_migration_1_constrain_core_tables` *before* the handles rebuild:
+
+```python
+KNOWN_PLATFORMS = ("youtube", "bluesky", "instagram", "linkedin-profile",
+                   "linkedin-company", "facebook", "x")
+
+
+def _quarantine_unknown_platforms(conn: sqlite3.Connection) -> None:
+    """Move B-73's ghost rows aside so the rebuild's INSERT ... SELECT is not
+    aborted by the very defect the CHECK exists to prevent. Each row is copied
+    verbatim and reported -- deleting it silently would destroy the operator's
+    only record of the typo, which is the same class of failure."""
+    from pipeline_app import obs
+
+    placeholders = ",".join("?" * len(KNOWN_PLATFORMS))
+    rows = conn.execute(
+        f"SELECT * FROM handles WHERE platform NOT IN ({placeholders})", KNOWN_PLATFORMS
+    ).fetchall()
+    if not rows:
+        return
+    now = _utcnow_iso()
+    for row in rows:
+        conn.execute(
+            "INSERT INTO handles_quarantine (quarantined_at, reason, platform, handle, "
+            "display_name, cohort, keyword_filter, included, status, added_at, validated_at, "
+            "last_seen_published_at) VALUES (?, 'unknown platform', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (now, row["platform"], row["handle"], row["display_name"], row["cohort"],
+             row["keyword_filter"], row["included"], row["status"], row["added_at"],
+             row["validated_at"], row["last_seen_published_at"]),
+        )
+        conn.execute("DELETE FROM handles WHERE id = ?", (row["id"],))
+        obs.record_event(
+            conn, kind="schema.handle_quarantined", severity="warning",
+            source="db.migration_1",
+            message=f"handle {row['handle']} names unknown platform {row['platform']!r}; "
+                    f"moved to handles_quarantine",
+            detail={"platform": row["platform"], "handle": row["handle"],
+                    "known_platforms": list(KNOWN_PLATFORMS)},
+        )
+    conn.commit()
+```
+
+`_utcnow_iso()` is a two-line helper in `db.py`:
+`return datetime.now(timezone.utc).isoformat(timespec="seconds")`.
+
+- [ ] **Run it.** All four pass, plus T5's un-`xfail`ed test. Full app suite green — every
+      `create_handle` platform literal in the tree is already in `KNOWN_PLATFORMS` (verified:
+      `youtube`, `facebook`, `instagram`; `test_email_render.py`'s `"threads"` is a dict fixture,
+      never a DB row).
+- [ ] **Commit.** `fix(schema): constrain handles.platform and quarantine ghost rows (B-73)`
+
+---
+
+### T11 — B-82: a handle that dies after registration still looks healthy
+
+**B-82 (S2, silent).** `set_handle_status` is called only inside the one-shot `validate_handle`
+branch. A handle that validates at registration and later dies — channel deleted, account renamed,
+scraper permanently blocked — raises per-handle errors into `discovery_run_handles` on every run
+but keeps `status='validated'`, `included=1` on the handles page indefinitely. On the roster
+surface a permanently-broken handle is indistinguishable from a healthy one.
+
+- [ ] **Write the failing test.** Append to `tests/test_db.py`:
+
+```python
+def test_a_handle_is_downgraded_to_failing_after_three_consecutive_failures(conn):
+    """FAULT."""
+    handle_id = db.create_handle(conn, "youtube", "@dead", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    db.set_handle_status(conn, handle_id, "validated", validated_at="2026-08-08T00:01:00+00:00")
+    for _ in range(2):
+        db.record_handle_failure(conn, handle_id, now_iso="2026-08-08T06:00:00+00:00")
+        assert db.get_handle(conn, handle_id)["status"] == "validated"
+    assert db.record_handle_failure(conn, handle_id, now_iso="2026-08-08T06:00:00+00:00") \
+        == "failing"
+    row = db.get_handle(conn, handle_id)
+    assert row["status"] == "failing"
+    assert row["consecutive_failures"] == 3
+
+
+def test_a_failing_handle_is_distinguishable_from_an_operator_disabled_one(conn):
+    """DISTINGUISHABILITY. The intended distinction already works in the other
+    direction -- included=0/validated (operator disabled) vs
+    included=0/invalid (auto-excluded at registration). The gap was only for
+    handles that break *after* registration, and this closes it without
+    collapsing into either existing state."""
+    dead = db.create_handle(conn, "youtube", "@dead", None, "guru", None,
+                            "2026-08-08T00:00:00+00:00")
+    disabled = db.create_handle(conn, "youtube", "@paused", None, "guru", None,
+                                "2026-08-08T00:00:00+00:00")
+    for h in (dead, disabled):
+        db.set_handle_status(conn, h, "validated", validated_at="2026-08-08T00:01:00+00:00")
+    for _ in range(3):
+        db.record_handle_failure(conn, dead, now_iso="2026-08-08T06:00:00+00:00")
+    db.set_handle_included(conn, disabled, False)
+
+    dead_row, disabled_row = db.get_handle(conn, dead), db.get_handle(conn, disabled)
+    assert (dead_row["status"], dead_row["included"]) == ("failing", 1)
+    assert (disabled_row["status"], disabled_row["included"]) == ("validated", 0)
+    assert dead_row["consecutive_failures"] == 3
+    assert disabled_row["consecutive_failures"] == 0
+
+
+def test_downgrading_a_handle_records_an_error_event(conn, tmp_path, monkeypatch):
+    """SURFACING."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    handle_id = db.create_handle(conn, "youtube", "@dead", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    db.set_handle_status(conn, handle_id, "validated", validated_at="2026-08-08T00:01:00+00:00")
+    for _ in range(3):
+        db.record_handle_failure(conn, handle_id, now_iso="2026-08-08T06:00:00+00:00")
+    rows = conn.execute("SELECT * FROM events WHERE kind = 'handle.marked_failing'").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "@dead" in rows[0]["message"]
+
+
+def test_a_successful_fetch_lifts_a_failing_handle_back_to_validated(conn):
+    """The downgrade has to be reversible: a transient outage must not
+    permanently mark a live source dead."""
+    handle_id = db.create_handle(conn, "youtube", "@flaky", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    db.set_handle_status(conn, handle_id, "validated", validated_at="2026-08-08T00:01:00+00:00")
+    for _ in range(3):
+        db.record_handle_failure(conn, handle_id, now_iso="2026-08-08T06:00:00+00:00")
+    db.clear_handle_failures(conn, handle_id)
+    row = db.get_handle(conn, handle_id)
+    assert (row["status"], row["consecutive_failures"]) == ("validated", 0)
+
+
+def test_clearing_failures_does_not_resurrect_a_handle_the_operator_invalidated(conn):
+    """'invalid' is a registration-time verdict, not a failure counter. A
+    successful fetch must not overwrite it."""
+    handle_id = db.create_handle(conn, "youtube", "@bad", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    db.set_handle_status(conn, handle_id, "invalid")
+    db.clear_handle_failures(conn, handle_id)
+    assert db.get_handle(conn, handle_id)["status"] == "invalid"
+```
+
+- [ ] **Run it.** `no such column: consecutive_failures`.
+- [ ] **Implement.** The column and the `failing` status already landed in T10's `handles` DDL.
+      Add to `db.py`:
+
+```python
+HANDLE_FAILURE_THRESHOLD = 3
+
+
+def record_handle_failure(conn: sqlite3.Connection, handle_id: int, *, now_iso: str,
+                          threshold: int = HANDLE_FAILURE_THRESHOLD) -> str:
+    """Count one consecutive per-handle failure; return the handle's status.
+
+    B-82: set_handle_status was only ever called from the one-shot validate
+    branch, so a handle that validated at registration and later died kept
+    status='validated', included=1 forever while raising an error row into
+    discovery_run_handles on every single run. On the roster a permanently
+    broken source was indistinguishable from a healthy one.
+
+    At `threshold` consecutive failures the handle is downgraded to 'failing'.
+    The counter is the evidence; the status is the signal. P8 calls this from
+    the per-handle error branch of discovery_engine."""
+    from pipeline_app import obs
+
+    with transaction(conn):
+        conn.execute(
+            "UPDATE handles SET consecutive_failures = consecutive_failures + 1 WHERE id = ?",
+            (handle_id,),
+        )
+        row = conn.execute(
+            "SELECT handle, platform, status, consecutive_failures FROM handles WHERE id = ?",
+            (handle_id,),
+        ).fetchone()
+        if row is None:
+            return "unknown"
+        status = row["status"]
+        if row["consecutive_failures"] >= threshold and status in ("validated", "pending"):
+            status = "failing"
+            conn.execute("UPDATE handles SET status = 'failing' WHERE id = ?", (handle_id,))
+            obs.record_event(
+                conn, kind="handle.marked_failing", severity="error",
+                source="db.record_handle_failure",
+                message=f"{row['platform']} handle {row['handle']} failed "
+                        f"{row['consecutive_failures']} consecutive runs; marked failing",
+                detail={"handle_id": handle_id, "platform": row["platform"],
+                        "handle": row["handle"],
+                        "consecutive_failures": row["consecutive_failures"],
+                        "since": now_iso},
+            )
+    return status
+
+
+def clear_handle_failures(conn: sqlite3.Connection, handle_id: int) -> None:
+    """A successful fetch resets the counter and lifts a 'failing' handle back to
+    'validated'. 'invalid' is deliberately untouched: that is a registration-time
+    verdict, not a failure counter."""
+    conn.execute(
+        "UPDATE handles SET consecutive_failures = 0, "
+        "status = CASE WHEN status = 'failing' THEN 'validated' ELSE status END WHERE id = ?",
+        (handle_id,),
+    )
+    commit_unless_in_transaction(conn)
+```
+
+- [ ] **Run it.** All five pass.
+- [ ] **Commit.** `feat(db): downgrade a handle that fails N consecutive runs (B-82)`
+
+---
+
+### T12 — the schema-drift guard
+
+Every constraint in T6–T11 exists twice: once in `schema.sql` (create-from-scratch) and once in
+migration 1 (upgrade). That duplication is how migration systems silently diverge. One test makes
+divergence impossible.
+
+- [ ] **Write the failing test.** Append to `tests/test_db.py`:
+
+```python
+def _normalized_schema(conn) -> set[str]:
+    return {
+        " ".join(row[0].split())
+        for row in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+    }
+
+
+def test_a_migrated_database_has_the_same_schema_as_a_fresh_one(tmp_path: Path):
+    """schema.sql and the migration list express the same constraints twice.
+    A database upgraded from v0 and one created today must be indistinguishable,
+    or the next `no such column` at runtime is already written."""
+    fresh_path = tmp_path / "fresh.db"
+    db.init_db(fresh_path, SCHEMA_PATH)
+
+    migrated_path = _legacy_db(tmp_path)
+    db.init_db(migrated_path, SCHEMA_PATH)
+
+    fresh, migrated = db.get_connection(fresh_path), db.get_connection(migrated_path)
+    try:
+        assert _normalized_schema(migrated) == _normalized_schema(fresh)
+    finally:
+        fresh.close()
+        migrated.close()
+```
+
+- [ ] **Run it.** It fails on whatever T6–T11 got subtly wrong — most likely an `IF NOT EXISTS`
+      present in one form and absent in the other, or a column order difference. Fix the migration
+      SQL (never the assertion) until the two match exactly.
+- [ ] **Commit.** `test(db): pin the migrated schema to the fresh schema (A-72)`
+
+---
+
+### T13 — A-85: no lifespan handler, so the connection is never closed
+
+**A-85 (S4, latent).** `create_app` opens the shared connection and registers no shutdown hook, so
+it is closed only by process exit — the WAL is never explicitly checkpointed, leaving
+`pipeline.db-wal`/`-shm` beside the database after every run. `init_db` correctly opens and closes
+its own short-lived connection, which makes the asymmetry a deviation from the module's own
+established pattern.
+
+- [ ] **Write the failing test.** Append to `tests/test_main.py`:
+
+```python
+def test_app_shutdown_closes_the_connection_and_truncates_the_wal(repo_root: Path):
+    from fastapi.testclient import TestClient
+
+    db_path = repo_root / "pipeline.db"
+    app = create_app(repo_root=repo_root, db_path=db_path)
+    with TestClient(app) as client:
+        client.get("/doctor")
+        assert (repo_root / "pipeline.db-wal").exists()
+    # Shutdown ran: the connection is closed and the WAL was checkpointed away.
+    with pytest.raises(sqlite3.ProgrammingError):
+        app.state.conn.execute("SELECT 1")
+    assert (repo_root / "pipeline.db-wal").stat().st_size == 0 \
+        or not (repo_root / "pipeline.db-wal").exists()
+```
+
+- [ ] **Run it.** Fails — no lifespan runs, the connection stays open.
+- [ ] **Implement.** In `main.py`, build the app with a lifespan:
+
+```python
+from contextlib import asynccontextmanager
+
+
+def create_app(repo_root: Path, db_path: Path) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        # `init_db` already opens and closes its own short-lived connection;
+        # the shared one had no shutdown hook at all, so the WAL was never
+        # checkpointed and every test that built an app leaked a connection and
+        # its -wal/-shm files for the life of the process (A-85).
+        _release_reconcile_lease(app.state.conn, app.state.instance_token)
+        try:
+            app.state.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception as exc:  # noqa: BLE001 -- shutdown must not raise
+            obs.log("db.checkpoint_failed", level="warning",
+                    error=f"{type(exc).__name__}: {exc}")
+        app.state.conn.close()
+
+    app = FastAPI(lifespan=lifespan)
+    ...
+```
+
+`_release_reconcile_lease` lands in T14; stub it as a no-op here and fill it in there, or land
+T14 first.
+
+- [ ] **Run it.** Passes. Full app suite green — no existing test uses `with TestClient(app)`
+      (verified: zero occurrences), so no existing test's connection is closed early by this.
+- [ ] **Commit.** `fix(main): close the shared connection and checkpoint the WAL on shutdown (A-85)`
+
+---
+
+### T14 — A-76: a second worker orphans a live turn
+
+**A-76 (S3, silent).** `reconcile_orphaned_turns` runs inside `create_app`, which
+`create_default_app` invokes once per worker process. It unconditionally marks **every** `running`
+turn `orphaned` and unwedges its stage — it has no notion of which process owns a turn. Starting a
+second worker declares an actively-streaming turn dead, flips its stage mid-flight and releases the
+single-flight lock so a second turn can start against the same `raw_output.md`. Nothing pins
+`--workers 1`.
+
+- [ ] **Write the failing test.** Append to `tests/test_main.py`:
+
+```python
+def test_a_second_app_instance_does_not_orphan_a_live_turn(repo_root: Path):
+    """FAULT. This is `uvicorn --workers 2` against a running turn."""
+    from pipeline_app import db as db_mod
+
+    db_path = repo_root / "pipeline.db"
+    first = create_app(repo_root=repo_root, db_path=db_path)
+    project_id = db_mod.create_project(first.state.conn, "a-1", "a", "generic",
+                                       "2026-08-08T00:00:00+00:00")
+    stage_row_id = db_mod.create_stage_row(first.state.conn, project_id, "ideation", "running")
+    db_mod.create_turn(first.state.conn, stage_row_id, "running",
+                       "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+
+    second = create_app(repo_root=repo_root, db_path=db_path)
+
+    assert len(db_mod.list_running_turns(second.state.conn)) == 1
+    assert db_mod.get_stage_by_row_id(second.state.conn, stage_row_id)["status"] == "running"
+
+
+def test_a_skipped_sweep_is_distinguishable_from_a_clean_one(repo_root: Path):
+    """DISTINGUISHABILITY. `orphaned_count == 0` means 'I swept and found
+    nothing'. A second instance that never swept must not report the same
+    thing -- that equivalence is the whole defect."""
+    db_path = repo_root / "pipeline.db"
+    first = create_app(repo_root=repo_root, db_path=db_path)
+    assert first.state.orphaned_count == 0
+
+    second = create_app(repo_root=repo_root, db_path=db_path)
+    assert second.state.orphaned_count is None
+
+
+def test_a_skipped_sweep_records_a_warning_event(repo_root: Path, tmp_path: Path, monkeypatch):
+    """SURFACING."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    db_path = repo_root / "pipeline.db"
+    first = create_app(repo_root=repo_root, db_path=db_path)
+    create_app(repo_root=repo_root, db_path=db_path)
+    rows = first.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'app.startup.reconcile_skipped'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "warning"
+
+
+def test_an_expired_lease_is_reclaimed_so_a_real_restart_still_sweeps(repo_root: Path):
+    """A crashed instance must not block reconciliation forever."""
+    from pipeline_app import main as main_mod
+
+    db_path = repo_root / "pipeline.db"
+    first = create_app(repo_root=repo_root, db_path=db_path)
+    first.state.conn.execute(
+        "UPDATE app_instances SET heartbeat_at = '2020-01-01T00:00:00+00:00' WHERE id = 1"
+    )
+    first.state.conn.commit()
+    second = create_app(repo_root=repo_root, db_path=db_path)
+    assert second.state.orphaned_count == 0  # swept, not skipped
+```
+
+- [ ] **Run it.** `test_a_second_app_instance_does_not_orphan_a_live_turn` fails with
+      `status == "awaiting_review"` / zero running turns — A-76 reproduced exactly.
+- [ ] **Implement (a).** Append to `schema.sql`:
+
+```sql
+-- Which process owns startup reconciliation. reconcile_orphaned_turns marks
+-- EVERY running turn orphaned and unwedges its stage; run once per uvicorn
+-- worker it declares an actively-streaming turn dead and releases the
+-- single-flight lock mid-write (A-76). One row, one lease, one sweeper.
+CREATE TABLE IF NOT EXISTS app_instances (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    owner_token  TEXT NOT NULL,
+    claimed_at   TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL
+);
+```
+
+- [ ] **Implement (b).** In `main.py`:
+
+```python
+RECONCILE_LEASE_SECONDS = 120
+
+
+def _claim_reconcile_lease(conn, token: str, now: datetime,
+                           lease_seconds: int = RECONCILE_LEASE_SECONDS) -> bool:
+    """True if this process may run the startup sweep.
+
+    A clean shutdown releases the lease (see the lifespan handler), so a genuine
+    restart sweeps immediately. A crash leaves it, and the lease expires after
+    `lease_seconds` -- long enough that uvicorn's other workers, which start
+    within seconds, are correctly refused."""
+    now_iso = now.isoformat(timespec="seconds")
+    with db_mod.transaction(conn):
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO app_instances (id, owner_token, claimed_at, heartbeat_at) "
+            "VALUES (1, ?, ?, ?)", (token, now_iso, now_iso),
+        )
+        if cur.rowcount == 1:
+            return True
+        row = conn.execute("SELECT * FROM app_instances WHERE id = 1").fetchone()
+        age = (now - datetime.fromisoformat(row["heartbeat_at"])).total_seconds()
+        if age < lease_seconds:
+            return False
+        conn.execute(
+            "UPDATE app_instances SET owner_token = ?, claimed_at = ?, heartbeat_at = ? "
+            "WHERE id = 1 AND owner_token = ?", (token, now_iso, now_iso, row["owner_token"]),
+        )
+        return True
+
+
+def _release_reconcile_lease(conn, token: str) -> None:
+    try:
+        conn.execute("DELETE FROM app_instances WHERE id = 1 AND owner_token = ?", (token,))
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001 -- shutdown must not raise
+        obs.log("app.lease_release_failed", level="warning",
+                error=f"{type(exc).__name__}: {exc}")
+```
+
+and in `create_app`, replacing line 28-30:
+
+```python
+    app.state.instance_token = f"{os.getpid()}:{uuid.uuid4().hex[:8]}"
+    if _claim_reconcile_lease(app.state.conn, app.state.instance_token,
+                              datetime.now(timezone.utc)):
+        app.state.orphaned_count = preflight.reconcile_orphaned_turns(
+            app.state.conn, app.state.repo_root, app.state.stage_defs
+        )
+    else:
+        # None, not 0: "I swept and found nothing" and "I never swept" are
+        # different facts, and collapsing them is how A-76 stayed invisible.
+        app.state.orphaned_count = None
+        obs.record_event(
+            app.state.conn, kind="app.startup.reconcile_skipped", severity="warning",
+            source="main.create_app",
+            message="another live app instance holds the reconcile lease; "
+                    "skipped the startup orphan sweep",
+            detail={"instance_token": app.state.instance_token},
+        )
+```
+
+- [ ] **Run it.** All four pass. Full app suite green — every existing test builds its app against
+      a fresh `tmp_path` database, so each claims the lease unopposed (verified: no test calls
+      `create_app` twice against one `db_path`).
+- [ ] **Commit.** `fix(main): lease startup reconciliation so a second worker cannot orphan a live turn (A-76)`
+
+---
+
+### T15 — A-83: a startup snapshot rendered beside a live probe of the same fact
+
+**A-83 (S4, docs-drift).** `app.state.cli_available` is computed once in `create_app` and threaded
+into every template as the global banner value, while `/doctor` additionally calls
+`check_cli_available()` live on each request and renders both in the same response. Installing or
+removing the CLI while the app runs makes the two disagree on one page, and nothing says one is a
+snapshot.
+
+Ten route call sites read `request.app.state.cli_available` and all ten belong to other packages,
+so the fix has to keep that attribute a plain bool — and make it fresh.
+
+- [ ] **Write the failing test.** Append to `tests/test_main.py`:
+
+```python
+def test_the_banner_and_the_doctor_panel_never_disagree_in_one_response(
+        repo_root: Path, monkeypatch):
+    """A-83: two answers to the same question in one HTML response. The probe
+    flips on every call, so a snapshot and a live probe are guaranteed to
+    differ -- unless both read one snapshot per request."""
+    from fastapi.testclient import TestClient
+    from pipeline_app import preflight
+
+    (repo_root / ".claude" / "skills").mkdir(parents=True)
+    flip = iter([True, False] * 20)
+    monkeypatch.setattr(
+        preflight, "check_cli_available",
+        lambda *a, **k: {"available": next(flip), "path": None, "error": None},
+    )
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    client = TestClient(app)
+    resp = client.get("/doctor")
+    banner_online = "SYSTEM ONLINE" in resp.text
+    panel_found = "NOT FOUND" not in resp.text
+    assert banner_online == panel_found
+
+
+def test_the_banner_reflects_a_cli_that_appeared_after_startup(repo_root: Path, monkeypatch):
+    """Restart was the only way to reconcile the two, and nothing said so."""
+    from fastapi.testclient import TestClient
+    from pipeline_app import main as main_mod, preflight
+
+    available = {"value": False}
+    monkeypatch.setattr(
+        preflight, "check_cli_available",
+        lambda *a, **k: {"available": available["value"], "path": None, "error": "not found"},
+    )
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    client = TestClient(app)
+    assert "CLI UNAVAILABLE" in client.get("/").text
+
+    available["value"] = True
+    app.state.cli_probe.invalidate()  # stand in for the TTL elapsing
+    assert "SYSTEM ONLINE" in client.get("/").text
+```
+
+- [ ] **Run it.** The first fails (banner and panel disagree); the second fails with
+      `AttributeError: cli_probe`.
+- [ ] **Implement (a).** In `main.py`:
+
+```python
+class _CliProbe:
+    """One cached answer to "is the Claude CLI installed", shared by the banner
+    and the /doctor panel.
+
+    Before this, the banner was a startup snapshot and /doctor was a live probe,
+    so one response could carry two different answers to the same question and
+    restart was the only way to reconcile them (A-83). The TTL exists only so
+    `shutil.which` is not called on every request; correctness comes from both
+    readers sharing one snapshot per request."""
+
+    def __init__(self, ttl_seconds: float = 5.0) -> None:
+        self._ttl = ttl_seconds
+        self._at = 0.0
+        self._value: dict | None = None
+
+    def get(self) -> dict:
+        now = time.monotonic()
+        if self._value is None or now - self._at >= self._ttl:
+            self._value = preflight.check_cli_available()
+            self._at = now
+        return self._value
+
+    def invalidate(self) -> None:
+        self._value = None
+```
+
+and in `create_app`, replacing line 31:
+
+```python
+    app.state.cli_probe = _CliProbe()
+    app.state.cli_available = app.state.cli_probe.get()["available"]
+
+    @app.middleware("http")
+    async def _refresh_cli_banner(request, call_next):
+        # Ten route modules read request.app.state.cli_available as a plain
+        # bool and all ten belong to other packages, so the attribute stays a
+        # bool -- it is just refreshed from the same snapshot /doctor reads,
+        # once, at the top of the request.
+        request.app.state.cli_available = request.app.state.cli_probe.get()["available"]
+        return await call_next(request)
+```
+
+- [ ] **Implement (b).** In `routes/doctor.py`, drop the direct import and read the shared probe:
+
+```python
+-from pipeline_app.preflight import check_cli_available
+...
+-            "cli": check_cli_available(),
++            "cli": request.app.state.cli_probe.get(),
+```
+
+- [ ] **Run it.** Both pass. Full app suite green, including `test_routes_browse.py`'s
+      `preflight.check_cli_available` monkeypatches — the probe calls it through the module
+      attribute, so patching still takes effect (the previous `from ... import` binding in
+      `doctor.py` did not respond to that patch at all).
+- [ ] **Commit.** `fix(main): serve the CLI banner and the doctor panel from one probe (A-83)`
+
+---
+
+### T16 — D-48: no CSRF protection on any state-changing POST
+
+**D-48 (S3, latent).** Every mutating route is a plain form POST with no token, no `SameSite`
+cookie to rely on (there is no session at all), and no `Origin`/`Referer` check. A
+`application/x-www-form-urlencoded` form POST is not preflighted, so any page open in the
+operator's browser can fire `POST http://127.0.0.1:8420/skills/<name>/save` or `/discovery/run`
+blind. The attacker never sees the response, but the git commit of attacker-supplied skill content
+and the billed Bright Data run happen regardless.
+
+- [ ] **Write the failing test.** Append to `tests/test_main.py`:
+
+```python
+def test_a_cross_origin_post_is_rejected(repo_root: Path):
+    from fastapi.testclient import TestClient
+
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    client = TestClient(app)
+    resp = client.post("/discovery/run", headers={"Origin": "https://evil.example"})
+    assert resp.status_code == 403
+
+
+def test_a_same_origin_post_is_not_rejected(repo_root: Path):
+    """DISTINGUISHABILITY. Rejecting every POST would pass the test above and
+    break the app -- the guard has to tell the two apart."""
+    from fastapi.testclient import TestClient
+
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    client = TestClient(app)
+    resp = client.post("/discovery/run", headers={"Origin": "http://testserver"})
+    assert resp.status_code != 403
+
+
+def test_a_cross_origin_referer_is_rejected_when_origin_is_absent(repo_root: Path):
+    from fastapi.testclient import TestClient
+
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    client = TestClient(app)
+    resp = client.post("/discovery/run", headers={"Referer": "https://evil.example/x"})
+    assert resp.status_code == 403
+
+
+def test_a_rejected_cross_origin_post_records_an_error_event(repo_root: Path, tmp_path,
+                                                             monkeypatch):
+    """SURFACING. A 403 the operator never sees is the same silence this whole
+    package exists to end."""
+    from fastapi.testclient import TestClient
+    from pipeline_app import obs
+
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    TestClient(app).post("/discovery/run", headers={"Origin": "https://evil.example"})
+    rows = app.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'security.cross_origin_post_rejected'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "evil.example" in rows[0]["message"]
+
+
+def test_a_get_is_never_rejected_for_its_origin(repo_root: Path):
+    from fastapi.testclient import TestClient
+
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    resp = TestClient(app).get("/doctor", headers={"Origin": "https://evil.example"})
+    assert resp.status_code == 200
+```
+
+- [ ] **Run it.** The first, third and fourth fail — every POST is accepted today.
+- [ ] **Implement.** In `main.py`, register a second middleware (registered after
+      `_refresh_cli_banner` so it runs first — Starlette applies middleware in reverse
+      registration order):
+
+```python
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _same_host(candidate: str, host_header: str) -> bool:
+    """A form POST carries Origin in every current browser; Referer is the
+    fallback for the ones that strip it. Neither present means a non-browser
+    client (curl, the test suite, the cron runner's own HTTP calls), which no
+    cross-site attack can produce -- so that case is allowed, deliberately and
+    with the residual gap recorded here rather than left implicit."""
+    return urlsplit(candidate).netloc.casefold() == host_header.casefold()
+
+
+@app.middleware("http")
+async def _reject_cross_origin_mutations(request, call_next):
+    if request.method in _MUTATING_METHODS:
+        claimed = request.headers.get("origin") or request.headers.get("referer")
+        host = request.headers.get("host", "")
+        if claimed and not _same_host(claimed, host):
+            obs.record_event(
+                request.app.state.conn,
+                kind="security.cross_origin_post_rejected", severity="error",
+                source="main.csrf_guard",
+                message=f"rejected {request.method} {request.url.path} claiming origin "
+                        f"{claimed}",
+                detail={"method": request.method, "path": request.url.path,
+                        "claimed_origin": claimed, "host": host},
+            )
+            return PlainTextResponse("cross-origin request rejected", status_code=403)
+    return await call_next(request)
+```
+
+- [ ] **Run it.** All five pass. Full app suite green — no existing test sends an `Origin` or
+      `Referer` header (verified), and the guard allows requests carrying neither.
+- [ ] **Commit.** `fix(main): reject cross-origin mutating requests (D-48)`
+
+---
+
+### T17 — `recent_events` on `/doctor` (the surface P15 renders)
+
+Without this, every `events` row written by all sixteen packages is invisible unless someone opens
+the database by hand — the same silence one layer down.
+
+- [ ] **Write the failing test.** Append to `tests/test_obs.py`:
+
+```python
+def test_doctor_context_carries_unacknowledged_error_events_newest_first(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from pipeline_app.main import create_app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    conn = app.state.conn
+
+    obs.record_event(conn, kind="a.info", severity="info", source="s", message="ignored")
+    obs.record_event(conn, kind="a.warn", severity="warning", source="s", message="ignored")
+    old_id = obs.record_event(conn, kind="a.old", severity="error", source="s", message="stale")
+    conn.execute("UPDATE events SET occurred_at = '2020-01-01T00:00:00+00:00' WHERE id = ?",
+                 (old_id,))
+    ack_id = obs.record_event(conn, kind="a.ack", severity="error", source="s", message="handled")
+    conn.execute("UPDATE events SET acknowledged = 1 WHERE id = ?", (ack_id,))
+    first = obs.record_event(conn, kind="adapter.fetch_failed", severity="error",
+                             source="discovery_youtube", message="first",
+                             detail={"handle": "@a"}, run_id=3)
+    second = obs.record_event(conn, kind="run.aborted", severity="critical",
+                              source="discovery_engine", message="second")
+    conn.commit()
+
+    captured = {}
+    real = app.state.templates.TemplateResponse
+
+    def spy(request, name, context, *args, **kwargs):
+        captured.update(context)
+        return real(request, name, context, *args, **kwargs)
+
+    monkeypatch.setattr(app.state.templates, "TemplateResponse", spy)
+    TestClient(app).get("/doctor")
+
+    events = captured["recent_events"]
+    assert [e["id"] for e in events] == [second, first]      # newest first, filtered
+    assert events[1] == {
+        "id": first, "occurred_at": events[1]["occurred_at"], "kind": "adapter.fetch_failed",
+        "severity": "error", "source": "discovery_youtube", "message": "first",
+        "detail": {"handle": "@a"}, "run_id": 3, "acknowledged": False,
+    }
+
+
+def test_recent_events_parses_detail_and_never_drops_a_malformed_one(tmp_path, monkeypatch):
+    """A detail column written by a future caller as non-JSON must not make the
+    event disappear -- losing the event is the defect, not the formatting."""
+    conn_path = tmp_path / "pipeline.db"
+    schema = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db.init_db(conn_path, schema)
+    c = db.get_connection(conn_path)
+    try:
+        c.execute(
+            "INSERT INTO events (occurred_at, kind, severity, source, message, detail) "
+            "VALUES (?, 'k', 'error', 's', 'm', 'not json')",
+            (db._utcnow_iso(),),
+        )
+        c.commit()
+        rows = db.list_unacknowledged_events(c, since_iso="2000-01-01T00:00:00+00:00")
+        assert len(rows) == 1
+        assert rows[0]["detail"] == {"raw": "not json"}
+    finally:
+        c.close()
+
+
+def test_acknowledging_an_event_removes_it_from_the_doctor_list(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from pipeline_app.main import create_app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    event_id = obs.record_event(app.state.conn, kind="k", severity="error",
+                                source="s", message="m")
+    client = TestClient(app)
+    resp = client.post(f"/doctor/events/{event_id}/ack",
+                       headers={"Origin": "http://testserver"})
+    assert resp.status_code in (200, 303, 307)
+    assert db.list_unacknowledged_events(
+        app.state.conn, since_iso="2000-01-01T00:00:00+00:00") == []
+```
+
+- [ ] **Run it.** Fails: `KeyError: 'recent_events'`.
+- [ ] **Implement (a).** Add to `db.py`:
+
+```python
+def list_unacknowledged_events(conn: sqlite3.Connection, *, since_iso: str,
+                               limit: int = 50) -> list[dict]:
+    """Unacknowledged error/critical events since `since_iso`, newest first.
+
+    Returns plain dicts, not Rows: `detail` is parsed out of its JSON column so
+    a template can iterate it, and the shape is the contract /doctor renders
+    (see P1's published interface). A detail that will not parse becomes
+    {"raw": <text>} -- losing the whole event over a formatting problem would be
+    the same silence this table exists to end."""
+    rows = conn.execute(
+        "SELECT * FROM events WHERE acknowledged = 0 AND severity IN ('error','critical') "
+        "AND occurred_at >= ? ORDER BY occurred_at DESC, id DESC LIMIT ?",
+        (since_iso, limit),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        detail = None
+        if row["detail"] is not None:
+            try:
+                parsed = json.loads(row["detail"])
+                detail = parsed if isinstance(parsed, dict) else {"raw": row["detail"]}
+            except (ValueError, TypeError):
+                detail = {"raw": row["detail"]}
+        out.append({
+            "id": row["id"], "occurred_at": row["occurred_at"], "kind": row["kind"],
+            "severity": row["severity"], "source": row["source"], "message": row["message"],
+            "detail": detail, "run_id": row["run_id"],
+            "acknowledged": bool(row["acknowledged"]),
+        })
+    return out
+
+
+def acknowledge_event(conn: sqlite3.Connection, event_id: int) -> None:
+    conn.execute("UPDATE events SET acknowledged = 1 WHERE id = ?", (event_id,))
+    commit_unless_in_transaction(conn)
+```
+
+- [ ] **Implement (b).** In `routes/doctor.py`:
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Request
+from fastapi.responses import RedirectResponse
+
+from pipeline_app import db as db_mod
+
+router = APIRouter()
+
+RECENT_EVENT_WINDOW_DAYS = 7
+
+
+@router.get("/doctor")
+def doctor_page(request: Request):
+    repo_root = request.app.state.repo_root
+    skills_dir = repo_root / ".claude" / "skills"
+    skill_names = sorted(p.name for p in skills_dir.iterdir() if p.is_dir()) \
+        if skills_dir.exists() else []
+    since = (datetime.now(timezone.utc) - timedelta(days=RECENT_EVENT_WINDOW_DAYS)) \
+        .isoformat(timespec="seconds")
+    return request.app.state.templates.TemplateResponse(
+        request, "doctor.html",
+        {
+            "repo_root": str(repo_root),
+            "db_path": str(getattr(request.app.state, "db_path", "")),
+            "cli": request.app.state.cli_probe.get(),
+            "skill_names": skill_names,
+            # None means "this instance never ran the startup sweep because
+            # another one holds the lease" -- different from 0 (A-76).
+            "orphaned_count": getattr(request.app.state, "orphaned_count", 0),
+            "recent_events": db_mod.list_unacknowledged_events(
+                request.app.state.conn, since_iso=since
+            ),
+            "active_nav": "doctor",
+            "cli_available": request.app.state.cli_available,
+        },
+    )
+
+
+@router.post("/doctor/events/{event_id}/ack")
+def acknowledge(request: Request, event_id: int):
+    db_mod.acknowledge_event(request.app.state.conn, event_id)
+    return RedirectResponse("/doctor", status_code=303)
+```
+
+- [ ] **Run it.** All three pass.
+- [ ] **Commit.** `feat(doctor): surface unacknowledged error events on the health page`
+
+---
+
+### T18 — F-26: two tests that assert on the value they injected into a mock
+
+**F-26 (S2, silent).** `test_main.py`'s two tests monkeypatch `preflight.check_cli_available` and
+then assert `app.state.cli_available` equals the boolean they injected — a one-attribute round trip
+standing in for the app factory's 34 statements. DB init, router mounting, the startup sweep and
+`pipeline.yaml` load failure are all unexercised; `main.py:56-57` is uncovered.
+
+- [ ] **Delete** `pipeline-app/tests/test_main.py:15-30` in full — both `test_cli_available_true_when_binary_found` and `test_cli_available_false_when_missing`.
+- [ ] **Write the replacement tests.** In `tests/test_main.py`:
+
+```python
+def test_cli_availability_is_recorded_on_app_state(repo_root: Path, monkeypatch):
+    """Renamed from test_cli_available_true_when_binary_found. It still round-
+    trips a mock, and that is all it claims to do -- the app factory's real
+    behaviour is the four tests below."""
+    from pipeline_app import preflight
+    monkeypatch.setattr(preflight, "check_cli_available",
+                        lambda *a, **k: {"available": True, "path": r"C:\fake\claude.CMD",
+                                         "error": None})
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    assert app.state.cli_available is True
+
+
+def test_app_factory_creates_the_database_schema(repo_root: Path):
+    """FAULT. 34 statements were covered by a one-attribute round trip."""
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    tables = {r[0] for r in app.state.conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert {"projects", "stages", "turns", "handles", "events", "creators",
+            "schema_version", "app_instances"} <= tables
+
+
+def test_app_factory_mounts_every_router(repo_root: Path):
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    paths = {r.path for r in app.routes}
+    for expected in ("/", "/doctor", "/discovery/handles", "/skills", "/inspector", "/browse"):
+        assert any(p == expected or p.startswith(expected) for p in paths), expected
+
+
+def test_app_factory_runs_the_startup_orphan_sweep(repo_root: Path):
+    from pipeline_app import db as db_mod
+
+    db_path = repo_root / "pipeline.db"
+    schema = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db_mod.init_db(db_path, schema)
+    seed = db_mod.get_connection(db_path)
+    project_id = db_mod.create_project(seed, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db_mod.create_stage_row(seed, project_id, "ideation", "running")
+    db_mod.create_turn(seed, stage_row_id, "running", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    seed.close()
+
+    app = create_app(repo_root=repo_root, db_path=db_path)
+    assert app.state.orphaned_count == 1
+    assert db_mod.list_running_turns(app.state.conn) == []
+
+
+def test_a_broken_pipeline_yaml_is_distinguishable_from_an_empty_one(
+        tmp_path: Path, monkeypatch):
+    """DISTINGUISHABILITY. `stages: []` is a legitimate empty topology. A
+    pipeline.yaml that cannot be parsed must not produce the same app -- an app
+    with zero stages and no complaint is how a config error becomes a
+    mystery."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    empty = create_app(repo_root=tmp_path, db_path=tmp_path / "empty.db")
+    assert empty.state.stage_defs == []
+
+    (tmp_path / "pipeline.yaml").write_text("stages: [{id: a}]\n", encoding="utf-8")
+    with pytest.raises(KeyError):
+        create_app(repo_root=tmp_path, db_path=tmp_path / "broken.db")
+
+
+def test_a_topology_load_failure_records_a_critical_event(tmp_path: Path, monkeypatch):
+    """SURFACING. Today the traceback goes to a console Task Scheduler
+    destroys."""
+    from pipeline_app import db as db_mod, obs
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    (tmp_path / "pipeline.yaml").write_text("stages: [{id: a}]\n", encoding="utf-8")
+    db_path = tmp_path / "pipeline.db"
+    with pytest.raises(KeyError):
+        create_app(repo_root=tmp_path, db_path=db_path)
+
+    conn = db_mod.get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM events WHERE kind = 'app.topology_load_failed'").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["severity"] == "critical"
+    finally:
+        conn.close()
+
+
+def test_create_default_app_targets_the_repo_root_database(monkeypatch):
+    """main.py:56-57 -- the two uncovered lines F-26 named."""
+    from pipeline_app import main as main_mod
+
+    seen = {}
+    monkeypatch.setattr(main_mod, "create_app",
+                        lambda *, repo_root, db_path: seen.update(
+                            repo_root=repo_root, db_path=db_path))
+    main_mod.create_default_app()
+    assert seen["db_path"] == seen["repo_root"] / "pipeline-app" / "pipeline.db"
+    assert (seen["repo_root"] / "pipeline-app" / "pipeline_app" / "main.py").exists()
+```
+
+- [ ] **Run it.** `test_a_topology_load_failure_records_a_critical_event` fails: no event, because
+      `load_topology` runs before the connection exists and nothing catches it.
+- [ ] **Implement.** In `main.py`, reorder so the database opens first and the topology load is
+      reported before it propagates:
+
+```python
+    schema_path = PACKAGE_DIR / "schema.sql"
+    db_mod.init_db(db_path, schema_path)
+    app.state.conn = db_mod.get_connection(db_path)
+    try:
+        app.state.stage_defs = load_topology(repo_root / "pipeline.yaml")
+    except Exception as exc:
+        # The failure is loud but unrecorded: create_app dies with a traceback
+        # into a console Windows Task Scheduler destroys. Record it, then let it
+        # propagate -- booting with an empty topology would be worse (F-26).
+        obs.record_event(
+            app.state.conn, kind="app.topology_load_failed", severity="critical",
+            source="main.create_app",
+            message=f"could not load {repo_root / 'pipeline.yaml'}: "
+                    f"{type(exc).__name__}: {exc}",
+            detail={"path": str(repo_root / "pipeline.yaml"), "error": type(exc).__name__},
+        )
+        raise
+```
+
+- [ ] **Run it.** All seven pass. Full app suite green.
+- [ ] **Commit.** `test(main): replace two mock round-trips with real app-factory coverage (F-26)`
+
+---
+
+## 4. Finding → test map
+
+Three-Test-Rule roles are given for the six `silent` findings. `latent`, `docs-drift` and
+`coverage-gap` findings get a named regression test but no mandatory triad.
+
+| Finding | Mode | Test file | Named test | Role |
+|---|---|---|---|---|
+| **A-70** | silent | `test_db.py` | `test_transaction_rolls_back_every_statement_in_the_block` | **fault** |
+| | | `test_db.py` | `test_a_failed_transaction_is_distinguishable_from_the_unwrapped_path` | **distinguishability** |
+| | | `test_db.py` | `test_a_rolled_back_transaction_records_an_error_event` | **surfacing** |
+| | | `test_db.py` | `test_leaf_helpers_still_commit_immediately_outside_a_transaction` | compatibility |
+| | | `test_db.py` | `test_a_swallowed_inner_failure_still_rolls_the_outer_transaction_back` | regression |
+| **A-71** | silent | `test_db.py` | `test_a_second_running_turn_is_rejected_by_the_storage_layer` | **fault** |
+| | | `test_db.py` | `test_one_running_turn_coexists_with_any_number_of_finished_ones` | **distinguishability** |
+| | | `test_db.py` | `test_a_rejected_concurrent_turn_is_visible_as_an_error_event` | **surfacing** |
+| | | `test_db.py` | `test_migration_orphans_all_but_the_newest_running_turn` | migration |
+| **A-76** | silent | `test_main.py` | `test_a_second_app_instance_does_not_orphan_a_live_turn` | **fault** |
+| | | `test_main.py` | `test_a_skipped_sweep_is_distinguishable_from_a_clean_one` | **distinguishability** |
+| | | `test_main.py` | `test_a_skipped_sweep_records_a_warning_event` | **surfacing** |
+| | | `test_main.py` | `test_an_expired_lease_is_reclaimed_so_a_real_restart_still_sweeps` | regression |
+| **B-73** | silent | `test_db.py` | `test_an_unknown_platform_is_rejected_at_the_storage_layer` | **fault** |
+| | | `test_db.py` | `test_a_rejected_platform_leaves_no_row_unlike_a_valid_one` | **distinguishability** |
+| | | `test_db.py` | `test_migration_quarantines_a_ghost_platform_row_and_records_it` | **surfacing** |
+| | | `test_db.py` | `test_every_platform_the_adapter_registry_knows_is_accepted` | not-too-narrow |
+| **B-82** | silent | `test_db.py` | `test_a_handle_is_downgraded_to_failing_after_three_consecutive_failures` | **fault** |
+| | | `test_db.py` | `test_a_failing_handle_is_distinguishable_from_an_operator_disabled_one` | **distinguishability** |
+| | | `test_db.py` | `test_downgrading_a_handle_records_an_error_event` | **surfacing** |
+| | | `test_db.py` | `test_a_successful_fetch_lifts_a_failing_handle_back_to_validated` | reversibility |
+| | | `test_db.py` | `test_clearing_failures_does_not_resurrect_a_handle_the_operator_invalidated` | regression |
+| **F-26** | silent | `test_main.py` | `test_app_factory_creates_the_database_schema` | **fault** |
+| | | `test_main.py` | `test_a_broken_pipeline_yaml_is_distinguishable_from_an_empty_one` | **distinguishability** |
+| | | `test_main.py` | `test_a_topology_load_failure_records_a_critical_event` | **surfacing** |
+| | | `test_main.py` | `test_app_factory_mounts_every_router` | coverage |
+| | | `test_main.py` | `test_app_factory_runs_the_startup_orphan_sweep` | coverage |
+| | | `test_main.py` | `test_create_default_app_targets_the_repo_root_database` | covers `main.py:56-57` |
+| **A-47** | latent | `test_db.py` | `test_stages_status_rejects_a_value_outside_the_enum` | — |
+| | | `test_db.py` | `test_update_stage_status_rejects_a_value_outside_the_enum` | — |
+| | | `test_db.py` | `test_every_StageStatus_member_is_accepted_by_the_check` | not-too-narrow |
+| | | `test_db.py` | `test_migration_coerces_a_ghost_stage_status_and_records_it` | migration |
+| **A-72** | latent | `test_db.py` | `test_a_fresh_database_is_stamped_at_the_current_schema_version` | — |
+| | | `test_db.py` | `test_an_existing_database_is_migrated_not_silently_left_behind` | — |
+| | | `test_db.py` | `test_migrations_are_applied_exactly_once` | — |
+| | | `test_db.py` | `test_a_database_from_a_newer_build_fails_loudly_instead_of_booting` | — |
+| | | `test_db.py` | `test_a_migrated_database_has_the_same_schema_as_a_fresh_one` | drift guard |
+| **A-75** | latent | `test_db.py` | `test_every_foreign_key_column_is_covered_by_an_index` | — |
+| | | `test_db.py` | `test_turns_status_rejects_a_value_outside_the_vocabulary` | — |
+| | | `test_db.py` | `test_every_turn_status_the_app_writes_is_accepted` | not-too-narrow |
+| | | `test_db.py` | `test_deleting_a_project_cascades_to_its_stages_and_turns` | — |
+| **A-83** | docs-drift | `test_main.py` | `test_the_banner_and_the_doctor_panel_never_disagree_in_one_response` | — |
+| | | `test_main.py` | `test_the_banner_reflects_a_cli_that_appeared_after_startup` | — |
+| **A-85** | latent | `test_main.py` | `test_app_shutdown_closes_the_connection_and_truncates_the_wal` | — |
+| **B-72** | coverage-gap | `test_db.py` | `test_one_creator_can_own_handles_on_several_platforms` | — |
+| | | `test_db.py` | `test_upsert_creator_is_idempotent_and_updates_the_display_name` | — |
+| | | `test_db.py` | `test_an_unlinked_handle_is_distinguishable_from_a_linked_one` | — |
+| | | `test_db.py` | `test_deleting_a_creator_does_not_delete_its_handles` | — |
+| **D-48** | latent | `test_main.py` | `test_a_cross_origin_post_is_rejected` | — |
+| | | `test_main.py` | `test_a_same_origin_post_is_not_rejected` | not-too-broad |
+| | | `test_main.py` | `test_a_cross_origin_referer_is_rejected_when_origin_is_absent` | — |
+| | | `test_main.py` | `test_a_rejected_cross_origin_post_records_an_error_event` | surfacing |
+| | | `test_main.py` | `test_a_get_is_never_rejected_for_its_origin` | not-too-broad |
+
+Frozen-interface tests (no finding of their own, but every package depends on them):
+`test_log_writes_a_json_line_to_a_dated_file`, `test_log_does_not_raise_when_the_log_directory_cannot_be_created`,
+`test_record_event_appends_a_row_and_returns_its_id`, `test_events_table_rejects_a_severity_outside_the_vocabulary`,
+`test_record_event_returns_minus_one_when_the_events_table_is_missing`,
+`test_record_event_falls_back_to_the_log_when_it_cannot_write`,
+`test_record_event_does_not_raise_on_a_closed_connection`,
+`test_doctor_context_carries_unacknowledged_error_events_newest_first`,
+`test_recent_events_parses_detail_and_never_drops_a_malformed_one`,
+`test_acknowledging_an_event_removes_it_from_the_doctor_list`.
+
+---
+
+## 5. Tests deleted or inverted
+
+| File:line | Test | Verdict | Replacement |
+|---|---|---|---|
+| `pipeline-app/tests/test_main.py:15-21` | `test_cli_available_true_when_binary_found` | **Deleted and replaced.** It monkeypatches `preflight.check_cli_available` to return `{"available": True}` and asserts `app.state.cli_available is True` — an assertion on the value the test itself injected, standing in as coverage for the app factory's 34 statements (F-26). | `test_cli_availability_is_recorded_on_app_state` keeps the round trip under an honest name; `test_app_factory_creates_the_database_schema`, `test_app_factory_mounts_every_router`, `test_app_factory_runs_the_startup_orphan_sweep`, `test_a_broken_pipeline_yaml_is_distinguishable_from_an_empty_one`, `test_a_topology_load_failure_records_a_critical_event` and `test_create_default_app_targets_the_repo_root_database` do the actual work. |
+| `pipeline-app/tests/test_main.py:24-30` | `test_cli_available_false_when_missing` | **Deleted, not replaced by a twin.** The `False` branch is a second round trip of the identical one-attribute assignment and adds nothing the `True` case does not already prove. The behaviour worth testing is A-83's — that the banner tracks a CLI that appears or disappears while the app runs — which `test_the_banner_reflects_a_cli_that_appeared_after_startup` covers for real. | `test_the_banner_reflects_a_cli_that_appeared_after_startup` (T15). |
+
+**No test is inverted in this package** — neither of the two names describes a defect, so neither
+needs the name-freezes-the-bug treatment.
+
+**Handoff to P4 (not actionable here).** F-26's other half is
+`pipeline-app/tests/test_turn_service.py:335-343`,
+`test_scripting_turn_records_gate_results_in_frontmatter`: it mocks `run_gates_for_stage` to return
+a literal and asserts the literal reaches frontmatter — useful plumbing coverage filed under a name
+that reads as gate integration, with the gate as the mocked component. The audit's proposed rename
+is `test_gate_results_are_copied_into_artifact_frontmatter`. That file is not in this package's
+list; **P4 must make this edit or F-26 is only half closed.**
+
+---
+
+## 6. Published interface
+
+Everything below is frozen once T18 lands. Downstream packages should be checked against this
+block, not against the code.
+
+### `pipeline_app.obs`
+
+```python
+def log(event: str, *, level: str = "info", **fields) -> None: ...
+def record_event(conn, *, kind: str, severity: str, source: str,
+                 message: str, detail: dict | None = None,
+                 run_id: int | None = None) -> int: ...
+
+LOG_DIR = <repo>/pipeline-app/logs          # monkeypatchable; log file is app-YYYY-MM-DD.log
+VALID_SEVERITIES = ("info", "warning", "error", "critical")
+```
+
+- Neither function raises, ever. `record_event` returns the new row id, or **`-1`** on any
+  failure, having written an `obs.record_event_failed` line through `log()` that still carries the
+  original `kind`/`severity`/`source`/`message`. **The recorded thing is never lost.**
+- `record_event` respects `db.transaction()`: called inside a boundary it does **not** commit.
+- **Adoption rule (from the orchestration plan):** anywhere the code signals failure *only* by
+  `print(..., file=sys.stderr)`, add `obs.record_event(..., severity="error")` beside it. Keep the
+  print.
+
+### `pipeline_app.db` — new public surface
+
+```python
+SCHEMA_VERSION: int
+KNOWN_PLATFORMS  = ("youtube","bluesky","instagram","linkedin-profile",
+                    "linkedin-company","facebook","x")
+STAGE_STATUSES   = ("locked","ready","running","awaiting_review","approved","stale","no_artifact")
+HANDLE_FAILURE_THRESHOLD = 3
+
+class SchemaVersionError(RuntimeError): ...
+class TransactionPoisonedError(RuntimeError): ...
+
+@contextmanager
+def transaction(conn) -> Iterator[sqlite3.Connection]: ...   # nests; rolls back + records an event
+def commit_unless_in_transaction(conn) -> None: ...          # what leaf helpers call
+def apply_migrations(conn) -> list[int]: ...
+
+def upsert_creator(conn, *, slug: str, display_name: str) -> int: ...
+def get_creator_by_slug(conn, slug: str) -> sqlite3.Row | None: ...
+def link_handle_to_creator(conn, handle_id: int, creator_id: int) -> None: ...
+def list_handles_for_creator(conn, creator_id: int) -> list[sqlite3.Row]: ...
+def list_unlinked_handles(conn) -> list[sqlite3.Row]: ...
+
+def record_handle_failure(conn, handle_id: int, *, now_iso: str,
+                          threshold: int = HANDLE_FAILURE_THRESHOLD) -> str: ...
+def clear_handle_failures(conn, handle_id: int) -> None: ...
+
+def list_unacknowledged_events(conn, *, since_iso: str, limit: int = 50) -> list[dict]: ...
+def acknowledge_event(conn, event_id: int) -> None: ...
+```
+
+**Behaviour every other package can rely on:** outside a `transaction()` block, every pre-existing
+`db.py` helper commits immediately, exactly as before. Nothing about the existing signatures
+changed.
+
+### `recent_events` — the dict P15 binds to in `doctor.html`
+
+`routes/doctor.py` passes `recent_events`: a **list of dicts**, unacknowledged `error`/`critical`
+events from the last **7 days**, **newest first**, capped at **50**. Exact keys:
+
+| Key | Type | Notes |
+|---|---|---|
+| `id` | `int` | Primary key. Use it for the ack form action: `POST /doctor/events/{id}/ack`. |
+| `occurred_at` | `str` | Aware-UTC ISO-8601, seconds precision — e.g. `"2026-08-08T13:04:05+00:00"`. Already sorted; do not re-sort in the template. |
+| `kind` | `str` | Dotted event kind, e.g. `"adapter.fetch_failed"`. |
+| `severity` | `str` | Only ever `"error"` or `"critical"` in this list. |
+| `source` | `str` | Reporting module/function, e.g. `"discovery_youtube"`. |
+| `message` | `str` | One-line human summary. Escape it — it can contain vendor error text. |
+| `detail` | `dict \| None` | **Already parsed** from the JSON column. `None` when the column is NULL. A value that will not parse as a JSON object becomes `{"raw": "<original text>"}` rather than being dropped. |
+| `run_id` | `int \| None` | `discovery_runs.id` where the event belongs to a run. |
+| `acknowledged` | `bool` | Always `False` in this list; present so the template binds one uniform shape. |
+
+An empty list means **no unacknowledged errors in seven days** — render that as a positive state,
+not as a missing panel. Also note `orphaned_count` is now `int | None`; **`None` means this
+instance never ran the startup sweep** (another instance holds the lease, A-76) and must render
+differently from `0`.
+
+### Schema shipped
+
+`events`, `creators` and `handles`' `creator_id` / `platform` CHECK / `UNIQUE(platform, handle)`
+are **exactly** the orchestration plan's frozen DDL. Added beyond it, all owned by this package:
+
+```
+schema_version(id CHECK(id=1), version)                     -- A-72
+app_instances(id CHECK(id=1), owner_token, claimed_at, heartbeat_at)  -- A-76
+handles_quarantine(...)                                     -- B-73, rows the CHECK could not carry
+handles.consecutive_failures INTEGER NOT NULL DEFAULT 0      -- B-82
+handles.status CHECK IN ('pending','validating','validated','invalid','failing')  -- B-82
+stages.status CHECK IN (STAGE_STATUSES)                      -- A-47
+turns.status  CHECK IN ('running','complete','failed','aborted','orphaned')       -- A-75
+ux_turns_single_running  UNIQUE(status) WHERE status='running'                    -- A-71
+idx_turns_stage_row, idx_drh_run, idx_drh_handle, idx_handles_creator             -- A-75, B-72
+ON DELETE CASCADE on stages.project_id, turns.stage_row_id,
+   discovery_run_handles.run_id/.handle_id;  ON DELETE SET NULL on handles.creator_id  -- A-75
+```
+
+**P10:** `creators` is empty and every `handles.creator_id` is `NULL` when this package lands. Use
+`db.upsert_creator` + `db.link_handle_to_creator`, and `db.list_unlinked_handles` to check your own
+coverage.
+
+**P8:** call `db.record_handle_failure(conn, handle_id, now_iso=...)` in the per-handle error
+branch and `db.clear_handle_failures(conn, handle_id)` on a successful fetch. `platform` values
+outside `db.KNOWN_PLATFORMS` now raise `sqlite3.IntegrityError` at insert — reject them in
+`add_handle` **before** the billable validate spawn, which is B-73's route-level half.
+
+---
+
+## 7. Handoffs
+
+1. **P4** — `tests/test_turn_service.py:335-343` rename, the other half of F-26. See [§5](#5-tests-deleted-or-inverted).
+2. **P8** — route-level platform rejection (B-73) and the `record_handle_failure` /
+   `clear_handle_failures` call sites (B-82).
+3. **P10** — populate `creators` and `handles.creator_id` (B-72).
+4. **P15** — render `recent_events` and the `orphaned_count is None` state in `doctor.html`
+   (§6), plus `consecutive_failures` / the `failing` status on the handles page (B-82).
+5. **Unassigned, one line.** `.gitignore` is in no package's file list, and `obs.log()` writes
+   `pipeline-app/logs/app-YYYY-MM-DD.log`. Add `pipeline-app/logs/` to `.gitignore` — whoever
+   picks it up first, before this package's first commit reaches a working tree that runs the app.
