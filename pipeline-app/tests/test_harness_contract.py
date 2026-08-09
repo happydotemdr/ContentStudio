@@ -190,6 +190,12 @@ def test_both_allowlists_are_keyed_by_owning_package():
         for package in mapping:
             assert _re.fullmatch(r"P\d{1,2}", package), f"{package!r} is not a package id"
 
+    assert "P0" not in conftest._CONNECTION_LEAKS_BY_PACKAGE, (
+        "P0 owns every file this suite collects for itself, so a leak in a "
+        "P0-owned file has no other package to come back and convert it -- "
+        "P0 must fix the leak directly instead of allowlisting it."
+    )
+
 
 @pytest.mark.allow_subprocess
 def test_a_leaking_test_fails_with_a_nonzero_exit(tmp_path):
