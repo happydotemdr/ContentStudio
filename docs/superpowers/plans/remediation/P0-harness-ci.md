@@ -367,7 +367,7 @@ def pytest_sessionstart(session):
         )
 ```
 
-- [ ] **Run it.** Both pass. **Then prove the guard is live**: `python -m pip install -e pipeline-app` from a *different* checkout is not reproducible in CI, so instead verify manually once by running `cd pipeline-app && python -m pytest -q` from a worktree while the main checkout's editable install is present — the suite must abort with the UsageError, not run. Uninstall afterwards.
+- [ ] **Run it.** Both pass. **Then prove the guard is live.** Note what the guard can and cannot catch, because the original wording of this step was wrong: under `python -m pytest`, Python prepends the cwd to `sys.path`, so from `pipeline-app/` the local `pipeline_app` *always* wins and the guard can never fire — the mandated invocation is safe independently of the guard. The reproducible demonstration is a **bare `pytest`** (no `-m`) run from `pipeline-app/` while a foreign editable install is present: `sys.path` then resolves `pipeline_app` to the other checkout and the suite must abort with the `UsageError` naming both trees, not run. That is the invocation F-63 is actually about — an IDE test runner, a forgotten `-m`, or a misconfigured CI step. Do **not** uninstall a pre-existing machine-wide editable install afterwards; it predates this programme, is shared across checkouts, and leaving it present keeps the guard exercised for real on this machine.
 - [ ] **Commit.** `feat(tests): refuse to run the app suite against a foreign checkout (F-63)`
 
 ---
