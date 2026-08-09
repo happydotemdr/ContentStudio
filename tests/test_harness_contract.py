@@ -325,3 +325,35 @@ def test_run_all_reaches_step_three_when_the_sibling_corpus_is_absent(tmp_path):
     assert result.returncode == 0
     assert "brandintel stub" in result.stdout
     assert "SKIPPED" in result.stdout
+
+
+@pytest.mark.allow_subprocess
+def test_run_all_stops_loudly_when_the_youth_sports_copy_genuinely_fails(tmp_path):
+    """Distinguishability, the other half. Every test above exercises only
+    the "source absent -> skip" path. Without this one, widening the `-eq 3`
+    branch condition to `-ge 1` (or deleting the `elif ... exit
+    "$youth_status"` branch outright) makes every other test in this file
+    still pass, while run_all.sh silently swallows a genuine step-2 failure
+    and marches on to step 3 -- exactly the defect this task exists to
+    remove (B-83)."""
+    bash_path = shutil.which("bash")
+    if bash_path is None:
+        pytest.skip("no bash interpreter found on PATH")
+    (tmp_path / "run_all.sh").write_text(RUN_ALL_SH.read_text(encoding="utf-8"), encoding="utf-8")
+    # A genuine failure, distinct from both success (0) and "source absent"
+    # (3): copy_youthsports.sh is stubbed out entirely here, so this proves
+    # run_all.sh's own branching, not the real script's -d check.
+    (tmp_path / "copy_youthsports.sh").write_text("exit 2\n", encoding="utf-8")
+    (tmp_path / "download_thinkers.py").write_text("print('thinkers stub')\n", encoding="utf-8")
+    (tmp_path / "download_brandintel.py").write_text("print('brandintel stub')\n", encoding="utf-8")
+    result = subprocess.run(
+        [bash_path, "run_all.sh"],
+        cwd=str(tmp_path), capture_output=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "PYTHON": sys.executable},
+    )
+    assert result.returncode != 0, "a genuine step-2 failure must fail the run, not succeed"
+    assert "SKIPPED" not in result.stdout and "SKIPPED" not in result.stderr, (
+        "a real failure must not be misreported as an absent source"
+    )
+    assert "brandintel stub" not in result.stdout, "step 3 must not run after a genuine step-2 failure"
+    assert result.returncode == 2, "the propagated code should be the stub's own, not flattened to 1"

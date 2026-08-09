@@ -31,6 +31,11 @@ echo ">>> [2/3] Youth-sports (RaisingGoodSports research corpus)"
 youth_status=0
 bash copy_youthsports.sh || youth_status=$?
 if [[ "$youth_status" -eq 3 ]]; then
+  # Stdout, not stderr: an absent sibling checkout is an expected condition
+  # here, not an error -- unlike the genuine-failure branch below, which
+  # correctly keeps its message on stderr. Deviates from the task brief's
+  # literal snippet (which had this line on stderr too); see
+  # P0-task-17-report.md for why.
   echo ">>> [2/3] SKIPPED — sibling corpus/raisinggoodsports/ is not present."
 elif [[ "$youth_status" -ne 0 ]]; then
   echo "! [2/3] failed with status $youth_status" >&2
