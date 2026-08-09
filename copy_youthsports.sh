@@ -15,7 +15,10 @@ if [[ ! -d "$SRC" ]]; then
   echo "! Source not found: $SRC" >&2
   echo "  This step needs a sibling checkout with corpus/raisinggoodsports/ present." >&2
   echo "  Not runnable standalone in this repo — see the README's scope note." >&2
-  exit 1
+  # Exit 3, not 1: run_all.sh treats 3 as "not applicable here, skip and carry
+  # on" and any other non-zero as a real failure. With a bare `exit 1` the two
+  # were indistinguishable and `set -e` killed the whole run (finding B-83).
+  exit 3
 fi
 
 mkdir -p "$DEST"

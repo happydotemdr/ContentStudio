@@ -24,10 +24,21 @@ echo ">>> [1/3] Thinkers (public-domain library, 53 works)"
 
 echo
 echo ">>> [2/3] Youth-sports (RaisingGoodSports research corpus)"
-bash copy_youthsports.sh
+# This corpus's source is a sibling checkout that is absent in this repo by
+# design. Under `set -e` a bare call aborted the whole run here and step 3 --
+# the brand-intel download, the only corpus-refresh path CLAUDE.md points at --
+# was unreachable (findings F-77, B-83).
+youth_status=0
+bash copy_youthsports.sh || youth_status=$?
+if [[ "$youth_status" -eq 3 ]]; then
+  echo ">>> [2/3] SKIPPED — sibling corpus/raisinggoodsports/ is not present."
+elif [[ "$youth_status" -ne 0 ]]; then
+  echo "! [2/3] failed with status $youth_status" >&2
+  exit "$youth_status"
+fi
 
 echo
-echo ">>> [3/3] Brand-intel / headless YouTube (transcripts + metadata + Bluesky/RSS)"
+echo ">>> [3/3] brand-intel / headless YouTube (transcripts + metadata + Bluesky/RSS)"
 "$PY" download_brandintel.py "$@"
 
 echo

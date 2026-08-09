@@ -4,6 +4,7 @@ This suite reads repo files as data. It is the one suite that legitimately
 inspects the whole tree, so the cross-suite drift checks live here.
 """
 import configparser
+import os
 import re
 import subprocess
 import sys
@@ -270,3 +271,40 @@ def test_git_status_is_clean_after_a_coverage_run(tmp_path):
     )
     untracked = [line[3:] for line in result.stdout.splitlines() if line.startswith("??")]
     assert not [p for p in untracked if ".coverage" in p or p.startswith("pipeline-app/logs/")]
+
+
+COPY_SH = REPO_ROOT / "copy_youthsports.sh"
+RUN_ALL_SH = REPO_ROOT / "run_all.sh"
+
+
+def test_copy_youthsports_uses_a_distinct_exit_code_for_a_missing_source():
+    """B-83: `exit 1` is indistinguishable from a copy that genuinely failed,
+    so run_all.sh cannot tell 'not applicable here' from 'broken'."""
+    assert "exit 3" in COPY_SH.read_text(encoding="utf-8")
+
+
+def test_run_all_treats_the_youth_sports_step_as_skippable():
+    text = RUN_ALL_SH.read_text(encoding="utf-8")
+    assert "|| youth_status=$?" in text
+    assert "brand-intel" in text.split("youth_status")[-1], (
+        "step 3 must still be reachable after step 2 fails (F-77)"
+    )
+
+
+@pytest.mark.allow_subprocess
+def test_run_all_reaches_step_three_when_the_sibling_corpus_is_absent(tmp_path):
+    """Fault + distinguishability in one run: with the sibling checkout absent
+    (always, in this repo), the script must warn and continue, and the
+    brand-intel step must still be announced."""
+    for name in ("run_all.sh", "copy_youthsports.sh"):
+        (tmp_path / name).write_text((REPO_ROOT / name).read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "download_thinkers.py").write_text("print('thinkers stub')\n", encoding="utf-8")
+    (tmp_path / "download_brandintel.py").write_text("print('brandintel stub')\n", encoding="utf-8")
+    result = subprocess.run(
+        ["bash", "run_all.sh"],
+        cwd=str(tmp_path), capture_output=True, encoding="utf-8", errors="replace",
+        env={**os.environ, "PYTHON": sys.executable},
+    )
+    assert result.returncode == 0
+    assert "brandintel stub" in result.stdout
+    assert "SKIPPED" in result.stdout
