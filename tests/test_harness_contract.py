@@ -514,3 +514,20 @@ def test_pr_template_job_names_match_the_workflow_exactly():
     text = TEMPLATE.read_text(encoding="utf-8")
     named = set(re.findall(r"- \[ \] `([a-z-]+)`", text))
     assert named == jobs
+
+
+def test_no_coverage_gate_exists_anywhere_in_the_harness():
+    """F-02: 95% line coverage coexisted with 328 defects. A --cov-fail-under
+    gate would re-establish the number as the quality bar."""
+    for path in (ROOT_INI, APP_INI, WORKFLOW, ROOT_DEV, APP_DEV):
+        assert "--cov-fail-under" not in path.read_text(encoding="utf-8"), path
+
+
+def test_the_quality_bar_is_stated_as_the_finding_to_test_mapping():
+    """F-27 policy half: the standard has to be written somewhere a machine
+    can check, or it is not a standard."""
+    assert "Coverage is diagnostic only" in ROOT_INI.read_text(encoding="utf-8")
+    assert "Coverage is diagnostic only" in APP_INI.read_text(encoding="utf-8")
+    template = TEMPLATE.read_text(encoding="utf-8")
+    assert "Regression test for the defect this fixes" in template
+    assert "observed FAILING before the fix" in template
