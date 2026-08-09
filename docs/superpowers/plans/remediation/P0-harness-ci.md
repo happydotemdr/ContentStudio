@@ -896,28 +896,27 @@ def test_third_party_asyncio_deprecations_are_ignored_by_name():
 
 
 @pytest.mark.allow_subprocess
-def test_a_repo_warning_fails_the_run_while_a_pytest_asyncio_one_does_not(tmp_path):
-    """Distinguishability: the 58,169 third-party lines are silenced, but the
-    repo's own warnings are not -- that was the whole defect (F-70)."""
-    (tmp_path / "pytest.ini").write_text(
-        (REPO_ROOT / "pipeline-app" / "pytest.ini").read_text(encoding="utf-8").replace(
-            "testpaths = tests", "testpaths = ."
-        ),
-        encoding="utf-8",
-    )
-    (tmp_path / "test_warn.py").write_text(
-        "import warnings\n"
-        "def test_repo_warning():\n"
-        "    warnings.warn('the app started emitting this', UserWarning)\n",
-        encoding="utf-8",
-    )
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"],
-        capture_output=True, encoding="utf-8", errors="replace", cwd=str(tmp_path),
-    )
-    assert result.returncode != 0
-    assert "UserWarning" in result.stdout
+def test_a_repo_warning_fails_the_run_while_an_ignored_module_one_does_not(tmp_path):
+    """Distinguishability: third-party lines are silenced, but the repo's own
+    warnings are not -- that was the whole defect (F-70).
+
+    Both halves are required. The single-half form of this test (emit a
+    UserWarning, assert the run fails) asserted only that `error` works: it
+    passed unchanged with every `ignore::` line deleted from the ini, so it
+    proved nothing about whether the ignore list is correctly scoped -- a test
+    whose name claims a comparison it never performs.
+    """
 ```
+
+**Write it as a two-case test, in this shape.** Each ignore line is a hole in the gate, so the test must prove the hole is exactly the shape it claims:
+
+- Build the temp `pytest.ini` from the real one (`testpaths = tests` → `testpaths = .`) **plus one extra line** the test controls: `ignore::UserWarning:ignorable_mod`.
+- Write two modules in `tmp_path`: `ignorable_mod.py`, whose function calls `warnings.warn(..., UserWarning)`, and a test file that imports and calls it; plus a second test file that raises the same `UserWarning` from its own module.
+- Run pytest once and assert the **repo-module** case fails with a non-zero return code and `UserWarning` in stdout.
+- Run pytest again with only the ignorable case collected and assert it **exits 0** — the warning was raised, and the module-scoped ignore is what let it through.
+- Assert the two return codes differ. That difference is the whole point: it is what proves a module-scoped ignore distinguishes its own module from every other, rather than the gate being globally on or globally off.
+
+Do **not** try to emit a warning attributable to the real `pytest_asyncio` or `fastapi.routing` modules by shadowing them in `tmp_path`; that fights the plugin loader and is flaky. The three real ignore strings are pinned by `test_third_party_asyncio_deprecations_are_ignored_by_name`, and the zero-warning full-suite run is the empirical evidence they match. This test pins the *mechanism*.
 
 - [ ] **Run it.** All fail — no `filterwarnings` key in either ini.
 - [ ] **Implement.** Add to **both** ini files:
@@ -929,9 +928,19 @@ def test_a_repo_warning_fails_the_run_while_a_pytest_asyncio_one_does_not(tmp_pa
 ; are the only third-party sources measured at collection; each names its module
 ; so a NEW deprecation from the same package still errors.
 ;
-; ResourceWarning stays ignored on purpose: it fires at GC, so it is
-; nondeterministic and untestable. The deterministic replacement is the
-; _no_leaked_sqlite_connections fixture in tests/conftest.py (finding F-66).
+; ResourceWarning stays ignored on purpose, and this is the one bare (module-
+; unqualified) ignore here: it fires at GC, so both its timing and the test it
+; gets attributed to are nondeterministic, and leaving it as `error` produces
+; flaky failures in whichever unrelated test happens to trigger the collection.
+;
+; Be honest about what that costs. This silences EVERY ResourceWarning in the
+; repo -- unclosed files, sockets, and subprocess pipes as well as DB handles.
+; The deterministic replacement, _no_leaked_sqlite_connections in
+; tests/conftest.py (finding F-66), covers sqlite connections ONLY. For every
+; other resource type there is currently no detector, so "no warning" and "a
+; non-sqlite handle leaked" are indistinguishable. That residual gap is
+; accepted deliberately, not overlooked; narrowing this line by module is not
+; possible because GC-time attribution is exactly what is unreliable.
 filterwarnings =
     error
     ignore::DeprecationWarning:pytest_asyncio
