@@ -1933,6 +1933,28 @@ def test_ci_configures_no_coverage_gate():
 # The weekly schedule exists for finding F-76: yt-dlp and youtube-transcript-api
 # change their JSON schema, and every test that consumes them is mocked against a
 # frozen copy, so the suite stays green while production breaks.
+#
+# CORRECTION FOUND DURING EXECUTION -- read before trusting the line above.
+# Re-running this suite weekly CANNOT detect that drift, and claiming it does is
+# worse than claiming nothing. Both libraries are pinned exactly, every test that
+# consumes them is mocked, and the autouse live-call guard raises on any unstubbed
+# network call (no test anywhere carries @pytest.mark.allow_network). So the
+# scheduled run is deterministic: it passes or fails identically forever, no matter
+# what YouTube changes. A schedule that "surfaces drift" but structurally cannot is
+# a success signal emitted without checking success -- this programme's own
+# recurring defect, in its own CI.
+#
+# The weekly run is still worth having, for what it ACTUALLY catches: environment
+# drift -- an unpinned transitive dependency, a runner-image change, a deprecated
+# Actions version. State that, not the drift claim.
+#
+# For the real F-76 signal, the scheduled path also runs a PIN-FRESHNESS step:
+# query the package index for the latest yt-dlp / youtube-transcript-api release
+# and fail (or warn loudly) when the pin is behind. That is an actionable signal
+# ("the pin is N releases stale, re-verify the mocked schema") and it does NOT
+# violate the never-touch-a-live-vendor rule -- the package index is not a vendor
+# API, bills nothing, and CI already installs from it. Keep it in the scheduled
+# job only, never in a test, and never in the push/PR path.
 name: tests
 
 on:
