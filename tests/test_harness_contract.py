@@ -6,6 +6,7 @@ inspects the whole tree, so the cross-suite drift checks live here.
 import configparser
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -295,13 +296,29 @@ def test_run_all_treats_the_youth_sports_step_as_skippable():
 def test_run_all_reaches_step_three_when_the_sibling_corpus_is_absent(tmp_path):
     """Fault + distinguishability in one run: with the sibling checkout absent
     (always, in this repo), the script must warn and continue, and the
-    brand-intel step must still be announced."""
+    brand-intel step must still be announced.
+
+    Resolves bash to an absolute path via shutil.which before invoking it.
+    A bare "bash" handed to subprocess lets Windows CreateProcess resolve it
+    against System32 -- where the WSL launcher stub ships on essentially
+    every Windows 10/11 install with WSL enabled -- before it ever consults
+    PATH, regardless of PATH's own ordering. That stub then fails immediately
+    with an unrelated WSL relay error, which has nothing to do with whether
+    this fix is correct. If no bash is found at all, skip with a reason
+    instead of silently passing: "no interpreter available" and "the script
+    behaved correctly" must never share an outcome -- that is exactly the
+    indistinguishable-representations defect this task's exit-code fix
+    exists to remove.
+    """
+    bash_path = shutil.which("bash")
+    if bash_path is None:
+        pytest.skip("no bash interpreter found on PATH")
     for name in ("run_all.sh", "copy_youthsports.sh"):
         (tmp_path / name).write_text((REPO_ROOT / name).read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "download_thinkers.py").write_text("print('thinkers stub')\n", encoding="utf-8")
     (tmp_path / "download_brandintel.py").write_text("print('brandintel stub')\n", encoding="utf-8")
     result = subprocess.run(
-        ["bash", "run_all.sh"],
+        [bash_path, "run_all.sh"],
         cwd=str(tmp_path), capture_output=True, encoding="utf-8", errors="replace",
         env={**os.environ, "PYTHON": sys.executable},
     )
