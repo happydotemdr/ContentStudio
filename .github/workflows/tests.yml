@@ -1,0 +1,103 @@
+# The 1,034 tests in this repo previously ran only when a human remembered, from
+# two different directories, with no event that caused them to run (finding F-60).
+#
+# Three jobs, all windows-latest (the target platform), all `python -m pytest`:
+#   root-suite          -- tests/ : Gate C, Gate D, skill provenance
+#   app-suite           -- pipeline-app/tests/ : the control app
+#   no-live-credentials -- proves the conftest guard fires with vendor keys set
+#
+# The weekly schedule exists for finding F-76: yt-dlp and youtube-transcript-api
+# change their JSON schema, and every test that consumes them is mocked against a
+# frozen copy, so the suite stays green while production breaks.
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  root-suite:
+    name: root-suite
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install
+        run: python -m pip install -r requirements-dev.txt
+      - name: Assert pipeline-app is not installed
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md, sys
+          names = {d.metadata["Name"] for d in md.distributions()}
+          if "pipeline-app" in names:
+              sys.exit("pipeline-app must not be installed: an editable install can "
+                       "shadow the checkout under test (finding F-63)")
+          PY
+      - name: Root suite
+        run: python -m pytest tests/ -q
+
+  app-suite:
+    name: app-suite
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: pipeline-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install
+        run: python -m pip install -r requirements-dev.txt
+      - name: Assert pipeline-app is not installed
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md, sys
+          names = {d.metadata["Name"] for d in md.distributions()}
+          if "pipeline-app" in names:
+              sys.exit("pipeline-app must not be installed: an editable install can "
+                       "shadow the checkout under test (finding F-63)")
+          PY
+      - name: App suite
+        run: python -m pytest -q
+
+  no-live-credentials:
+    name: no-live-credentials
+    runs-on: windows-latest
+    env:
+      # Canary values. The guard must fire with keys PRESENT -- that is the state
+      # on the operator's machine, where one forgotten stub spawns a real,
+      # per-record-billed Bright Data job and the test still passes (finding F-68).
+      BRIGHTDATA_API_KEY: ci-canary-must-never-be-used
+      RESEND_API_KEY: ci-canary-must-never-be-used
+      YOUTUBE_API_KEY: ci-canary-must-never-be-used
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install both toolchains
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -r pipeline-app/requirements-dev.txt
+      - name: Root guard
+        run: python -m pytest tests/test_harness_contract.py -q -k "guard or blocked or vendor"
+      - name: App guard
+        working-directory: pipeline-app
+        run: python -m pytest tests/test_harness_contract.py -q -k "guard or blocked or vendor"

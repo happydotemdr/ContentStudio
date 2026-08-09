@@ -357,3 +357,46 @@ def test_run_all_stops_loudly_when_the_youth_sports_copy_genuinely_fails(tmp_pat
     )
     assert "brandintel stub" not in result.stdout, "step 3 must not run after a genuine step-2 failure"
     assert result.returncode == 2, "the propagated code should be the stub's own, not flattened to 1"
+
+
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
+
+
+def _workflow() -> dict:
+    import yaml
+
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def test_ci_defines_the_three_required_jobs():
+    assert set(_workflow()["jobs"]) == {"root-suite", "app-suite", "no-live-credentials"}
+
+
+def test_ci_runs_both_suites_with_python_m_and_never_a_bare_pytest():
+    """F-61 + F-63: bare `pytest` omits the app suite silently and does not
+    prepend the cwd, so it can test a different checkout."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "python -m pytest tests/" in text
+    assert re.search(r"working-directory:\s*pipeline-app", text)
+    assert not re.search(r"run:\s*pytest\b", text), "a bare `pytest` invocation is in the workflow"
+
+
+def test_ci_asserts_pipeline_app_is_never_installed():
+    """F-63: CI must never install the package, so python -m's cwd prepend is
+    its only source."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "pipeline-app must not be installed" in text
+    assert "pip install -e" not in text
+
+
+def test_ci_runs_weekly_so_floating_upstream_changes_surface():
+    """F-76: yt-dlp ships frequently; a weekly run turns an ambient break into
+    a dated, reviewable one."""
+    on = _workflow()[True] if True in _workflow() else _workflow()["on"]
+    assert "schedule" in on
+    assert on["schedule"][0]["cron"]
+
+
+def test_ci_configures_no_coverage_gate():
+    """F-02: 95% coverage coexisted with 328 defects."""
+    assert "--cov-fail-under" not in WORKFLOW.read_text(encoding="utf-8")
