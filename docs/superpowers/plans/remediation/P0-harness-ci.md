@@ -1715,6 +1715,27 @@ Closes: **F-03** (primary), **F-72** (the coverage half).
 
 This is the test that catches the class of defect unit tests structurally cannot: a stage not receiving an artifact its `SKILL.md` declares required.
 
+**Two corrections found during execution — the code block below does not work as written.**
+
+1. **Stages unlock on APPROVAL, not on `awaiting_review`.** Every stage except the two
+   dependency-free ones starts LOCKED, so a walk that merely runs stage N and moves on stalls
+   at stage 2. The walk must drive `approval_service.approve_stage` between stages. This is
+   worth knowing beyond this test: it means "the stage produced an artifact" and "the next
+   stage can start" are different conditions, and only the second one advances the pipeline.
+2. **`grounding` does not use the `raw_output.md` contract at all.** Its real artifact lands in
+   `rgs-briefs/` through logic inlined in `routes/stages.py`, not through the artifact-writing
+   path every other stage uses. A walk that assumes the uniform contract fails on that stage
+   with "the kickoff prompt did not name a raw_output path". The walk must mirror the grounding
+   route's snapshot-diff-and-point sequence. **Routed to the package that owns
+   `routes/stages.py`:** a stage whose artifact handling is inlined in its route rather than
+   going through the shared artifact layer is a handoff the shared layer cannot see, check, or
+   version.
+
+**The assertion that makes this test worth having** is the one tying a downstream stage's input
+to the specific artifact the upstream stage actually produced. "Nine artifacts exist" is the
+same defect as the test this replaces, at nine times the size. Verify by mutation: zero out
+`input_files` in `turn_service.py`, confirm the walk fails, revert.
+
 - [ ] **Write the failing test.** Create `pipeline-app/tests/integration/test_stubbed_cli_e2e.py`:
 
 ```python
