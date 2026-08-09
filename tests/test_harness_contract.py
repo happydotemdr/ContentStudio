@@ -223,3 +223,19 @@ def test_yt_dlp_and_transcript_api_are_pinned_exactly_in_both_manifests():
                 f"{path.name}: {library} is not pinned to an exact version "
                 f"(no wildcard, no range, no compound spec)"
             )
+
+
+def test_root_scripts_is_not_a_regular_package():
+    """C-105: the empty __init__.py is what makes root scripts/ a *regular*
+    package, which is what shadows pipeline-app/scripts/ when the app suite is
+    collected from here."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("scripts")
+    assert spec is not None
+    assert spec.origin is None, "root scripts/ is still a regular package (C-105)"
+    assert not (REPO_ROOT / "scripts" / "__init__.py").exists()
+
+
+def test_root_scripts_modules_still_import_by_name():
+    from scripts.resolve_brief_version import find_latest  # noqa: F401
