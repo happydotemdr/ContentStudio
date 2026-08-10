@@ -689,7 +689,7 @@ def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException) -> None:
       half-finished work, which would defeat A-70 through the very module meant to report it.
       The explicit `conn.commit()` in `_rollback_and_report` above is the one deliberate exception
       and must remain.
-- [ ] **Run it.** All eight pass. Then run the whole app suite: `cd pipeline-app && python -m pytest -q`.
+- [ ] **Run it.** All seven pass. Then run the whole app suite: `cd pipeline-app && python -m pytest -q`.
       **Zero existing tests may change behaviour.** If any fails, the compatibility rule was broken.
 - [ ] **Commit.** `fix(db): give every multi-row invariant a transaction boundary (A-70)`
 
