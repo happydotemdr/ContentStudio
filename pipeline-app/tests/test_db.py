@@ -2660,9 +2660,9 @@ def test_clearing_failures_for_a_handle_that_does_not_exist_fails_instead_of_ret
 # one schema, and until now nothing compared them.
 #
 # `_structural_schema` below reads the shape out of pragmas wherever a pragma
-# exists, and out of normalized DDL text only for the two things SQLite exposes
-# no pragma for: a CHECK expression, and a partial index's WHERE predicate. The
-# helpers above it are that text parser.
+# exists, and out of normalized DDL text only for the three things SQLite
+# exposes no pragma for: a CHECK expression, a partial index's WHERE predicate,
+# and AUTOINCREMENT. The helpers above it are that text parser.
 # ---------------------------------------------------------------------------
 
 
@@ -2745,6 +2745,7 @@ def _matching_paren(sql: str, open_at: int) -> int:
 
 _CHECK_OPEN = re.compile(r"\bCHECK\b\s*\(", re.I)
 _CHECK_WORD = re.compile(r"\bCHECK\b", re.I)
+_AUTOINCREMENT = re.compile(r"\bAUTOINCREMENT\b", re.I)
 
 
 def _check_constraints_in(table: str, ddl: str) -> frozenset[str]:
@@ -2770,18 +2771,50 @@ def _check_constraints_in(table: str, ddl: str) -> frozenset[str]:
     return frozenset(found)
 
 
-def _table_check_constraints(conn, table: str) -> frozenset[str]:
-    """`_check_constraints_in` against the definition SQLite is enforcing.
+def _declares_autoincrement(table: str, ddl: str) -> bool:
+    """Whether `table`'s primary key declares AUTOINCREMENT.
+
+    The third thing no pragma exposes, and the one the other seven dimensions
+    are all blind to: `PRAGMA table_info` reports `INTEGER` / `pk=1` with or
+    without the keyword, and `sqlite_sequence` -- the table the keyword creates
+    -- is filtered out of the object-name set by the `sqlite_%` exclusion. So
+    the keyword can be dropped from any of the four tables migration 1 rebuilds
+    and every other dimension stays green.
+
+    Not cosmetic. T7 recorded that the create-copy-drop-rename rebuild resets
+    the `sqlite_sequence` high-water mark, so a migrated database can already
+    re-issue an id a deleted row once had. Lose the keyword on one shape and the
+    two allocate ids by different rules entirely -- monotonic-forever on one,
+    largest-rowid-plus-one on the other -- with nothing detecting it.
+
+    A reading, not a parser: it runs on the same normalized DDL the CHECK
+    extraction already produces. `False` has to mean "this table's primary key
+    does not autoincrement" and never "there was nothing here to read", which is
+    what the CREATE TABLE assertion is for -- a boolean dimension that answers
+    the same way for every table is "we looked at nothing" in boolean clothing,
+    and both shapes would agree on it forever."""
+    assert re.match(r"CREATE\s+TABLE\b", ddl, re.I), \
+        f"not a CREATE TABLE statement for {table}: {ddl!r}"
+    return bool(_AUTOINCREMENT.search(ddl))
+
+
+def _table_ddl(conn, table: str) -> str:
+    """The normalized `CREATE TABLE` statement SQLite stores for `table`.
 
     sqlite_master rather than schema.sql or a Python constant, for the reason
     `_check_vocabulary` gives above: only the DDL on THIS database decides what
-    this database stores. No pragma exposes a CHECK, so this is one of the two
-    dimensions the comparison has to read out of text."""
+    this database stores. Read once per table and handed to both readings that
+    need it, so a table's DDL is fetched and normalized in exactly one place."""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", (table,)
     ).fetchone()
     assert row is not None and row[0], f"no stored DDL for table {table!r}"
-    return _check_constraints_in(table, _normalize_ddl(row[0]))
+    return _normalize_ddl(row[0])
+
+
+def _table_check_constraints(conn, table: str) -> frozenset[str]:
+    """`_check_constraints_in` against the definition SQLite is enforcing."""
+    return _check_constraints_in(table, _table_ddl(conn, table))
 
 
 def _index_predicate(conn, name: str, partial: int) -> str | None:
@@ -2845,6 +2878,8 @@ def _structural_schema(conn) -> dict:
             continue
         columns = conn.execute(f'PRAGMA table_info("{name}")').fetchall()
         assert columns, f"PRAGMA table_info returned nothing for table {name!r}"
+        # Fetched once and handed to both readings that need it.
+        ddl = _table_ddl(conn, name)
 
         indexes: dict[str, tuple] = {}
         predicates: dict[str, str | None] = {}
@@ -2877,7 +2912,8 @@ def _structural_schema(conn) -> dict:
                  fk["on_update"], fk["on_delete"], fk["match"])
                 for fk in conn.execute(f'PRAGMA foreign_key_list("{name}")').fetchall()
             ),
-            "checks": _table_check_constraints(conn, name),
+            "checks": _check_constraints_in(name, ddl),
+            "autoincrement": _declares_autoincrement(name, ddl),
             "indexes": indexes,
             "index_predicates": predicates,
         }
@@ -2899,12 +2935,20 @@ def test_the_ddl_parser_reports_malformed_input_instead_of_finding_nothing_in_it
         _strip_sql_comments("status TEXT DEFAULT 'oops -- not a comment")
     with pytest.raises(AssertionError, match="could not read"):
         _check_constraints_in("stages", "CREATE TABLE stages (status TEXT CHECK status IN (1))")
+    with pytest.raises(AssertionError, match="not a CREATE TABLE statement"):
+        _declares_autoincrement("stages", "")
 
     # A doubled quote is SQLite's escape, not the end of the literal. A scanner
     # that stops at the first `'` treats ` -- fine' ` as a comment and drops the
     # rest of the statement, silently.
     assert _strip_sql_comments("DEFAULT 'it''s -- fine' -- gone") == "DEFAULT 'it''s -- fine' "
+    # The legitimately-absent cases, which must come back as absence rather than
+    # as a raise -- that distinction is what makes the three asserts above mean
+    # something.
     assert _check_constraints_in("t", "CREATE TABLE t (a TEXT)") == frozenset()
+    assert _declares_autoincrement("t", "CREATE TABLE t (id INTEGER PRIMARY KEY)") is False
+    assert _declares_autoincrement(
+        "t", "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)") is True
 
 
 def test_a_migrated_database_has_the_same_schema_as_a_fresh_one(tmp_path: Path, monkeypatch):
@@ -2932,12 +2976,12 @@ def test_a_migrated_database_has_the_same_schema_as_a_fresh_one(tmp_path: Path, 
     two tables and that. Add to schema.sql, add the matching migration step, or
     this fails.
 
-    Six dimensions, one assertion each so a failure names the kind of drift:
+    Eight dimensions, one assertion each so a failure names the kind of drift:
     the set of object names, column names and order, per-column
     type/NOT NULL/DEFAULT/PK, foreign keys including ON DELETE, indexes
     including UNIQUE and the partial flag, and partial-index WHERE predicates.
-    CHECK constraints are the seventh, and the one dimension with no pragma
-    behind it."""
+    The last two have no pragma behind them and are read out of normalized DDL:
+    CHECK constraints, and whether the primary key declares AUTOINCREMENT."""
     # apply_migrations logs `schema.migration_applied`, so without this the
     # migrated half writes into the app's real logs/ directory -- same reason
     # every other migration test in this file pins it.
@@ -2973,6 +3017,13 @@ def test_a_migrated_database_has_the_same_schema_as_a_fresh_one(tmp_path: Path, 
                for t in fresh["tables"].values()
                for predicate in t["index_predicates"].values()), \
         "no partial-index WHERE was extracted from ANY index -- the extractor is broken"
+    # The AUTOINCREMENT reading is a boolean, so its floor has to be two-sided:
+    # a reading stuck on one answer would agree with itself across both shapes
+    # forever. Both answers occur for real -- the rebuilt tables autoincrement,
+    # the singleton `id INTEGER PRIMARY KEY CHECK (id = 1)` tables do not -- so
+    # if this ever fails, check whether that is still true before touching it.
+    assert {t["autoincrement"] for t in fresh["tables"].values()} == {True, False}, \
+        "every table read the same way for AUTOINCREMENT -- the reading does not discriminate"
 
     for table in sorted(fresh["tables"]):
         expected, actual = fresh["tables"][table], migrated["tables"][table]
@@ -2988,3 +3039,8 @@ def test_a_migrated_database_has_the_same_schema_as_a_fresh_one(tmp_path: Path, 
             f"{table}: an index differs in columns, UNIQUE, origin or partial flag"
         assert actual["index_predicates"] == expected["index_predicates"], \
             f"{table}: a partial index's WHERE predicate differs"
+        # Last, deliberately: every other dimension is blind to this keyword, so
+        # a failure here is one the seven above have just passed on this table.
+        assert actual["autoincrement"] == expected["autoincrement"], \
+            f"{table}: one shape's primary key declares AUTOINCREMENT and the other's " \
+            f"does not, so the two allocate ids by different rules"
