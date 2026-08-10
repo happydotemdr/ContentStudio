@@ -155,7 +155,10 @@ def _block_live_calls(request, monkeypatch):
 # whose dict is empty deletes the dict. Nothing may be ADDED to this list: a
 # new leak is a new defect and fails the test that produced it.
 _CONNECTION_LEAKS_BY_PACKAGE: dict[str, list[str]] = {
-    "P1": ["tests/test_main.py"],
+    # P1 had tests/test_main.py here and no longer does: T13 (A-85) gave
+    # create_app a lifespan that closes the shared connection, and converted
+    # that module to build its apps under `with TestClient(app)` so the
+    # lifespan actually runs. Deleted, not amended -- this list shrinks only.
     "P3": ["tests/test_routes_approve_edit.py", "tests/test_routes_stages.py"],
     "P4": ["tests/test_routes_chat_sse.py"],
     "P5": [
