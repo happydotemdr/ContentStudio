@@ -209,7 +209,18 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
     # concurrent write.
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    # Read back rather than assumed: every FK constraint in schema.sql is inert
+    # without this, and nothing else in the app ever checks. A fresh connection is
+    # never inside a transaction, so the write should always take -- the same
+    # reasoning behind every other verified pragma in this file (_set_foreign_keys,
+    # _restore_foreign_keys). The impossible branch is logged, not asserted, because
+    # this runs on the startup path and must not crash the app over a defensive check.
     conn.execute("PRAGMA foreign_keys = ON")
+    if not bool(conn.execute("PRAGMA foreign_keys").fetchone()[0]):
+        from pipeline_app import obs
+        obs.log("db.foreign_keys_not_enabled", level="critical",
+                note="PRAGMA foreign_keys = ON did not take on a fresh connection; "
+                     "every FK constraint in schema.sql is inert without it")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn
@@ -502,6 +513,33 @@ def _set_foreign_keys(conn: sqlite3.Connection, enabled: bool) -> bool:
     return bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
 
 
+def _restore_foreign_keys(conn: sqlite3.Connection, wanted: bool, version: int) -> None:
+    """Put enforcement back, and never raise doing it.
+
+    Called from a `finally:` and from the path where the transaction never opened.
+    A raise from either would replace the migration's own exception with this one --
+    and from the `finally:` it would also skip the failure-reporting block below,
+    losing the only durable record that the migration failed at all. Reporting must
+    never mask the thing being reported; `obs.record_event` holds the same contract
+    for the same reason.
+
+    `_set_foreign_keys` returns a reading rather than an intent, so "it did not take"
+    and "it raised" are two different observations and both are said out loud."""
+    from pipeline_app import obs
+
+    try:
+        if _set_foreign_keys(conn, wanted) == wanted:
+            return
+        reading = "unchanged"
+    except Exception as exc:  # noqa: BLE001 -- restoring must not mask the failure
+        reading = f"{type(exc).__name__}: {exc}"
+    obs.log("db.foreign_keys_not_restored", level="critical", version=version,
+            wanted=wanted, reading=reading,
+            note="PRAGMA foreign_keys is a no-op inside a transaction; this connection "
+                 "is running without referential integrity enforcement and must be "
+                 "closed, not reused")
+
+
 def apply_migrations(conn: sqlite3.Connection) -> list[int]:
     """Run every registered migration the database has not seen, in order.
 
@@ -601,14 +639,25 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
         # it and is strictly stronger: it checks the whole database rather than one
         # statement's rows.
         fk_was_enabled = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
-        if _set_foreign_keys(conn, False):
-            raise MigrationIntegrityError(
-                f"could not disable foreign key enforcement before migration {version}; "
-                f"the rebuild would fail on DROP TABLE, and refusing to start beats a "
-                f"half-applied schema"
-            )
-        violations_before = _foreign_key_violations(conn)
-        conn.execute("BEGIN IMMEDIATE")
+        # Everything between disabling enforcement and opening the transaction runs
+        # inside this try. Below it, the `finally:` restores; above it, nothing has
+        # changed yet. In between there is no other restorer -- and `BEGIN IMMEDIATE`
+        # is precisely where a failure is expected, since SQLITE_BUSY is the whole
+        # reason it is IMMEDIATE. Without this the caller gets its connection back
+        # with referential integrity silently off: no exception about it, no log, no
+        # event, and every later orphan accepted. Confirmed by probe, not argument.
+        try:
+            if _set_foreign_keys(conn, False):
+                raise MigrationIntegrityError(
+                    f"could not disable foreign key enforcement before migration "
+                    f"{version}; the rebuild would fail on DROP TABLE, and refusing to "
+                    f"start beats a half-applied schema"
+                )
+            violations_before = _foreign_key_violations(conn)
+            conn.execute("BEGIN IMMEDIATE")
+        except BaseException:
+            _restore_foreign_keys(conn, fk_was_enabled, version)
+            raise
         _enter_migration_boundary(conn)
         failure: BaseException | None = None
         rollback_failed = False
@@ -689,13 +738,10 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
             # takes; on the path where rollback itself failed a transaction is still
             # open and the pragma silently does nothing. That second case is precisely
             # a restore that did not restore, so it is read back and reported rather
-            # than assumed.
-            if _set_foreign_keys(conn, fk_was_enabled) != fk_was_enabled:
-                obs.log("db.foreign_keys_not_restored", level="critical", version=version,
-                        wanted=fk_was_enabled,
-                        note="PRAGMA foreign_keys is a no-op inside a transaction; this "
-                             "connection is running without referential integrity "
-                             "enforcement and must be closed, not reused")
+            # than assumed. Via the helper, which cannot raise: this is a `finally:`,
+            # and an exception here would replace the migration's own and skip the
+            # reporting block below it.
+            _restore_foreign_keys(conn, fk_was_enabled, version)
         if failure is not None:
             # Report OBSERVATIONS, not a verdict.
             #

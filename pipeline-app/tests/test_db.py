@@ -1258,3 +1258,109 @@ def test_pre_existing_foreign_key_violations_do_not_brick_the_boot(tmp_path: Pat
             == db.SCHEMA_VERSION
     finally:
         c.close()
+
+
+def test_foreign_keys_are_restored_when_the_transaction_cannot_be_opened(
+        tmp_path: Path, monkeypatch):
+    """The connection must never come back with enforcement off and nothing said.
+    BEGIN IMMEDIATE fails under write contention, which is the whole reason it is
+    IMMEDIATE, so this path is reachable rather than theoretical."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    monkeypatch.setattr(db, "_MIGRATIONS", [(1, lambda conn: None)])
+
+    blocker = db.get_connection(db_path)
+    c = db.get_connection(db_path)
+    try:
+        c.execute("UPDATE schema_version SET version = 0 WHERE id = 1")
+        c.commit()
+        blocker.execute("BEGIN IMMEDIATE")
+        blocker.execute("UPDATE schema_version SET version = 0 WHERE id = 1")
+        c.execute("PRAGMA busy_timeout = 0")  # fail now rather than in five seconds
+        with pytest.raises(sqlite3.OperationalError):
+            db.apply_migrations(c)
+        assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1, \
+            "connection handed back without referential integrity enforcement"
+    finally:
+        blocker.rollback()
+        blocker.close()
+        c.close()
+
+
+def test_a_failing_pragma_restore_does_not_swallow_the_migration_failure(
+        tmp_path: Path, monkeypatch):
+    """Reporting must never mask the thing being reported. If restoring enforcement
+    blows up, the migration's own exception still propagates and its events row is
+    still written -- otherwise a migration failure and a clean run look identical."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+
+    def boom(conn):
+        raise RuntimeError("the migration itself failed")
+
+    def exploding_set(conn, enabled):
+        if enabled:  # only the restore, not the disable
+            raise sqlite3.ProgrammingError("pragma exploded")
+        return False
+
+    monkeypatch.setattr(db, "_MIGRATIONS", [(1, boom)])
+    c = db.get_connection(db_path)
+    try:
+        c.execute("UPDATE schema_version SET version = 0 WHERE id = 1")
+        c.commit()
+        monkeypatch.setattr(db, "_set_foreign_keys", exploding_set)
+        with pytest.raises(RuntimeError, match="the migration itself failed"):
+            db.apply_migrations(c)
+        monkeypatch.undo()
+        rows = c.execute(
+            "SELECT * FROM events WHERE kind = 'schema.migration_failed'").fetchall()
+        assert len(rows) == 1
+        assert "RuntimeError" in rows[0]["message"]
+    finally:
+        c.close()
+
+
+def test_STAGE_STATUSES_matches_the_enum():
+    """The tuple the migration reads, pinned to the enum it claims to mirror."""
+    from pipeline_app.state_machine import StageStatus
+    assert db.STAGE_STATUSES == tuple(m.value for m in StageStatus)
+
+
+def test_every_StageStatus_member_is_accepted_by_the_migrated_table(
+        tmp_path: Path, monkeypatch):
+    """The migration-side half of the fresh-database test above. A fresh and a
+    migrated database must not disagree about what a legal status is."""
+    from pipeline_app import obs
+    from pipeline_app.state_machine import StageStatus
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.execute("INSERT INTO projects (run_id, slug, brand, created_at) "
+              "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00')")
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        for i, member in enumerate(StageStatus):
+            db.create_stage_row(c, 1, f"stage-{i}", member.value)
+    finally:
+        c.close()
+
+
+def test_get_connection_enables_foreign_key_enforcement(tmp_path: Path):
+    """Every FK constraint in schema.sql is inert without this, and nothing else
+    in the app ever checks."""
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        c.close()
