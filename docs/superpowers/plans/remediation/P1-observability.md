@@ -562,6 +562,109 @@ def test_a_swallowed_inner_failure_still_rolls_the_outer_transaction_back(conn):
             except RuntimeError:
                 pass
     assert db.list_projects(conn) == []
+
+
+def _db_path(conn) -> Path:
+    return Path(conn.execute("PRAGMA database_list").fetchone()[2])
+
+
+class _FlakyCommit:
+    """A connection whose first `commit()` fails.
+
+    A wrapper rather than a monkeypatch because `sqlite3.Connection` is a C type
+    and does not accept attribute assignment. Everything else proxies through, so
+    `id()` keying still works as long as the wrapper is what gets passed around."""
+
+    def __init__(self, real):
+        self._real = real
+        self._failed = False
+
+    def commit(self):
+        if not self._failed:
+            self._failed = True
+            raise sqlite3.OperationalError("database is locked")
+        return self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_an_inner_block_unwinding_after_its_outer_one_does_not_strand_the_connection(
+    conn, tmp_path, monkeypatch
+):
+    """A depth entry re-created after the outer block popped it is permanent and
+    totally silent: every later commit becomes a no-op and the connection stops
+    persisting anything, with no exception, no log line and no events row."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    outer, inner = db.transaction(conn), db.transaction(conn)
+    outer.__enter__()
+    inner.__enter__()
+    outer.__exit__(None, None, None)   # the outer block unwinds first...
+    inner.__exit__(None, None, None)   # ...and the inner one second
+
+    db.create_project(conn, "after", "a", "generic", "2026-08-08T00:00:00+00:00")
+    other = db.get_connection(_db_path(conn))
+    try:
+        assert len(db.list_projects(other)) == 1  # the connection still commits
+    finally:
+        other.close()
+
+    text = "\n".join(p.read_text(encoding="utf-8") for p in (tmp_path / "logs").glob("app-*.log"))
+    assert "db.transaction_bookkeeping_lost" in text  # ...and said so, rather than absorbing it
+
+
+def test_a_poisoned_transaction_names_the_original_failure(conn, tmp_path, monkeypatch):
+    """The synthetic TransactionPoisonedError is the only thing left to report, so
+    if it does not carry the real fault, nothing does -- not `events`, not the log,
+    not a traceback."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    with pytest.raises(db.TransactionPoisonedError) as caught:
+        with db.transaction(conn):
+            try:
+                with db.transaction(conn):
+                    raise RuntimeError("the stage row insert failed")
+            except RuntimeError:
+                pass
+
+    assert "the stage row insert failed" in str(caught.value)
+    assert isinstance(caught.value.__cause__, RuntimeError)
+
+    other = db.get_connection(_db_path(conn))
+    try:
+        row = other.execute(
+            "SELECT * FROM events WHERE kind = 'db.transaction_rolled_back'"
+        ).fetchone()
+    finally:
+        other.close()
+    detail = json.loads(row["detail"])
+    assert detail["original_exception"] == "RuntimeError"
+    assert "the stage row insert failed" in detail["original_message"]
+
+
+def test_a_failing_boundary_commit_does_not_leave_the_work_for_the_next_caller(
+    conn, tmp_path, monkeypatch
+):
+    """If the boundary's own commit raises and the statements are left pending, the
+    next unrelated helper's commit persists them -- the caller was told the
+    operation failed and the data landed anyway."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    flaky = _FlakyCommit(conn)
+    with pytest.raises(sqlite3.OperationalError):
+        with db.transaction(flaky):
+            db.create_project(flaky, "doomed", "a", "generic", "2026-08-08T00:00:00+00:00")
+
+    db.create_project(conn, "later", "b", "generic", "2026-08-08T00:00:00+00:00")
+    other = db.get_connection(_db_path(conn))
+    try:
+        assert [r["run_id"] for r in db.list_projects(other)] == ["later"]
+    finally:
+        other.close()
 ```
 
 - [ ] **Run it.** `AttributeError: module 'pipeline_app.db' has no attribute 'transaction'`.
@@ -589,7 +692,10 @@ class TransactionPoisonedError(RuntimeError):
 # while `transaction()` holds a strong reference to the connection, so id reuse
 # cannot collide.
 _TXN_DEPTH: dict[int, int] = {}
-_TXN_POISON: set[int] = set()
+# Maps a poisoned connection to the FIRST exception that poisoned it -- a set
+# would record only that something failed, never what, which is the difference
+# between an events row a human can act on and one that just says "a thing broke".
+_TXN_POISON: dict[int, BaseException] = {}
 _TXN_LOCK = threading.Lock()
 
 
@@ -611,8 +717,21 @@ def transaction(conn: sqlite3.Connection):
     """One explicit boundary around a multi-row invariant.
 
     Wrap project creation, approval + unlock, the staleness cascade and each
-    per-project backfill in this. Nests: an inner block joins the outer one
-    rather than committing early."""
+    per-project backfill in this (T4b does exactly that). Nests: an inner block
+    joins the outer one rather than committing early.
+
+    **Known hazard, deliberately not solved here.** The boundary is a property of
+    the *connection*, and this app shares one connection across threads
+    (`get_connection`'s `check_same_thread=False`). So a leaf helper called from a
+    thread that is in no boundary at all still stops committing while *another*
+    thread holds one, and its write is discarded outright if that boundary rolls
+    back. The known sharer is `discovery_engine._open_heartbeat_connection`, which
+    returns `None` on any `sqlite3.Error` and falls back to the shared connection;
+    under a rolled-back boundary the heartbeat write vanishes, `heartbeat_at`
+    freezes, and another process reclaims a run that is still alive. Making that
+    fallback loud belongs to the discovery package; do not fix it here, and do not
+    widen the boundary to be thread-local -- that would break the single-connection
+    design this app depends on."""
     key = id(conn)
     with _TXN_LOCK:
         depth = _TXN_DEPTH.get(key, 0)
@@ -622,31 +741,74 @@ def transaction(conn: sqlite3.Connection):
         yield conn
     except BaseException as exc:
         with _TXN_LOCK:
-            _TXN_POISON.add(key)
+            _TXN_POISON.setdefault(key, exc)
         if outermost:
             _rollback_and_report(conn, exc)
         raise
     else:
         with _TXN_LOCK:
-            poisoned = key in _TXN_POISON
-        if outermost and poisoned:
+            original = _TXN_POISON.get(key)
+        if outermost and original is not None:
             exc = TransactionPoisonedError(
-                "an inner transaction failed and its exception was swallowed"
+                "an inner transaction failed and its exception was swallowed: "
+                f"{type(original).__name__}: {original}"
             )
-            _rollback_and_report(conn, exc)
+            # The inner block was not outermost, so _rollback_and_report never ran
+            # for it, and the caller swallowed the exception by definition of this
+            # path. Without chaining, the ONLY record of what actually failed --
+            # which statement in the cascade, and why -- exists nowhere: not in
+            # `events`, not in the log, not in a traceback.
+            exc.__cause__ = original
+            _rollback_and_report(conn, exc, original=original)
             raise exc
         if outermost:
-            conn.commit()
+            try:
+                conn.commit()
+            except BaseException as commit_exc:
+                # Without this the block's statements stay pending in an open
+                # transaction with no rollback and no event, the finally pops the
+                # depth, and the NEXT unrelated leaf helper commits this failed
+                # block's work. The caller was told the operation failed and the
+                # data landed anyway -- A-70 with extra steps.
+                _rollback_and_report(conn, commit_exc)
+                raise
     finally:
         with _TXN_LOCK:
-            if outermost:
+            remaining = _TXN_DEPTH.get(key, 1) - 1
+            # Decrement, never restore the entry depth. Restoring an absolute value
+            # RE-CREATES the key if the outermost block already popped it -- which
+            # happens whenever two threads hold boundaries on this shared connection
+            # and unwind out of order, or a suspended generator's inner block is
+            # closed by GC after the outer one finished. The phantom key is
+            # permanent and totally silent: every later commit_unless_in_transaction
+            # sees depth > 0 and does nothing, so that connection stops committing
+            # forever, with no exception, no log line and no events row.
+            lost = not outermost and key not in _TXN_DEPTH
+            if outermost or remaining <= 0:
                 _TXN_DEPTH.pop(key, None)
-                _TXN_POISON.discard(key)
+                _TXN_POISON.pop(key, None)
             else:
-                _TXN_DEPTH[key] = depth
+                _TXN_DEPTH[key] = remaining
+        if lost:
+            # Never silently. Reaching here means the bookkeeping was already gone
+            # when an inner block exited -- the anomaly above, caught rather than
+            # absorbed. Inside the `finally` so it fires while an exception is
+            # propagating too, but OUTSIDE the lock: obs.log() touches the
+            # filesystem, and it never raises, so it cannot mask the original.
+            from pipeline_app import obs
+
+            obs.log("db.transaction_bookkeeping_lost", level="warning",
+                    note="an inner transaction exited after its outer block unwound")
 
 
-def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException) -> None:
+def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException,
+                         *, original: BaseException | None = None) -> None:
+    """`original` is the underlying failure when `exc` is a synthetic wrapper.
+
+    On the poison path `exc` is a TransactionPoisonedError this module just
+    built, so recording only `exc` would produce an events row that says a
+    transaction was poisoned and nothing whatsoever about the fault -- the one
+    thing an operator actually needs."""
     from pipeline_app import obs
 
     try:
@@ -654,10 +816,14 @@ def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException) -> None:
     except Exception as rollback_exc:  # noqa: BLE001 -- report it, never mask the original
         obs.log("db.rollback_failed", level="critical",
                 error=f"{type(rollback_exc).__name__}: {rollback_exc}")
+    detail = {"exception": type(exc).__name__}
+    if original is not None:
+        detail["original_exception"] = type(original).__name__
+        detail["original_message"] = str(original)
     obs.record_event(
         conn, kind="db.transaction_rolled_back", severity="error", source="db.transaction",
         message=f"rolled back after {type(exc).__name__}: {exc}",
-        detail={"exception": type(exc).__name__},
+        detail=detail,
     )
     # Commit the event row explicitly. We are still nominally inside this
     # transaction -- `transaction()`'s finally has not popped the depth key yet --
@@ -689,9 +855,45 @@ def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException) -> None:
       half-finished work, which would defeat A-70 through the very module meant to report it.
       The explicit `conn.commit()` in `_rollback_and_report` above is the one deliberate exception
       and must remain.
-- [ ] **Run it.** All seven pass. Then run the whole app suite: `cd pipeline-app && python -m pytest -q`.
+- [ ] **Run it.** All ten pass (`tests/test_db.py` needs `import json` added). Then run the whole app suite: `cd pipeline-app && python -m pytest -q`.
       **Zero existing tests may change behaviour.** If any fails, the compatibility rule was broken.
 - [ ] **Commit.** `fix(db): give every multi-row invariant a transaction boundary (A-70)`
+
+---
+
+### T4b — wire the boundary into the four multi-row invariants (A-70, the other half)
+
+T4 builds the machinery. **Nothing in the entire sixteen-package programme ever calls it** —
+verified by `grep -rn "db.transaction(" docs/superpowers/plans/remediation/`, which matches only
+P1's own test code. Shipping T4 alone leaves A-70's actual failure mode completely intact: a
+half-written project that looks real. `transaction()`'s own docstring names the four call sites
+that need it; this task is executing that sentence.
+
+The four, located by `grep -rn "create_project(\|_backfill_one_project\|reclaim_stale_runs" --include=*.py`:
+
+| Invariant | Site | What is currently non-atomic |
+|---|---|---|
+| Project creation | `pipeline_app/project_service.py:23` `create_project` | project row, then each stage row, then each directory |
+| Approval + unlock | `pipeline_app/approval_service.py:11` `approve_stage` | the approval and the unlock of the next stage |
+| Per-project backfill | `pipeline_app/migrations.py:85` `_backfill_one_project` | inserts an `approved` styleboard row, *then* sets `approved_at` — an interruption yields `status='approved', approved_at=NULL`, A-70's worked example |
+| Staleness cascade | `pipeline_app/discovery_engine.py:299` `reclaim_stale_runs` call | reclaims N runs, committing each |
+
+- [ ] **Write the failing test.** For each of the four, a test that interrupts the operation partway
+      and asserts **nothing** was left behind. Model them on T4's
+      `test_transaction_rolls_back_every_statement_in_the_block`: force the failure by
+      monkeypatching the *second* step of the invariant to raise, then assert the first step's row
+      is absent. Name them
+      `test_<operation>_leaves_nothing_behind_when_it_fails_partway`.
+      Each must be observed failing **before** the wrapping is added — that failure *is* A-70, and
+      it is the only direct evidence in the programme that the finding was ever real.
+- [ ] **Implement.** Wrap each operation's body in `with db_mod.transaction(conn):`. **Wrap only.**
+      These four files are touched by other packages (P2, P3, P4); do not restructure, rename or
+      re-order anything inside them, and do not change a signature. If an operation already returns
+      early on a failure path, the boundary must still cover every write.
+- [ ] **Run it.** The four new tests pass. Then the whole app suite: `cd pipeline-app && python -m pytest -q`.
+      **Zero existing tests may change behaviour** — outside a boundary nothing moved, and inside
+      one the only difference is *when* the commit happens.
+- [ ] **Commit.** `fix(db): wrap the four multi-row invariants in a transaction boundary (A-70)`
 
 ---
 
