@@ -3571,6 +3571,48 @@ by an intermediate P1 build skips migration 1 entirely. It is dev-only and loud 
 unshipped), but T9 and T10 extend migration 1 and will reason from that comment. Correct the
 comment if this task touches it; do not build on its exhaustiveness claim.
 
+#### T9 as built — C1 was wrong, and the implementer was right to deviate
+
+**Status: implemented in `3c7fc67`.** Recorded here so the plan matches the tree, before the task
+review reads either.
+
+**C1's third edit is a defect I wrote, and it is this package's recurring class again — the
+twenty-first instance, authored by the remediation.** C1 said to put
+`CREATE INDEX … ON handles(creator_id)` in `schema.sql` *below* the `handles` table. C3, four
+paragraphs later, says a legacy `handles` has no `creator_id` and that any such index in
+`schema.sql` therefore raises inside `executescript`, before `events` exists. **Both cannot be
+true.** C1 fixed the fresh-database ordering bug and left the legacy-database crash exactly where
+it was. The implementer probed it standalone *and* in-repo with C1 implemented literally: three
+pre-existing-database tests fail with `sqlite3.OperationalError: no such column: creator_id` while
+every fresh-database test stays green — the precise fresh/migrated asymmetry the twin discipline
+exists to catch.
+
+**As built**, following the `ux_turns_single_running` precedent this same file established at T8's
+F1: `schema.sql` carries the `creators` DDL and the `handles.creator_id` column but **no index**
+(a comment sits where it would have gone, naming why); `init_db` issues the fresh database's copy
+of `idx_handles_creator` after `apply_migrations`; migration 1's
+`_MIGRATION_1_HANDLES_CREATOR_STEPS` owns the migrated database's copy.
+
+**C7 — found and closed by the implementer mid-task, not in any brief.** `init_db`'s index
+statement is guarded `if not pre_existing:`. Unguarded it would silently repair an omission in the
+migration — masking H1's T10 hazard and making behaviour (c) unfalsifiable, so the per-behaviour
+RED for the index could never be earned. A fix that hides the bug it is supposed to expose.
+
+#### NEW FINDINGS raised by T9 — filed for validation, NOT fixed here
+
+1. **`link_handle_to_creator` cannot fail.** Called with a `handle_id` that does not exist it
+   updates zero rows and returns exactly as if it had linked — "nothing to link" and "the link
+   silently did not happen" share one representation. Transcribed unchanged from the plan's frozen
+   code. **A candidate instance of the recurring class in code this task creates**, so it is worth
+   deciding here rather than handing on: P10 populates `creators` from the manifests and would
+   report success having linked nothing. Left to the T9 task review to grade rather than
+   pre-judged.
+2. **Fresh and migrated `handles` DDL text now differ in column order** until T10's rebuild
+   normalises them (`schema.sql` declares `creator_id` inside the table body; the migration
+   `ALTER`s it on at the end). Harmless to behaviour, but **T12 adds
+   `test_a_migrated_database_has_the_same_schema_as_a_fresh_one`** — if that test compares DDL
+   text rather than resolved structure, it goes red for a cosmetic reason. Route to T12.
+
 ---
 
 ### T10 — B-73: `handles.platform` is unconstrained free text
