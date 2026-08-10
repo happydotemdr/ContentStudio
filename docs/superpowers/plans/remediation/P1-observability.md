@@ -3198,6 +3198,165 @@ directly, which several existing tests do.
 5. The usual per-constraint twin discipline (T7's lesson): the index, the orphaning, and the stage
    un-wedging are three separate behaviours. Is each one load-bearing in both database shapes?
 
+#### T8 fix round 1 — the review happened; four findings, all confirmed
+
+The T8 task review ran against `5f8783d..b22cee2`. Full report:
+`.superpowers/sdd/2026-08-08-audit-remediation/P1-task-8-review.md`. Verdict: **spec ❌, quality
+Needs fixes.** Four findings — one Critical, three Important — and four of the five open questions
+above resolved as defects. Q3 is answered as the *shape* of the Critical's fix.
+
+Two controller checks, done before this amendment, closed the review's two ⚠️ items: both suites
+match the report exactly (app 937 passed / 3 skipped / 2 xfailed, root 247 passed), and **both
+`xfail` markers exist at BASE `5f8783d`** (`test_db.py:585`, `:1409`) — T8 introduced neither.
+
+**Facts established empirically for this fix round. Do not re-derive them, and do not reason past
+them:**
+
+- `conn` (both `tests/conftest.py:229` and `tests/test_db.py:11`) builds its database through
+  `db.init_db`. Every "fresh database" test therefore reaches `init_db`, not a raw `executescript`.
+- `init_db` stamps `schema_version` to `SCHEMA_VERSION` for a new database and `0` for a
+  pre-existing one, so **migration 1 never runs on a fresh database.** That asymmetry is the whole
+  reason the fresh/migrated twin discipline exists.
+- `apply_migrations` wraps each migration in `BEGIN IMMEDIATE`, and with an explicit `BEGIN`
+  SQLite's DDL *is* transactional (T5 probed this). Migration 1 is therefore atomic: a database
+  stamped at version 1 always has `ux_turns_single_running`, or the stamp never landed.
+- `schema.sql` statement order: `turns` at :37, `ux_turns_single_running` at :58 (T8's addition),
+  `ux_discovery_single_running` at :90, **`events` at :116.**
+- `LEGACY_SCHEMA_V0` (`test_db.py:536`) declares `discovery_runs` **without**
+  `ux_discovery_single_running`, so a legacy fixture can hold two `'running'` discovery runs.
+- `sqlite3.IntegrityError` discriminates cleanly on `exc.sqlite_errorname` (probed against SQLite
+  3.50.4 on this host, all four constraint kinds on the real `turns` shape):
+
+  | fault | `sqlite_errorname` | message |
+  |---|---|---|
+  | second running turn | `SQLITE_CONSTRAINT_UNIQUE` | `UNIQUE constraint failed: turns.status` |
+  | bad status | `SQLITE_CONSTRAINT_CHECK` | `CHECK constraint failed: status IN (...)` |
+  | deleted stage | `SQLITE_CONSTRAINT_FOREIGNKEY` | `FOREIGN KEY constraint failed` |
+  | null events_path | `SQLITE_CONSTRAINT_NOTNULL` | `NOT NULL constraint failed: turns.events_path` |
+
+---
+
+**F1 (Critical) — the repair commits an irreversible mutation with no durable record of having
+done it.** `db.py:742-753`. Between `conn.commit()` at :747 and
+`_record_duplicate_running_turns_orphaned` at :751 sits `conn.executescript(schema.sql)`. If it
+raises, `turns.status` has already been flipped to `'orphaned'` and `stages.status` reset to
+`'ready'`, durably, and nothing anywhere recorded it: no `events` row (the table does not exist
+yet, by construction) and no `obs.log()` line either. `init_db`'s `finally: conn.close()` then
+discards the connection. A silent data mutation with no record — the exact class this package
+exists to remove, introduced by the remediation itself.
+
+This is reachable today, not theoretical: `ux_discovery_single_running` (`schema.sql:90`) executes
+*after* the mutation and *before* `events` (:116).
+
+Fix — the restructure, which also answers open question 3:
+
+- [ ] **Delete `ux_turns_single_running` from `schema.sql`** (the copy T8 appended after `turns`).
+- [ ] **Delete the whole pre-schema repair block from `init_db`** — the `deferred_events`
+      assignment, its `if deferred_events: conn.commit()`, the deferred
+      `_record_duplicate_running_turns_orphaned` call, and the now-false comment above them.
+- [ ] **Issue the index once in `init_db`, immediately after `apply_migrations(conn)`**, as
+      `CREATE UNIQUE INDEX IF NOT EXISTS`. This is the fresh database's copy, replacing
+      `schema.sql`'s, at a point where `events` exists and any duplicates are already repaired.
+      Carry a comment recording *why it cannot raise here* — a fresh database has no turns, and a
+      pre-existing one either just had migration 1 repair its duplicates and build the index, or
+      was already stamped at 1 and (by migration atomicity) already has it. That comment is the
+      tripwire for T9/T10, which extend the same migration.
+- [ ] **Leave `_MIGRATION_1_TURNS_STEPS`' copy and the migration's own repair call alone.** They
+      are what protect a caller reaching `apply_migrations` directly.
+- [ ] **Keep the two-function split** — `_orphan_all_but_newest_running_turn` staying pure and
+      `obs`-free is what makes the repair testable without an `events` table, and `source=` is what
+      F3's twin test asserts on. But **both docstrings now narrate a deferred-recording design that
+      no longer exists** (`db.py:440-455` and the comment at `:564-573` describe `init_db`'s
+      pre-schema call at length, and `"db.init_db"` is no longer a value `source` ever takes).
+      Rewrite both to describe the code as it now stands. A docstring describing a deleted design
+      is a defect, not a cosmetic.
+
+RED, and it must be observed: add
+`test_a_failed_boot_does_not_leave_turns_silently_rewritten`. Seed `_legacy_db` with two
+`'running'` turns **and** two `'running'` discovery runs, call `db.init_db`, and assert it raises,
+then reopen the database and assert **both turns are still `'running'`** — unmutated. Against the
+current tree that assertion fails (they are `'running'` and `'orphaned'`, rewritten with no record).
+After the fix the boot still raises — on the discovery index, see the new finding below — but
+touches no turn. The test is meaningful on both sides of the fix, for different reasons; say which
+in its docstring.
+
+**F2 (Important) — the no-duplicates and brand-new-database paths are asserted by no test.**
+`db.py:471`: `for turn_id, stage_row_id in running[1:]` can be widened to `running` and the entire
+suite still passes — every running turn on every boot of a pre-existing database would be orphaned
+and its stage reset, and nothing would catch it. No test constructs a pre-existing database holding
+exactly *one* running turn: `test_db.py:1672-1677` and `:1712-1717` both insert two, and
+`_legacy_db` inserts none.
+
+- [ ] Add a test seeding `_legacy_db` with one project, one `'running'` stage and one `'running'`
+      turn; call `db.init_db`; assert the turn is still `'running'`, the stage is still `'running'`,
+      and `SELECT count(*) FROM events WHERE kind = 'schema.duplicate_running_turn_orphaned'` is
+      `0`. **The zero-events assertion is the load-bearing one** — it is what separates "nothing to
+      repair" from "repaired something", and without it the test passes under the widened slice.
+- [ ] RED is earned by widening `running[1:]` to `running` and observing this test fail. Restore.
+
+**F3 (Important) — the migration-embedded call site is load-bearing for no committed test.**
+`db.py:574-576`. The implementer's own report states that removing this call leaves both migration
+tests green; the only evidence it works is an ad-hoc repro run by hand and never committed. That is
+T7's recorded failure exactly: the twin discipline applied per *shape* instead of per *call site*,
+with an uncommitted manual repro standing in for a test.
+
+- [ ] Commit the repro. Build a legacy-shaped database that **also** has an `events` table, insert
+      two `'running'` turns, stamp `schema_version` to 0, call `db.apply_migrations(conn)`
+      **directly** (never `init_db`), and assert both the orphaning and an `events` row with
+      `source = 'db.migration_1'`.
+- [ ] **Assert on `source`.** It is the only thing that makes this a twin rather than a second copy
+      of the `init_db` test — the two call sites are otherwise indistinguishable in the row they
+      write. (After F1 there is only one recording call site left, which makes the assertion cheap
+      to get wrong and worth stating explicitly.)
+- [ ] RED is earned by deleting the `db.py:574-576` call and observing this test — and only this
+      test — fail. Restore.
+
+**F4 (Important, plan-mandated — operator ruled "fix" on 2026-08-10).** `db.py:1157-1176`:
+`create_turn`'s `except sqlite3.IntegrityError` is unqualified, but `turns` carries three other
+constraints that raise it (the `status` CHECK, the `stage_row_id` FK, `NOT NULL` on
+`events_path`). A caller passing an invalid status or a deleted `stage_row_id` gets an `events` row
+saying `turn.concurrent_start_rejected` / `severity='error'` / `"refused a second running turn"` —
+a confident, wrong diagnosis in the one place the operator is told to look. Two distinct faults
+share one representation.
+
+This was the brief's verbatim implement (b). It was escalated as plan-mandated and the operator
+ruled: fix it.
+
+- [ ] **Discriminate on `exc.sqlite_errorname`, not on the message.** The errorname is a stable API
+      contract; the message is prose. Record `turn.concurrent_start_rejected` **only** when
+      `exc.sqlite_errorname == "SQLITE_CONSTRAINT_UNIQUE"`; otherwise record a distinct kind,
+      `turn.insert_rejected`, same `severity="error"`, with a message that does not claim a race.
+- [ ] Put `sqlite_errorname` in `detail` on **both** branches, so the operator sees the actual
+      constraint class rather than this code's interpretation of it.
+- [ ] **Re-raise unchanged in both branches.** The existing `_TXN_DEPTH` fallback-log behaviour
+      applies to both branches equally — do not let it apply to only one.
+- [ ] RED: two tests, one per branch. A CHECK violation (invalid status) must produce
+      `turn.insert_rejected`; the second-running-turn case must still produce
+      `turn.concurrent_start_rejected`. Add one assertion that the **two kinds differ** — that is
+      the distinguishability leg, and it is the whole point of this finding. Against the current
+      tree the CHECK-violation test fails by recording the concurrency kind.
+
+**Scope fence.** These four findings and nothing else. Do not touch `ux_discovery_single_running`
+(new finding, filed below, not this task's), do not extend migration 1 beyond what F1 says, and do
+not renumber the schema version.
+
+#### NEW FINDING raised by the T8 review — filed for validation, deliberately NOT fixed here
+
+**`ux_discovery_single_running` (`schema.sql:90`) crashes `init_db` on any legacy database holding
+two `'running'` discovery runs**, and does so *before* `events` (:116) is created — so the boot dies
+with a partially-built schema and no findable record. Same shape as A-71, on `discovery_runs`
+instead of `turns`, and **pre-existing**: it predates this package and is unchanged by T8.
+`LEGACY_SCHEMA_V0` confirms a legacy database has `discovery_runs` with no such index, so
+duplicates are constructible.
+
+It needs the same treatment A-71 got: a repair inside a migration, not a bare index in
+`schema.sql`. It belongs to whichever package owns the discovery schema (P6–P9), **not** to T8 —
+fixing it here would widen a fix round into a second package's territory.
+
+Status: **awaiting operator validation.** Not a blocker for T8: after F1, T8's own fix leaves the
+turns table untouched on that boot path, which is precisely what
+`test_a_failed_boot_does_not_leave_turns_silently_rewritten` pins.
+
 ---
 
 ### T9 — B-72: cross-platform creator identity
