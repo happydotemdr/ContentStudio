@@ -663,6 +663,14 @@ def test_a_failing_boundary_commit_does_not_leave_the_work_for_the_next_caller(
     other = db.get_connection(_db_path(conn))
     try:
         assert [r["run_id"] for r in db.list_projects(other)] == ["later"]
+        # The defect was "no rollback AND no event". Assert both halves: a boundary
+        # that discards work without saying so is the failure mode this package
+        # exists to remove, and it is the half a passing rollback assertion hides.
+        rows = other.execute(
+            "SELECT * FROM events WHERE kind = 'db.transaction_rolled_back'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert "OperationalError" in rows[0]["message"]
     finally:
         other.close()
 ```
