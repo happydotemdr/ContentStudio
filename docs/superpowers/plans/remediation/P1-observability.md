@@ -3147,6 +3147,57 @@ def create_turn(conn: sqlite3.Connection, stage_row_id: int, status: str,
 - [ ] **Run it.** All six pass, plus both suites.
 - [ ] **Commit.** `fix(schema): enforce one running turn at the storage layer (A-71)`
 
+#### T8 as built — a plan defect the implementer found, and the review that has not happened yet
+
+**Status: implemented in `b22cee2`, NOT yet task-reviewed.** Recorded here so the plan matches the
+tree. The next session's first job is the T8 task review, not T9.
+
+Steps (a)–(d) above are **wrong as written**, and their own two migration tests crash on them.
+`init_db` runs the whole of `schema.sql` through one `conn.executescript()` **before** any
+migration. `executescript` aborts on the first failing statement and DDL auto-commits as it goes.
+`events` is defined near the *end* of `schema.sql`, after `turns`. So on a legacy database holding
+two `'running'` turns — precisely what
+`test_migration_orphans_all_but_the_newest_running_turn` and
+`test_the_migration_does_not_leave_a_stage_wedged_in_running` construct — `schema.sql`'s own copy
+of `ux_turns_single_running` raises `IntegrityError` the moment it tries to build itself over the
+violation. `init_db` dies, `events`/`handles`/`discovery_runs`/`discovery_settings` are never
+created, the database is left **partially migrated and durably so**, and the migration that exists
+to clean the duplicates up never runs at all. A boot crash on exactly the databases this task
+exists to repair.
+
+Observed, not reasoned: `sqlite3.IntegrityError: UNIQUE constraint failed: turns.status` at
+`db.py:684`, on both tests, with (a)–(d) implemented literally.
+
+**As built:** `_orphan_all_but_newest_running_turn` was split into a pure data-repair function
+(SELECT/UPDATE only, returns what it did, no `obs` dependency) and
+`_record_duplicate_running_turns_orphaned` which does the `record_event` calls over that return
+value. `init_db` calls the repair **before** `executescript(schema.sql)` when the database is
+pre-existing and already has a `turns` table, holds the details, and records them **after**
+`executescript` completes — because `events` does not exist until then.
+`_migration_1_constrain_core_tables` keeps its own call to the same repair function; the
+implementer verified by removal that this is not what makes the six tests pass (`init_db`'s
+pre-schema call is), but that it *is* load-bearing for a caller reaching `apply_migrations`
+directly, which several existing tests do.
+
+**Open questions for the T8 review — none of these were checked by anyone yet:**
+
+1. **The repair now mutates data before `schema.sql`, on every boot of a pre-existing database,
+   outside any transaction and outside the migration boundary.** If `executescript` then fails for
+   any *other* reason, the rows were already changed and the events were never written: a silent
+   data mutation with no record, which is the exact defect class this package exists to remove.
+   Does that path need its own guard, and is there a durable record of the repair if the boot dies
+   between the two halves?
+2. Is the repair correctly skipped for a brand-new database, and correctly a no-op when there are
+   no duplicates — verified by a test, not by inspection?
+3. `init_db` doing data repair at all is a widening of its job. Is `init_db` the right home, or
+   should `schema.sql`'s copy of the index move to a position after `events`, or out of
+   `schema.sql` entirely so the migration owns it exclusively?
+4. Does the split leave `_migration_1_constrain_core_tables`' own call able to record its events —
+   i.e. is the migration-embedded path still surfacing, or did the split leave it repairing
+   silently?
+5. The usual per-constraint twin discipline (T7's lesson): the index, the orphaning, and the stage
+   un-wedging are three separate behaviours. Is each one load-bearing in both database shapes?
+
 ---
 
 ### T9 — B-72: cross-platform creator identity
