@@ -1396,7 +1396,35 @@ def get_creator_by_slug(conn: sqlite3.Connection, slug: str) -> sqlite3.Row | No
 
 
 def link_handle_to_creator(conn: sqlite3.Connection, handle_id: int, creator_id: int) -> None:
-    conn.execute("UPDATE handles SET creator_id = ? WHERE id = ?", (creator_id, handle_id))
+    """Raises LookupError when `handle_id` names no row.
+
+    Without the check the UPDATE matches nothing and this returns None --
+    exactly what it returns on success -- so "there was no such handle" and "the
+    link was established" share one representation, and P10 populating
+    `creators` from the manifests would report success having linked nothing.
+
+    The silence was also asymmetric: a `creator_id` that names no row was
+    already loud, because the foreign key raises. Only `handle_id` could be
+    wrong for free.
+
+    `rowcount` is an exact signal here rather than an inference. This is a
+    single-row UPDATE by primary key, so it is 1 or 0 -- and 1 covers relinking
+    a handle to the creator it already has, because SQLite counts the rows the
+    WHERE clause matched, not the values it changed (probed, not assumed).
+
+    Two things deliberately absent. No `events` row: the raise is itself the
+    human-reachable signal and it propagates, so a row here would record a
+    caller's bad argument twice. And no rollback: the failed UPDATE changed
+    nothing, while this helper is callable inside a `db.transaction()` boundary
+    where a rollback would silently discard the caller's work -- the boundary
+    owns that decision, and it already makes it on this exception."""
+    cur = conn.execute("UPDATE handles SET creator_id = ? WHERE id = ?", (creator_id, handle_id))
+    if cur.rowcount == 0:
+        # Before commit_unless_in_transaction, not after: a call that changed
+        # nothing must not commit as though it had.
+        raise LookupError(
+            f"no handle with id {handle_id}; nothing was linked to creator {creator_id}"
+        )
     commit_unless_in_transaction(conn)
 
 

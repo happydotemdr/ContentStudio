@@ -2012,6 +2012,46 @@ def test_deleting_a_creator_does_not_delete_its_handles(conn):
     assert db.get_handle(conn, handle_id)["creator_id"] is None
 
 
+def test_linking_a_handle_that_does_not_exist_fails_instead_of_returning(conn):
+    """"There was no such handle" and "the link was established" shared one
+    representation: the UPDATE matched zero rows and the function returned None,
+    exactly as on success.
+
+    The asymmetry was arbitrary as well as silent. A `creator_id` that names no
+    row was already loud -- the foreign key raises -- so of the two arguments
+    only `handle_id` could be wrong for free. Both fail loudly now."""
+    creator_id = db.upsert_creator(conn, slug="a", display_name="A")
+    real = db.create_handle(conn, "youtube", "@a", None, "guru", None,
+                            "2026-08-08T00:00:00+00:00")
+    missing = real + 1000
+    with pytest.raises(LookupError, match=str(missing)):
+        db.link_handle_to_creator(conn, missing, creator_id)
+
+
+def test_a_failed_link_is_distinguishable_from_a_real_one_and_writes_nothing(conn):
+    """Both halves, because either alone is satisfiable by a broken fix.
+
+    A helper that raised unconditionally would pass a fault test, so the real
+    link has to still work and still be observable through the query P10 will
+    report from. And a helper that raised only after writing something would
+    also pass that much, so the rows have to be unchanged afterwards too --
+    "it failed" is not the same claim as "it failed without doing anything"."""
+    creator_id = db.upsert_creator(conn, slug="a", display_name="A")
+    linked = db.create_handle(conn, "youtube", "@a", None, "guru", None,
+                              "2026-08-08T00:00:00+00:00")
+    db.create_handle(conn, "x", "@b", None, "guru", None, "2026-08-08T00:00:00+00:00")
+    db.link_handle_to_creator(conn, linked, creator_id)
+    before = {(r["id"], r["creator_id"]) for r in db.list_handles(conn)}
+
+    with pytest.raises(LookupError):
+        db.link_handle_to_creator(conn, linked + 1000, creator_id)
+
+    assert [r["handle"] for r in db.list_handles_for_creator(conn, creator_id)] == ["@a"]
+    after = db.list_handles(conn)
+    assert len(after) == len(before)
+    assert {(r["id"], r["creator_id"]) for r in after} == before
+
+
 def test_a_migrated_database_gets_cross_platform_creator_identity_too(
         tmp_path: Path, monkeypatch):
     """The migrated-database twin of the four tests above, and none of them can
