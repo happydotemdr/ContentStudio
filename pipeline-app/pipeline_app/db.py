@@ -1602,6 +1602,101 @@ def upsert_handle_from_migration(
     return get_handle_by_platform_and_handle(conn, platform, handle)["id"]
 
 
+HANDLE_FAILURE_THRESHOLD = 3
+
+
+def record_handle_failure(conn: sqlite3.Connection, handle_id: int, *, now_iso: str,
+                          threshold: int = HANDLE_FAILURE_THRESHOLD) -> str:
+    """Count one consecutive per-handle failure; return the handle's status.
+
+    B-82: set_handle_status was only ever called from the one-shot validate
+    branch, so a handle that validated at registration and later died kept
+    status='validated', included=1 forever while raising an error row into
+    discovery_run_handles on every single run. On the roster a permanently
+    broken source was indistinguishable from a healthy one.
+
+    At `threshold` consecutive failures the handle is downgraded to 'failing'.
+    The counter is the evidence; the status is the signal. P8 calls this from
+    the per-handle error branch of discovery_engine.
+
+    Uses `transaction()`, not `commit_unless_in_transaction` (C3) -- do not
+    "fix" this to match T9's C6 on `upsert_creator`. `upsert_creator` was a
+    single already-atomic INSERT ... ON CONFLICT; this is THREE writes -- the
+    counter increment, the status downgrade, and the event -- that must land
+    together or not at all, so the boundary stays. The known cross-thread
+    suppression hazard documented on `transaction()` itself applies here too
+    and is not this function's to solve (T13b tracks it).
+
+    Raises LookupError naming `handle_id` when no such row exists (C1). An
+    earlier draft returned the string "unknown" here instead -- the same
+    defect T9 fixed on `link_handle_to_creator`, one task later: "unknown"
+    travels back in the SAME channel as a real status, so a caller looping
+    over handles (P8) cannot tell "this handle is now failing" from "there is
+    no such handle" without special-casing a magic string, and it is also a
+    fourth value outside HANDLE_STATUSES, which the CHECK constraint will
+    never accept. The check runs BEFORE `transaction()` opens, deliberately:
+    doing it after an UPDATE that matched nothing would leave a transaction
+    boundary open around a no-op write for what is actually a caller error,
+    triggering `transaction()`'s rollback-and-report machinery (a spurious
+    `db.transaction_rolled_back` event) for something that never wrote
+    anything and needs no rollback at all."""
+    from pipeline_app import obs
+
+    if get_handle(conn, handle_id) is None:
+        raise LookupError(f"no handle with id {handle_id}")
+
+    with transaction(conn):
+        conn.execute(
+            "UPDATE handles SET consecutive_failures = consecutive_failures + 1 WHERE id = ?",
+            (handle_id,),
+        )
+        row = conn.execute(
+            "SELECT handle, platform, status, consecutive_failures FROM handles WHERE id = ?",
+            (handle_id,),
+        ).fetchone()
+        status = row["status"]
+        if row["consecutive_failures"] >= threshold and status in ("validated", "pending"):
+            status = "failing"
+            conn.execute("UPDATE handles SET status = 'failing' WHERE id = ?", (handle_id,))
+            obs.record_event(
+                conn, kind="handle.marked_failing", severity="error",
+                source="db.record_handle_failure",
+                message=f"{row['platform']} handle {row['handle']} failed "
+                        f"{row['consecutive_failures']} consecutive runs; marked failing",
+                detail={"handle_id": handle_id, "platform": row["platform"],
+                        "handle": row["handle"],
+                        "consecutive_failures": row["consecutive_failures"],
+                        # C4: this is when the THIRD failure landed, not when the
+                        # handle started failing (the first failure's timestamp
+                        # was never recorded) -- "since" would claim a
+                        # measurement this code never took.
+                        "marked_failing_at": now_iso},
+            )
+    return status
+
+
+def clear_handle_failures(conn: sqlite3.Connection, handle_id: int) -> None:
+    """A successful fetch resets the counter and lifts a 'failing' handle back to
+    'validated'. 'invalid' is deliberately untouched: that is a registration-time
+    verdict, not a failure counter.
+
+    Raises LookupError naming `handle_id` when no such row exists (C2),
+    identical to T9's F1 on `link_handle_to_creator`: without the check the
+    UPDATE matches zero rows and this returns None -- the success value -- so
+    "the handle recovered" and "there is no such handle" would share one
+    representation."""
+    cur = conn.execute(
+        "UPDATE handles SET consecutive_failures = 0, "
+        "status = CASE WHEN status = 'failing' THEN 'validated' ELSE status END WHERE id = ?",
+        (handle_id,),
+    )
+    if cur.rowcount == 0:
+        # Before commit_unless_in_transaction, not after: a call that changed
+        # nothing must not commit as though it had.
+        raise LookupError(f"no handle with id {handle_id}")
+    commit_unless_in_transaction(conn)
+
+
 def upsert_creator(conn: sqlite3.Connection, *, slug: str, display_name: str) -> int:
     """One creator, keyed by a stable slug. P10 calls this from the manifests.
 

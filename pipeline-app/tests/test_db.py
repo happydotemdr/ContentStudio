@@ -2523,3 +2523,113 @@ def test_a_quarantined_row_keeps_the_status_the_operator_actually_had(
             "a row that was quarantined was also reported as coerced"
     finally:
         c.close()
+
+
+# ---------------------------------------------------------------------------
+# T11 -- B-82: a handle that dies after registration still looks healthy.
+# ---------------------------------------------------------------------------
+
+
+def test_a_handle_is_downgraded_to_failing_after_three_consecutive_failures(conn):
+    """FAULT."""
+    handle_id = db.create_handle(conn, "youtube", "@dead", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    db.set_handle_status(conn, handle_id, "validated", validated_at="2026-08-08T00:01:00+00:00")
+    for _ in range(2):
+        db.record_handle_failure(conn, handle_id, now_iso="2026-08-08T06:00:00+00:00")
+        assert db.get_handle(conn, handle_id)["status"] == "validated"
+    assert db.record_handle_failure(conn, handle_id, now_iso="2026-08-08T06:00:00+00:00") \
+        == "failing"
+    row = db.get_handle(conn, handle_id)
+    assert row["status"] == "failing"
+    assert row["consecutive_failures"] == 3
+
+
+def test_a_failing_handle_is_distinguishable_from_an_operator_disabled_one(conn):
+    """DISTINGUISHABILITY. The intended distinction already works in the other
+    direction -- included=0/validated (operator disabled) vs
+    included=0/invalid (auto-excluded at registration). The gap was only for
+    handles that break *after* registration, and this closes it without
+    collapsing into either existing state."""
+    dead = db.create_handle(conn, "youtube", "@dead", None, "guru", None,
+                            "2026-08-08T00:00:00+00:00")
+    disabled = db.create_handle(conn, "youtube", "@paused", None, "guru", None,
+                                "2026-08-08T00:00:00+00:00")
+    for h in (dead, disabled):
+        db.set_handle_status(conn, h, "validated", validated_at="2026-08-08T00:01:00+00:00")
+    for _ in range(3):
+        db.record_handle_failure(conn, dead, now_iso="2026-08-08T06:00:00+00:00")
+    db.set_handle_included(conn, disabled, False)
+
+    dead_row, disabled_row = db.get_handle(conn, dead), db.get_handle(conn, disabled)
+    assert (dead_row["status"], dead_row["included"]) == ("failing", 1)
+    assert (disabled_row["status"], disabled_row["included"]) == ("validated", 0)
+    assert dead_row["consecutive_failures"] == 3
+    assert disabled_row["consecutive_failures"] == 0
+
+
+def test_downgrading_a_handle_records_an_error_event(conn, tmp_path, monkeypatch):
+    """SURFACING. Also pins C4: the event's timestamp field is named
+    `marked_failing_at`, not `since` -- `since` reads as "failing since",
+    which the third-failure timestamp is not (the handle has been failing
+    since the FIRST failure, and this code never recorded that moment)."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    handle_id = db.create_handle(conn, "youtube", "@dead", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    db.set_handle_status(conn, handle_id, "validated", validated_at="2026-08-08T00:01:00+00:00")
+    for _ in range(3):
+        db.record_handle_failure(conn, handle_id, now_iso="2026-08-08T06:00:00+00:00")
+    rows = conn.execute("SELECT * FROM events WHERE kind = 'handle.marked_failing'").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "@dead" in rows[0]["message"]
+    detail = json.loads(rows[0]["detail"])
+    assert detail["marked_failing_at"] == "2026-08-08T06:00:00+00:00"
+    assert "since" not in detail
+
+
+def test_a_successful_fetch_lifts_a_failing_handle_back_to_validated(conn):
+    """The downgrade has to be reversible: a transient outage must not
+    permanently mark a live source dead."""
+    handle_id = db.create_handle(conn, "youtube", "@flaky", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    db.set_handle_status(conn, handle_id, "validated", validated_at="2026-08-08T00:01:00+00:00")
+    for _ in range(3):
+        db.record_handle_failure(conn, handle_id, now_iso="2026-08-08T06:00:00+00:00")
+    db.clear_handle_failures(conn, handle_id)
+    row = db.get_handle(conn, handle_id)
+    assert (row["status"], row["consecutive_failures"]) == ("validated", 0)
+
+
+def test_clearing_failures_does_not_resurrect_a_handle_the_operator_invalidated(conn):
+    """'invalid' is a registration-time verdict, not a failure counter. A
+    successful fetch must not overwrite it."""
+    handle_id = db.create_handle(conn, "youtube", "@bad", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    db.set_handle_status(conn, handle_id, "invalid")
+    db.clear_handle_failures(conn, handle_id)
+    assert db.get_handle(conn, handle_id)["status"] == "invalid"
+
+
+def test_recording_a_failure_for_a_handle_that_does_not_exist_fails_instead_of_returning_unknown(conn):
+    """C1. The plan's own draft returned the string "unknown" for a handle_id
+    that names no row. That travels back in the SAME channel as a real status,
+    so a caller looping over handles (P8) cannot tell "this handle is now
+    failing" from "there is no such handle" without special-casing a magic
+    string -- and "unknown" is also a fourth value outside HANDLE_STATUSES,
+    which the CHECK constraint will never accept. Matches
+    link_handle_to_creator's LookupError pattern instead."""
+    missing_id = 999999
+    with pytest.raises(LookupError, match=str(missing_id)):
+        db.record_handle_failure(conn, missing_id, now_iso="2026-08-08T06:00:00+00:00")
+
+
+def test_clearing_failures_for_a_handle_that_does_not_exist_fails_instead_of_returning(conn):
+    """C2. Identical defect to T9's F1 on link_handle_to_creator: an UPDATE
+    that matches zero rows and a function that returns None either way means
+    "the handle recovered" and "there is no such handle" share one
+    representation -- the success value."""
+    missing_id = 999999
+    with pytest.raises(LookupError, match=str(missing_id)):
+        db.clear_handle_failures(conn, missing_id)
