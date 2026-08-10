@@ -2949,7 +2949,7 @@ def test_a_rejected_concurrent_turn_is_visible_as_an_error_event(conn, tmp_path,
     ).fetchall()
     assert len(rows) == 1
     assert rows[0]["severity"] == "error"
-    assert rows[0]["detail"] is not None and "scripting" not in rows[0]["message"] or True
+    assert json.loads(rows[0]["detail"])["stage_row_id"] == s2
 
 
 def test_migration_orphans_all_but_the_newest_running_turn(tmp_path: Path, monkeypatch):
@@ -2984,9 +2984,83 @@ def test_migration_orphans_all_but_the_newest_running_turn(tmp_path: Path, monke
         ).fetchone()[0] == 1
     finally:
         c.close()
+
+
+def test_the_migration_does_not_leave_a_stage_wedged_in_running(tmp_path: Path, monkeypatch):
+    """The defect this task would otherwise INTRODUCE.
+
+    `reconcile_orphaned_turns` unwedges a stage by iterating *running* turns
+    (preflight.py:14-18). A turn the migration has already set to 'orphaned' is
+    invisible to it, so its stage sits at 'running' forever --
+    `is_locked_or_running` answers True, and the stage is un-chattable,
+    un-editable and un-approvable with no operator action that can free it. The
+    newest turn survives as 'running', so preflight unwedges *its* stage and only
+    its stage; the losers are stranded silently."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','running');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'scripting','running');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (1,'running','2026-08-08T00:00:00+00:00','e/1.jsonl');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (2,'running','2026-08-08T00:00:05+00:00','e/2.jsonl');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        # Stage 1 lost its turn to the migration, so nothing downstream will ever
+        # revisit it. It must come back recoverable.
+        assert c.execute("SELECT status FROM stages WHERE id = 1").fetchone()[0] == "ready"
+        # Stage 2 keeps the surviving running turn: preflight owns it, and the
+        # migration must not have touched it.
+        assert c.execute("SELECT status FROM stages WHERE id = 2").fetchone()[0] == "running"
+        detail = json.loads(c.execute(
+            "SELECT detail FROM events "
+            "WHERE kind = 'schema.duplicate_running_turn_orphaned'").fetchone()[0])
+        assert detail["stage_row_id"] == 1
+        assert detail["stage_status_was"] == "running"
+    finally:
+        c.close()
+
+
+def test_a_second_running_turn_is_rejected_on_a_migrated_database(tmp_path: Path, monkeypatch):
+    """The migrated-database twin, for the third time in this package: schema.sql
+    runs before the migration, so `CREATE UNIQUE INDEX` there lands on the OLD
+    turns table and the rebuild's DROP TABLE destroys it. A fresh database would
+    be protected and a migrated one would not, and the fresh test passes either
+    way."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        project_id = db.create_project(c, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+        s1 = db.create_stage_row(c, project_id, "ideation", "running")
+        s2 = db.create_stage_row(c, project_id, "scripting", "running")
+        db.create_turn(c, s1, "running", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.create_turn(c, s2, "running", "2026-08-08T00:00:01+00:00", "e/2.jsonl")
+    finally:
+        c.close()
 ```
 
-- [ ] **Run it.** All four fail.
+- [ ] **Run it, and report each test's ACTUAL failure.** Do not match a predicted count.
+- [ ] **Check the existing suite before you implement.** This index makes a second concurrent
+      running turn illegal app-wide, and several existing tests create running turns. I verified
+      none creates two *at once* (`test_preflight.py` uses one per test, likewise `test_db.py`,
+      `test_turn_service.py`, `test_routes_chat_sse.py`) — so the suite should survive. **If
+      something does break, that is a real finding about a genuine second running turn, and it
+      goes in your report. Do not relax the index or delete the test to make it pass.**
 - [ ] **Implement (a).** Append to `schema.sql`, immediately after `turns`:
 
 ```sql
@@ -3015,23 +3089,62 @@ def create_turn(conn: sqlite3.Connection, stage_row_id: int, status: str,
         # ux_turns_single_running fired: another turn is already running. The
         # application-level checks (route pre-check and run_stage_turn) both
         # read zero -- this is the race they cannot see (A-71).
-        obs.record_event(
+        event_id = obs.record_event(
             conn, kind="turn.concurrent_start_rejected", severity="error",
             source="db.create_turn",
             message=f"refused a second running turn for stage_row_id={stage_row_id}",
             detail={"stage_row_id": stage_row_id, "error": str(exc)},
         )
+        # Outside a db.transaction() the event commits and outlives the raise
+        # (verified: the failed INSERT leaves in_transaction True, and the events
+        # row still survives a reconnect). INSIDE one it does not -- the caller's
+        # boundary rolls back on this very exception and takes the only record of
+        # the race with it. No caller wraps create_turn today, but it is a public
+        # helper, and "the record died with the thing it was recording" is the
+        # defect this package exists to remove.
+        if event_id != -1 and _TXN_DEPTH.get(id(conn), 0) > 0:
+            obs.log("turn.concurrent_start_rejected", level="error",
+                    stage_row_id=stage_row_id, error=str(exc),
+                    note="inside a caller transaction: the events row will be rolled "
+                         "back with it, so this log line is the durable record")
         raise
     commit_unless_in_transaction(conn)
     return cur.lastrowid
 ```
 
-- [ ] **Implement (c).** Add `_orphan_all_but_newest_running_turn(conn)` to migration 1, before
-      the `turns` rebuild: select `running` turns ordered by `created_at DESC, id DESC`, keep the
-      first, `UPDATE ... SET status='orphaned'` on the rest, and `record_event` per row with kind
-      `schema.duplicate_running_turn_orphaned`, severity `warning`.
-- [ ] **Run it.** All four pass. Tidy the third test's trailing `or True` — it is a placeholder in
-      this plan, not shippable; assert on `rows[0]["detail"]` containing the stage row id instead.
+- [ ] **Implement (c) — the migration half, and it has two jobs, not one.**
+
+      Add `_orphan_all_but_newest_running_turn(conn)` to migration 1, called **before** the
+      `turns` rebuild (a legacy database can already hold the duplicates, and the unique index
+      cannot be created over them). Order it after `_coerce_unknown_turn_statuses` — a coerced
+      ghost status becomes `'orphaned'`, never `'running'`, so it cannot affect this pass, but
+      running them in a fixed stated order keeps the function readable as it grows.
+
+      Select `running` turns ordered by `created_at DESC, id DESC` and keep the first. For each
+      loser:
+
+      1. `UPDATE turns SET status = 'orphaned'`.
+      2. **Un-wedge its stage.** `reconcile_orphaned_turns` unwedges a stage by iterating
+         *running* turns (`preflight.py:14-18`), so a turn this migration has already orphaned is
+         invisible to it and its stage sits at `'running'` forever — `is_locked_or_running`
+         answers True, and nothing an operator can do frees it. If the stage is still
+         `'running'`, set it to `'ready'`. That mirrors `_unwedge_stage`'s no-artifact branch and
+         destroys nothing; where an artifact does exist the stage merely needs re-approving,
+         which the event says. Do **not** reach for the filesystem from a migration to tell the
+         two cases apart.
+      3. One `obs.record_event` per orphaned turn, kind `schema.duplicate_running_turn_orphaned`,
+         severity `warning`, with `turn_id`, `stage_row_id` and `stage_status_was` in `detail` —
+         `stage_status_was` is what makes the reset visible rather than merely done.
+
+      No commit, no pragma, no `executescript` — the same `_MIGRATIONS` contract as every other
+      migration helper.
+
+- [ ] **Implement (d) — the index must exist on migrated databases too.** Append
+      `CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_single_running ON turns(status) WHERE status = 'running'`
+      to `_MIGRATION_1_TURNS_STEPS`, after the `RENAME` and beside the `idx_turns_stage_row`
+      statement already there. `schema.sql` alone protects only fresh databases: it runs before
+      the migration, so its index lands on the pre-rebuild table and `DROP TABLE` destroys it.
+- [ ] **Run it.** All six pass, plus both suites.
 - [ ] **Commit.** `fix(schema): enforce one running turn at the storage layer (A-71)`
 
 ---
