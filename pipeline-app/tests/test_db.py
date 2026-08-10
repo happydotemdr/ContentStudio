@@ -1383,16 +1383,26 @@ def _indexed_columns(conn) -> set[tuple[str, str]]:
     return out
 
 
-_FK_COLUMNS_INDEXED_HERE = [("turns", "stage_row_id"),
-                            ("discovery_run_handles", "run_id"),
-                            ("discovery_run_handles", "handle_id")]
+def _foreign_key_columns(conn) -> set[tuple[str, str]]:
+    """Every (table, column) declared a foreign key, read from the database.
+
+    Derived rather than hand-listed: a hand-list makes a test named "every foreign
+    key column" pass for a foreign key nobody remembered to add to it. This
+    self-extends as later tasks add creators and handles."""
+    out = set()
+    for (tbl,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'").fetchall():
+        for fk in conn.execute(f"PRAGMA foreign_key_list('{tbl}')").fetchall():
+            out.add((tbl, fk["from"]))
+    return out
 
 
 def test_every_foreign_key_column_is_covered_by_an_index(conn):
     """An unindexed FK makes both the join and every integrity check a full
     scan, and turns is never pruned."""
     indexed = _indexed_columns(conn)
-    for table, column in _FK_COLUMNS_INDEXED_HERE:
+    for table, column in _foreign_key_columns(conn):
         assert (table, column) in indexed, f"{table}.{column} is an unindexed foreign key"
 
 
@@ -1419,7 +1429,7 @@ def test_every_foreign_key_column_is_still_indexed_after_the_migration(
     c = db.get_connection(db_path)
     try:
         indexed = _indexed_columns(c)
-        for table, column in _FK_COLUMNS_INDEXED_HERE:
+        for table, column in _foreign_key_columns(c):
             assert (table, column) in indexed, \
                 f"{table}.{column} lost its index in the rebuild"
     finally:
@@ -1458,6 +1468,96 @@ def test_deleting_a_project_cascades_to_its_stages_and_turns(conn):
     conn.commit()
     assert conn.execute("SELECT count(*) FROM stages").fetchone()[0] == 0
     assert conn.execute("SELECT count(*) FROM turns").fetchone()[0] == 0
+
+
+def test_deleting_a_project_cascades_on_a_migrated_database(tmp_path: Path, monkeypatch):
+    """The migrated-database twin of the cascade test. Without it, dropping
+    ON DELETE CASCADE from the rebuild's DDL changes nothing that any test can
+    see -- which was true until this test existed."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        project_id = db.create_project(c, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+        stage_row_id = db.create_stage_row(c, project_id, "ideation", "ready")
+        db.create_turn(c, stage_row_id, "complete", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+        c.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        c.commit()
+        assert c.execute("SELECT count(*) FROM stages").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM turns").fetchone()[0] == 0
+    finally:
+        c.close()
+
+
+def test_deleting_a_discovery_run_or_a_handle_cascades_to_discovery_run_handles(conn):
+    """discovery_run_handles has two foreign keys, run_id and handle_id, and
+    until this task neither declared ON DELETE -- so a future delete path
+    would either fail or orphan rows depending on pragma state, same as
+    turns.stage_row_id. Cover both parents rather than just one. Terminal-status
+    runs are used throughout so ux_discovery_single_running (the partial unique
+    index on discovery_runs(status) WHERE status = 'running') never engages."""
+    run_a = db.insert_terminal_run(
+        conn, "r1", "manual", "incremental", "completed",
+        "2026-08-08T00:00:00+00:00", "2026-08-08T00:01:00+00:00")
+    run_b = db.insert_terminal_run(
+        conn, "r2", "manual", "incremental", "completed",
+        "2026-08-08T01:00:00+00:00", "2026-08-08T01:01:00+00:00")
+    handle_a = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-08T00:00:00+00:00")
+    handle_b = db.create_handle(conn, "youtube", "@b", None, "guru", None, "2026-08-08T00:00:00+00:00")
+    db.record_handle_result(conn, run_a, handle_a, "ok", items_downloaded=1)
+    db.record_handle_result(conn, run_b, handle_b, "ok", items_downloaded=1)
+
+    conn.execute("DELETE FROM discovery_runs WHERE id = ?", (run_a,))
+    conn.commit()
+    assert conn.execute(
+        "SELECT count(*) FROM discovery_run_handles WHERE run_id = ?", (run_a,)
+    ).fetchone()[0] == 0
+
+    conn.execute("DELETE FROM handles WHERE id = ?", (handle_b,))
+    conn.commit()
+    assert conn.execute(
+        "SELECT count(*) FROM discovery_run_handles WHERE handle_id = ?", (handle_b,)
+    ).fetchone()[0] == 0
+
+
+def test_deleting_a_discovery_run_or_a_handle_cascades_on_a_migrated_database(
+        tmp_path: Path, monkeypatch):
+    """The migrated-database twin of the test above, for the same reason
+    `test_deleting_a_project_cascades_on_a_migrated_database` exists: the fresh
+    test exercises schema.sql's copy of the two ON DELETE CASCADE clauses and
+    never the migration's."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        run_a = db.insert_terminal_run(
+            c, "r1", "manual", "incremental", "completed",
+            "2026-08-08T00:00:00+00:00", "2026-08-08T00:01:00+00:00")
+        run_b = db.insert_terminal_run(
+            c, "r2", "manual", "incremental", "completed",
+            "2026-08-08T01:00:00+00:00", "2026-08-08T01:01:00+00:00")
+        handle_a = db.create_handle(c, "youtube", "@a", None, "guru", None, "2026-08-08T00:00:00+00:00")
+        handle_b = db.create_handle(c, "youtube", "@b", None, "guru", None, "2026-08-08T00:00:00+00:00")
+        db.record_handle_result(c, run_a, handle_a, "ok", items_downloaded=1)
+        db.record_handle_result(c, run_b, handle_b, "ok", items_downloaded=1)
+
+        c.execute("DELETE FROM discovery_runs WHERE id = ?", (run_a,))
+        c.commit()
+        assert c.execute(
+            "SELECT count(*) FROM discovery_run_handles WHERE run_id = ?", (run_a,)
+        ).fetchone()[0] == 0
+
+        c.execute("DELETE FROM handles WHERE id = ?", (handle_b,))
+        c.commit()
+        assert c.execute(
+            "SELECT count(*) FROM discovery_run_handles WHERE handle_id = ?", (handle_b,)
+        ).fetchone()[0] == 0
+    finally:
+        c.close()
 
 
 def test_migration_coerces_a_ghost_turn_status_and_records_it(tmp_path: Path, monkeypatch):

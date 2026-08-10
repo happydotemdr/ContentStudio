@@ -306,13 +306,26 @@ def _coerce_unknown_stage_statuses(conn: sqlite3.Connection) -> None:
 def _coerce_unknown_turn_statuses(conn: sqlite3.Connection) -> None:
     """Same ruling as `_coerce_unknown_stage_statuses`, one table over: a legacy
     row can already hold a status the new CHECK rejects, and the rebuild's
-    `INSERT ... SELECT` aborts on it. A turn whose status cannot be interpreted
-    *is* an orphan (preflight.reconcile_orphaned_turns already uses that status
-    for turns whose process died without reporting), so that is where it goes.
-    Record one event per row.
+    `INSERT ... SELECT` aborts on it. No third value passes the new CHECK, so
+    coercion has to land on one of the five, and 'orphaned' is the honest choice:
+    preflight.reconcile_orphaned_turns already uses it for a turn whose process
+    died without reporting, which is the closest existing category to "we do not
+    know what actually happened to this turn."
 
-    No commit here, deliberately -- same reasoning as the stage coercion: the
-    UPDATEs and their events belong to apply_migrations' transaction."""
+    This is an accepted trade, not a semantic identity. Coercing here makes a
+    genuinely-orphaned turn and a ghost-status turn share one value in `turns` --
+    one representation standing in for two different states, the same shape this
+    package exists to remove elsewhere. What compensates is the
+    `schema.turn_status_coerced` event row recorded below: it is the durable,
+    queryable record that keeps "coerced from an unknown status" distinguishable
+    from "actually orphaned by reconcile_orphaned_turns", so the collapse lands
+    only in `turns` and not also in the record of what happened. The stage-side
+    coercion to 'no_artifact' in `_coerce_unknown_stage_statuses` makes the
+    identical trade for the identical reason.
+
+    Record one event per row. No commit here, deliberately -- same reasoning as
+    the stage coercion: the UPDATEs and their events belong to
+    apply_migrations' transaction."""
     from pipeline_app import obs
 
     placeholders = ",".join("?" * len(TURN_STATUSES))
@@ -428,10 +441,11 @@ def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
     duration of this function, so DROP TABLE never trips a child row regardless of
     sequence, and a RENAME only needs fixing up by SQLite when something still
     references the table's *temporary* `_new` name, which nothing here ever does.
-    It matters for readability and for whoever adds T9's `creators` and T10's
-    `handles` rebuilds to this same function: `discovery_run_handles` (the child)
-    must stay positioned before `handles`' own rebuild step when that lands, i.e.
-    append T10's block after this one rather than inserting it above.
+    For whoever adds T9's `creators` and T10's `handles` rebuilds to this same
+    function: as a readability convention -- not a correctness requirement, per
+    the paragraph above -- keep `discovery_run_handles` (the child) positioned
+    before `handles`' own rebuild step, i.e. append T10's block after this one
+    rather than inserting it above.
 
     Later tasks in this package extend this same migration further (handles,
     creators). It stays version 1 until it has shipped."""
