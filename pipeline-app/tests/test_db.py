@@ -1406,12 +1406,15 @@ def test_every_foreign_key_column_is_covered_by_an_index(conn):
         assert (table, column) in indexed, f"{table}.{column} is an unindexed foreign key"
 
 
-@pytest.mark.xfail(reason="handles.creator_id does not exist until T9", strict=True)
 def test_handles_creator_id_is_covered_by_an_index(conn):
     """Split out of the test above rather than left as a failing assertion inside
     it. `handles.creator_id` is created by T9, so asserting it here would leave the
     suite red for two whole tasks -- and "the suite is red but we know why" is how a
-    real regression gets waved through."""
+    real regression gets waved through.
+
+    T9 created the column, so the xfail marker that carried this test through T7
+    and T8 is gone. It was `strict=True`: leaving it would have turned this
+    task's success into a red suite."""
     assert ("handles", "creator_id") in _indexed_columns(conn)
 
 
@@ -1960,5 +1963,119 @@ def test_a_failed_boot_does_not_leave_turns_silently_rewritten(tmp_path: Path, m
             == ["running", "running"]
         assert [r[0] for r in c.execute("SELECT status FROM stages ORDER BY id")] \
             == ["running", "running"]
+    finally:
+        c.close()
+
+
+def test_one_creator_can_own_handles_on_several_platforms(conn):
+    """The join key that does not exist today. Adam Grant is registered on two
+    platforms in manifests/brand_sources.json with nothing connecting them."""
+    creator_id = db.upsert_creator(conn, slug="adam-grant", display_name="Adam Grant")
+    yt = db.create_handle(conn, "youtube", "@bigthink", None, "guru", None,
+                          "2026-08-08T00:00:00+00:00")
+    x = db.create_handle(conn, "x", "@AdamMGrant", None, "guru", None,
+                         "2026-08-08T00:00:00+00:00")
+    db.link_handle_to_creator(conn, yt, creator_id)
+    db.link_handle_to_creator(conn, x, creator_id)
+    rows = db.list_handles_for_creator(conn, creator_id)
+    assert {(r["platform"], r["handle"]) for r in rows} == \
+        {("youtube", "@bigthink"), ("x", "@AdamMGrant")}
+
+
+def test_upsert_creator_is_idempotent_and_updates_the_display_name(conn):
+    first = db.upsert_creator(conn, slug="adam-grant", display_name="A Grant")
+    second = db.upsert_creator(conn, slug="adam-grant", display_name="Adam Grant")
+    assert second == first
+    assert db.get_creator_by_slug(conn, "adam-grant")["display_name"] == "Adam Grant"
+
+
+def test_an_unlinked_handle_is_distinguishable_from_a_linked_one(conn):
+    """Today every handle is unlinked and there is no way to tell. After P10
+    populates creators, an unlinked handle is a coverage gap the operator can
+    query for."""
+    db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-08T00:00:00+00:00")
+    linked = db.create_handle(conn, "x", "@b", None, "guru", None, "2026-08-08T00:00:00+00:00")
+    db.link_handle_to_creator(conn, linked,
+                              db.upsert_creator(conn, slug="b", display_name="B"))
+    assert [r["handle"] for r in db.list_unlinked_handles(conn)] == ["@a"]
+
+
+def test_deleting_a_creator_does_not_delete_its_handles(conn):
+    """ON DELETE SET NULL, not CASCADE: a roster edit must never destroy the
+    handle rows that own the downloaded corpus directories."""
+    creator_id = db.upsert_creator(conn, slug="a", display_name="A")
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    db.link_handle_to_creator(conn, handle_id, creator_id)
+    conn.execute("DELETE FROM creators WHERE id = ?", (creator_id,))
+    conn.commit()
+    assert db.get_handle(conn, handle_id)["creator_id"] is None
+
+
+def test_a_migrated_database_gets_cross_platform_creator_identity_too(
+        tmp_path: Path, monkeypatch):
+    """The migrated-database twin of the four tests above, and none of them can
+    stand in for it: every one of them uses the `conn` fixture, which is a FRESH
+    database, and migration 1 never runs on a fresh database.
+
+    Four separate behaviours, asserted in dependency order so that dropping any
+    one of them from the migration fails a DIFFERENT assertion here (T7's
+    recorded lesson was that a per-table twin let all four of its ON DELETE
+    CASCADE clauses be deleted with the suite still green):
+
+      (a) the `creators` table exists;
+      (b) `handles.creator_id` exists, and is a foreign key to `creators`;
+      (c) `handles.creator_id` is covered by an index (`idx_handles_creator`);
+      (d) ON DELETE SET NULL actually fires -- the handle survives its creator.
+
+    The two legacy handle rows seeded below are also the data-preservation
+    guard: (d) looks its handle up by (platform, handle), so a migration that
+    added the column by rebuilding the table and losing its rows fails there."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO handles (platform, handle, cohort, added_at) "
+        "VALUES ('youtube','@bigthink','guru','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO handles (platform, handle, cohort, added_at) "
+        "VALUES ('x','@AdamMGrant','guru','2026-08-08T00:00:00+00:00');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        # (a)
+        assert c.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='creators'"
+        ).fetchone()[0] == 1, "the creators table is missing on a migrated database"
+        # (b)
+        columns = {r["name"] for r in c.execute("PRAGMA table_info('handles')")}
+        assert "creator_id" in columns, \
+            "handles.creator_id is missing on a migrated database"
+        parents = {(fk["from"], fk["table"])
+                   for fk in c.execute("PRAGMA foreign_key_list('handles')")}
+        assert ("creator_id", "creators") in parents, \
+            "handles.creator_id is not a foreign key to creators on a migrated database"
+        # (c)
+        assert ("handles", "creator_id") in _indexed_columns(c), \
+            "handles.creator_id has no covering index (idx_handles_creator) " \
+            "on a migrated database"
+        # (d)
+        creator_id = db.upsert_creator(c, slug="adam-grant", display_name="Adam Grant")
+        yt = db.get_handle_by_platform_and_handle(c, "youtube", "@bigthink")["id"]
+        db.link_handle_to_creator(c, yt, creator_id)
+        assert [r["handle"] for r in db.list_handles_for_creator(c, creator_id)] \
+            == ["@bigthink"]
+        c.execute("DELETE FROM creators WHERE id = ?", (creator_id,))
+        c.commit()
+        surviving = db.get_handle(c, yt)
+        assert surviving is not None, \
+            "deleting the creator destroyed the handle row -- CASCADE, not SET NULL"
+        assert surviving["creator_id"] is None, \
+            "ON DELETE SET NULL did not fire on a migrated database"
     finally:
         c.close()

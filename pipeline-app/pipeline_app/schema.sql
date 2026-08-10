@@ -60,6 +60,17 @@ CREATE INDEX IF NOT EXISTS idx_turns_stage_row ON turns(stage_row_id);
 -- migration 1 has already repaired any duplicates. See db._MIGRATION_1_TURNS_STEPS
 -- and db.init_db.
 
+-- Cross-platform creator identity. Without it @jane on YouTube and @jane on X
+-- are unrelated rows: per-creator reporting is impossible, one creator's
+-- cross-post is counted three times in the daily inventory, and "did we miss
+-- this creator's new platform" is unanswerable (B-72). P10 populates this from
+-- the manifests; this package only creates it.
+CREATE TABLE IF NOT EXISTS creators (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug         TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS handles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     platform TEXT NOT NULL,
@@ -72,8 +83,21 @@ CREATE TABLE IF NOT EXISTS handles (
     added_at TEXT NOT NULL,
     validated_at TEXT,
     last_seen_published_at TEXT,
+    creator_id INTEGER REFERENCES creators(id) ON DELETE SET NULL,
     UNIQUE(platform, handle)
 );
+-- `idx_handles_creator` is deliberately NOT here, for the same reason
+-- `ux_turns_single_running` is not: this file runs as one executescript()
+-- before any migration, and on a pre-existing database the `CREATE TABLE IF NOT
+-- EXISTS handles` above is skipped -- so `handles` still has no `creator_id`
+-- column at this point and `CREATE INDEX ... ON handles(creator_id)` raises
+-- `no such column: creator_id` right here (probed on sqlite 3.50.4, not
+-- reasoned about). executescript then abandons every statement after it --
+-- `events` among them, it is created near the end of this file -- and the boot
+-- dies with a half-built schema and nowhere to record it. The column and the
+-- index are added to a pre-existing database by
+-- db._MIGRATION_1_HANDLES_CREATOR_STEPS, and to a fresh one by db.init_db after
+-- apply_migrations returns. See both.
 
 CREATE TABLE IF NOT EXISTS discovery_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

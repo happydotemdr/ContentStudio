@@ -520,6 +520,32 @@ _MIGRATION_1_DISCOVERY_RUN_HANDLES_STEPS = (
 )
 
 
+# B-72's migrated half. `creators` itself needs no migration step -- it is a new
+# table, so schema.sql's `CREATE TABLE IF NOT EXISTS creators` creates it on
+# every database shape -- but `handles.creator_id` does: schema.sql's `handles`
+# DDL is IF NOT EXISTS and is skipped outright on a pre-existing database, so
+# the column declared there never reaches one. Hence the ALTER.
+#
+# No create-copy-drop-rename here, unlike every other block above. Probed on
+# sqlite 3.50.4 rather than reasoned about: `ALTER TABLE ... ADD COLUMN ...
+# REFERENCES creators(id) ON DELETE SET NULL` is accepted, is accepted inside
+# apply_migrations' `BEGIN IMMEDIATE` with `foreign_keys = OFF`, and the
+# ON DELETE SET NULL clause is genuinely enforced afterwards -- deleting a
+# creator sets its handles' creator_id to NULL rather than deleting them. A
+# rebuild would buy nothing and would destroy this index on its way past.
+#
+# The index is appended here for the same reason the turns indices are: a copy
+# in schema.sql cannot work, because schema.sql runs before this migration and
+# the column does not exist yet on the shape that needs it (see the note in
+# schema.sql where the index would otherwise go). db.init_db issues the fresh
+# database's copy after apply_migrations returns.
+_MIGRATION_1_HANDLES_CREATOR_STEPS = (
+    "ALTER TABLE handles ADD COLUMN creator_id INTEGER "
+    "REFERENCES creators(id) ON DELETE SET NULL",
+    "CREATE INDEX IF NOT EXISTS idx_handles_creator ON handles(creator_id)",
+)
+
+
 def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
     """A-47 / A-75: give `stages.status`, `turns.status` and the discovery_run_handles
     foreign keys the constraints schema.sql can never deliver to an existing table.
@@ -541,14 +567,14 @@ def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
     duration of this function, so DROP TABLE never trips a child row regardless of
     sequence, and a RENAME only needs fixing up by SQLite when something still
     references the table's *temporary* `_new` name, which nothing here ever does.
-    For whoever adds T9's `creators` and T10's `handles` rebuilds to this same
-    function: as a readability convention -- not a correctness requirement, per
-    the paragraph above -- keep `discovery_run_handles` (the child) positioned
-    before `handles`' own rebuild step, i.e. append T10's block after this one
-    rather than inserting it above.
+    B-72's `handles.creator_id` step is appended after `discovery_run_handles`,
+    following that same readability convention -- not a correctness requirement,
+    per the paragraph above -- and T10's `handles` rebuild goes after it rather
+    than above it, so `discovery_run_handles` (the child) stays positioned
+    before `handles`' own rebuild step.
 
-    Later tasks in this package extend this same migration further (handles,
-    creators). It stays version 1 until it has shipped."""
+    T10 still extends this same migration further (the `handles` rebuild). It
+    stays version 1 until it has shipped."""
     _coerce_unknown_stage_statuses(conn)
     for statement in _MIGRATION_1_STAGES_STEPS:
         conn.execute(statement)
@@ -566,6 +592,15 @@ def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
     for statement in _MIGRATION_1_TURNS_STEPS:
         conn.execute(statement)
     for statement in _MIGRATION_1_DISCOVERY_RUN_HANDLES_STEPS:
+        conn.execute(statement)
+    # Last, and T10's `handles` rebuild goes after THIS: the rebuild's
+    # create-copy-drop-rename must carry `creator_id REFERENCES creators(id) ON
+    # DELETE SET NULL` forward and re-create idx_handles_creator, because its
+    # DROP TABLE takes the index down with the table (the T7-F2 shape). Adding
+    # the column before the rebuild rather than only inside it keeps this step
+    # readable on its own and keeps the rebuild's INSERT ... SELECT able to name
+    # the column.
+    for statement in _MIGRATION_1_HANDLES_CREATOR_STEPS:
         conn.execute(statement)
 
 
@@ -734,18 +769,25 @@ def init_db(db_path: Path, schema_path: Path) -> None:
         # rows to make the index buildable would have committed that mutation
         # with no `events` table to record it in.
         #
-        # It cannot raise HERE, and that is the property to preserve. Three
-        # cases, no fourth:
+        # It cannot raise HERE, and that is the property to preserve. Four
+        # cases -- the fourth was missing from this comment until T9, which is
+        # why it is spelled out rather than trimmed:
         #   * brand-new database -- schema.sql just created an empty `turns`,
         #     so there is nothing to violate;
         #   * pre-existing and stamped 0 -- apply_migrations has just run
         #     migration 1, which orphans duplicate running turns before
         #     rebuilding `turns` and creates this same index as the last step of
         #     that rebuild, so this is an IF NOT EXISTS no-op;
-        #   * pre-existing and already stamped 1 -- migration 1 is skipped, but
-        #     apply_migrations wraps each migration in BEGIN IMMEDIATE, under
-        #     which SQLite's DDL is transactional, so the stamp landed only if
-        #     the whole of migration 1 did. Again a no-op.
+        #   * pre-existing and already stamped 1 by a SHIPPED build -- migration
+        #     1 is skipped, but apply_migrations wraps each migration in BEGIN
+        #     IMMEDIATE, under which SQLite's DDL is transactional, so the stamp
+        #     landed only if the whole of migration 1 did. Again a no-op;
+        #   * pre-existing and stamped 1 by an INTERMEDIATE build of this
+        #     package -- migration 1 is still under construction and grows a
+        #     step per task, so such a database carries the stamp without the
+        #     steps added after it was written, and skips them permanently.
+        #     Dev-only (version 1 is unshipped) and loud rather than silent, but
+        #     it is real: do not reason from an exhaustiveness claim here.
         # A later migration that reintroduces duplicate running turns, or that
         # rebuilds `turns` without recreating the index, breaks that reasoning
         # and this statement is where the boot will fail. That is the intended
@@ -754,6 +796,41 @@ def init_db(db_path: Path, schema_path: Path) -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_single_running "
             "ON turns(status) WHERE status = 'running'"
         )
+        # B-72's fresh-database copy of idx_handles_creator, here for the same
+        # reason as the statement above: schema.sql cannot carry it. On a
+        # pre-existing database `CREATE TABLE IF NOT EXISTS handles` is skipped,
+        # so the column does not exist yet when schema.sql runs and the index
+        # raises `no such column: creator_id` inside executescript -- before
+        # `events` is created, so the boot dies with a half-built schema and
+        # nowhere to record it (probed on sqlite 3.50.4, not reasoned about).
+        # Migration 1 owns the pre-existing database's copy
+        # (_MIGRATION_1_HANDLES_CREATOR_STEPS); this owns the fresh one.
+        #
+        # Guarded by `not pre_existing`, unlike the unconditional statement
+        # above, and the guard is load-bearing rather than an optimisation.
+        # `pre_existing` is False exactly when schema.sql has just built the
+        # whole schema at the target shape and no migration will run over it --
+        # which is the one case with a column but no index. Issuing it
+        # unconditionally would instead create the index on a MIGRATED database
+        # too, and that silently repairs the migration's own omission: T10
+        # rebuilds `handles` in this same migration 1, its DROP TABLE takes
+        # idx_handles_creator down with the table, and a rebuild that forgot to
+        # re-create it would be papered over here -- with
+        # test_every_foreign_key_column_is_still_indexed_after_the_migration
+        # going green over the defect, since it boots through init_db. A
+        # migration must leave the schema complete on its own; a direct
+        # apply_migrations caller (several tests are) never reaches this line at
+        # all.
+        #
+        # The cost of the guard, stated rather than glossed: on the fourth case
+        # above -- pre-existing, stamped 1 by an intermediate build, so
+        # migration 1's ALTER never ran -- this is skipped, and neither the
+        # column nor the index appears. That is dev-only and identical to what
+        # every other step of the unshipped migration 1 does on that shape.
+        if not pre_existing:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_handles_creator ON handles(creator_id)"
+            )
         conn.commit()
     finally:
         conn.close()
@@ -1296,6 +1373,45 @@ def upsert_handle_from_migration(
     )
     commit_unless_in_transaction(conn)
     return get_handle_by_platform_and_handle(conn, platform, handle)["id"]
+
+
+def upsert_creator(conn: sqlite3.Connection, *, slug: str, display_name: str) -> int:
+    """One creator, keyed by a stable slug. P10 calls this from the manifests.
+
+    `commit_unless_in_transaction` rather than a `transaction()` block, like
+    every other leaf helper here: a single INSERT ... ON CONFLICT is already
+    atomic, and a boundary opened in a leaf helper is the cross-thread
+    suppression hazard documented on `transaction()` itself."""
+    conn.execute(
+        "INSERT INTO creators (slug, display_name) VALUES (?, ?) "
+        "ON CONFLICT(slug) DO UPDATE SET display_name = excluded.display_name",
+        (slug, display_name),
+    )
+    commit_unless_in_transaction(conn)
+    return conn.execute("SELECT id FROM creators WHERE slug = ?", (slug,)).fetchone()["id"]
+
+
+def get_creator_by_slug(conn: sqlite3.Connection, slug: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM creators WHERE slug = ?", (slug,)).fetchone()
+
+
+def link_handle_to_creator(conn: sqlite3.Connection, handle_id: int, creator_id: int) -> None:
+    conn.execute("UPDATE handles SET creator_id = ? WHERE id = ?", (creator_id, handle_id))
+    commit_unless_in_transaction(conn)
+
+
+def list_handles_for_creator(conn: sqlite3.Connection, creator_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM handles WHERE creator_id = ? ORDER BY platform, handle", (creator_id,)
+    ).fetchall()
+
+
+def list_unlinked_handles(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Handles with no creator. After P10's migration this is the coverage gap
+    list: every row here is a creator the roster cannot report on."""
+    return conn.execute(
+        "SELECT * FROM handles WHERE creator_id IS NULL ORDER BY platform, handle"
+    ).fetchall()
 
 
 def insert_running_run(
