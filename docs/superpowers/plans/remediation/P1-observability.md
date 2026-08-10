@@ -403,9 +403,23 @@ def test_record_event_does_not_raise_on_a_closed_connection(tmp_path, monkeypatc
     assert obs.record_event(closed, kind="k", severity="error", source="s", message="m") == -1
 ```
 
-- [ ] **Run it.** The first three fail if T2's implementation lacks the blanket `except`; run them
-      against a deliberately narrowed `except sqlite3.OperationalError` first to confirm they
-      fail for the right reason, then restore the blanket form.
+- [ ] **Run it.** T2's implementation already exists, so these four tests would otherwise pass on
+      first write and prove nothing. Each needs a scaffold that makes it genuinely red, and **no
+      single scaffold reds all four** — use both, one at a time, restoring `obs.py` after each.
+      Never commit a scaffold.
+    - **Scaffold A** — narrow the blanket guard to `except sqlite3.OperationalError`.
+      `test_record_event_rejects_an_unknown_severity_without_raising` (`ValueError`) and
+      `test_record_event_does_not_raise_on_a_closed_connection` (`sqlite3.ProgrammingError`) fail:
+      the exception escapes instead of becoming a logged `-1`. The other two still **pass**, because
+      a missing table raises `OperationalError`, which the narrowed guard still catches.
+    - **Scaffold B** — delete the `log("obs.record_event_failed", ...)` call from the except branch,
+      leaving the bare `return -1`. `test_record_event_falls_back_to_the_log_when_it_cannot_write`
+      fails. This is the scaffold that matters most: that test is the one guarding against a silent
+      `-1`, which would recreate the exact defect this module exists to fix, so it must be observed
+      discriminating rather than assumed to.
+    - `test_record_event_returns_minus_one_when_the_events_table_is_missing` is red only against no
+      guard at all. Removing the `try` entirely is a valid third scaffold if you want the
+      observation; it is not required.
 - [ ] **Implement.** Already written in T2. If any test fails, widen the guard — never narrow the
       test.
 - [ ] **Commit.** `test(obs): prove record_event never raises and never loses the record`
