@@ -417,9 +417,13 @@ def test_record_event_does_not_raise_on_a_closed_connection(tmp_path, monkeypatc
       fails. This is the scaffold that matters most: that test is the one guarding against a silent
       `-1`, which would recreate the exact defect this module exists to fix, so it must be observed
       discriminating rather than assumed to.
-    - `test_record_event_returns_minus_one_when_the_events_table_is_missing` is red only against no
-      guard at all. Removing the `try` entirely is a valid third scaffold if you want the
-      observation; it is not required.
+    - **Scaffold C** — narrow the guard to `except (ValueError, sqlite3.ProgrammingError):`,
+      deliberately excluding `OperationalError`.
+      `test_record_event_returns_minus_one_when_the_events_table_is_missing` fails, as does the
+      fallback-log test; 3 and 4 stay green. This is the only scaffold that reds test 1, and it is
+      **required** — the rule that a test passing on first write proves nothing has no carve-out,
+      and "the guard is one blanket `except Exception`, so it must work" is analysis, not the
+      observed evidence every other test in this suite has.
 - [ ] **Implement.** Already written in T2. If any test fails, widen the guard — never narrow the
       test.
 - [ ] **Commit.** `test(obs): prove record_event never raises and never loses the record`
