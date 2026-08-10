@@ -691,6 +691,11 @@ def test_a_migration_body_calling_a_leaf_helper_does_not_commit_mid_migration(
             db.apply_migrations(conn)
 
         assert db.list_projects(conn) == []   # the helper's write rolled back too
+        # The boundary must also clean up after itself. Without this, deleting
+        # _exit_migration_boundary leaves the whole suite green while every
+        # subsequent commit on this connection silently stops.
+        assert id(conn) not in db._TXN_DEPTH
+        assert id(conn) not in db._TXN_POISON
     finally:
         conn.close()
 
@@ -709,3 +714,34 @@ def test_an_out_of_order_or_duplicated_migration_list_is_rejected_at_import():
     with pytest.raises(RuntimeError):
         db._validate_migration_order([(1, noop), (1, noop)])
     db._validate_migration_order([(1, noop), (2, noop)])  # the good case must not raise
+
+
+def test_the_migration_boundary_reports_lost_bookkeeping_instead_of_going_silent(
+    tmp_path, monkeypatch
+):
+    """Not from the brief -- constructed so the `lost` detector is an observed
+    alarm rather than an assumed one. `.get(key, 1) - 1` yields 0 whether the
+    key was healthily at 1 or was never there at all, so without the flag
+    "normal exit" and "my bookkeeping was clobbered" are the same silent
+    return -- the same class `transaction()`'s own `lost` flag exists to catch.
+
+    Scaffold: enter the boundary, then delete its `_TXN_DEPTH` entry out from
+    under it (standing in for whatever external interference would clobber it
+    in production), then exit. The key is gone before `_exit_migration_boundary`
+    ever looks at it, which is exactly the state the detector exists to notice."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    conn = db.get_connection(db_path)
+    try:
+        db._enter_migration_boundary(conn)
+        db._TXN_DEPTH.pop(id(conn), None)  # clobbered out from under the boundary
+        db._exit_migration_boundary(conn)
+
+        text = "\n".join(
+            p.read_text(encoding="utf-8") for p in (tmp_path / "logs").glob("app-*.log")
+        )
+        assert "db.migration_bookkeeping_lost" in text
+    finally:
+        conn.close()
