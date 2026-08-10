@@ -50,13 +50,15 @@ CREATE TABLE IF NOT EXISTS turns (
     cost_usd REAL
 );
 CREATE INDEX IF NOT EXISTS idx_turns_stage_row ON turns(stage_row_id);
-
--- The pipeline's single-running invariant, at the storage layer where discovery
--- already has it (ux_discovery_single_running). Two concurrent chat POSTs can
--- both read zero running turns and both insert one, launching two Claude
--- subprocesses that write the same raw_output.md (A-71).
-CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_single_running
-    ON turns(status) WHERE status = 'running';
+-- `ux_turns_single_running` (the pipeline's single-running invariant, A-71) is
+-- deliberately NOT here. This file runs as one executescript() before any
+-- migration, and a pre-existing database can already hold two 'running' turns:
+-- a UNIQUE index built over that violation raises, executescript abandons every
+-- statement after it -- `events` among them, it is created near the end of this
+-- file -- and the boot dies with a half-built schema and nowhere to record it.
+-- db.init_db issues the index after apply_migrations instead, at a point where
+-- migration 1 has already repaired any duplicates. See db._MIGRATION_1_TURNS_STEPS
+-- and db.init_db.
 
 CREATE TABLE IF NOT EXISTS handles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

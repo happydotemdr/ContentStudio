@@ -1658,6 +1658,58 @@ def test_a_rejected_concurrent_turn_is_visible_as_an_error_event(conn, tmp_path,
     assert json.loads(rows[0]["detail"])["stage_row_id"] == s2
 
 
+def test_a_constraint_violation_that_is_not_a_race_is_not_reported_as_one(
+        conn, tmp_path, monkeypatch):
+    """FAULT. `turns` carries four constraints that all raise IntegrityError and
+    only one of them is the single-running race. A caller passing a typo'd status
+    must not leave the operator an `events` row saying a second Claude
+    subprocess tried to start -- a confident wrong diagnosis in the one place
+    they are told to look is worse than no row at all."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    s1 = db.create_stage_row(conn, project_id, "ideation", "running")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_turn(conn, s1, "runnnig", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    rows = conn.execute(
+        "SELECT * FROM events WHERE source = 'db.create_turn' ORDER BY id"
+    ).fetchall()
+    assert [r["kind"] for r in rows] == ["turn.insert_rejected"]
+    assert rows[0]["severity"] == "error"
+    # The constraint class SQLite reported, not this code's reading of it.
+    assert json.loads(rows[0]["detail"])["sqlite_errorname"] == "SQLITE_CONSTRAINT_CHECK"
+    assert conn.execute("SELECT count(*) FROM turns").fetchone()[0] == 0
+
+
+def test_the_race_and_a_plain_constraint_violation_are_different_events(
+        conn, tmp_path, monkeypatch):
+    """DISTINGUISHABILITY. Two distinct faults sharing one representation is the
+    defect class this package exists to remove, and `create_turn`'s single
+    unqualified `except sqlite3.IntegrityError` was an instance of it: a CHECK
+    violation and a genuine concurrent start wrote the same kind, the same
+    severity and the same message."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    s1 = db.create_stage_row(conn, project_id, "ideation", "running")
+    s2 = db.create_stage_row(conn, project_id, "scripting", "running")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_turn(conn, s1, "runnnig", "2026-08-08T00:00:00+00:00", "e/0.jsonl")
+    db.create_turn(conn, s1, "running", "2026-08-08T00:00:01+00:00", "e/1.jsonl")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_turn(conn, s2, "running", "2026-08-08T00:00:02+00:00", "e/2.jsonl")
+
+    rows = conn.execute(
+        "SELECT * FROM events WHERE source = 'db.create_turn' ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2
+    check_row, race_row = rows
+    assert race_row["kind"] == "turn.concurrent_start_rejected"
+    assert json.loads(race_row["detail"])["sqlite_errorname"] == "SQLITE_CONSTRAINT_UNIQUE"
+    # The load-bearing line: one kind per fault, not one kind for both.
+    assert check_row["kind"] != race_row["kind"]
+
+
 def test_migration_orphans_all_but_the_newest_running_turn(tmp_path: Path, monkeypatch):
     """A legacy database can already hold two running turns -- the exact race
     this index prevents. The index cannot be created over them, so the migration
@@ -1756,5 +1808,157 @@ def test_a_second_running_turn_is_rejected_on_a_migrated_database(tmp_path: Path
         db.create_turn(c, s1, "running", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
         with pytest.raises(sqlite3.IntegrityError):
             db.create_turn(c, s2, "running", "2026-08-08T00:00:01+00:00", "e/2.jsonl")
+    finally:
+        c.close()
+
+
+def test_migration_1_orphans_duplicate_running_turns_for_a_direct_caller(
+        tmp_path: Path, monkeypatch):
+    """The twin for the migration-embedded CALL SITE, not for a second database
+    shape -- T7's lesson applied per call site rather than per shape.
+
+    `init_db` is not in this path at all: the database is stamped 0 by hand and
+    `apply_migrations` is called directly, the way several tests in this file
+    (and any future non-boot upgrade path) reach migration 1. Without the repair
+    call inside `_migration_1_constrain_core_tables`, the `CREATE UNIQUE INDEX
+    ux_turns_single_running` at the end of `_MIGRATION_1_TURNS_STEPS` has
+    duplicates underneath it and the migration cannot complete.
+
+    `source` is asserted deliberately. It is the only field that distinguishes
+    this row from one written by any other call site, so without it this test is
+    a second copy of the `init_db` tests rather than a twin of them."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        # A legacy shape that has already been through P1's earlier tasks: it
+        # has `events` (so the migration can record) and a version stamp (so
+        # apply_migrations has something to read), but no constraints and no
+        # single-running index.
+        "CREATE TABLE schema_version (id INTEGER PRIMARY KEY CHECK (id = 1),"
+        " version INTEGER NOT NULL);"
+        "INSERT INTO schema_version (id, version) VALUES (1, 0);"
+        "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " occurred_at TEXT NOT NULL, kind TEXT NOT NULL,"
+        " severity TEXT NOT NULL CHECK (severity IN ('info','warning','error','critical')),"
+        " source TEXT NOT NULL, message TEXT NOT NULL, detail TEXT, run_id INTEGER,"
+        " acknowledged INTEGER NOT NULL DEFAULT 0);"
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','running');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'scripting','running');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (1,'running','2026-08-08T00:00:00+00:00','e/1.jsonl');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (2,'running','2026-08-08T00:00:05+00:00','e/2.jsonl');"
+    )
+    c.commit()
+    c.close()
+
+    c = db.get_connection(db_path)
+    try:
+        assert db.apply_migrations(c) == [1]
+        assert [r["status"] for r in c.execute("SELECT status FROM turns ORDER BY id")] \
+            == ["orphaned", "running"]
+        assert c.execute("SELECT status FROM stages WHERE id = 1").fetchone()[0] == "ready"
+        rows = c.execute(
+            "SELECT * FROM events WHERE kind = 'schema.duplicate_running_turn_orphaned'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["source"] == "db.migration_1"
+        assert rows[0]["severity"] == "warning"
+        assert json.loads(rows[0]["detail"]) == {
+            "turn_id": 1, "stage_row_id": 1, "stage_status_was": "running"}
+    finally:
+        c.close()
+
+
+def test_a_pre_existing_database_with_one_running_turn_is_left_alone(
+        tmp_path: Path, monkeypatch):
+    """The repair must be able to tell "nothing to repair" from "repaired
+    something". Every other test of the orphaning pass seeds two running turns,
+    so `running[1:]` could be widened to `running` -- orphaning EVERY running
+    turn on EVERY boot of a pre-existing database and resetting its stage -- and
+    the whole suite would still pass. The zero-events assertion is the
+    load-bearing one: the turn and the stage surviving is what a correct no-op
+    looks like, and an event row is what a repair that ran looks like."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','running');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (1,'running','2026-08-08T00:00:00+00:00','e/1.jsonl');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        assert [r["status"] for r in c.execute("SELECT status FROM turns")] == ["running"]
+        assert [r["status"] for r in c.execute("SELECT status FROM stages")] == ["running"]
+        assert c.execute(
+            "SELECT count(*) FROM events WHERE kind = 'schema.duplicate_running_turn_orphaned'"
+        ).fetchone()[0] == 0
+    finally:
+        c.close()
+
+
+def test_a_failed_boot_does_not_leave_turns_silently_rewritten(tmp_path: Path, monkeypatch):
+    """A boot that dies partway must not have already rewritten `turns`.
+
+    This test is meaningful on both sides of the fix, for different reasons.
+    BEFORE it, `init_db` repaired duplicate running turns *before*
+    `conn.executescript(schema.sql)` and committed that repair, recording it only
+    afterwards -- so any later statement in schema.sql raising left
+    `turns.status` flipped to 'orphaned' and `stages.status` reset to 'ready',
+    durably, with no `events` row (that table is created near the end of
+    schema.sql and so does not exist yet) and no log line either: a silent data
+    mutation with no record.
+
+    AFTER it, `init_db` mutates nothing before the schema is in place. The same
+    boot still raises -- on `ux_discovery_single_running`, a pre-existing defect
+    of the same shape on `discovery_runs`, filed separately and deliberately not
+    fixed here -- but it leaves every turn and every stage exactly as it found
+    them.
+
+    The two 'running' discovery runs are what make the boot fail; the two
+    'running' turns are what the assertions are about."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','running');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'scripting','running');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (1,'running','2026-08-08T00:00:00+00:00','e/1.jsonl');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (2,'running','2026-08-08T00:00:05+00:00','e/2.jsonl');"
+        "INSERT INTO discovery_runs (run_id,trigger,mode,status,started_at) "
+        "VALUES ('d-1','manual','incremental','running','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO discovery_runs (run_id,trigger,mode,status,started_at) "
+        "VALUES ('d-2','manual','incremental','running','2026-08-08T00:00:05+00:00');"
+    )
+    c.commit()
+    c.close()
+
+    with pytest.raises(sqlite3.IntegrityError):
+        db.init_db(db_path, SCHEMA_PATH)
+
+    c = sqlite3.connect(db_path)
+    try:
+        assert [r[0] for r in c.execute("SELECT status FROM turns ORDER BY id")] \
+            == ["running", "running"]
+        assert [r[0] for r in c.execute("SELECT status FROM stages ORDER BY id")] \
+            == ["running", "running"]
     finally:
         c.close()
