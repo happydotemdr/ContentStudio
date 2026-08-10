@@ -625,3 +625,35 @@ def test_a_database_from_a_newer_build_fails_loudly_instead_of_booting(tmp_path:
     c.close()
     with pytest.raises(db.SchemaVersionError):
         db.init_db(db_path, SCHEMA_PATH)
+
+
+def test_a_migration_that_fails_partway_leaves_neither_the_ddl_nor_the_stamp(tmp_path, monkeypatch):
+    """Half-applied and never-applied must not be the same state. If the DDL
+    survives while the stamp does not, the next boot re-runs the migration, the
+    already-applied ALTER fails with "duplicate column name", and the database is
+    wedged at that version forever."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    conn = db.get_connection(db_path)
+    try:
+        def half_a_migration(c):
+            c.execute("ALTER TABLE projects ADD COLUMN doomed TEXT")
+            raise RuntimeError("the second half failed")
+
+        monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, half_a_migration)])
+        with pytest.raises(RuntimeError):
+            db.apply_migrations(conn)
+
+        assert "doomed" not in [r[1] for r in conn.execute("PRAGMA table_info(projects)")]
+        assert conn.execute(
+            "SELECT version FROM schema_version WHERE id = 1"
+        ).fetchone()[0] == db.SCHEMA_VERSION
+        rows = conn.execute(
+            "SELECT * FROM events WHERE kind = 'schema.migration_failed'"
+        ).fetchall()
+        assert len(rows) == 1          # ...and it said so
+        assert rows[0]["severity"] == "critical"
+    finally:
+        conn.close()

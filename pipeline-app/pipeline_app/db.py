@@ -47,6 +47,16 @@ def transaction(conn: sqlite3.Connection):
     per-project backfill in this (T4b does exactly that). Nests: an inner block
     joins the outer one rather than committing early.
 
+    **Does not cover DDL.** This context manager, like `commit_unless_in_transaction`,
+    relies entirely on Python's sqlite3 implicit transaction control -- and that
+    control only ever opens an implicit transaction ahead of DML
+    (INSERT/UPDATE/DELETE). A `CREATE TABLE` or `ALTER TABLE` executed inside a
+    `transaction()` block lands on disk the instant it runs, commits or no commits,
+    and a rollback after it does not undo it (A-72). Schema migrations therefore do
+    not use this: `db.apply_migrations` issues its own explicit `conn.execute("BEGIN")`
+    around each migration instead, which does make DDL atomic. Reach for
+    `transaction()` for row-level invariants only.
+
     **Known hazard, deliberately not solved here.** The boundary is a property of
     the *connection*, and this app shares one connection across threads
     (`get_connection`'s `check_same_thread=False`). So a leaf helper called from a
@@ -267,9 +277,39 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
     for version, migrate in _MIGRATIONS:
         if version <= current:
             continue
-        migrate(conn)
-        conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (version,))
-        conn.commit()
+        # Explicit BEGIN, not db.transaction(). Python's sqlite3 opens an implicit
+        # transaction only for DML, never for DDL -- so under the default
+        # transaction control a migration's CREATE/ALTER lands on disk the instant
+        # it executes and survives any rollback. Verified: without BEGIN,
+        # `in_transaction` is False after a CREATE TABLE and rollback leaves the
+        # table; with BEGIN it is True and the table is gone. db.transaction()
+        # relies on that same implicit control, so it does NOT make DDL atomic and
+        # is the wrong tool here.
+        #
+        # Without this, a migration that raises halfway leaves its DDL applied and
+        # the version stamp untouched -- "partially applied" and "never ran" become
+        # the same state. The next boot re-runs it, the already-applied ALTER fails
+        # with "duplicate column name", and the database is wedged at that version
+        # permanently, with every boot reporting the same error and no way to tell
+        # which half already happened.
+        conn.execute("BEGIN")
+        try:
+            migrate(conn)
+            conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (version,))
+            conn.commit()
+        except BaseException as exc:
+            conn.rollback()
+            # Report before re-raising: the exception reaches whoever called
+            # init_db, but this is the only record that survives the process.
+            obs.record_event(
+                conn, kind="schema.migration_failed", severity="critical",
+                source="db.apply_migrations",
+                message=f"migration {version} failed and was rolled back: "
+                        f"{type(exc).__name__}: {exc}",
+                detail={"version": version, "exception": type(exc).__name__,
+                        "applied_before_failure": applied},
+            )
+            raise
         applied.append(version)
         obs.record_event(
             conn, kind="schema.migration_applied", severity="info", source="db.apply_migrations",
