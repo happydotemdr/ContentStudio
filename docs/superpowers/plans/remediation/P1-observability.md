@@ -3613,6 +3613,62 @@ RED for the index could never be earned. A fix that hides the bug it is supposed
    `test_a_migrated_database_has_the_same_schema_as_a_fresh_one`** — if that test compares DDL
    text rather than resolved structure, it goes red for a cosmetic reason. Route to T12.
 
+#### T9 fix round 1 — finding 1 graded Critical, and it is fixed here
+
+The T9 task review ran against `f1d019f..3c7fc67`. Full report:
+`.superpowers/sdd/2026-08-08-audit-remediation/P1-task-9-review.md`. Verdict: **spec ✅**, quality
+**Needs fixes** — one Critical, five Minor. The reviewer independently confirmed the as-built
+placement correct on both database shapes, the `if not pre_existing:` guard sound with no hole, and
+each of the four per-behaviour REDs independently load-bearing.
+
+Both of the reviewer's ⚠️ items were closed by the controller: the suite counts are exact
+(app **948 passed / 3 skipped / 1 xfailed**, root **247 passed**, `git status` clean), and the six
+scaffold RED runs — not reproducible from a diff by construction — are corroborated by the
+reviewer's own check that all six reported failure line numbers resolve exactly against the final
+file, with a consistent offset matching C4's hunk.
+
+**F1 (Critical) — `link_handle_to_creator` cannot fail.** `db.py:1398`. Called with a `handle_id`
+that does not exist, the `UPDATE` matches zero rows and the function returns `None` — exactly what
+it returns on success. "There was no such handle" and "the link was established" share one
+representation. This was transcribed unchanged from the plan's own frozen code, so the plan
+authored it; it is the **twenty-second** instance of the recurring class in this programme, and the
+twelfth written by the remediation itself.
+
+**No escalation.** This is not a plan-mandated finding to route to the operator: the governing
+programme brief already rules on this category standing — *"Any representation shared by 'nothing
+here' and 'something is wrong' is a defect by default… If you find a new instance, treat it as in
+scope, file it in the relevant plan, and fix it."* The plan is amended and the fix executed here,
+the same way T3's drift was handled.
+
+**Fixed in T9, not handed to P10**, for the reviewer's reasons, which hold: the same function is
+already *loud* on a bad `creator_id` (the foreign key raises) and silent only on a bad `handle_id`,
+so the asymmetry is arbitrary; `cursor.rowcount == 0` is an exact signal needing no inference; and
+P10 is merely the **consumer** of a contract only P1 can define. P10 populating `creators` from the
+manifests would otherwise report success having linked nothing.
+
+- [ ] **Implement.** Capture the cursor from the `UPDATE` and raise when it matched no row —
+      symmetric with the foreign key's behaviour on a bad `creator_id`, so both arguments now fail
+      loudly instead of one of them. Raise `LookupError` naming the `handle_id`. Keep
+      `commit_unless_in_transaction(conn)` on the success path only: a call that changed nothing
+      must not commit as though it had.
+- [ ] **Do not add an `events` row here.** B-72's failure mode is `coverage-gap`, not `silent`, and
+      a raise is already a human-reachable signal that propagates. An event row for a caller error
+      that also raises is the "Extra" the review rubric flags.
+- [ ] **Write the fault test.** A `handle_id` that does not exist raises `LookupError`. **RED is
+      earned by observing it return `None` against the current code** — paste that output.
+- [ ] **Write the distinguishability test.** A real link still succeeds and is observable through
+      `list_handles_for_creator`, and the failed call left **no** partial state: assert the handle
+      count and the `creator_id` of every existing row are unchanged after the raise. Without that
+      second half the test proves only that something raised.
+- [ ] **Check the siblings before you finish.** `upsert_creator`, `get_creator_by_slug`,
+      `list_handles_for_creator` and `list_unlinked_handles` were transcribed from the same frozen
+      block. Say explicitly, in the report, whether any of them shares a representation between
+      "nothing here" and "something is wrong" — and if one does, report it rather than widening the
+      fix unasked.
+
+**Scope fence.** This finding only. The five Minor findings in the review report are deferred to
+the ledger and the final whole-branch review; do not action them.
+
 ---
 
 ### T10 — B-73: `handles.platform` is unconstrained free text
