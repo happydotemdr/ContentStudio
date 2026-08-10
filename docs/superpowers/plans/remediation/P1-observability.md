@@ -475,17 +475,53 @@ def test_a_failed_transaction_is_distinguishable_from_the_unwrapped_path(conn):
 
 def test_a_rolled_back_transaction_records_an_error_event(conn, tmp_path, monkeypatch):
     """SURFACING. A silently discarded half-operation is how A-70 stayed
-    invisible; the rollback has to leave a row a human can find."""
+    invisible; the rollback has to leave a row a human can find -- and it has to
+    still be there once this connection is gone.
+
+    Read it back on a SECOND connection. Reading it on the connection that wrote
+    it passes whether or not the row was ever committed, so that version of this
+    test cannot tell a durable event from one that dies with the process."""
     from pipeline_app import obs
     monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
     with pytest.raises(RuntimeError):
         with db.transaction(conn):
             db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
             raise RuntimeError("boom")
-    rows = conn.execute("SELECT * FROM events WHERE kind = 'db.transaction_rolled_back'").fetchall()
+
+    other = db.get_connection(Path(conn.execute("PRAGMA database_list").fetchone()[2]))
+    try:
+        rows = other.execute(
+            "SELECT * FROM events WHERE kind = 'db.transaction_rolled_back'"
+        ).fetchall()
+    finally:
+        other.close()
     assert len(rows) == 1
     assert rows[0]["severity"] == "error"
     assert "RuntimeError" in rows[0]["message"]
+    assert db.list_projects(conn) == []  # ...and the half-written project is still gone
+
+
+def test_recording_an_event_inside_a_transaction_does_not_commit_the_caller(
+    conn, tmp_path, monkeypatch
+):
+    """`record_event` is called from inside operations that are failing. If it
+    committed, it would persist the half-finished work the boundary exists to
+    discard -- A-70 defeated by the very module built to report it."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    with pytest.raises(RuntimeError):
+        with db.transaction(conn):
+            db.create_project(conn, "half", "a", "generic", "2026-08-08T00:00:00+00:00")
+            obs.record_event(conn, kind="k", severity="warning", source="s", message="mid-flight")
+            raise RuntimeError("boom")
+
+    assert db.list_projects(conn) == []  # the half project did NOT survive
+    # That event row rolled back with everything else -- correct, but it must not
+    # be the only trace. `record_event` logs unconditionally, so the file survives.
+    text = "\n".join(
+        p.read_text(encoding="utf-8") for p in (tmp_path / "logs").glob("app-*.log")
+    )
+    assert "mid-flight" in text
 
 
 def test_leaf_helpers_still_commit_immediately_outside_a_transaction(conn, tmp_path):
@@ -619,13 +655,37 @@ def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException) -> None:
         message=f"rolled back after {type(exc).__name__}: {exc}",
         detail={"exception": type(exc).__name__},
     )
+    # Commit the event row explicitly. We are still nominally inside this
+    # transaction -- `transaction()`'s finally has not popped the depth key yet --
+    # so `record_event`'s `commit_unless_in_transaction` is a no-op here. The
+    # rollback above already discarded the caller's work, so this row is the only
+    # statement pending; committing it cannot resurrect anything.
+    #
+    # Without this the sole durable trace of the rollback dies with the
+    # connection: verified empirically on sqlite3 with the default
+    # isolation_level -- the row is visible on THIS connection, invisible to any
+    # other, and gone entirely after close(). A surfacing mechanism that only the
+    # failing process can see is the exact defect this package exists to remove.
+    try:
+        conn.commit()
+    except Exception as commit_exc:  # noqa: BLE001 -- a lost event must not mask the original
+        obs.log("db.rollback_event_commit_failed", level="critical",
+                error=f"{type(commit_exc).__name__}: {commit_exc}")
 ```
 
 - [ ] **Implement (b).** Replace every one of the ~20 bare `conn.commit()` calls in `db.py`'s
       helpers with `commit_unless_in_transaction(conn)`. Leave `init_db`'s own `conn.commit()`
       alone — it owns a short-lived private connection and is never inside a caller's boundary.
       Verify with `grep -n "conn.commit()" pipeline_app/db.py` — the only survivor is `init_db`'s.
-- [ ] **Run it.** All six pass. Then run the whole app suite: `cd pipeline-app && python -m pytest -q`.
+- [ ] **Implement (c).** Redeem T2's deferred half: in `obs.py`, replace `record_event`'s plain
+      `conn.commit()` with the deferred import of `commit_unless_in_transaction` and a call to it,
+      exactly as T2's code block shows. The import must stay inside the function — `db` imports
+      `obs` for its own diagnostics, so a module-level import here is circular. This is what stops
+      an event recorded *inside* a caller's `transaction()` block from committing that caller's
+      half-finished work, which would defeat A-70 through the very module meant to report it.
+      The explicit `conn.commit()` in `_rollback_and_report` above is the one deliberate exception
+      and must remain.
+- [ ] **Run it.** All eight pass. Then run the whole app suite: `cd pipeline-app && python -m pytest -q`.
       **Zero existing tests may change behaviour.** If any fails, the compatibility rule was broken.
 - [ ] **Commit.** `fix(db): give every multi-row invariant a transaction boundary (A-70)`
 
