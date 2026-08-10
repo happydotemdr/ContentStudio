@@ -12,13 +12,13 @@ brief text could not have known:
   distinct skill set, a mutated app.state, or a patched CLI probe), so none of
   them can reuse the shared `client` fixture from tests/conftest.py, which is
   fixed to one tmp_path/skills-dir/config. `create_app()` opens
-  app.state.conn and nothing closes it, and this suite's
-  `_no_leaked_sqlite_connections` guard fails any test that leaves one open
-  (this module is not in conftest.py's `_CONNECTION_LEAKS_BY_PACKAGE`
-  allowlist, so a leak here is a hard failure, not a warning). `_doctor_client`
-  below is a local, closing-in-`finally` stand-in for that fixture, built the
-  same way the shared one is, instead of the brief's bare
-  `TestClient(_app_at(...))`.
+  app.state.conn, and this suite's `_no_leaked_sqlite_connections` guard fails
+  any test that leaves one open (this module is not in conftest.py's
+  `_CONNECTION_LEAKS_BY_PACKAGE` allowlist, so a leak here is a hard failure,
+  not a warning). `_doctor_client` below is a local, closing-in-`finally`
+  stand-in for that fixture, built the same way the shared one is, instead of
+  the brief's bare `TestClient(_app_at(...))` -- which would run no lifespan at
+  all and so would not close the connection either.
 
 - The CLI-absent/CLI-present test does not monkeypatch `shutil.which`
   directly, despite that being the obvious lever. `check_cli_available`'s
@@ -77,10 +77,12 @@ def _app_at(root: Path, monkeypatch, skills: tuple[str, ...] = ()):
 def _doctor_client(root: Path, monkeypatch, skills: tuple[str, ...] = ()):
     """TestClient(_app_at(...)) that closes app.state.conn on the way out.
 
-    create_app() unconditionally opens app.state.conn and wires no shutdown
-    handler to close it (see tests/conftest.py's `client` fixture docstring);
-    TestClient's own context manager only drives ASGI startup/shutdown
-    events, none of which touch app.state.conn.
+    create_app() unconditionally opens app.state.conn and registers a lifespan
+    that closes it on ASGI shutdown (A-85), which is why the app is entered as
+    a context manager here rather than passed bare to TestClient. The `finally`
+    stays because it covers the path the lifespan cannot -- startup itself
+    raising, so no shutdown event is ever sent. See tests/conftest.py's `client`
+    fixture docstring.
     """
     app = _app_at(root, monkeypatch, skills)
     try:

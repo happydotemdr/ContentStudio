@@ -254,10 +254,18 @@ def client(tmp_path, monkeypatch):
     """The canonical FastAPI fixture. Duplicated in 9 test files today (F-65).
 
     create_app() unconditionally opens app.state.conn (pipeline_app/main.py)
-    and wires no shutdown handler to close it -- TestClient's own context
-    manager only drives ASGI startup/shutdown events, none of which touch
-    app.state.conn. Close it here, in a finally, so it closes on both the
-    passing and the raising path.
+    and registers a lifespan that closes it again on ASGI shutdown (A-85), so
+    the app must be entered as a context manager -- `with TestClient(app)` --
+    or that shutdown never runs and the connection leaks.
+
+    The `finally` close is not redundant with it. It covers the one path the
+    lifespan cannot: if startup itself raises, the `with` block is never
+    entered, no shutdown event is ever sent, and the connection create_app has
+    already opened would be orphaned. On the ordinary path the two overlap and
+    the second close is a harmless no-op.
+    tests/test_harness_contract.py::test_shared_client_fixture_closes_its_
+    connection_when_startup_raises injects exactly that startup failure, so
+    deleting the `finally` below turns it red.
     """
     from fastapi.testclient import TestClient
 

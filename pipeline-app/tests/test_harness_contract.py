@@ -128,26 +128,61 @@ def test_shared_client_fixture_serves_the_app(client):
     assert client.get("/doctor").status_code == 200
 
 
-def test_shared_client_fixture_closes_its_connection_on_teardown(tmp_path, monkeypatch):
-    """create_app() opens app.state.conn (pipeline_app/main.py) and wires no
-    shutdown handler to close it. The client fixture must close it itself on
-    teardown -- on both the passing and the raising path -- or every test
-    that requests `client` leaks a sqlite handle, which is exactly the class
-    of leak this fixture exists to eliminate (F-65/F-66)."""
-    import sqlite3
+def test_shared_client_fixture_closes_its_connection_when_startup_raises(tmp_path, monkeypatch):
+    """The client fixture's `finally` close is load-bearing on exactly one path,
+    and this test drives that one -- deliberately, because the obvious version
+    of this test can no longer fail.
+
+    create_app() opens app.state.conn and now also registers a lifespan that
+    closes it (A-85, P1 T13). That lifespan runs whenever `with TestClient(app)`
+    exits, the raising-test-body path included. So driving the fixture through
+    a NORMAL teardown and asserting the connection ends up closed proves
+    nothing about the fixture: the lifespan satisfies it whether or not
+    conftest's `finally` exists. Two mechanisms, one assertion, and the guard
+    silently stops guarding.
+
+    The path the lifespan does NOT cover is startup itself failing: the `with`
+    block is never entered, no shutdown event is ever sent, and the connection
+    create_app already opened is orphaned unless the fixture closes it. That is
+    the fault injected here, and it is the whole reason conftest's close sits in
+    a `finally` rather than after the `with`. Delete
+    `finally: app.state.conn.close()` from tests/conftest.py and this test goes
+    red; the lifespan cannot cover for it.
+
+    The fixture's ordinary teardown is not left uncovered: the lifespan half is
+    proved by tests/test_main.py::test_app_shutdown_closes_the_connection_and_
+    truncates_the_wal, and every test that requests `client` runs under
+    `_no_leaked_sqlite_connections` above. Each mechanism now has one test that
+    fails when that mechanism alone is removed (F-65/F-66)."""
+    from fastapi.testclient import TestClient
 
     import conftest
+    from pipeline_app import main
+
+    built: list = []
+    real_create_app = main.create_app
+
+    def capturing_create_app(**kwargs):
+        app = real_create_app(**kwargs)
+        built.append(app)
+        return app
+
+    def startup_explodes(self):
+        raise RuntimeError("ASGI startup failed")
+
+    # The fixture resolves both names at call time (`from ... import` inside
+    # its body), so patching the modules reaches it.
+    monkeypatch.setattr(main, "create_app", capturing_create_app)
+    monkeypatch.setattr(TestClient, "__enter__", startup_explodes)
 
     gen = conftest.client.__wrapped__(tmp_path, monkeypatch)
-    test_client = next(gen)
-    connection = test_client.app.state.conn
+    with pytest.raises(RuntimeError, match="ASGI startup failed"):
+        next(gen)  # never yields: it raises on the way in, through the finally
 
-    # Sanity: the connection is live while the fixture is active.
-    connection.execute("SELECT 1")
-
-    with pytest.raises(StopIteration):
-        next(gen)  # drive the fixture generator through its teardown
-
+    # Checked, not assumed: if create_app never ran there would be no
+    # connection to orphan and the assertion below would pass vacuously.
+    assert built, "create_app never ran, so this test would prove nothing"
+    connection = built[0].state.conn
     with pytest.raises(sqlite3.ProgrammingError):
         connection.execute("SELECT 1")
 
