@@ -263,6 +263,11 @@ class MigrationIntegrityError(RuntimeError):
 STAGE_STATUSES = ("locked", "ready", "running", "awaiting_review", "approved",
                   "stale", "no_artifact")
 
+# turn_service writes running/aborted/complete/failed; preflight writes orphaned.
+# Verified against the call sites, not assumed: turn_service.py:129 (running),
+# :210 (aborted), :216 (complete/failed), preflight.py:16 (orphaned) (A-75).
+TURN_STATUSES = ("running", "complete", "failed", "aborted", "orphaned")
+
 
 def _coerce_unknown_stage_statuses(conn: sqlite3.Connection) -> None:
     """A legacy row can already hold the typo the new CHECK exists to prevent, and
@@ -298,6 +303,37 @@ def _coerce_unknown_stage_statuses(conn: sqlite3.Connection) -> None:
                     stage_row_id=row_id, was=was)
 
 
+def _coerce_unknown_turn_statuses(conn: sqlite3.Connection) -> None:
+    """Same ruling as `_coerce_unknown_stage_statuses`, one table over: a legacy
+    row can already hold a status the new CHECK rejects, and the rebuild's
+    `INSERT ... SELECT` aborts on it. A turn whose status cannot be interpreted
+    *is* an orphan (preflight.reconcile_orphaned_turns already uses that status
+    for turns whose process died without reporting), so that is where it goes.
+    Record one event per row.
+
+    No commit here, deliberately -- same reasoning as the stage coercion: the
+    UPDATEs and their events belong to apply_migrations' transaction."""
+    from pipeline_app import obs
+
+    placeholders = ",".join("?" * len(TURN_STATUSES))
+    rows = conn.execute(
+        f"SELECT id, stage_row_id, status FROM turns "
+        f"WHERE status NOT IN ({placeholders})", TURN_STATUSES
+    ).fetchall()
+    for row_id, stage_row_id, was in rows:
+        conn.execute("UPDATE turns SET status = 'orphaned' WHERE id = ?", (row_id,))
+        coerced_id = obs.record_event(
+            conn, kind="schema.turn_status_coerced", severity="warning",
+            source="db.migration_1",
+            message=f"turn {row_id} on stage_row {stage_row_id} held unknown status "
+                    f"{was!r}; coerced to 'orphaned'",
+            detail={"turn_id": row_id, "stage_row_id": stage_row_id, "was": was},
+        )
+        if coerced_id == -1:
+            obs.log("db.turn_status_coercion_unrecorded", level="error",
+                    turn_id=row_id, was=was)
+
+
 # One statement per execute(), never executescript(): executescript issues an
 # implicit COMMIT before it runs, which would end apply_migrations' transaction and
 # make this rebuild non-atomic. create-copy-drop-rename is exactly where that
@@ -323,17 +359,89 @@ _MIGRATION_1_STAGES_STEPS = (
 )
 
 
+# Same create-copy-drop-rename recipe as _MIGRATION_1_STAGES_STEPS, one statement
+# per execute() for the same reason. The CREATE INDEX is appended to this tuple,
+# not left to schema.sql: schema.sql's own `CREATE INDEX IF NOT EXISTS
+# idx_turns_stage_row` runs BEFORE the migration (init_db's ordering) and so lands
+# on the OLD `turns` table -- this rebuild's `DROP TABLE turns` then takes that
+# index down with the table it was on, and a migrated database would silently come
+# back unindexed while a fresh one would not (A-75).
+_MIGRATION_1_TURNS_STEPS = (
+    """CREATE TABLE turns_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        stage_row_id INTEGER NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK (status IN
+            ('running','complete','failed','aborted','orphaned')),
+        created_at TEXT NOT NULL,
+        finished_at TEXT,
+        events_path TEXT NOT NULL,
+        cost_usd REAL
+    )""",
+    """INSERT INTO turns_new (id, stage_row_id, status, created_at, finished_at, events_path, cost_usd)
+        SELECT id, stage_row_id, status, created_at, finished_at, events_path, cost_usd FROM turns""",
+    "DROP TABLE turns",
+    "ALTER TABLE turns_new RENAME TO turns",
+    "CREATE INDEX IF NOT EXISTS idx_turns_stage_row ON turns(stage_row_id)",
+)
+
+
+# discovery_run_handles gets no new CHECK (schema.sql never declared a status
+# vocabulary for it, and A-75 does not ask for one) -- only ON DELETE CASCADE on
+# both its foreign keys and the two covering indices, appended after the RENAME
+# for the same reason the turns indices are: schema.sql's copies would land on the
+# table this DROP TABLE is about to remove.
+_MIGRATION_1_DISCOVERY_RUN_HANDLES_STEPS = (
+    """CREATE TABLE discovery_run_handles_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL REFERENCES discovery_runs(id) ON DELETE CASCADE,
+        handle_id INTEGER NOT NULL REFERENCES handles(id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        items_downloaded INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT
+    )""",
+    """INSERT INTO discovery_run_handles_new
+        (id, run_id, handle_id, status, items_downloaded, error_message)
+        SELECT id, run_id, handle_id, status, items_downloaded, error_message
+        FROM discovery_run_handles""",
+    "DROP TABLE discovery_run_handles",
+    "ALTER TABLE discovery_run_handles_new RENAME TO discovery_run_handles",
+    "CREATE INDEX IF NOT EXISTS idx_drh_run ON discovery_run_handles(run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_drh_handle ON discovery_run_handles(handle_id)",
+)
+
+
 def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
-    """A-47: give `stages.status` the CHECK that schema.sql can never deliver.
+    """A-47 / A-75: give `stages.status`, `turns.status` and the discovery_run_handles
+    foreign keys the constraints schema.sql can never deliver to an existing table.
 
     Every statement in schema.sql is `CREATE TABLE IF NOT EXISTS`, so no constraint
     added there reaches a database that already has the table. This is the only path
     that applies them, and it is why schema_version exists.
 
-    Later tasks in this package extend this same migration (turns, handles,
+    Rebuild order: stages, then turns, then discovery_run_handles. `turns` is
+    stages' FK child, so it is rebuilt immediately after its parent to keep the
+    coerce-then-rebuild pairs for one FK relationship adjacent and readable;
+    `discovery_run_handles` is independent of both (no FK to or from turns) and is
+    placed last because its own two parents -- discovery_runs and handles -- are
+    not rebuilt by this migration at all yet. This ordering is not load-bearing
+    for correctness today: apply_migrations disables FK enforcement for the whole
+    duration of this function, so DROP TABLE never trips a child row regardless of
+    sequence, and a RENAME only needs fixing up by SQLite when something still
+    references the table's *temporary* `_new` name, which nothing here ever does.
+    It matters for readability and for whoever adds T9's `creators` and T10's
+    `handles` rebuilds to this same function: `discovery_run_handles` (the child)
+    must stay positioned before `handles`' own rebuild step when that lands, i.e.
+    append T10's block after this one rather than inserting it above.
+
+    Later tasks in this package extend this same migration further (handles,
     creators). It stays version 1 until it has shipped."""
     _coerce_unknown_stage_statuses(conn)
     for statement in _MIGRATION_1_STAGES_STEPS:
+        conn.execute(statement)
+    _coerce_unknown_turn_statuses(conn)
+    for statement in _MIGRATION_1_TURNS_STEPS:
+        conn.execute(statement)
+    for statement in _MIGRATION_1_DISCOVERY_RUN_HANDLES_STEPS:
         conn.execute(statement)
 
 

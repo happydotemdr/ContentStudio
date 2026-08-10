@@ -548,6 +548,14 @@ CREATE TABLE handles (id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NU
   included INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'pending',
   added_at TEXT NOT NULL, validated_at TEXT, last_seen_published_at TEXT,
   UNIQUE(platform, handle));
+CREATE TABLE discovery_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL UNIQUE,
+  trigger TEXT NOT NULL, mode TEXT NOT NULL, backfill_start TEXT, backfill_end TEXT,
+  status TEXT NOT NULL, heartbeat_at TEXT, started_at TEXT NOT NULL, finished_at TEXT,
+  md_path TEXT);
+CREATE TABLE discovery_run_handles (id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES discovery_runs(id),
+  handle_id INTEGER NOT NULL REFERENCES handles(id), status TEXT NOT NULL,
+  items_downloaded INTEGER NOT NULL DEFAULT 0, error_message TEXT);
 """
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
 
@@ -1362,5 +1370,144 @@ def test_get_connection_enables_foreign_key_enforcement(tmp_path: Path):
     c = db.get_connection(db_path)
     try:
         assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        c.close()
+
+
+def _indexed_columns(conn) -> set[tuple[str, str]]:
+    out = set()
+    for tbl, in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+        for idx in conn.execute(f"PRAGMA index_list('{tbl}')").fetchall():
+            for col in conn.execute(f"PRAGMA index_info('{idx['name']}')").fetchall():
+                out.add((tbl, col["name"]))
+    return out
+
+
+_FK_COLUMNS_INDEXED_HERE = [("turns", "stage_row_id"),
+                            ("discovery_run_handles", "run_id"),
+                            ("discovery_run_handles", "handle_id")]
+
+
+def test_every_foreign_key_column_is_covered_by_an_index(conn):
+    """An unindexed FK makes both the join and every integrity check a full
+    scan, and turns is never pruned."""
+    indexed = _indexed_columns(conn)
+    for table, column in _FK_COLUMNS_INDEXED_HERE:
+        assert (table, column) in indexed, f"{table}.{column} is an unindexed foreign key"
+
+
+@pytest.mark.xfail(reason="handles.creator_id does not exist until T9", strict=True)
+def test_handles_creator_id_is_covered_by_an_index(conn):
+    """Split out of the test above rather than left as a failing assertion inside
+    it. `handles.creator_id` is created by T9, so asserting it here would leave the
+    suite red for two whole tasks -- and "the suite is red but we know why" is how a
+    real regression gets waved through."""
+    assert ("handles", "creator_id") in _indexed_columns(conn)
+
+
+def test_every_foreign_key_column_is_still_indexed_after_the_migration(
+        tmp_path: Path, monkeypatch):
+    """The migrated-database half, and the reason it exists is a defect T6 hit
+    already: schema.sql runs BEFORE the migration, so its `CREATE INDEX IF NOT
+    EXISTS` lands on the OLD table -- and the rebuild's `DROP TABLE` then takes the
+    index with it. A fresh database keeps its indices and a migrated one silently
+    loses them, and the fresh-database test above passes either way."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        indexed = _indexed_columns(c)
+        for table, column in _FK_COLUMNS_INDEXED_HERE:
+            assert (table, column) in indexed, \
+                f"{table}.{column} lost its index in the rebuild"
+    finally:
+        c.close()
+
+
+def test_turns_status_rejects_a_value_outside_the_vocabulary(conn):
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_turn(conn, stage_row_id, "complet", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+
+
+# Verified against the call sites, not the plan: turn_service.py writes running,
+# aborted, complete and failed; preflight.py writes orphaned.
+TURN_STATUSES_THE_APP_WRITES = ("complete", "failed", "aborted", "orphaned")
+
+
+def test_every_turn_status_the_app_writes_is_accepted(conn):
+    """turn_service writes running/aborted/complete/failed; preflight writes
+    orphaned. A CHECK narrower than that would break the app at runtime."""
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    turn_id = db.create_turn(conn, stage_row_id, "running", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    for status in ("complete", "failed", "aborted", "orphaned"):
+        db.update_turn(conn, turn_id, status)
+
+
+def test_deleting_a_project_cascades_to_its_stages_and_turns(conn):
+    """No FK declared ON DELETE, so a future delete path would either fail or
+    orphan rows depending on pragma state. Pin the behaviour now."""
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    db.create_turn(conn, stage_row_id, "complete", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+    assert conn.execute("SELECT count(*) FROM stages").fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM turns").fetchone()[0] == 0
+
+
+def test_migration_coerces_a_ghost_turn_status_and_records_it(tmp_path: Path, monkeypatch):
+    """Same ruling as the stage coercion in T6: a legacy row already holding a
+    status the new CHECK rejects must not brick the boot, and must not vanish. A
+    turn whose status cannot be interpreted *is* an orphan, so that is where it
+    goes."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','approved');"
+        "INSERT INTO turns (stage_row_id, status, created_at, events_path) "
+        "VALUES (1,'complet','2026-08-08T00:00:00+00:00','e/1.jsonl');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT status FROM turns WHERE id = 1").fetchone()[0] == "orphaned"
+        ev = c.execute(
+            "SELECT * FROM events WHERE kind = 'schema.turn_status_coerced'").fetchall()
+        assert len(ev) == 1
+        assert "complet" in ev[0]["message"]
+    finally:
+        c.close()
+
+
+def test_every_turn_status_the_app_writes_is_accepted_by_the_migrated_table(
+        tmp_path: Path, monkeypatch):
+    """The migrated-database half of the vocabulary check, for the same reason T6
+    needed one: the fresh-database test exercises schema.sql's copy of the CHECK
+    list and never the migration's."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        project_id = db.create_project(c, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+        stage_row_id = db.create_stage_row(c, project_id, "ideation", "ready")
+        turn_id = db.create_turn(c, stage_row_id, "running",
+                                 "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+        for status in TURN_STATUSES_THE_APP_WRITES:
+            db.update_turn(c, turn_id, status)
     finally:
         c.close()

@@ -36,13 +36,20 @@ CREATE TABLE IF NOT EXISTS stages (
 
 CREATE TABLE IF NOT EXISTS turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    stage_row_id INTEGER NOT NULL REFERENCES stages(id),
-    status TEXT NOT NULL,
+    stage_row_id INTEGER NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
+    -- turn_service writes running/aborted/complete/failed; preflight writes
+    -- orphaned. Verified against the call sites, not assumed: turn_service.py:129
+    -- (running), :210 (aborted), :216 (complete/failed), preflight.py:16
+    -- (orphaned). Anything else is a typo that every status comparison in the app
+    -- would silently answer False to (A-47's defect, same shape) (A-75).
+    status TEXT NOT NULL CHECK (status IN
+        ('running','complete','failed','aborted','orphaned')),
     created_at TEXT NOT NULL,
     finished_at TEXT,
     events_path TEXT NOT NULL,
     cost_usd REAL
 );
+CREATE INDEX IF NOT EXISTS idx_turns_stage_row ON turns(stage_row_id);
 
 CREATE TABLE IF NOT EXISTS handles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,12 +85,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_discovery_single_running
 
 CREATE TABLE IF NOT EXISTS discovery_run_handles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL REFERENCES discovery_runs(id),
-    handle_id INTEGER NOT NULL REFERENCES handles(id),
+    run_id INTEGER NOT NULL REFERENCES discovery_runs(id) ON DELETE CASCADE,
+    handle_id INTEGER NOT NULL REFERENCES handles(id) ON DELETE CASCADE,
     status TEXT NOT NULL,
     items_downloaded INTEGER NOT NULL DEFAULT 0,
     error_message TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_drh_run ON discovery_run_handles(run_id);
+CREATE INDEX IF NOT EXISTS idx_drh_handle ON discovery_run_handles(handle_id);
 
 CREATE TABLE IF NOT EXISTS discovery_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
