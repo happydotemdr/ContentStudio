@@ -2125,20 +2125,20 @@ def test_a_migrated_database_gets_cross_platform_creator_identity_too(
 # B-73: handles.platform was unconstrained free text.
 # ---------------------------------------------------------------------------
 
-def _platform_vocabulary_the_check_enforces(conn) -> set[str]:
-    """The platform names the LIVE `handles` table actually accepts.
+def _check_vocabulary(conn, column: str) -> set[str]:
+    """The values the LIVE `handles` table actually accepts in `column`.
 
-    Read out of sqlite_master rather than out of `db.KNOWN_PLATFORMS`, because
-    the vocabulary now exists in three hand-written copies -- that constant,
+    Read out of sqlite_master rather than out of a Python constant, because each
+    of these vocabularies now exists in three hand-written copies -- the constant,
     schema.sql's CHECK, and the migration's CHECK -- and only the one SQLite is
-    enforcing on this database decides what gets stored. Asserting against the
-    constant would be an echo: it would pass while the two CHECKs said something
-    else entirely."""
+    enforcing on this database decides what gets stored. Asserting a constant
+    against itself would be an echo: it would pass while the two CHECKs said
+    something else entirely."""
     ddl = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='handles'"
     ).fetchone()[0]
-    match = re.search(r"CHECK\s*\(\s*platform\s+IN\s*\((.*?)\)\s*\)", ddl, re.S)
-    assert match is not None, f"`handles` declares no platform CHECK at all:\n{ddl}"
+    match = re.search(rf"CHECK\s*\(\s*{column}\s+IN\s*\((.*?)\)\s*\)", ddl, re.S)
+    assert match is not None, f"`handles` declares no {column} CHECK at all:\n{ddl}"
     return set(re.findall(r"'([^']*)'", match.group(1)))
 
 
@@ -2189,7 +2189,37 @@ def test_the_platform_check_accepts_nothing_the_adapter_registry_cannot_serve(co
     """The other half. One direction alone lets the CHECK grow a platform no
     adapter can serve -- stored happily, then KeyError in the detached validate
     subprocess, which is B-73 again with the CHECK's blessing."""
-    assert _platform_vocabulary_the_check_enforces(conn) == _adapter_registry_platforms()
+    assert _check_vocabulary(conn, "platform") == _adapter_registry_platforms()
+
+
+def test_known_platforms_is_the_hub_of_the_three_platform_vocabularies(conn):
+    """The two tests above compare the CHECK to the registry and never read
+    `db.KNOWN_PLATFORMS` -- so the copy the MIGRATION actually filters on could
+    drift in either direction with both of them green. That is not a hypothetical
+    gap: `_quarantine_unknown_platforms` uses this constant and nothing else, so a
+    constant narrower than the CHECK quarantines handles that were fine, and one
+    wider lets a row the CHECK rejects reach the copy step and abort the boot.
+
+    Pinning through the constant as the hub makes all three one vocabulary: with
+    registry == constant and CHECK == constant, CHECK == registry follows."""
+    constant = set(db.KNOWN_PLATFORMS)
+    assert constant == _adapter_registry_platforms(), \
+        "db.KNOWN_PLATFORMS and run_discovery_cron.build_adapters() disagree"
+    assert _check_vocabulary(conn, "platform") == constant, \
+        "the handles.platform CHECK and db.KNOWN_PLATFORMS disagree"
+
+
+def test_handle_statuses_is_the_hub_the_check_and_the_coercion_filter_share(conn):
+    """The same pin for the same reason on the other column this rebuild narrows.
+    `_coerce_unknown_handle_statuses` filters on `db.HANDLE_STATUSES` while the
+    rebuild enforces its own CHECK list; if the constant is ever wider than the
+    CHECK, the coercion pass steps over the row the CHECK is about to reject and
+    the boot-brick F2 fixed comes straight back."""
+    constant = set(db.HANDLE_STATUSES)
+    assert _check_vocabulary(conn, "status") == constant, \
+        "the handles.status CHECK and db.HANDLE_STATUSES disagree"
+    assert set(HANDLE_STATUSES_THE_APP_WRITES) == constant, \
+        "the statuses the app writes and db.HANDLE_STATUSES disagree"
 
 
 def test_a_migrated_database_rejects_an_unknown_platform_too(tmp_path: Path, monkeypatch):
@@ -2206,7 +2236,7 @@ def test_a_migrated_database_rejects_an_unknown_platform_too(tmp_path: Path, mon
         with pytest.raises(sqlite3.IntegrityError):
             db.create_handle(c, "instgram", "@ghost", None, "guru", None,
                              "2026-08-08T00:00:00+00:00")
-        assert _platform_vocabulary_the_check_enforces(c) == _adapter_registry_platforms()
+        assert _check_vocabulary(c, "platform") == _adapter_registry_platforms()
     finally:
         c.close()
 
@@ -2399,5 +2429,97 @@ def test_quarantining_a_ghost_handle_does_not_brick_a_boot_that_recorded_its_fai
             "SELECT * FROM events WHERE kind = 'schema.handle_quarantined'"
         ).fetchone()
         assert json.loads(ev["detail"])["run_results_removed"] == 1
+    finally:
+        c.close()
+
+
+def test_migration_coerces_a_ghost_handle_status_and_records_it(tmp_path: Path, monkeypatch):
+    """The other column this rebuild narrows, and the same ruling T6 made for
+    `stages` and T8 for `turns`: legacy `handles.status` is free text, the rebuilt
+    table constrains it to five values, and a legacy row holding anything else
+    aborts the copy step out of `init_db`. Do not brick, do not discard.
+
+    Coerced rather than quarantined, because unlike an unknown platform an
+    unknown status is one corrupted field on a handle that is otherwise perfectly
+    serviceable -- and coerced to 'pending' rather than 'invalid', because
+    'invalid' is the verdict discovery_engine writes after actually looking a
+    handle up, and nothing looked this one up.
+
+    The third handle is the distinguishability guard: after the coercion the
+    repaired row and the genuinely-pending one hold the same value in `handles`,
+    so the event row is the only thing that still tells them apart, and a
+    coercion pass that fired on both would be indistinguishable from a correct
+    one without it."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO handles (platform, handle, display_name, cohort, keyword_filter, "
+        "included, status, added_at) VALUES "
+        "('youtube','@ghoststatus','Ghosty','guru','kw',0,'validatng',"
+        "'2026-08-01T00:00:00+00:00');"
+        "INSERT INTO handles (platform, handle, cohort, status, added_at) "
+        "VALUES ('youtube','@reallypending','guru','pending','2026-08-02T00:00:00+00:00');"
+        "INSERT INTO handles (platform, handle, cohort, status, added_at) "
+        "VALUES ('x','@validated','guru','validated','2026-08-03T00:00:00+00:00');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)  # must not abort on the CHECK it just added
+
+    c = db.get_connection(db_path)
+    try:
+        coerced = db.get_handle_by_platform_and_handle(c, "youtube", "@ghoststatus")
+        assert coerced["status"] == "pending"
+        # Coerced, not discarded: one field moved and nothing else did.
+        assert (coerced["display_name"], coerced["cohort"], coerced["keyword_filter"],
+                coerced["included"], coerced["added_at"]) == \
+            ("Ghosty", "guru", "kw", 0, "2026-08-01T00:00:00+00:00")
+        assert db.get_handle_by_platform_and_handle(
+            c, "youtube", "@reallypending")["status"] == "pending"
+        assert db.get_handle_by_platform_and_handle(
+            c, "x", "@validated")["status"] == "validated"
+
+        ev = c.execute(
+            "SELECT * FROM events WHERE kind = 'schema.handle_status_coerced'"
+        ).fetchall()
+        assert len(ev) == 1, \
+            "the coercion fired on a row whose status was already legitimate"
+        assert ev[0]["severity"] == "warning"
+        assert "validatng" in ev[0]["message"]
+        assert json.loads(ev[0]["detail"])["handle"] == "@ghoststatus"
+    finally:
+        c.close()
+
+
+def test_a_quarantined_row_keeps_the_status_the_operator_actually_had(
+        tmp_path: Path, monkeypatch):
+    """Pins the order of the two repair passes, which is load-bearing in one
+    direction. A ghost-platform row can hold a ghost status too; coercing first
+    would write 'pending' into the copy `handles_quarantine` preserves, destroying
+    part of the record the quarantine exists to keep -- and would emit a coercion
+    event for a row that is about to leave the table anyway."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.execute("INSERT INTO handles (platform, handle, cohort, status, added_at) "
+              "VALUES ('instgram','@ghost','guru','validatng','2026-08-08T00:00:00+00:00')")
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        assert [(r["platform"], r["status"]) for r in
+                c.execute("SELECT platform, status FROM handles_quarantine")] == \
+            [("instgram", "validatng")]
+        assert c.execute(
+            "SELECT count(*) FROM events WHERE kind = 'schema.handle_status_coerced'"
+        ).fetchone()[0] == 0, \
+            "a row that was quarantined was also reported as coerced"
     finally:
         c.close()

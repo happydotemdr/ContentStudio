@@ -272,14 +272,29 @@ TURN_STATUSES = ("running", "complete", "failed", "aborted", "orphaned")
 # a vocabulary whose authority is `run_discovery_cron.build_adapters()` -- the
 # other two being schema.sql's CHECK and _MIGRATION_1_HANDLES_STEPS' -- and it
 # exists only because a migration body cannot import run_discovery_cron without
-# dragging every adapter into the boot path. The copies are pinned to the
-# registry, in both directions, by
-# test_every_platform_the_adapter_registry_knows_is_accepted and
-# test_the_platform_check_accepts_nothing_the_adapter_registry_cannot_serve;
-# adding a platform means editing all three and the registry, and the tests say
-# so if you miss one (B-73).
+# dragging every adapter into the boot path.
+#
+# `test_known_platforms_is_the_hub_of_the_three_platform_vocabularies` is the pin,
+# and it is THIS constant that is pinned, in both directions, to both of the
+# others: registry == constant, and the CHECK SQLite is actually enforcing ==
+# constant. The two round-trip tests C1 added compare the CHECK to the registry
+# and never read this name at all, so they cannot see it drift -- which is what
+# the first version of this comment wrongly claimed they did.
+#
+# Drift here is not cosmetic. `_quarantine_unknown_platforms` filters on this
+# tuple while the rebuild's CHECK enforces its own list, so a constant NARROWER
+# than the CHECK quarantines handles that were fine, and one WIDER lets a row the
+# CHECK rejects reach the copy step and abort the boot (B-73).
 KNOWN_PLATFORMS = ("youtube", "bluesky", "instagram", "linkedin-profile",
                    "linkedin-company", "facebook", "x")
+
+# discovery_engine writes validating/validated/invalid (:243, :248, :255, :279);
+# schema.sql's DEFAULT writes pending; 'failing' is B-82's, unwritten today.
+# Pinned to the CHECK by test_handle_statuses_is_the_hub_the_check_and_the_
+# coercion_filter_share, for the same reason and with the same two drift
+# directions as KNOWN_PLATFORMS above -- `_coerce_unknown_handle_statuses`
+# filters on this tuple and the rebuild enforces the CHECK.
+HANDLE_STATUSES = ("pending", "validating", "validated", "invalid", "failing")
 
 
 def _utcnow_iso() -> str:
@@ -641,6 +656,62 @@ def _quarantine_unknown_platforms(conn: sqlite3.Connection) -> None:
                     run_results_removed=run_results_removed)
 
 
+def _coerce_unknown_handle_statuses(conn: sqlite3.Connection) -> None:
+    """The other half of the repair `_quarantine_unknown_platforms` does, for the
+    other column the same rebuild narrows. Legacy `handles.status` is free text;
+    the rebuilt table constrains it to five values, so a legacy row holding
+    anything else aborts the copy step out of `init_db` -- the identical
+    boot-brick `_coerce_unknown_stage_statuses` and `_coerce_unknown_turn_statuses`
+    exist to prevent, one table over.
+
+    **Coerced, not quarantined**, and that asymmetry with the platform pass is the
+    point: an unknown *platform* means no adapter can ever serve the row, so it is
+    unusable and has to be set aside; an unknown *status* is one corrupted field
+    on an otherwise valid handle that the next discovery run can resolve. Do not
+    brick, do not discard.
+
+    **Coerced to 'pending', not 'invalid'.** 'invalid' is the verdict
+    discovery_engine writes when a handle was actually looked up and not found
+    (:255, :279); writing it here would claim a validation nobody performed.
+    'pending' claims nothing, and it is the state a freshly added handle is in --
+    the next run picks the row up and produces a real verdict.
+
+    The accepted trade, stated rather than glossed -- the same one the turn
+    coercion makes: afterwards a coerced handle and a genuinely-pending one share
+    one value in `handles`, which is the collapse this package exists to remove
+    elsewhere. What compensates is the `schema.handle_status_coerced` row recorded
+    below: the durable, queryable record that keeps "we could not read what this
+    said" distinguishable from "nobody has validated it yet". The collapse lands
+    in `handles` only, never in the record of what happened.
+
+    Record one event per row. No commit here, deliberately -- same reasoning as
+    every other pass in this migration: the UPDATEs and their events belong to
+    `apply_migrations`' transaction."""
+    from pipeline_app import obs
+
+    placeholders = ",".join("?" * len(HANDLE_STATUSES))
+    rows = conn.execute(
+        f"SELECT id, platform, handle, status FROM handles "
+        f"WHERE status NOT IN ({placeholders})", HANDLE_STATUSES
+    ).fetchall()
+    # Unpacked positionally rather than by column name, for the same reason
+    # _coerce_unknown_stage_statuses does it: apply_migrations is public and a
+    # caller's connection need not carry a Row factory.
+    for row_id, platform, handle, was in rows:
+        conn.execute("UPDATE handles SET status = 'pending' WHERE id = ?", (row_id,))
+        coerced_id = obs.record_event(
+            conn, kind="schema.handle_status_coerced", severity="warning",
+            source="db.migration_1",
+            message=f"handle {handle} on {platform} held unknown status {was!r}; "
+                    f"coerced to 'pending'",
+            detail={"handle_id": row_id, "platform": platform, "handle": handle,
+                    "was": was},
+        )
+        if coerced_id == -1:
+            obs.log("db.handle_status_coercion_unrecorded", level="error",
+                    handle_id=row_id, was=was)
+
+
 # B-73's migrated half, and the same create-copy-drop-rename recipe as every
 # rebuild above, one statement per execute() for the same reason.
 #
@@ -749,6 +820,13 @@ def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
     # (CHECK constraint failed) -- bricking the boot on the very defect being
     # fixed (B-73).
     _quarantine_unknown_platforms(conn)
+    # After the quarantine, not before it, and the order is load-bearing in one
+    # direction: a ghost-platform row can hold a ghost status too, and coercing
+    # first would write 'pending' into the copy `handles_quarantine` keeps --
+    # destroying part of the very record the quarantine exists to preserve, and
+    # emitting a coercion event for a row that is about to leave the table. Both
+    # narrowed columns are repaired before the rebuild's copy step either way.
+    _coerce_unknown_handle_statuses(conn)
     for statement in _MIGRATION_1_HANDLES_STEPS:
         conn.execute(statement)
 
