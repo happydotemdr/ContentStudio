@@ -39,13 +39,14 @@ def create_project(
     if run_dir.resolve().parent != (repo_root / "runs").resolve():
         raise ValueError(f"slug resolves outside the runs directory: {slug!r}")
 
-    project_id = db_mod.create_project(conn, run_id, cleaned_slug, brand, now.isoformat())
-    run_dir.mkdir(parents=True, exist_ok=True)
+    with db_mod.transaction(conn):
+        project_id = db_mod.create_project(conn, run_id, cleaned_slug, brand, now.isoformat())
+        run_dir.mkdir(parents=True, exist_ok=True)
 
-    applicable = [s for s in stage_defs if s.brand_scope is None or s.brand_scope == brand]
-    for stage in applicable:
-        status = compute_initial_status(stage.depends_on)
-        db_mod.create_stage_row(conn, project_id, stage.id, status.value)
-        (run_dir / stage_dir_name(stage)).mkdir(parents=True, exist_ok=True)
+        applicable = [s for s in stage_defs if s.brand_scope is None or s.brand_scope == brand]
+        for stage in applicable:
+            status = compute_initial_status(stage.depends_on)
+            db_mod.create_stage_row(conn, project_id, stage.id, status.value)
+            (run_dir / stage_dir_name(stage)).mkdir(parents=True, exist_ok=True)
 
     return {"project_id": project_id, "run_id": run_id, "run_dir": run_dir}

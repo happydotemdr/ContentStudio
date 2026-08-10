@@ -152,9 +152,10 @@ def _backfill_one_project(
             else StageStatus.LOCKED.value
         )
 
-    row_id = db_mod.create_stage_row(conn, project_id, "styleboard", status)
-    if status == StageStatus.APPROVED.value:
-        db_mod.update_stage_status(conn, row_id, status, approved_at=now)
+    with db_mod.transaction(conn):
+        row_id = db_mod.create_stage_row(conn, project_id, "styleboard", status)
+        if status == StageStatus.APPROVED.value:
+            db_mod.update_stage_status(conn, row_id, status, approved_at=now)
     (run_dir / stage_dir_name(stage_def)).mkdir(parents=True, exist_ok=True)
 
 

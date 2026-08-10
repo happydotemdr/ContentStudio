@@ -1,0 +1,491 @@
+"""Regression tests for the P0 harness contract, app-suite half."""
+import configparser
+import os
+import sqlite3
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+import pytest
+
+APP_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = APP_ROOT.parent
+APP_INI = APP_ROOT / "pytest.ini"
+
+
+def _ini(path: Path) -> configparser.ConfigParser:
+    parser = configparser.ConfigParser(inline_comment_prefixes=None)
+    parser.read_string(path.read_text(encoding="utf-8"))
+    return parser
+
+
+def test_app_ini_registers_the_two_opt_in_markers():
+    markers = _ini(APP_INI)["pytest"]["markers"]
+    assert "allow_network" in markers
+    assert "allow_subprocess" in markers
+
+
+def test_app_ini_declares_coverage_diagnostic_and_configures_no_gate():
+    text = APP_INI.read_text(encoding="utf-8")
+    assert "Coverage is diagnostic only" in text
+    assert "--cov-fail-under" not in text
+
+
+def test_session_start_accepts_the_working_tree():
+    import conftest
+
+    conftest.pytest_sessionstart(session=None)  # must not raise
+
+
+def test_session_start_rejects_a_pipeline_app_from_another_checkout(monkeypatch, tmp_path):
+    import types
+
+    import conftest
+
+    foreign = tmp_path / "other-checkout" / "pipeline-app" / "pipeline_app"
+    foreign.mkdir(parents=True)
+    (foreign / "__init__.py").write_text("", encoding="utf-8")
+    fake = types.ModuleType("pipeline_app")
+    fake.__file__ = str(foreign / "__init__.py")
+    monkeypatch.setitem(sys.modules, "pipeline_app", fake)
+
+    with pytest.raises(pytest.UsageError) as excinfo:
+        conftest.pytest_sessionstart(session=None)
+
+    message = str(excinfo.value)
+    assert str(foreign) in message                       # the wrong tree, named
+    assert str(APP_ROOT / "pipeline_app") in message      # the right tree, named
+    assert "pip uninstall" in message
+
+
+def test_unstubbed_requests_post_is_blocked():
+    import requests
+
+    import conftest
+
+    with pytest.raises(conftest.LiveCallBlocked) as excinfo:
+        requests.post("https://api.brightdata.com/datasets/v3/trigger", json={})
+    assert "BRIGHTDATA_API_KEY" in str(excinfo.value)
+
+
+def test_unstubbed_urlopen_is_blocked():
+    import conftest
+
+    with pytest.raises(conftest.LiveCallBlocked):
+        urllib.request.urlopen("https://www.googleapis.com/youtube/v3/search")
+
+
+def test_unstubbed_subprocess_run_is_blocked():
+    import conftest
+
+    with pytest.raises(conftest.LiveCallBlocked):
+        subprocess.run(["yt-dlp", "--dump-json", "https://youtube.com/watch?v=x"])
+
+
+@pytest.mark.allow_subprocess
+def test_marked_test_may_spawn_a_real_process():
+    result = subprocess.run(
+        [sys.executable, "-c", "print('ok')"],
+        capture_output=True, encoding="utf-8", errors="replace",
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_a_stubbed_call_still_wins_over_the_guard(monkeypatch):
+    """The guard must never defeat an explicit stub -- 40+ existing tests
+    monkeypatch subprocess.run and must keep working."""
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: "stubbed")
+    assert subprocess.run(["anything"]) == "stubbed"
+
+
+VENDOR_KEYS = ("BRIGHTDATA_API_KEY", "RESEND_API_KEY", "YOUTUBE_API_KEY")
+
+
+def test_guard_fires_even_when_every_vendor_key_is_present(monkeypatch):
+    """The `no-live-credentials` CI job runs exactly this with canary values in
+    the environment. A guard that only works when keys are absent is worthless:
+    keys are always present on the operator's machine."""
+    import requests
+
+    import conftest
+
+    for key in VENDOR_KEYS:
+        monkeypatch.setenv(key, "ci-canary-must-never-be-used")
+
+    with pytest.raises(conftest.LiveCallBlocked):
+        requests.post("https://api.brightdata.com/datasets/v3/trigger", json={})
+    with pytest.raises(conftest.LiveCallBlocked):
+        subprocess.run(["curl", "https://api.resend.com/emails"])
+
+
+def test_shared_conn_fixture_is_initialised_and_closes(conn):
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='stages'").fetchone()
+    assert row is not None
+
+
+def test_shared_client_fixture_serves_the_app(client):
+    assert client.get("/doctor").status_code == 200
+
+
+def test_shared_client_fixture_closes_its_connection_when_startup_raises(tmp_path, monkeypatch):
+    """The client fixture's `finally` close is load-bearing on exactly one path,
+    and this test drives that one -- deliberately, because the obvious version
+    of this test can no longer fail.
+
+    create_app() opens app.state.conn and now also registers a lifespan that
+    closes it (A-85, P1 T13). That lifespan runs whenever `with TestClient(app)`
+    exits, the raising-test-body path included. So driving the fixture through
+    a NORMAL teardown and asserting the connection ends up closed proves
+    nothing about the fixture: the lifespan satisfies it whether or not
+    conftest's `finally` exists. Two mechanisms, one assertion, and the guard
+    silently stops guarding.
+
+    The path the lifespan does NOT cover is startup itself failing: the `with`
+    block is never entered, no shutdown event is ever sent, and the connection
+    create_app already opened is orphaned unless the fixture closes it. That is
+    the fault injected here, and it is the whole reason conftest's close sits in
+    a `finally` rather than after the `with`. Delete
+    `finally: app.state.conn.close()` from tests/conftest.py and this test goes
+    red; the lifespan cannot cover for it.
+
+    The fixture's ordinary teardown is not left uncovered: the lifespan half is
+    proved by tests/test_main.py::test_app_shutdown_closes_the_connection_and_
+    truncates_the_wal, and every test that requests `client` runs under
+    `_no_leaked_sqlite_connections` above. Each mechanism now has one test that
+    fails when that mechanism alone is removed (F-65/F-66)."""
+    from fastapi.testclient import TestClient
+
+    import conftest
+    from pipeline_app import main
+
+    built: list = []
+    real_create_app = main.create_app
+
+    def capturing_create_app(**kwargs):
+        app = real_create_app(**kwargs)
+        built.append(app)
+        return app
+
+    def startup_explodes(self):
+        raise RuntimeError("ASGI startup failed")
+
+    # The fixture resolves both names at call time (`from ... import` inside
+    # its body), so patching the modules reaches it.
+    monkeypatch.setattr(main, "create_app", capturing_create_app)
+    monkeypatch.setattr(TestClient, "__enter__", startup_explodes)
+
+    gen = conftest.client.__wrapped__(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match="ASGI startup failed"):
+        next(gen)  # never yields: it raises on the way in, through the finally
+
+    # Checked, not assumed: if create_app never ran there would be no
+    # connection to orphan and the assertion below would pass vacuously.
+    assert built, "create_app never ran, so this test would prove nothing"
+    connection = built[0].state.conn
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("SELECT 1")
+
+
+def test_unclosed_detects_an_open_connection(tmp_path):
+    import conftest
+
+    connection = sqlite3.connect(tmp_path / "x.db")
+    try:
+        assert conftest._is_open(connection) is True
+    finally:
+        connection.close()
+
+
+def test_unclosed_does_not_flag_a_closed_connection(tmp_path):
+    import conftest
+
+    connection = sqlite3.connect(tmp_path / "x.db")
+    connection.close()
+    assert conftest._is_open(connection) is False
+
+
+def test_leak_allowlist_entries_all_still_exist():
+    """Shrink-only ratchet: an allowlisted module that has been renamed or
+    fixed must be removed from the list, not left to rot."""
+    import conftest
+
+    for rel in conftest._KNOWN_CONNECTION_LEAKS:
+        assert (APP_ROOT / rel).exists(), f"{rel} is allowlisted but does not exist"
+
+
+def test_both_allowlists_are_keyed_by_owning_package():
+    """Every remediation agent must be able to find its own entries with one
+    grep for its package id, without reading P0's plan."""
+    import conftest
+    import re as _re
+
+    for mapping in (conftest._CONNECTION_LEAKS_BY_PACKAGE, conftest._SUBPROCESS_ALLOWED_BY_PACKAGE):
+        assert mapping.keys(), "an empty allowlist must be deleted, not left as {}"
+        for package in mapping:
+            assert _re.fullmatch(r"P\d{1,2}", package), f"{package!r} is not a package id"
+
+    assert "P0" not in conftest._CONNECTION_LEAKS_BY_PACKAGE, (
+        "P0 owns every file this suite collects for itself, so a leak in a "
+        "P0-owned file has no other package to come back and convert it -- "
+        "P0 must fix the leak directly instead of allowlisting it."
+    )
+
+
+@pytest.mark.allow_subprocess
+def test_a_leaking_test_fails_with_a_nonzero_exit(tmp_path):
+    """Surfacing: the operator-reachable signal is a failed test and a non-zero
+    process exit, not a ResourceWarning lost in 58,169 lines (F-70)."""
+    (tmp_path / "conftest.py").write_text(
+        "import importlib.util\n"
+        f"_spec = importlib.util.spec_from_file_location('p0conf', r'{APP_ROOT / 'tests' / 'conftest.py'}')\n"
+        "_m = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_m)\n"
+        "_no_leaked_sqlite_connections = _m._no_leaked_sqlite_connections\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_leak.py").write_text(
+        "import sqlite3\n"
+        "def test_leaks(tmp_path):\n"
+        "    sqlite3.connect(tmp_path / 'db.sqlite')\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", str(tmp_path), "-q", "-p", "no:cacheprovider"],
+        capture_output=True, encoding="utf-8", errors="replace", cwd=str(tmp_path),
+    )
+    assert result.returncode != 0
+    assert "sqlite connection" in result.stdout
+
+
+def test_both_inis_turn_unexpected_warnings_into_errors():
+    """App suite asserts its own ini -- the root suite is the one that
+    legitimately inspects both files (see tests/test_harness_contract.py)."""
+    filters = _ini(APP_INI)["pytest"]["filterwarnings"]
+    assert filters.strip().splitlines()[0].strip() == "error"
+
+
+def test_filterwarnings_no_longer_carries_the_dead_pytest_asyncio_ignores():
+    """pytest-asyncio 1.2.0 (requirements-dev.txt) plus the asyncio_mode /
+    asyncio_default_fixture_loop_scope pins above fixed the deprecation noise
+    this suite used to ignore by name, at its source (F-70, F-71). A
+    module-scoped ignore that outlives the warning it targeted is not inert:
+    it keeps silencing every *future* DeprecationWarning from that module
+    too, which is exactly the signal `filterwarnings = error` exists to
+    surface. Both `ignore::DeprecationWarning:pytest_asyncio[.plugin]` lines
+    were removed for that reason; this pins the remaining list exactly, so a
+    future re-add of either dead line fails this test instead of passing
+    unnoticed.
+    """
+    filters = [
+        line.strip()
+        for line in _ini(APP_INI)["pytest"]["filterwarnings"].splitlines()
+        if line.strip()
+    ]
+    assert filters == [
+        "error",
+        "ignore::DeprecationWarning:fastapi.routing",
+        "ignore::ResourceWarning",
+    ]
+    assert "ignore::DeprecationWarning:pytest_asyncio" not in filters
+    assert "ignore::DeprecationWarning:pytest_asyncio.plugin" not in filters
+
+
+@pytest.mark.allow_subprocess
+def test_a_repo_warning_fails_the_run_while_an_ignored_module_one_does_not(tmp_path):
+    """Distinguishability: third-party lines are silenced, but the repo's own
+    warnings are not -- that was the whole defect (F-70).
+
+    Both halves are required. The single-half form of this test (emit a
+    UserWarning, assert the run fails) asserted only that `error` works: it
+    passed unchanged with every `ignore::` line deleted from the ini, so it
+    proved nothing about whether the ignore list is correctly scoped -- a test
+    whose name claims a comparison it never performs.
+    """
+    ini_text = APP_INI.read_text(encoding="utf-8").replace(
+        "testpaths = tests", "testpaths = ."
+    )
+    ini_text += "    ignore::UserWarning:ignorable_mod\n"
+    (tmp_path / "pytest.ini").write_text(ini_text, encoding="utf-8")
+
+    (tmp_path / "ignorable_mod.py").write_text(
+        "import warnings\n"
+        "def warn_here():\n"
+        "    warnings.warn('from a module the ignore list names', UserWarning)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_repo_warning.py").write_text(
+        "import warnings\n"
+        "def test_repo_warning():\n"
+        "    warnings.warn('the app started emitting this', UserWarning)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_ignorable_warning.py").write_text(
+        "import ignorable_mod\n"
+        "def test_ignorable_warning():\n"
+        "    ignorable_mod.warn_here()\n",
+        encoding="utf-8",
+    )
+
+    def _run(test_file):
+        return subprocess.run(
+            [sys.executable, "-m", "pytest", test_file, "-q", "-p", "no:cacheprovider"],
+            capture_output=True, encoding="utf-8", errors="replace", cwd=str(tmp_path),
+        )
+
+    repo_result = _run("test_repo_warning.py")
+    ignorable_result = _run("test_ignorable_warning.py")
+
+    assert repo_result.returncode != 0
+    assert "UserWarning" in repo_result.stdout
+    assert ignorable_result.returncode == 0
+    assert repo_result.returncode != ignorable_result.returncode
+
+
+def test_asyncio_mode_and_loop_scope_are_pinned_explicitly():
+    section = _ini(APP_INI)["pytest"]
+    assert section["asyncio_mode"] == "strict"
+    assert section["asyncio_default_fixture_loop_scope"] == "function"
+
+
+def test_pytest_asyncio_supports_the_running_interpreter():
+    import importlib.metadata
+
+    installed = importlib.metadata.version("pytest-asyncio")
+    major = int(installed.split(".")[0])
+    assert major >= 1, (
+        f"pytest-asyncio {installed} predates Python 3.13; this interpreter is "
+        f"{sys.version_info.major}.{sys.version_info.minor} (finding F-71)"
+    )
+
+
+def test_setup_py_declares_install_requires_from_the_runtime_manifest():
+    import ast
+
+    source = (APP_ROOT / "setup.py").read_text(encoding="utf-8")
+    assert "install_requires" in source, "setup.py installs the package and none of its deps (F-75)"
+
+    calls: list[dict] = []
+    # ONE namespace, used as both globals and locals. Passing separate dicts
+    # puts setup.py's module-level names (HERE) in locals while any function
+    # defined there resolves globals -- so _runtime_requirements() raises
+    # NameError on HERE. That is an artefact of this exec idiom, not a defect
+    # in setup.py, and it must not be "fixed" by contorting setup.py (e.g. a
+    # `here: Path = HERE` default parameter) to suit the test.
+    #
+    # The setuptools import is stubbed out entirely rather than partially:
+    # setuptools is not bundled with Python 3.12+, so importing it here makes
+    # the test depend on a package no manifest declares. A real `pip install`
+    # gets setuptools through PEP 517 build isolation, so it does NOT belong
+    # in a manifest either -- the right fix is for this test not to need it.
+    namespace: dict = {
+        "setup": lambda **kw: calls.append(kw),
+        "find_packages": lambda **kw: [],
+        "__file__": str(APP_ROOT / "setup.py"),
+    }
+    exec(  # noqa: S102 -- executing our own setup.py with setup() stubbed
+        source.replace("from setuptools import find_packages, setup", ""),
+        namespace,
+    )
+    # the exec above records the setup() kwargs; assert the dependency list is real
+    requires = calls[0]["install_requires"]
+    assert "fastapi==0.115.*" in requires
+    assert not any(r.startswith("pytest") for r in requires), "test deps must not be install_requires"
+
+
+def test_the_f64_scripts_rename_has_not_silently_landed():
+    """F-64 tripwire, not a record. `pipeline-app/scripts/` -> `pipeline-app/tools/`
+    is a deferred, cross-package, must-be-atomic rename (its modules are owned
+    by P8: setup_discovery_task.py; P10: migrate_handles_from_manifest.py,
+    backfill_youtube_frontmatter.py). A Windows scheduled task is registered
+    against scripts/setup_discovery_task.py's current path -- if the rename
+    lands without every reference updated in the same commit, that task keeps
+    running against a directory that no longer exists, failing forever and
+    invisibly.
+
+    A bare `"F-64" in source` substring check cannot detect any of that: it
+    stays green whether the rename is pending, half-done, or the directory is
+    deleted outright, so it cannot tell "still deferred" from "silently
+    forgotten." This asserts the actual tree state instead.
+    """
+    source = (APP_ROOT / "setup.py").read_text(encoding="utf-8")
+    assert "F-64" in source
+
+    scripts_dir = APP_ROOT / "scripts"
+    tools_dir = APP_ROOT / "tools"
+    assert scripts_dir.is_dir() and not tools_dir.exists(), (
+        "The F-64 scripts rename (pipeline-app/scripts/ -> pipeline-app/tools/) "
+        "appears to have landed: pipeline-app/scripts/ is gone or "
+        "pipeline-app/tools/ now exists. This test, setup.py's F-64 docstring, "
+        "and every doc reference to pipeline-app/scripts must be updated in "
+        "THE SAME COMMIT as the rename -- the directory move, the Windows "
+        "scheduled-task registration path (setup_discovery_task.py), and the "
+        "doc updates are one atomic change, not a follow-up."
+    )
+
+
+BAT = APP_ROOT / "start_pipeline.bat"
+_windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows batch file")
+
+
+def _run_bat(tmp_path: Path):
+    (tmp_path / "start_pipeline.bat").write_text(BAT.read_text(encoding="utf-8"), encoding="utf-8")
+    # Preflight-only is requested by an explicit argv flag, not an env var --
+    # an env var can leak across shell sessions (see start_pipeline.bat).
+    return subprocess.run(
+        ["cmd", "/c", str(tmp_path / "start_pipeline.bat"), "--check-only"],
+        capture_output=True, encoding="utf-8", errors="replace",
+    )
+
+
+@_windows_only
+@pytest.mark.allow_subprocess
+def test_missing_venv_exits_nonzero_and_does_not_open_a_browser(tmp_path):
+    """Fault: on a missing venv the operator's only signal today is a browser
+    connection error while the real message sits in a background window."""
+    result = _run_bat(tmp_path)
+    assert result.returncode != 0
+    assert "venv" in result.stdout.lower()
+    assert "OPENING BROWSER" not in result.stdout
+
+
+@_windows_only
+@pytest.mark.allow_subprocess
+def test_a_healthy_launch_is_distinguishable_from_a_failed_one(tmp_path):
+    """Distinguishability: the two states must not both end in 'browser opens'."""
+    scripts = tmp_path / ".venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "activate.bat").write_text("@echo off\r\n", encoding="utf-8")
+    ok = _run_bat(tmp_path)
+
+    (tmp_path / "no-venv").mkdir()
+    broken = _run_bat(tmp_path / "no-venv")
+    assert ok.returncode == 0
+    # "OPENING BROWSER" alone is NOT a distinguishing assertion: the substring
+    # appears in BOTH the --check-only message ("...OPENING BROWSER would
+    # follow.") and the genuine post-launch line ("OPENING BROWSER
+    # http://127.0.0.1:8420"). A test named for distinguishability has to pin
+    # which of the two it got, or it is asserting the shared representation
+    # this task exists to remove.
+    assert "--check-only" in ok.stdout            # the preflight exit, specifically
+    assert "OPENING BROWSER would follow" in ok.stdout
+    assert "OPENING BROWSER http://" not in ok.stdout  # the real launch did NOT happen
+    assert ok.returncode != broken.returncode
+    assert ok.stdout != broken.stdout
+
+
+def test_no_test_file_claims_e2e_coverage_it_does_not_have():
+    """F-72: test_real_cli_e2e.py covered 1 of 9 stages and asserted only that
+    a file existed."""
+    integration = APP_ROOT / "tests" / "integration"
+    assert not (integration / "test_real_cli_e2e.py").exists()
+    assert (integration / "test_real_cli_ideation_only.py").exists()
+
+
+def test_the_real_cli_test_never_writes_into_the_repo():
+    source = (APP_ROOT / "tests" / "integration" / "test_real_cli_ideation_only.py").read_text(
+        encoding="utf-8"
+    )
+    assert "create_project(conn, REPO_ROOT" not in source, (
+        "the opt-in test creates <repo>/runs/integration-test-topic-* in the working tree (F-72)"
+    )
+    assert "create_project(conn, tmp_path" in source

@@ -1,6 +1,7 @@
-# ContentStudio corpus-archive toolkit — laptop dependencies.
+# ContentStudio corpus-archive toolkit — runtime dependencies.
 # Install with:  pip install -r requirements.txt
-requests>=2.31
-yt-dlp>=2025.1.1
-youtube-transcript-api>=1.0
-pyyaml>=6.0
+# Test-only dependencies live in requirements-dev.txt (finding F-74).
+requests==2.31.*
+yt-dlp==2026.7.4
+youtube-transcript-api==1.2.4
+pyyaml==6.0.*

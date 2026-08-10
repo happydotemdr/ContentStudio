@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_app import db as db_mod
-from pipeline_app.migrations import backfill_styleboard_rows
+from pipeline_app.migrations import _backfill_one_project, backfill_styleboard_rows
 from pipeline_app.pipeline_config import StageDef
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1] / "pipeline_app"
@@ -108,6 +108,31 @@ def test_backfill_writes_synthetic_artifact_when_past_visual_with_no_recoverable
     written = tmp_path / "runs" / "legacy-6" / "02b-styleboard" / "artifact.v1.md"
     assert written.exists()
     assert "not recoverable" in written.read_text(encoding="utf-8")
+
+
+def test_backfill_one_project_leaves_nothing_behind_when_it_fails_partway(conn, tmp_path, monkeypatch):
+    """FAULT (A-70's worked example). _backfill_one_project inserts an approved
+    styleboard row, then sets approved_at. Without a transaction boundary the row
+    insert commits immediately, so an interruption before approved_at is set
+    leaves status='approved', approved_at=NULL forever -- nothing else in the app
+    ever revisits an existing styleboard row. Force the failure on the second
+    step (the approved_at update) and assert the first step's row (the insert)
+    did not survive either."""
+    pid = _legacy_project(conn, tmp_path, "legacy-flaky", "approved", sheet=LEGACY_SHEET)
+    project = next(p for p in db_mod.list_projects(conn) if p["id"] == pid)
+    stage_def = next(s for s in STAGE_DEFS if s.id == "styleboard")
+    visual_def = next(s for s in STAGE_DEFS if s.id == "visual")
+    now = "2026-08-08T00:00:00+00:00"
+
+    def raise_on_approved_at(*args, **kwargs):
+        raise RuntimeError("boom mid-way through the approved_at update")
+
+    monkeypatch.setattr(db_mod, "update_stage_status", raise_on_approved_at)
+
+    with pytest.raises(RuntimeError):
+        _backfill_one_project(conn, tmp_path, stage_def, visual_def, project, now)
+
+    assert db_mod.get_stage(conn, pid, "styleboard") is None
 
 
 def test_backfill_skips_a_broken_legacy_project_without_blocking_others(conn, tmp_path):

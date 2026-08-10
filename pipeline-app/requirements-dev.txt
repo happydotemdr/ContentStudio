@@ -1,0 +1,11 @@
+# App-suite test toolchain. CI's `app-suite` job installs this alongside
+# requirements.txt.
+-r requirements.txt
+pytest==8.3.*
+pytest-asyncio==1.2.*
+pytest-cov==7.1.*
+httpx==0.27.*
+# F-25: no property-based or mutation testing exists anywhere in either suite.
+# Provisioned here; the property tests for the two linters belong to P11
+# (lint_prompt_sheet.py) and P12 (lint_script_language.py).
+hypothesis==6.*

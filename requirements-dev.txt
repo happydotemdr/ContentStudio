@@ -1,0 +1,8 @@
+# Root-suite test toolchain. CI's `root-suite` job installs this alongside
+# requirements.txt. Coverage tooling is here because coverage had never been
+# measured on this repo before the 2026-08-08 audit (finding F-01) -- it is
+# diagnostic only, never a gate (finding F-02).
+-r requirements.txt
+pytest==8.3.*
+pytest-cov==7.1.*
+hypothesis==6.*

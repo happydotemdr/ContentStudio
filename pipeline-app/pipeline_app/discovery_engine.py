@@ -296,8 +296,9 @@ def run_discovery(
             return {"run_row_id": run_row_id, "status": status}
 
     # incremental / backfill: single-flight lock applies.
-    reclaimed_ids = db_mod.reclaim_stale_runs(conn, now_iso(now), stale_after_s)
-    _write_abandoned_records_for_reclaimed_runs(conn, repo_root, reclaimed_ids, now)
+    with db_mod.transaction(conn):
+        reclaimed_ids = db_mod.reclaim_stale_runs(conn, now_iso(now), stale_after_s)
+        _write_abandoned_records_for_reclaimed_runs(conn, repo_root, reclaimed_ids, now)
     try:
         run_row_id = db_mod.insert_running_run(conn, run_id, trigger, mode, started_at, backfill_start, backfill_end)
     except sqlite3.IntegrityError:

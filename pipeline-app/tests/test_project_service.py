@@ -75,3 +75,69 @@ def test_stages_with_no_dependencies_start_ready_others_locked(conn, tmp_path: P
     scripting = db.get_stage(conn, result["project_id"], "scripting")
     assert ideation["status"] == "ready"
     assert scripting["status"] == "locked"
+
+
+def _rolled_back_events(db_path: Path) -> list:
+    """Read on a fresh connection -- reading on the connection that wrote the
+    row would pass whether or not it was ever actually committed."""
+    other = db.get_connection(db_path)
+    try:
+        return other.execute(
+            "SELECT * FROM events WHERE kind = 'db.transaction_rolled_back'"
+        ).fetchall()
+    finally:
+        other.close()
+
+
+def test_create_project_leaves_nothing_behind_when_it_fails_partway(conn, tmp_path: Path, monkeypatch):
+    """FAULT + SURFACING + DISTINGUISHABILITY (A-70, the Three-Test Rule).
+    create_project inserts the project row, then a stage row per stage. Without a
+    transaction boundary the project row commits immediately, so an interruption
+    during stage-row creation leaves an orphaned project with no stages -- exactly
+    A-70's failure mode.
+
+    A-70 is `failure_mode: silent`, so proving the rollback happened (FAULT) is
+    not enough on its own: the rolled-back database is byte-identical to "no
+    project was ever created" -- zero project rows either way. Without a durable,
+    human-findable trace of the failure, "nothing here" and "something went
+    wrong" are the same database, which is the exact defect class this programme
+    exists to close. SURFACING closes that: an events row records the rollback.
+    DISTINGUISHABILITY closes the other half: the legitimate-empty state (never
+    attempted) and the failed-creation state must differ observably, not just in
+    theory -- zero events before, exactly one after, on a connection that only
+    ever sees committed state."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    def raise_on_stage_row(*args, **kwargs):
+        raise RuntimeError("boom mid-way through stage row creation")
+
+    monkeypatch.setattr(db, "create_stage_row", raise_on_stage_row)
+
+    db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
+
+    # Legitimate-empty baseline, BEFORE anything is attempted: zero projects,
+    # zero rollback events. This is the state a genuinely-empty pipeline and a
+    # not-yet-attempted creation share.
+    assert db.list_projects(conn) == []
+    assert _rolled_back_events(db_path) == []
+
+    with pytest.raises(RuntimeError):
+        create_project(conn, tmp_path, "why-kids-quit", "generic", STAGES)
+
+    # FAULT: the first step's row (the project) did not survive the interrupted
+    # second step (the first stage-row insert) either.
+    assert db.list_projects(conn) == []
+
+    # SURFACING: a durable, human-findable trace of the rollback exists, read on
+    # a SECOND connection so an uncommitted-but-visible-to-the-writer row can't
+    # pass this check.
+    rows = _rolled_back_events(db_path)
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "RuntimeError" in rows[0]["message"]
+
+    # DISTINGUISHABILITY: the database now differs observably from the
+    # legitimate-empty baseline above -- same zero projects, but ONE rollback
+    # event where there were zero. "Nothing was created" and "creation blew up
+    # halfway" are no longer the same database.

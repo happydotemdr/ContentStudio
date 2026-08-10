@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -6,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 
 from pipeline_app import db as db_mod
 from pipeline_app import migrations
+from pipeline_app import obs
 from pipeline_app import preflight
 from pipeline_app.pipeline_config import load_topology
 from pipeline_app.routes import browse, discovery, doctor, inspector, projects, skills, stages
@@ -14,7 +16,29 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 
 
 def create_app(repo_root: Path, db_path: Path) -> FastAPI:
-    app = FastAPI()
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        # `init_db` already opens and closes its own short-lived connection;
+        # the shared one had no shutdown hook at all, so the WAL was never
+        # checkpointed and every caller that built an app leaked a connection
+        # and its -wal/-shm files for the life of the process (A-85).
+        #
+        # Runs only when the app is driven as a context manager -- uvicorn
+        # always does, and a test must use `with TestClient(app)`.
+        try:
+            app.state.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception as exc:  # noqa: BLE001 -- shutdown must not raise
+            # obs.log and NOT obs.record_event, deliberately: the connection is
+            # about to close and may itself be what failed, so writing an
+            # `events` row on it is unreliable by construction. A-85's failure
+            # mode is `latent`, not `silent`, so no surfacing leg is owed --
+            # this is not a missing event.
+            obs.log("db.checkpoint_failed", level="warning",
+                    error=f"{type(exc).__name__}: {exc}")
+        app.state.conn.close()
+
+    app = FastAPI(lifespan=lifespan)
     app.state.repo_root = repo_root
     app.state.db_path = db_path
     app.state.stage_defs = load_topology(repo_root / "pipeline.yaml")
