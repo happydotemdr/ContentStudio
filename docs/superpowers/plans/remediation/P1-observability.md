@@ -4177,6 +4177,67 @@ def clear_handle_failures(conn: sqlite3.Connection, handle_id: int) -> None:
 - [ ] **Run it.** All five pass.
 - [ ] **Commit.** `feat(db): downgrade a handle that fails N consecutive runs (B-82)`
 
+#### T11 pre-review corrections — the plan repeats T9's Critical, twice
+
+Adversarially pre-reviewed before dispatch. **These supersede the code above wherever they
+conflict.**
+
+**C1 — `record_handle_failure` returns `"unknown"` for a handle that does not exist.** This is the
+recurring defect class, written by the plan, one task after the same defect was graded **Critical**
+in `link_handle_to_creator` and fixed. `"unknown"` travels back in the **same channel as a real
+status**, so P8 — which calls this in a loop over handles and will act on the return value — cannot
+tell "this handle is now failing" from "there is no such handle" without knowing to special-case a
+magic string. It is also a **fourth value outside `HANDLE_STATUSES`**, which T10 just pinned to
+three copies; this hands the vocabulary a member the CHECK will never accept.
+
+- [ ] Raise **`LookupError`** naming the `handle_id`, exactly as `link_handle_to_creator` now does.
+      Delete the `"unknown"` sentinel. The return type stays `str` and every value it can return is
+      a member of `HANDLE_STATUSES`.
+- [ ] Move the existence check so the early exit cannot leave a boundary open around an `UPDATE`
+      that matched nothing.
+
+**C2 — `clear_handle_failures` has the same defect and no check at all.** Its `UPDATE … WHERE id =
+?` matches zero rows for a nonexistent handle and the function returns `None` — the success value.
+Identical to T9's F1.
+
+- [ ] Raise `LookupError` on `rowcount == 0`, and keep `commit_unless_in_transaction(conn)` on the
+      **success path only**: a call that changed nothing must not commit as though it had.
+- [ ] RED for both C1 and C2 must be **observed against the current behaviour** — the `"unknown"`
+      return and the silent `None` respectively. Paste both.
+
+**C3 — `record_handle_failure` opening `with transaction(conn)` is correct here; do not "fix" it to
+match T9's C6.** T9 required `upsert_creator` to use `commit_unless_in_transaction` because it was a
+single already-atomic statement. This function is **three** writes — the increment, the status
+downgrade, and the event — that must land together or not at all. Keep the boundary, and add a
+comment saying why, so the next reader does not harmonise it away. The known cross-thread
+suppression hazard applies and is **already covered** by T13b's accept-and-detect design; it is
+detected, not silent, and is not this task's to solve.
+
+**C4 — the event's `since` field claims something the value does not support.** `now_iso` is the
+timestamp of the **third** failure, but a field called `since` reads as "failing since". The handle
+has been failing since the *first* failure. An operator reading it would get the wrong date.
+
+- [ ] Rename it `marked_failing_at`, which is what the value actually is. Do not invent a
+      first-failure timestamp — the column to derive one does not exist, and this programme does not
+      let code claim a measurement it never took.
+
+**C5 — B-82 IS NOT CLOSED BY THIS TASK, and the finding→task map should not be read as saying it
+is.** This is T4b's lesson exactly: *"T4 ships machinery nothing calls; A-70's half-written project
+would have survived the whole programme."* After T11, **nothing in production calls
+`record_handle_failure` or `clear_handle_failures`**, so a handle that dies after registration still
+keeps `status='validated'`, `included=1` forever — the defect B-82 describes, untouched.
+
+Unlike A-70 this is **not** an oversight to fix with a new P1 task: the call site is
+`discovery_engine.py`, which is **P8's file**, and §1's scope table already records the split
+(P1 ships the column, the vocabulary and the policy function; **P8** calls it from the per-handle
+error branch; **P15** renders the counter). File exclusivity is being honoured correctly.
+
+- [ ] Keep the docstring line naming P8 as the caller — it is the only in-code record of the
+      contract.
+- [ ] **B-82 must not be marked closed when this task completes.** It closes when P8 wires the call
+      and P15 renders it. Recorded as a tracked cross-package handoff in the ledger; the programme's
+      definition of done must check the call site exists, not merely that the helper does.
+
 ---
 
 ### T12 — the schema-drift guard
