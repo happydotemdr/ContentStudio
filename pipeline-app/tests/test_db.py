@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 
@@ -419,3 +420,106 @@ def test_a_swallowed_inner_failure_still_rolls_the_outer_transaction_back(conn):
             except RuntimeError:
                 pass
     assert db.list_projects(conn) == []
+
+
+def _db_path(conn) -> Path:
+    return Path(conn.execute("PRAGMA database_list").fetchone()[2])
+
+
+class _FlakyCommit:
+    """A connection whose first `commit()` fails.
+
+    A wrapper rather than a monkeypatch because `sqlite3.Connection` is a C type
+    and does not accept attribute assignment. Everything else proxies through, so
+    `id()` keying still works as long as the wrapper is what gets passed around."""
+
+    def __init__(self, real):
+        self._real = real
+        self._failed = False
+
+    def commit(self):
+        if not self._failed:
+            self._failed = True
+            raise sqlite3.OperationalError("database is locked")
+        return self._real.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_an_inner_block_unwinding_after_its_outer_one_does_not_strand_the_connection(
+    conn, tmp_path, monkeypatch
+):
+    """A depth entry re-created after the outer block popped it is permanent and
+    totally silent: every later commit becomes a no-op and the connection stops
+    persisting anything, with no exception, no log line and no events row."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    outer, inner = db.transaction(conn), db.transaction(conn)
+    outer.__enter__()
+    inner.__enter__()
+    outer.__exit__(None, None, None)   # the outer block unwinds first...
+    inner.__exit__(None, None, None)   # ...and the inner one second
+
+    db.create_project(conn, "after", "a", "generic", "2026-08-08T00:00:00+00:00")
+    other = db.get_connection(_db_path(conn))
+    try:
+        assert len(db.list_projects(other)) == 1  # the connection still commits
+    finally:
+        other.close()
+
+    text = "\n".join(p.read_text(encoding="utf-8") for p in (tmp_path / "logs").glob("app-*.log"))
+    assert "db.transaction_bookkeeping_lost" in text  # ...and said so, rather than absorbing it
+
+
+def test_a_poisoned_transaction_names_the_original_failure(conn, tmp_path, monkeypatch):
+    """The synthetic TransactionPoisonedError is the only thing left to report, so
+    if it does not carry the real fault, nothing does -- not `events`, not the log,
+    not a traceback."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    with pytest.raises(db.TransactionPoisonedError) as caught:
+        with db.transaction(conn):
+            try:
+                with db.transaction(conn):
+                    raise RuntimeError("the stage row insert failed")
+            except RuntimeError:
+                pass
+
+    assert "the stage row insert failed" in str(caught.value)
+    assert isinstance(caught.value.__cause__, RuntimeError)
+
+    other = db.get_connection(_db_path(conn))
+    try:
+        row = other.execute(
+            "SELECT * FROM events WHERE kind = 'db.transaction_rolled_back'"
+        ).fetchone()
+    finally:
+        other.close()
+    detail = json.loads(row["detail"])
+    assert detail["original_exception"] == "RuntimeError"
+    assert "the stage row insert failed" in detail["original_message"]
+
+
+def test_a_failing_boundary_commit_does_not_leave_the_work_for_the_next_caller(
+    conn, tmp_path, monkeypatch
+):
+    """If the boundary's own commit raises and the statements are left pending, the
+    next unrelated helper's commit persists them -- the caller was told the
+    operation failed and the data landed anyway."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    flaky = _FlakyCommit(conn)
+    with pytest.raises(sqlite3.OperationalError):
+        with db.transaction(flaky):
+            db.create_project(flaky, "doomed", "a", "generic", "2026-08-08T00:00:00+00:00")
+
+    db.create_project(conn, "later", "b", "generic", "2026-08-08T00:00:00+00:00")
+    other = db.get_connection(_db_path(conn))
+    try:
+        assert [r["run_id"] for r in db.list_projects(other)] == ["later"]
+    finally:
+        other.close()

@@ -19,7 +19,10 @@ class TransactionPoisonedError(RuntimeError):
 # while `transaction()` holds a strong reference to the connection, so id reuse
 # cannot collide.
 _TXN_DEPTH: dict[int, int] = {}
-_TXN_POISON: set[int] = set()
+# Maps a poisoned connection to the FIRST exception that poisoned it -- a set
+# would record only that something failed, never what, which is the difference
+# between an events row a human can act on and one that just says "a thing broke".
+_TXN_POISON: dict[int, BaseException] = {}
 _TXN_LOCK = threading.Lock()
 
 
@@ -41,8 +44,21 @@ def transaction(conn: sqlite3.Connection):
     """One explicit boundary around a multi-row invariant.
 
     Wrap project creation, approval + unlock, the staleness cascade and each
-    per-project backfill in this. Nests: an inner block joins the outer one
-    rather than committing early."""
+    per-project backfill in this (T4b does exactly that). Nests: an inner block
+    joins the outer one rather than committing early.
+
+    **Known hazard, deliberately not solved here.** The boundary is a property of
+    the *connection*, and this app shares one connection across threads
+    (`get_connection`'s `check_same_thread=False`). So a leaf helper called from a
+    thread that is in no boundary at all still stops committing while *another*
+    thread holds one, and its write is discarded outright if that boundary rolls
+    back. The known sharer is `discovery_engine._open_heartbeat_connection`, which
+    returns `None` on any `sqlite3.Error` and falls back to the shared connection;
+    under a rolled-back boundary the heartbeat write vanishes, `heartbeat_at`
+    freezes, and another process reclaims a run that is still alive. Making that
+    fallback loud belongs to the discovery package; do not fix it here, and do not
+    widen the boundary to be thread-local -- that would break the single-connection
+    design this app depends on."""
     key = id(conn)
     with _TXN_LOCK:
         depth = _TXN_DEPTH.get(key, 0)
@@ -52,31 +68,74 @@ def transaction(conn: sqlite3.Connection):
         yield conn
     except BaseException as exc:
         with _TXN_LOCK:
-            _TXN_POISON.add(key)
+            _TXN_POISON.setdefault(key, exc)
         if outermost:
             _rollback_and_report(conn, exc)
         raise
     else:
         with _TXN_LOCK:
-            poisoned = key in _TXN_POISON
-        if outermost and poisoned:
+            original = _TXN_POISON.get(key)
+        if outermost and original is not None:
             exc = TransactionPoisonedError(
-                "an inner transaction failed and its exception was swallowed"
+                "an inner transaction failed and its exception was swallowed: "
+                f"{type(original).__name__}: {original}"
             )
-            _rollback_and_report(conn, exc)
+            # The inner block was not outermost, so _rollback_and_report never ran
+            # for it, and the caller swallowed the exception by definition of this
+            # path. Without chaining, the ONLY record of what actually failed --
+            # which statement in the cascade, and why -- exists nowhere: not in
+            # `events`, not in the log, not in a traceback.
+            exc.__cause__ = original
+            _rollback_and_report(conn, exc, original=original)
             raise exc
         if outermost:
-            conn.commit()
+            try:
+                conn.commit()
+            except BaseException as commit_exc:
+                # Without this the block's statements stay pending in an open
+                # transaction with no rollback and no event, the finally pops the
+                # depth, and the NEXT unrelated leaf helper commits this failed
+                # block's work. The caller was told the operation failed and the
+                # data landed anyway -- A-70 with extra steps.
+                _rollback_and_report(conn, commit_exc)
+                raise
     finally:
         with _TXN_LOCK:
-            if outermost:
+            remaining = _TXN_DEPTH.get(key, 1) - 1
+            # Decrement, never restore the entry depth. Restoring an absolute value
+            # RE-CREATES the key if the outermost block already popped it -- which
+            # happens whenever two threads hold boundaries on this shared connection
+            # and unwind out of order, or a suspended generator's inner block is
+            # closed by GC after the outer one finished. The phantom key is
+            # permanent and totally silent: every later commit_unless_in_transaction
+            # sees depth > 0 and does nothing, so that connection stops committing
+            # forever, with no exception, no log line and no events row.
+            lost = not outermost and key not in _TXN_DEPTH
+            if outermost or remaining <= 0:
                 _TXN_DEPTH.pop(key, None)
-                _TXN_POISON.discard(key)
+                _TXN_POISON.pop(key, None)
             else:
-                _TXN_DEPTH[key] = depth
+                _TXN_DEPTH[key] = remaining
+        if lost:
+            # Never silently. Reaching here means the bookkeeping was already gone
+            # when an inner block exited -- the anomaly above, caught rather than
+            # absorbed. Inside the `finally` so it fires while an exception is
+            # propagating too, but OUTSIDE the lock: obs.log() touches the
+            # filesystem, and it never raises, so it cannot mask the original.
+            from pipeline_app import obs
+
+            obs.log("db.transaction_bookkeeping_lost", level="warning",
+                    note="an inner transaction exited after its outer block unwound")
 
 
-def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException) -> None:
+def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException,
+                         *, original: BaseException | None = None) -> None:
+    """`original` is the underlying failure when `exc` is a synthetic wrapper.
+
+    On the poison path `exc` is a TransactionPoisonedError this module just
+    built, so recording only `exc` would produce an events row that says a
+    transaction was poisoned and nothing whatsoever about the fault -- the one
+    thing an operator actually needs."""
     from pipeline_app import obs
 
     try:
@@ -84,10 +143,14 @@ def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException) -> None:
     except Exception as rollback_exc:  # noqa: BLE001 -- report it, never mask the original
         obs.log("db.rollback_failed", level="critical",
                 error=f"{type(rollback_exc).__name__}: {rollback_exc}")
+    detail = {"exception": type(exc).__name__}
+    if original is not None:
+        detail["original_exception"] = type(original).__name__
+        detail["original_message"] = str(original)
     obs.record_event(
         conn, kind="db.transaction_rolled_back", severity="error", source="db.transaction",
         message=f"rolled back after {type(exc).__name__}: {exc}",
-        detail={"exception": type(exc).__name__},
+        detail=detail,
     )
     # Commit the event row explicitly. We are still nominally inside this
     # transaction -- `transaction()`'s finally has not popped the depth key yet --
