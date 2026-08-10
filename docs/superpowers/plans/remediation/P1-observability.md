@@ -4537,6 +4537,77 @@ T14 first.
       (verified: zero occurrences), so no existing test's connection is closed early by this.
 - [ ] **Commit.** `fix(main): close the shared connection and checkpoint the WAL on shutdown (A-85)`
 
+#### T13 pre-review corrections — five, and the task as written ships a lifespan nothing runs
+
+Pre-reviewed before dispatch. **These supersede the steps above wherever they conflict.**
+
+**Probed on this host, not reasoned about.** A WAL database, written, then checkpointed, then closed:
+
+| step | `pipeline.db-wal` |
+|---|---|
+| after a write | exists, 12,392 bytes |
+| after `PRAGMA wal_checkpoint(TRUNCATE)` | exists, **0 bytes** |
+| after `conn.close()` | **deleted** |
+
+**C1 — the test's final assertion raises when the fix works.** As written:
+
+```
+assert (repo_root / "pipeline.db-wal").stat().st_size == 0 \
+    or not (repo_root / "pipeline.db-wal").exists()
+```
+
+`or` evaluates its left operand first, and after shutdown the file is **gone**, so `.stat()` raises
+`FileNotFoundError` and the `or not … exists()` fallback is **unreachable**. Confirmed by running
+it: `FileNotFoundError: [WinError 2]`. This is worse than a test that cannot fail — it is a test
+that **errors precisely when the implementation is correct**, and the natural response to that is
+to weaken the assertion.
+
+- [ ] Check existence **first**: the WAL is absent, or present and zero bytes. Both are correct
+      post-shutdown states; the failing state is a WAL that still holds data.
+
+**C2 — verify the precondition rather than assuming it.** `assert (repo_root / "pipeline.db-wal")
+.exists()` inside the `with` block only holds if something has written by then. `create_app` calls
+`reconcile_orphaned_turns` on the shared connection, so it should — but confirm it, and if the file
+is absent for a legitimate reason, force a write rather than dropping the assertion. A precondition
+that silently does not hold turns the post-condition into a tautology.
+
+**C3 — the `_release_reconcile_lease` ordering ambiguity is resolved: T13 does not call it.** The
+step above offers "stub it as a no-op here and fill it in there, or land T14 first". A plan must not
+leave that open, and the stub option is actively wrong — `app.state.instance_token` does not exist
+until T14 either, so the shutdown path would `AttributeError` on every app teardown.
+
+- [ ] **Omit the lease release entirely from T13.** T14 adds that single line into the lifespan this
+      task creates. Do not stub, do not reference `app.state.instance_token`.
+
+**C4 — the task as written ships a lifespan nothing runs, and leaves behind P1's own leak-allowlist
+entry.** This is the omission that matters most, and it is T4b's lesson in a new costume.
+
+Verified: `tests/test_main.py` contains **zero** `with TestClient(app)` uses and builds its apps by
+calling `create_app(...)` directly (`:20`, `:29`). A FastAPI lifespan runs only when the app is used
+as a context manager — so **none of the existing tests would exercise the code this task adds**, and
+their connections keep leaking exactly as before.
+
+That leak is already recorded: `_KNOWN_CONNECTION_LEAKS["P1"] = ["tests/test_main.py"]`
+(`tests/conftest.py:158`). P0 T9 established the rule when it built that list — **each package
+deletes its own entry when it converts its fixture**, and the list is **shrink-only**, so removal is
+the sanctioned direction. P0 could not do it (P1's file); P1 must.
+
+- [ ] Convert `tests/test_main.py`'s app construction so the lifespan actually runs — a fixture
+      yielding `with TestClient(app)` is the obvious shape, matching the canonical `client` fixture
+      P0 T8 built.
+- [ ] **Delete the `"P1"` key from `_KNOWN_CONNECTION_LEAKS`.** P0 T9 added a self-detecting
+      assertion that `"P0"` can never be a key; leaving `"P1"` behind after the task that exists to
+      close it is the same defect one package over.
+- [ ] If any test genuinely cannot be converted, say which and why in the report rather than leaving
+      the entry in place unexplained. An allowlist entry is only ever for a leak another package
+      must come back and fix — and this is that coming back.
+
+**C5 — the checkpoint's `except Exception` logging via `obs.log` and not `record_event` is
+correct; do not "fix" it.** At shutdown the connection is about to close and may itself be what
+failed, so writing an `events` row on it is unreliable by construction. **A-85's failure mode is
+`latent`, not `silent`** (finding table), so the Three-Test Rule does not bind here and no surfacing
+leg is owed. Add a comment saying so, so a later reviewer does not read it as a missing event.
+
 ---
 
 ### T13b — the shared connection makes a transaction boundary unsafe under concurrent routes
