@@ -4608,6 +4608,40 @@ failed, so writing an `events` row on it is unreliable by construction. **A-85's
 `latent`, not `silent`** (finding table), so the Three-Test Rule does not bind here and no surfacing
 leg is owed. Add a comment saying so, so a later reviewer does not read it as a missing event.
 
+#### T13 as built — C2 was itself a tautology, and the implementer caught it
+
+**Status: implemented in `c0d7c16`.** Recorded so the plan matches the tree before the review reads
+either.
+
+**C2 was wrong in the way it warned about.** It told the implementer to *verify* the
+`pipeline.db-wal` precondition rather than assume it — but the literal check it named (`.exists()`)
+**holds trivially and always**: `get_connection`'s `PRAGMA journal_mode = WAL` creates the file
+immediately, at zero bytes, so it is never absent pre-shutdown. The precondition would have passed
+against an app with no shutdown hook at all, making the post-condition exactly the tautology C2
+existed to prevent. As built, the test forces a real write through `app.state.conn` and asserts
+`st_size > 0`, so the before/after contrast is genuine. RED: `assert (not True or 16512 == 0)`.
+
+Also as built: C1's ordering fixed (`.exists()` before `.stat()`, verified against the landed fix
+that the original order raises `FileNotFoundError` exactly when the implementation is correct); C3
+honoured with zero references to `_release_reconcile_lease` or `app.state.instance_token`; C4's
+`_app_client` context manager shaped on P0 T8's `client` fixture, **both** `test_main.py` tests
+converted, and the **`"P1"` key deleted from `_KNOWN_CONNECTION_LEAKS`** — RED earned twice, once
+for the unclosed connection and once for the leak detector firing after the key was removed. C5's
+`obs.log` kept with the latent-not-silent rationale in a comment, plus a new covering test for a
+checkpoint that fails.
+
+**Two concerns reported by the implementer, neither actioned — for the review to grade:**
+
+1. **Three docstrings outside the scope fence now state the opposite of reality** — they say the app
+   "wires no shutdown handler", which was true until this commit. `tests/conftest.py:252-257`,
+   `tests/test_routes_doctor.py:15-17` and `:78-84`, `tests/test_harness_contract.py:132-136`. No
+   test is wrong; only the stated reason is. T8-F1 established that a docstring describing a deleted
+   design is a defect rather than a cosmetic, so this needs a ruling on whether it is in scope here
+   or belongs to the packages owning those files.
+2. **`main.py:39`'s `conn.close()` sits outside the `try`** (transcribed from the brief). If
+   `obs.log` raises inside the `except` branch, the close never runs — a leak on the error path of
+   the very handler that exists to prevent leaks.
+
 ---
 
 ### T13b — the shared connection makes a transaction boundary unsafe under concurrent routes
