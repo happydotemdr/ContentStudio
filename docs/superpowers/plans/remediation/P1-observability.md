@@ -2111,7 +2111,29 @@ implementer until the operator has chosen.** The options, none obviously correct
    no-ops for a thread that is not the one holding the boundary. Does not fix the loss; does convert
    it from silent to reported, which is this programme's stated bar.
 
-- [ ] **Decide.** Operator picks. Record the choice and the reasoning in this file before executing.
+**DECIDED (operator, 2026-08-09): option 4, accept and detect.** The loss is not prevented; it is
+made loud, which is this programme's stated bar. Options 1–3 each buy prevention with a cost this
+project should not pay yet: option 1 breaks `approve_stage`'s dependence on reading its own
+uncommitted write and forces restructuring in files other packages own; option 2 makes `db.py`
+depend on an application-level lock above it; option 3 blocks the event loop across project
+creation's `mkdir` calls.
+
+**One trap to design around: `obs.record_event` calls `commit_unless_in_transaction`.** Emitting the
+event from inside `commit_unless_in_transaction` therefore recurses infinitely. Do not solve that
+with a re-entrancy flag — a flag makes the second, suppressed report silent, which is the defect
+class again. Instead:
+
+- `transaction()` records the owning thread on entry (`_TXN_OWNER[key] = threading.get_ident()`),
+  under the existing lock, cleared on the same paths as `_TXN_DEPTH`.
+- `commit_unless_in_transaction` increments a counter when it no-ops for a thread that is not the
+  owner. It records nothing itself and never calls into `obs`.
+- `transaction()` emits **one** `db.cross_thread_commit_suppressed` event at exit when that counter
+  is non-zero, carrying the count and the owning thread. At exit there is no recursion risk, and one
+  event naming N suppressed writes is more useful to an operator than N events.
+- On the **rollback** path those suppressed writes were not merely delayed but discarded. Say so:
+  the event's severity is `error` there and `warning` on the success path, and the message must
+  distinguish the two. A boundary that silently ate another thread's write is exactly what this
+  task exists to expose.
 - [ ] **Write the failing test.** Two threads, one connection: one holds a boundary that rolls back
       while the other performs an ordinary write outside any boundary. Assert the outsider's write
       survives (options 1–3) or is reported (option 4). Observe it fail first.
