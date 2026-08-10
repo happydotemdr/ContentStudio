@@ -78,3 +78,33 @@ def log(event: str, *, level: str = "info", **fields) -> None:
             fh.write(line + "\n")
     except Exception:  # noqa: BLE001 -- a read-only disk must not kill the caller
         pass
+
+
+def record_event(conn, *, kind: str, severity: str, source: str,
+                 message: str, detail: dict | None = None,
+                 run_id: int | None = None) -> int:
+    """Append one row to the `events` table and return its id.
+
+    severity in {"info","warning","error","critical"}. Never raises -- a
+    failure to record must not mask the thing being recorded; it falls back to
+    log() and returns -1."""
+    try:
+        if severity not in VALID_SEVERITIES:
+            raise ValueError(f"unknown severity {severity!r}")
+        detail_json = (
+            json.dumps(detail, default=repr, ensure_ascii=False) if detail is not None else None
+        )
+        cur = conn.execute(
+            "INSERT INTO events (occurred_at, kind, severity, source, message, detail, run_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (_utcnow().isoformat(timespec="seconds"), kind, severity, source, message,
+             detail_json, run_id),
+        )
+        conn.commit()
+        event_id = int(cur.lastrowid)
+    except Exception as exc:  # noqa: BLE001 -- recording must never mask the recorded
+        log("obs.record_event_failed", level="error", kind=kind, severity=severity,
+            source=source, message=message, error=f"{type(exc).__name__}: {exc}")
+        return -1
+    log(kind, level=severity, source=source, message=message, event_id=event_id, run_id=run_id)
+    return event_id

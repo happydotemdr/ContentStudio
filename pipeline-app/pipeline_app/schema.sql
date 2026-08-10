@@ -75,3 +75,20 @@ CREATE TABLE IF NOT EXISTS discovery_settings (
     last_scheduled_run_date TEXT
 );
 INSERT OR IGNORE INTO discovery_settings (id) VALUES (1);
+
+-- The place a failure goes. Before this table the codebase caught errors
+-- carefully and told nobody: 35 stderr diagnostics on the scheduled path wrote
+-- to a console Windows Task Scheduler destroys.
+CREATE TABLE IF NOT EXISTS events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at  TEXT    NOT NULL,
+  kind         TEXT    NOT NULL,
+  severity     TEXT    NOT NULL CHECK (severity IN ('info','warning','error','critical')),
+  source       TEXT    NOT NULL,
+  message      TEXT    NOT NULL,
+  detail       TEXT,
+  run_id       INTEGER,
+  acknowledged INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_events_occurred ON events(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_severity ON events(severity, occurred_at DESC);
