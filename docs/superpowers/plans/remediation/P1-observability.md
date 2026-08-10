@@ -4428,6 +4428,53 @@ gone unnoticed. Test-hygiene, not a product defect; the fix is either an autouse
 `obs.LOG_DIR` for the whole app suite or a per-test `monkeypatch`. Left for the final whole-branch
 review to place, since an autouse fixture touches `conftest.py`, which P0 owns.
 
+#### T12 fix round 1 — an eighth dimension the seven cannot see
+
+The T12 task review ran against `ee8470c..99ddaa4`. Full report:
+`.superpowers/sdd/2026-08-08-audit-remediation/P1-task-12-review.md`. **Spec ✅**, task quality
+**Approved**, with one Important and eight Minor.
+
+The reviewer verified independently that all seven dimensions are genuinely compared (two of them
+*stronger* than the corrections asked — `index_xinfo` over `index_info`, and `on_update`/`match`/
+`seq` on foreign keys); that the as-built seven-way split is correct, since `indexes` asserts before
+`index_predicates` and the `partial` flag is element 3 of the indexes tuple, so dropping a `WHERE`
+genuinely stops the test one dimension early while scaffold 5b changes no pragma value and reaches
+the predicate comparison; that the `_check_vocabulary` delegation is **stricter**, not weaker (the
+regex is now anchored, the absent case still trips, and a future compound CHECK would red T10's pin
+rather than narrow it); that comment-stripping cannot corrupt a CHECK holding a `--`-bearing string
+literal, in either direction, both cases pinned; and that **no path exists where two empty sets
+compare equal** — five anti-vacuity guards, two reality floors on the fresh database, and `objects`
+equality asserted before the loop making the per-table lookup total.
+
+Both ⚠️ items are closed by the controller. The seven RED observations are not reproducible from a
+GREEN diff by construction — accepted on the same basis as T9's and T10's, with the diff
+corroborating the "no production code touched" claim (`db.py` and `schema.sql` are absent from it).
+And **A-72's failure mode is `latent`, not `silent`** (finding table, line 61), so the Three-Test
+Rule does not formally bind here — the adversarial test supplies fault, distinguishability and
+surfacing in practice anyway.
+
+**F1 (Important) — `AUTOINCREMENT` is invisible to all seven dimensions.** `tests/test_db.py:2822`.
+`PRAGMA table_info` reports `INTEGER` / `pk=1` whether or not the keyword is present, and
+`sqlite_sequence` is excluded by the `sqlite_%` filter at `:2838`. Yet `AUTOINCREMENT` is
+hand-duplicated on **all four tables migration 1 rebuilds** (`db.py:393`, `:418`, `:539`, `:733`),
+so dropping it from any of them leaves the guard green.
+
+This is not cosmetic, and T7 already recorded why: the create-copy-drop-rename rebuild **resets the
+`sqlite_sequence` high-water mark**, so a migrated database can re-issue a previously-used id. Lose
+the keyword as well and the two shapes allocate ids by different rules entirely, with nothing
+detecting it. The guard exists to make exactly this class of divergence impossible.
+
+- [ ] Add an **eighth dimension**: per table, whether its primary key declares `AUTOINCREMENT`.
+      There is no pragma for it — take it from the normalized DDL the CHECK and predicate
+      extraction already produce, so this adds a reading, not a parser.
+- [ ] **RED**: drop `AUTOINCREMENT` from one rebuilt table in the migration only, observe the new
+      assertion fail **and confirm the other seven stay green** — a dimension that reds alongside
+      an existing one is not a new dimension. Restore.
+
+**Scope fence.** F1 only. The eight Minor findings — including the latent view/trigger, `COLLATE`
+and `WITHOUT ROWID`/`STRICT` dimensions, none of which appear in `schema.sql` today — are deferred
+to the final whole-branch review.
+
 ---
 
 ### T13 — A-85: no lifespan handler, so the connection is never closed
