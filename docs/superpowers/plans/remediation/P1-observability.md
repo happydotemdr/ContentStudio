@@ -1119,15 +1119,28 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
     return applied
 ```
 
-- [ ] **Run it.** The first, third and fourth pass. The second still fails (`CHECK` not in the
-      `handles` DDL) — that is T10's job and is the correct failure. Mark it
-      `@pytest.mark.xfail(reason="migration 1 lands in T10", strict=True)` and remove the marker
-      in T10.
+- [ ] **Run it.** The first and fourth pass. **The second *and third* both stay red**, for the same
+      root cause: `_MIGRATIONS` is still empty here, so a legacy database has nothing to lift it off
+      version 0. They come back at different tasks, so they carry different markers — getting this
+      wrong points the next reader at the wrong task:
+    - The second needs the `CHECK` in the `handles` DDL, which is **T10**'s job:
+      `@pytest.mark.xfail(reason="migration 1 constrains handles in T10", strict=True)`.
+    - The third needs only that *some* migration is registered, which happens in **T6**:
+      `@pytest.mark.xfail(reason="migration 1 is registered in T6", strict=True)`.
+    - `strict=True` on both is not optional. Without it an XPASS is reported and ignored, so a
+      tripwire that has served its purpose would sit there forever and a test that started passing
+      for the wrong reason would look identical to one still correctly red. With it, the marker
+      turns into a hard failure the moment the migration lands, which is what forces its removal.
+      Remove each marker in the task its reason names.
 - [ ] **Commit.** `feat(db): version the schema and run migrations exactly once (A-72)`
 
 ---
 
 ### T6 — A-47: `stages.status` accepts any string
+
+> **Also remove** `test_migrations_are_applied_exactly_once`'s `xfail` marker here —
+> registering migration 1 is exactly what makes it pass. `strict=True` will fail the suite as an
+> XPASS if you forget, which is the point of the marker.
 
 **A-47 (S4, latent).** `update_stage_status` takes a bare `str` and the column accepts anything.
 Three call sites already pass string literals rather than `StageStatus` members, so a typo would
@@ -1647,6 +1660,10 @@ def list_unlinked_handles(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 ---
 
 ### T10 — B-73: `handles.platform` is unconstrained free text
+
+> **Also remove** `test_an_existing_database_is_migrated_not_silently_left_behind`'s `xfail`
+> marker here — constraining `handles` is what makes it pass. `strict=True` turns a forgotten
+> marker into a hard failure.
 
 **B-73 (S2, silent).** `platform` is `TEXT NOT NULL` with no CHECK, no enum and no FK. A value the
 adapter registry does not know (`"instgram"`) is stored happily; the spawned validate run then does
