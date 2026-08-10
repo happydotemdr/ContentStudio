@@ -1347,13 +1347,21 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
             conn.commit()
         except BaseException as exc:
             failure = exc
-            # Captured HERE, before rollback() destroys it. This is the one reading
-            # that separates "the body committed its work" (False) from "the work was
-            # still pending and is about to be discarded" (True) -- and it is the only
-            # observation on offer that flips when a body commits DML, which the schema
-            # cookie cannot see. It was previously rejected for making a bad VERDICT,
-            # which is a category error: this is a raw reading, and the reader draws
-            # the conclusion.
+            # Captured HERE, before rollback() destroys it. It reports exactly one
+            # thing: whether the body's work was still pending when it failed (True)
+            # or the body had already ended the transaction itself (False). It is the
+            # only observation on offer that flips when a body commits DML, which the
+            # schema cookie cannot see.
+            #
+            # It does NOT distinguish a body that committed from one that rolled ITSELF
+            # back -- both read False. Within the _MIGRATIONS contract that cannot
+            # happen, since a body may not call conn.rollback(); outside it, this
+            # reading is silent on the difference. Stated because the previous version
+            # of this comment claimed more than the reading supports, which is the same
+            # overclaiming that produced five wrong verdicts here.
+            #
+            # It was earlier rejected for making a bad VERDICT, which was a category
+            # error: this is a raw reading, and the reader draws the conclusion.
             try:
                 pending_when_it_failed = conn.in_transaction
             except Exception:  # noqa: BLE001 -- unreadable is its own reading
@@ -1737,6 +1745,9 @@ def test_a_failure_that_left_durable_data_is_distinguishable_from_one_that_left_
 
     def run(body) -> dict:
         db_path = tmp_path / f"{body.__name__}.db"
+        # Clear first: init_db calls apply_migrations, so booting the second database
+        # with the FIRST body still registered would re-fire it during that boot.
+        monkeypatch.setattr(db, "_MIGRATIONS", [])
         db.init_db(db_path, SCHEMA_PATH)
         conn = db.get_connection(db_path)
         try:
