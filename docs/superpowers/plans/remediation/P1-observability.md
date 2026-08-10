@@ -2799,6 +2799,101 @@ TURN_STATUSES_THE_APP_WRITES = ("complete", "failed", "aborted", "orphaned")
       what `strict=True` is for.
 - [ ] **Commit.** `fix(schema): index every FK, constrain turns.status, declare ON DELETE (A-75)`
 
+#### T7 fix round 1 — the third constraint shipped untested
+
+This task adds three kinds of constraint: a CHECK, two indices, and four `ON DELETE CASCADE`
+clauses. The fresh/migrated twin discipline covered the first two thoroughly and **missed the
+third entirely**. The reviewer proved it: with `ON DELETE CASCADE` stripped from both
+`turns_new` and `discovery_run_handles_new`, all 80 tests in `test_db.py` still passed. A
+behaviour change with no failing-test step is exactly what this programme's bar forbids.
+
+- [ ] **F1 (Important) — the migration's cascade is untested.** The existing
+      `test_deleting_a_project_cascades_to_its_stages_and_turns` runs on the `conn` fixture, a
+      *fresh* database, so it exercises `schema.sql`'s copy of the clause and never the
+      migration's. Same asymmetry the CHECK and the indices each already have a twin for.
+
+```python
+def test_deleting_a_project_cascades_on_a_migrated_database(tmp_path: Path, monkeypatch):
+    """The migrated-database twin of the cascade test. Without it, dropping
+    ON DELETE CASCADE from the rebuild's DDL changes nothing that any test can
+    see -- which was true until this test existed."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        project_id = db.create_project(c, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+        stage_row_id = db.create_stage_row(c, project_id, "ideation", "ready")
+        db.create_turn(c, stage_row_id, "complete", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+        c.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        c.commit()
+        assert c.execute("SELECT count(*) FROM stages").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM turns").fetchone()[0] == 0
+    finally:
+        c.close()
+```
+
+      **Scaffold required**: delete `ON DELETE CASCADE` from `_MIGRATION_1_TURNS_STEPS` only, and
+      confirm this test goes red while the fresh-database cascade test stays green. Restore it.
+      Report both outputs.
+
+- [ ] **F2 (Important) — `discovery_run_handles`' two cascades have no test at all**, in either
+      database shape. Add one covering both parents, in both shapes. Structure it however reads
+      best, but it must actually delete a `discovery_runs` row and a `handles` row and assert the
+      join rows went with them.
+
+      Note `ux_discovery_single_running` — the partial unique index on `discovery_runs(status)` —
+      so use a non-`'running'` status, or one run at a time, rather than fighting it.
+
+- [ ] **F3 (Minor, promoted) — a test named "every foreign key column" that reads a hand-written
+      list.** `_FK_COLUMNS_INDEXED_HERE` cannot see a foreign key nobody added to it, so the test
+      overclaims its own scope, and T9 and T10 both add foreign keys. Derive it from the database
+      instead, and use it in **both** the fresh and the migrated test:
+
+```python
+def _foreign_key_columns(conn) -> set[tuple[str, str]]:
+    """Every (table, column) declared a foreign key, read from the database.
+
+    Derived rather than hand-listed: a hand-list makes a test named "every foreign
+    key column" pass for a foreign key nobody remembered to add to it. This
+    self-extends as later tasks add creators and handles."""
+    out = set()
+    for (tbl,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%'").fetchall():
+        for fk in conn.execute(f"PRAGMA foreign_key_list('{tbl}')").fetchall():
+            out.add((tbl, fk["from"]))
+    return out
+```
+
+      Delete `_FK_COLUMNS_INDEXED_HERE`. Keep `test_handles_creator_id_is_covered_by_an_index` and
+      its `xfail` — `creator_id` does not exist yet, so nothing derived from the live database can
+      cover it, and that marker is the reminder for T9.
+
+      > If the derived version fails on a foreign key that was **not** in the hand-list, that is a
+      > real unindexed foreign key and a genuine new finding. Report it; do not add an exclusion to
+      > make the test pass.
+
+- [ ] **F4 (comment work, no behaviour change).** Two docstrings say more than they should:
+      1. The rebuild-order docstring in `_migration_1_constrain_core_tables` disclaims that
+         ordering is load-bearing and then tells T10 that `discovery_run_handles` "must stay
+         positioned before" the `handles` rebuild. Pick one: state it as a convention worth
+         keeping, not as a correctness requirement the same paragraph denies.
+      2. `_coerce_unknown_turn_statuses` coerces an uninterpretable status to `'orphaned'`, which
+         means that inside `turns` a ghost status and a genuinely orphaned turn become the same
+         value — one representation shared by two states, which is the defect class this package
+         exists to remove. It is nonetheless the right call: no third value passes the CHECK, and
+         the `schema.turn_status_coerced` event row is the durable record that distinguishes them.
+         **Say that in the docstring**, as an accepted trade with its compensating record named.
+         Do not leave it asserted-away as "a ghost turn *is* an orphan" — that is a semantic
+         argument standing in for an engineering one. The stage-side coercion to `'no_artifact'`
+         has the identical shape; note the parallel.
+
+- [ ] **Run both suites.** `cd pipeline-app && python -m pytest`, and from the repo root
+      `python -m pytest tests/ -v`. Both green.
+- [ ] **Commit.** `test(schema): prove the ON DELETE CASCADE clauses this task added`
+
 ---
 
 ### T8 — A-71: the missing partial unique index on `turns`
