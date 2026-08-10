@@ -92,6 +92,7 @@ reason** → implement → see it pass → commit. Do not batch two tasks into o
 ```python
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -130,6 +131,24 @@ def test_log_does_not_raise_when_the_log_directory_cannot_be_created(tmp_path: P
 def test_log_does_not_raise_on_an_unserializable_field(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
     obs.log("adapter.fetch_failed", level="error", conn=object())  # must not raise
+
+
+def test_a_caller_field_can_never_replace_the_real_timestamp(tmp_path: Path, monkeypatch):
+    """`ts` is the one field that makes two log lines comparable.
+
+    A caller passing `ts=` must not be able to replace it -- and must not have
+    its value silently dropped either, or a mistaken call would be
+    indistinguishable from a correct one.
+    """
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    obs.log("adapter.fetch_failed", level="error", ts="1999-01-01T00:00:00+00:00", handle="@a")
+
+    files = list((tmp_path / "logs").glob("app-*.log"))
+    record = json.loads(files[0].read_text(encoding="utf-8").strip())
+    assert record["ts"] != "1999-01-01T00:00:00+00:00"          # the caller did not win
+    assert record["ts"].startswith(str(datetime.now(timezone.utc).year))
+    assert record["field_ts"] == "1999-01-01T00:00:00+00:00"    # ...and was not silently dropped
+    assert record["handle"] == "@a"                             # a non-colliding field is untouched
 ```
 
 - [ ] **Run it.** `cd pipeline-app && python -m pytest tests/test_obs.py -v` → `ModuleNotFoundError: pipeline_app.obs`. That is the right failure.
@@ -170,6 +189,25 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _merge(reserved: dict, fields: dict) -> dict:
+    """Reserved keys always win; a colliding caller field is preserved, never dropped.
+
+    `ts` is the one field that makes two log lines comparable, so a caller must
+    never be able to replace it. But silently *discarding* the caller's value
+    would be the same bug wearing a different hat: a mistaken call would look
+    exactly like a correct one. A collision is therefore re-keyed to
+    `field_<name>`, which keeps the record self-describing.
+
+    Only `ts` can actually collide today -- `level` and `event` are named
+    parameters, so passing either twice is a TypeError at the call site. All
+    three are guarded anyway, so a later signature change cannot open the hole.
+    """
+    merged = dict(reserved)
+    for key, value in fields.items():
+        merged[f"field_{key}" if key in reserved else key] = value
+    return merged
+
+
 def log(event: str, *, level: str = "info", **fields) -> None:
     """Structured line to stderr AND to pipeline-app/logs/app-YYYY-MM-DD.log.
 
@@ -177,7 +215,10 @@ def log(event: str, *, level: str = "info", **fields) -> None:
     now = _utcnow()
     try:
         line = json.dumps(
-            {"ts": now.isoformat(timespec="seconds"), "level": level, "event": event, **fields},
+            _merge(
+                {"ts": now.isoformat(timespec="seconds"), "level": level, "event": event},
+                fields,
+            ),
             default=repr,
             ensure_ascii=False,
         )
@@ -196,7 +237,7 @@ def log(event: str, *, level: str = "info", **fields) -> None:
         pass
 ```
 
-- [ ] **Run it.** All four pass.
+- [ ] **Run it.** All five pass.
 - [ ] **Commit.** `feat(obs): add obs.log() -- a diagnostic that outlives the console`
 
 ---
