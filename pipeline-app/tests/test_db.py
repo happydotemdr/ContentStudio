@@ -2572,7 +2572,13 @@ def test_downgrading_a_handle_records_an_error_event(conn, tmp_path, monkeypatch
     """SURFACING. Also pins C4: the event's timestamp field is named
     `marked_failing_at`, not `since` -- `since` reads as "failing since",
     which the third-failure timestamp is not (the handle has been failing
-    since the FIRST failure, and this code never recorded that moment)."""
+    since the FIRST failure, and this code never recorded that moment).
+
+    Read the event back on a SECOND connection. Reading it on the one that
+    wrote it passes whether or not the row was ever committed -- and "durable
+    enough to find after the process dies" is the only property that makes
+    this a surfacing test at all (same idiom as
+    test_a_rolled_back_transaction_records_an_error_event, tests/test_db.py:339)."""
     from pipeline_app import obs
     monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
     handle_id = db.create_handle(conn, "youtube", "@dead", None, "guru", None,
@@ -2580,7 +2586,14 @@ def test_downgrading_a_handle_records_an_error_event(conn, tmp_path, monkeypatch
     db.set_handle_status(conn, handle_id, "validated", validated_at="2026-08-08T00:01:00+00:00")
     for _ in range(3):
         db.record_handle_failure(conn, handle_id, now_iso="2026-08-08T06:00:00+00:00")
-    rows = conn.execute("SELECT * FROM events WHERE kind = 'handle.marked_failing'").fetchall()
+
+    other = db.get_connection(Path(conn.execute("PRAGMA database_list").fetchone()[2]))
+    try:
+        rows = other.execute(
+            "SELECT * FROM events WHERE kind = 'handle.marked_failing'"
+        ).fetchall()
+    finally:
+        other.close()
     assert len(rows) == 1
     assert rows[0]["severity"] == "error"
     assert "@dead" in rows[0]["message"]
