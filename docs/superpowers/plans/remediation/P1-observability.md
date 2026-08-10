@@ -3415,22 +3415,12 @@ def test_deleting_a_creator_does_not_delete_its_handles(conn):
 ```
 
 - [ ] **Run it.** `no such table: creators`.
-- [ ] **Implement (a).** Append to `schema.sql`, **above** `handles` (the FK target must exist
-      first), verbatim from the frozen DDL plus the index:
-
-```sql
--- Cross-platform creator identity. Without it @jane on YouTube and @jane on X
--- are unrelated rows: per-creator reporting is impossible, one creator's
--- cross-post is counted three times in the daily inventory, and "did we miss
--- this creator's new platform" is unanswerable (B-72). P10 populates this from
--- the manifests; this package only creates it.
-CREATE TABLE IF NOT EXISTS creators (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  slug         TEXT NOT NULL UNIQUE,
-  display_name TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_handles_creator ON handles(creator_id);
-```
+- [ ] **Implement (a).** ~~Append to `schema.sql`, **above** `handles`, verbatim from the frozen
+      DDL plus the index.~~ **SUPERSEDED — see "T9 pre-review corrections" below.** As written this
+      step crashes the boot on *both* database shapes (probed, not reasoned: `no such table:
+      main.handles` on a fresh database, `no such column: creator_id` on a legacy one), and it
+      never adds `handles.creator_id` at all, so every test below fails. Use the corrected
+      three-part placement in that section.
 
 - [ ] **Implement (b).** Add `upsert_creator`, `get_creator_by_slug`, `link_handle_to_creator`,
       `list_handles_for_creator`, `list_unlinked_handles` to `db.py`:
@@ -3472,6 +3462,114 @@ def list_unlinked_handles(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 - [ ] **Run it.** These four plus T7's `creator_id` index assertion now pass.
 - [ ] **Commit.** `feat(schema): add cross-platform creator identity (B-72)`
+
+#### T9 pre-review corrections — five, one of them fatal on every boot
+
+The plan's T9 was adversarially pre-reviewed before dispatch, as every task since T5 has been, and
+its code is wrong in five ways. **Everything below supersedes the steps above where they conflict.**
+
+**Probed on this host (SQLite 3.50.4), not reasoned about. Do not re-derive:**
+
+| probe | result |
+|---|---|
+| `CREATE INDEX … ON handles(creator_id)` placed *above* `CREATE TABLE handles` | `OperationalError: no such table: main.handles` |
+| same index against a legacy `handles` that has no `creator_id` | `OperationalError: no such column: creator_id` |
+| `ALTER TABLE handles ADD COLUMN creator_id INTEGER REFERENCES creators(id) ON DELETE SET NULL` | **OK** |
+| that `ALTER` inside `BEGIN IMMEDIATE` with `foreign_keys = OFF`, then the index | **OK**, and `ON DELETE SET NULL` is genuinely enforced afterwards (deleting the creator sets `creator_id` to `NULL`, verified) |
+
+**C1 — the placement is fatal on a fresh database.** The step says append *above* `handles`. That
+is right for `CREATE TABLE creators` (the FK target) and wrong for the index, which references a
+table that does not exist yet. Split them into **three** edits to `schema.sql`, in this order:
+
+- [ ] **Above `handles`** (currently `schema.sql:63`), the frozen DDL:
+
+```sql
+-- Cross-platform creator identity. Without it @jane on YouTube and @jane on X
+-- are unrelated rows: per-creator reporting is impossible, one creator's
+-- cross-post is counted three times in the daily inventory, and "did we miss
+-- this creator's new platform" is unanswerable (B-72). P10 populates this from
+-- the manifests; this package only creates it.
+CREATE TABLE IF NOT EXISTS creators (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  slug         TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL
+);
+```
+
+- [ ] **Inside the `handles` table body** (C2), as the last column before the `UNIQUE` clause:
+
+```sql
+    creator_id INTEGER REFERENCES creators(id) ON DELETE SET NULL,
+```
+
+- [ ] **Below the `handles` table**, the index — never above it:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_handles_creator ON handles(creator_id);
+```
+
+**C2 — the step never adds `handles.creator_id`.** Every test in this task depends on the column —
+`link_handle_to_creator` does `UPDATE handles SET creator_id = ?`, and
+`test_deleting_a_creator_does_not_delete_its_handles` needs the `ON DELETE SET NULL` clause on it.
+`schema.sql`'s `handles` DDL has no such column today (verified). Add
+`creator_id INTEGER REFERENCES creators(id) ON DELETE SET NULL` to it.
+
+**C3 — the migrated half does not exist, and without it the boot crashes.** This is the fifth
+occurrence of "schema.sql runs before migrations" in this package (T7-F2, T8's index, T8's
+`executescript`, the index-destroyed-by-`DROP TABLE` shape, and now this). On a legacy database
+`handles` has no `creator_id`, so `schema.sql`'s index raises **inside `executescript`, before
+`events` at :116** — boot dies, partial schema, no record. Migration 1 must add the column and the
+index itself:
+
+- [ ] Add `_MIGRATION_1_HANDLES_CREATOR_STEPS`, a tuple of two plain statements — the `ALTER TABLE
+      … ADD COLUMN` above and `CREATE INDEX IF NOT EXISTS idx_handles_creator ON
+      handles(creator_id)` — and run it from `_migration_1_constrain_core_tables`.
+- [ ] **No rebuild.** The create-copy-drop-rename recipe is not needed here: a plain `ALTER` adds
+      the column *with* its `ON DELETE SET NULL` clause and enforcement works (probed above). That
+      keeps the `_MIGRATIONS` contract trivially: two `conn.execute()` calls, no commit, no
+      rollback, no `executescript`, no pragma.
+- [ ] Place it **before** where T10's `handles` rebuild will go, and see H1 below.
+
+**C4 — T7's `xfail` marker must be removed here, and the plan never says so.**
+`test_handles_creator_id_is_covered_by_an_index` (`tests/test_db.py:1409`) carries
+`@pytest.mark.xfail(reason="handles.creator_id does not exist until T9", strict=True)`. Under
+`strict=True` an xfail that starts passing is a **hard failure**, so leaving the marker turns this
+task's success into a red suite. Remove it in this task. (T10 carries the same instruction for its
+own marker at `:585`; T9's was simply omitted.)
+
+**C5 — no migrated-database twin for any of it.** Every test in the task uses the `conn` fixture,
+which is a fresh database — and migration 1 never runs on a fresh database, so as written this
+task's migrated half is asserted nowhere. That is T7's recorded lesson and T8's F3, recurring.
+This task adds **four** distinct things; per the twin rule each needs both shapes:
+
+- [ ] the `creators` table exists
+- [ ] `handles.creator_id` exists and is a foreign key to it
+- [ ] `idx_handles_creator` exists
+- [ ] `ON DELETE SET NULL` actually fires
+
+  Add a migrated-database test (build `_legacy_db`, stamp `schema_version` to 0, boot through
+  `db.init_db`) asserting all four. **RED must be earned per behaviour**, not once for the group:
+  drop each of the four from the migration in turn and observe a different assertion fail each
+  time. T7 applied this per-table instead of per-behaviour and all four of its `ON DELETE CASCADE`
+  clauses could be deleted with 80 tests still green.
+
+**C6 (minor, consistency) — `upsert_creator` should not open a `db.transaction()`.** Its siblings
+(`link_handle_to_creator` and every other leaf helper) call `commit_unless_in_transaction(conn)`.
+A single `INSERT … ON CONFLICT` is already atomic, and a boundary opened in a leaf helper is the
+cross-thread suppression hazard T13b exists to detect. Use `commit_unless_in_transaction`.
+
+**H1 — handoff to T10, which rebuilds `handles` in this same migration 1.** T10's
+create-copy-drop-rename must carry `creator_id` forward **with its `REFERENCES creators(id) ON
+DELETE SET NULL` clause**, and must **re-create `idx_handles_creator`** — the rebuild's `DROP
+TABLE` destroys indices, which is exactly the T7-F2 shape. If T10's rebuild runs after C3's `ALTER`
+and does not carry both, a migrated database silently loses the column and the index while every
+fresh-database test stays green.
+
+**H2 — carry forward from T8 (deferred minor, this is the area it names).** `init_db`'s "three
+cases, no fourth" comment (`db.py:737-748`) is **not exhaustive**: a database stamped at version 1
+by an intermediate P1 build skips migration 1 entirely. It is dev-only and loud (version 1 is
+unshipped), but T9 and T10 extend migration 1 and will reason from that comment. Correct the
+comment if this task touches it; do not build on its exhaustiveness claim.
 
 ---
 
