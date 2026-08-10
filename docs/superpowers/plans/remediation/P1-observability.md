@@ -3965,9 +3965,66 @@ under scaffolds B5a/B5b.
    `email_render.PLATFORM_LABELS` remain unpinned. Same drift class, template-side. Route to the
    package owning the discovery templates (**P8/P15**).
 
+#### T10 fix round 1 — two Important, one of them another boot-brick
+
+The T10 task review ran against `34309ec..7790aad`. Full report:
+`.superpowers/sdd/2026-08-08-audit-remediation/P1-task-10-review.md`. **Spec compliant on all six
+corrections and on the Three-Test Rule**; quality **Needs fixes** — two Important, no spec gap.
+
+The reviewer confirmed independently: the quarantine deletion is exactly scoped (bound per-row to
+the ghost's own id, so a valid handle's children are unreachable); C1's reverse direction genuinely
+parses live `sqlite_master` DDL and asserts set **equality** on both fresh and migrated tables; C2's
+survivor assertion covers all eight nullable/defaulted fields, so "survives" means intact rather
+than merely present; behaviour-5's reuse of T9's tests is legitimate coverage, since each of the
+three sub-behaviours independently reds them; and `consecutive_failures`/`'failing'` are genuinely
+inert until T11.
+
+**F1 (Important) — `KNOWN_PLATFORMS` is an unpinned third copy, and its comment says otherwise.**
+`db.py:271-281`. The comment claims the constant is pinned to the adapter registry by two named
+tests. **Neither test reads it.** C1 pinned the CHECK to `build_adapters()` and left
+`KNOWN_PLATFORMS` — the copy the migration's `NOT IN` filter actually uses — floating in both drift
+directions. A false claim of coverage is worse than no claim: it is the reason nobody looks again.
+
+- [ ] Make the pin real and three-way, with the constant as the hub: assert
+      `set(db.KNOWN_PLATFORMS) == set(build_adapters())` **and** that the set parsed from the live
+      CHECK equals `db.KNOWN_PLATFORMS`. Then all three copies are one.
+- [ ] Correct the comment to name the test that actually does it. **RED by removing one platform
+      from `KNOWN_PLATFORMS` only** and observing a failure that names the constant — if the
+      existing CHECK↔registry test is what fails, the pin is still not on the constant.
+
+**F2 (Important) — the rebuild narrows `handles.status` with no coercion pass.** `db.py:672-673`.
+Legacy `handles.status` is free text; the rebuilt table constrains it to five values. A legacy row
+holding anything else aborts the `INSERT … SELECT` **out of `init_db`** — the same boot-brick that
+`_coerce_unknown_stage_statuses`, `_coerce_unknown_turn_statuses` and this task's own
+`_quarantine_unknown_platforms` all exist to prevent. This task installed a repair for one narrowed
+column and not for the other one it narrowed in the same rebuild.
+
+- [ ] Add `_coerce_unknown_handle_statuses`, mirroring the two existing coercion passes, and run it
+      **before** the rebuild's copy step.
+- [ ] **Coerce to `'pending'`, and record an event per coerced row.** Not `'invalid'`: that asserts
+      a validation verdict nobody reached, and this programme does not let code claim work it did
+      not do. `'pending'` makes no claim and the next discovery run resolves it.
+- [ ] **Coerce, do not quarantine** — the same ruling T6 made. An unknown *platform* means no
+      adapter can ever serve the row, so it is unusable and must be set aside; an unknown *status*
+      is one corrupted field on an otherwise valid handle. Do not brick, do not discard.
+- [ ] RED: seed a legacy database with a handle whose status is outside the vocabulary and observe
+      `init_db` aborting today. That is the boot-brick; it must be the observed failure.
+
+**Scope fence.** These two findings only. Do not action the review's Minor findings, and do not
+touch the two new findings filed above — both belong to other packages.
+
 ---
 
 ### T11 — B-82: a handle that dies after registration still looks healthy
+
+> **T11's RED is re-derived — read this before writing the test.** T10 already added the
+> `consecutive_failures` column and the `'failing'` status value (it had to: the `status` CHECK
+> cannot be altered later without a second rebuild of the same table inside the same version-1
+> migration). So the step below that reads *"**Run it.** `no such column: consecutive_failures`"*
+> **can never fire.** T11's failing observation is
+> `AttributeError: module 'pipeline_app.db' has no attribute 'record_handle_failure'`.
+> A task whose RED cannot fire is a task that proves nothing, and this programme has shipped three
+> of those already.
 
 **B-82 (S2, silent).** `set_handle_status` is called only inside the one-shot `validate_handle`
 branch. A handle that validates at registration and later dies — channel deleted, account renamed,
