@@ -2203,6 +2203,33 @@ def _set_foreign_keys(conn: sqlite3.Connection, enabled: bool) -> bool:
     package exists to remove, so this returns the reading and every caller compares."""
     conn.execute(f"PRAGMA foreign_keys = {'ON' if enabled else 'OFF'}")
     return bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+
+
+def _restore_foreign_keys(conn: sqlite3.Connection, wanted: bool, version: int) -> None:
+    """Put enforcement back, and never raise doing it.
+
+    Called from a `finally:` and from the path where the transaction never opened.
+    A raise from either would replace the migration's own exception with this one --
+    and from the `finally:` it would also skip the failure-reporting block below,
+    losing the only durable record that the migration failed at all. Reporting must
+    never mask the thing being reported; `obs.record_event` holds the same contract
+    for the same reason.
+
+    `_set_foreign_keys` returns a reading rather than an intent, so "it did not take"
+    and "it raised" are two different observations and both are said out loud."""
+    from pipeline_app import obs
+
+    try:
+        if _set_foreign_keys(conn, wanted) == wanted:
+            return
+        reading = "unchanged"
+    except Exception as exc:  # noqa: BLE001 -- restoring must not mask the failure
+        reading = f"{type(exc).__name__}: {exc}"
+    obs.log("db.foreign_keys_not_restored", level="critical", version=version,
+            wanted=wanted, reading=reading,
+            note="PRAGMA foreign_keys is a no-op inside a transaction; this connection "
+                 "is running without referential integrity enforcement and must be "
+                 "closed, not reused")
 ```
 
       Then, inside the `for version, migrate in _MIGRATIONS:` loop, **immediately after**
@@ -2221,14 +2248,29 @@ def _set_foreign_keys(conn: sqlite3.Connection, enabled: bool) -> bool:
         # it and is strictly stronger: it checks the whole database rather than one
         # statement's rows.
         fk_was_enabled = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
-        if _set_foreign_keys(conn, False):
-            raise MigrationIntegrityError(
-                f"could not disable foreign key enforcement before migration {version}; "
-                f"the rebuild would fail on DROP TABLE, and refusing to start beats a "
-                f"half-applied schema"
-            )
-        violations_before = _foreign_key_violations(conn)
+        # Everything between disabling enforcement and opening the transaction runs
+        # inside this try. Below it, the `finally:` restores; above it, nothing has
+        # changed yet. In between there is no other restorer -- and `BEGIN IMMEDIATE`
+        # is precisely where a failure is expected, since SQLITE_BUSY is the whole
+        # reason it is IMMEDIATE. Without this the caller gets its connection back
+        # with referential integrity silently off: no exception about it, no log, no
+        # event, and every later orphan accepted. Confirmed by probe, not argument.
+        try:
+            if _set_foreign_keys(conn, False):
+                raise MigrationIntegrityError(
+                    f"could not disable foreign key enforcement before migration "
+                    f"{version}; the rebuild would fail on DROP TABLE, and refusing to "
+                    f"start beats a half-applied schema"
+                )
+            violations_before = _foreign_key_violations(conn)
+            conn.execute("BEGIN IMMEDIATE")
+        except BaseException:
+            _restore_foreign_keys(conn, fk_was_enabled, version)
+            raise
 ```
+
+      (The existing `conn.execute("BEGIN IMMEDIATE")` line moves **into** that `try`; it is not
+      duplicated. `_enter_migration_boundary(conn)` stays immediately after, outside the `try`.)
 
       Inside the `try:`, **after** the `swallowed` check and **before** the
       `UPDATE schema_version` stamp:
@@ -2266,13 +2308,10 @@ def _set_foreign_keys(conn: sqlite3.Connection, enabled: bool) -> bool:
             # takes; on the path where rollback itself failed a transaction is still
             # open and the pragma silently does nothing. That second case is precisely
             # a restore that did not restore, so it is read back and reported rather
-            # than assumed.
-            if _set_foreign_keys(conn, fk_was_enabled) != fk_was_enabled:
-                obs.log("db.foreign_keys_not_restored", level="critical", version=version,
-                        wanted=fk_was_enabled,
-                        note="PRAGMA foreign_keys is a no-op inside a transaction; this "
-                             "connection is running without referential integrity "
-                             "enforcement and must be closed, not reused")
+            # than assumed. Via the helper, which cannot raise: this is a `finally:`,
+            # and an exception here would replace the migration's own and skip the
+            # reporting block below it.
+            _restore_foreign_keys(conn, fk_was_enabled, version)
 ```
 
 - [ ] **Implement (c) — migration 1 itself.** In `db.py`, **above** the `_MIGRATIONS` list (which
@@ -2369,6 +2408,166 @@ def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
       in the tree is a valid `StageStatus` (verified: `approved`, `awaiting_review`, `locked`,
       `ready`, `running`).
 - [ ] **Commit.** `fix(schema): constrain stages.status to the StageStatus enum (A-47)`
+
+#### T6 fix round 1 — two escape hatches in the FK handling, plus a copy nothing pins
+
+Review of commit `b16d156` found two Important defects **in the code this plan told the implementer
+to write**, both fresh instances of the class this whole package exists to remove: a state that goes
+wrong and produces the same observable result as success. The code blocks above are already
+corrected; this checklist is what still has to be done to the tree.
+
+- [ ] **F1 (Important) — restore enforcement when the transaction never opens.** The disable sat
+      outside any `try`, so if `BEGIN IMMEDIATE` raised (SQLITE_BUSY — the exact case IMMEDIATE
+      exists to surface) the caller got its connection back with `foreign_keys = 0`, no log, no
+      event, and every later orphan silently accepted. The reviewer reproduced it live. Apply the
+      corrected `try/except BaseException` block above, moving the existing `BEGIN IMMEDIATE` into
+      it. Test:
+
+```python
+def test_foreign_keys_are_restored_when_the_transaction_cannot_be_opened(
+        tmp_path: Path, monkeypatch):
+    """The connection must never come back with enforcement off and nothing said.
+    BEGIN IMMEDIATE fails under write contention, which is the whole reason it is
+    IMMEDIATE, so this path is reachable rather than theoretical."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    monkeypatch.setattr(db, "_MIGRATIONS", [(1, lambda conn: None)])
+
+    blocker = db.get_connection(db_path)
+    c = db.get_connection(db_path)
+    try:
+        c.execute("UPDATE schema_version SET version = 0 WHERE id = 1")
+        c.commit()
+        blocker.execute("BEGIN IMMEDIATE")
+        blocker.execute("UPDATE schema_version SET version = 0 WHERE id = 1")
+        c.execute("PRAGMA busy_timeout = 0")  # fail now rather than in five seconds
+        with pytest.raises(sqlite3.OperationalError):
+            db.apply_migrations(c)
+        assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1, \
+            "connection handed back without referential integrity enforcement"
+    finally:
+        blocker.rollback()
+        blocker.close()
+        c.close()
+```
+
+- [ ] **F2 (Important) — the restore in the `finally:` must not be able to raise.** It was the only
+      unguarded call in a function that `try`/`except`s every other risky read. If the pragma
+      raised, that exception replaced the migration's own **and** skipped the entire
+      `if failure is not None:` block — losing the one durable `schema.migration_failed` record.
+      Add `_restore_foreign_keys` as written above and call it from both sites. Test:
+
+```python
+def test_a_failing_pragma_restore_does_not_swallow_the_migration_failure(
+        tmp_path: Path, monkeypatch):
+    """Reporting must never mask the thing being reported. If restoring enforcement
+    blows up, the migration's own exception still propagates and its events row is
+    still written -- otherwise a migration failure and a clean run look identical."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+
+    def boom(conn):
+        raise RuntimeError("the migration itself failed")
+
+    def exploding_set(conn, enabled):
+        if enabled:  # only the restore, not the disable
+            raise sqlite3.ProgrammingError("pragma exploded")
+        return False
+
+    monkeypatch.setattr(db, "_MIGRATIONS", [(1, boom)])
+    c = db.get_connection(db_path)
+    try:
+        c.execute("UPDATE schema_version SET version = 0 WHERE id = 1")
+        c.commit()
+        monkeypatch.setattr(db, "_set_foreign_keys", exploding_set)
+        with pytest.raises(RuntimeError, match="the migration itself failed"):
+            db.apply_migrations(c)
+        monkeypatch.undo()
+        rows = c.execute(
+            "SELECT * FROM events WHERE kind = 'schema.migration_failed'").fetchall()
+        assert len(rows) == 1
+        assert "RuntimeError" in rows[0]["message"]
+    finally:
+        c.close()
+```
+
+> `monkeypatch.undo()` before the assertion is deliberate: leaving the patch in place while
+> reading `events` is fine, but undoing it makes the read unambiguously against real code.
+> If `monkeypatch.undo()` interacts badly with the fixture's own teardown, drop the call and
+> say so — do not silently work around it.
+
+- [ ] **F3 (Important, promoted from Minor) — nothing pins the three copies of the status
+      vocabulary.** `STAGE_STATUSES`, `schema.sql`, and `_MIGRATION_1_STAGES_STEPS` are three
+      hand-written copies and none derives from `StageStatus`. They agree today.
+      `test_every_StageStatus_member_is_accepted_by_the_check` runs on the `conn` fixture — a
+      *fresh* database — so it exercises `schema.sql`'s copy only. A narrower CHECK in the
+      migration's copy would leave every **migrated** database rejecting a status that fresh ones
+      accept, and would ship green. Add both halves:
+
+```python
+def test_STAGE_STATUSES_matches_the_enum():
+    """The tuple the migration reads, pinned to the enum it claims to mirror."""
+    from pipeline_app.state_machine import StageStatus
+    assert db.STAGE_STATUSES == tuple(m.value for m in StageStatus)
+
+
+def test_every_StageStatus_member_is_accepted_by_the_migrated_table(
+        tmp_path: Path, monkeypatch):
+    """The migration-side half of the fresh-database test above. A fresh and a
+    migrated database must not disagree about what a legal status is."""
+    from pipeline_app import obs
+    from pipeline_app.state_machine import StageStatus
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.execute("INSERT INTO projects (run_id, slug, brand, created_at) "
+              "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00')")
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        for i, member in enumerate(StageStatus):
+            db.create_stage_row(c, 1, f"stage-{i}", member.value)
+    finally:
+        c.close()
+```
+
+      **Scaffold required** (this test passes on first write otherwise): temporarily delete
+      `'stale'` from the CHECK list inside `_MIGRATION_1_STAGES_STEPS` only, observe this test red
+      while `test_every_StageStatus_member_is_accepted_by_the_check` stays green — that contrast is
+      the finding — then restore it. Report both outputs.
+
+- [ ] **F4 (Minor, promoted) — `get_connection` sets `PRAGMA foreign_keys = ON` and never reads it
+      back**, three lines from the helper introduced to fix exactly that. A fresh connection is
+      never inside a transaction so it should always take, which is the same reasoning that
+      produced every other unchecked pragma in this file. Read it back and log `critical` on the
+      impossible branch, then pin the outcome:
+
+```python
+def test_get_connection_enables_foreign_key_enforcement(tmp_path: Path):
+    """Every FK constraint in schema.sql is inert without this, and nothing else
+    in the app ever checks."""
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        c.close()
+```
+
+      **Scaffold required**: delete the `PRAGMA foreign_keys = ON` line, observe red, restore.
+
+- [ ] **Run both suites.** `cd pipeline-app && python -m pytest`, and `python -m pytest tests/ -v`
+      from the repo root. Both green.
+- [ ] **Commit.** `fix(db): close two silent escape hatches in the migration FK handling`
 
 ---
 
