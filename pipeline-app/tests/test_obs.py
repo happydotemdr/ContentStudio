@@ -92,3 +92,44 @@ def test_events_table_rejects_a_severity_outside_the_vocabulary(conn):
             "INSERT INTO events (occurred_at, kind, severity, source, message) "
             "VALUES ('2026-08-08T00:00:00+00:00', 'k', 'catastrophic', 's', 'm')"
         )
+
+
+def test_record_event_returns_minus_one_when_the_events_table_is_missing(tmp_path, monkeypatch):
+    """An operator database that predates the events table must not turn every
+    reported failure into a second, uncaught failure."""
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    bare = sqlite3.connect(tmp_path / "bare.db")
+    try:
+        assert obs.record_event(bare, kind="k", severity="error", source="s", message="m") == -1
+    finally:
+        bare.close()
+
+
+def test_record_event_falls_back_to_the_log_when_it_cannot_write(tmp_path, monkeypatch):
+    """Returning -1 silently would recreate the exact defect this module exists
+    to fix. The fallback has to leave a trace."""
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    bare = sqlite3.connect(tmp_path / "bare.db")
+    try:
+        obs.record_event(bare, kind="adapter.fetch_failed", severity="error",
+                         source="discovery_youtube", message="yt-dlp exited 1")
+    finally:
+        bare.close()
+    written = (tmp_path / "logs").glob("app-*.log")
+    text = "\n".join(p.read_text(encoding="utf-8") for p in written)
+    assert "obs.record_event_failed" in text
+    assert "yt-dlp exited 1" in text  # the recorded thing is not lost
+
+
+def test_record_event_rejects_an_unknown_severity_without_raising(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    assert obs.record_event(conn, kind="k", severity="catastrophic",
+                            source="s", message="m") == -1
+    assert conn.execute("SELECT count(*) FROM events").fetchone()[0] == 0
+
+
+def test_record_event_does_not_raise_on_a_closed_connection(tmp_path, monkeypatch):
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    closed = sqlite3.connect(tmp_path / "closed.db")
+    closed.close()
+    assert obs.record_event(closed, kind="k", severity="error", source="s", message="m") == -1
