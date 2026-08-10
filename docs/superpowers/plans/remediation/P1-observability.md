@@ -3845,6 +3845,88 @@ def _quarantine_unknown_platforms(conn: sqlite3.Connection) -> None:
       never a DB row).
 - [ ] **Commit.** `fix(schema): constrain handles.platform and quarantine ghost rows (B-73)`
 
+#### T10 pre-review corrections — six, and one of them invalidates T11's RED
+
+Adversarially pre-reviewed before dispatch, as every task since T5 has been. **These supersede the
+steps above wherever they conflict.**
+
+Verified in the tree first, not assumed: `db.list_platform_handles` (`db.py:1322`) and
+`db.list_handles` (`db.py:1334`) both exist, so the tests above compile. `consecutive_failures`
+and the `'failing'` status appear **nowhere** in `pipeline_app/` or `tests/` today. The authoritative
+platform vocabulary is **`build_adapters()` at `pipeline-app/run_discovery_cron.py:32`**, whose
+seven keys match the CHECK above exactly at the time of writing.
+
+**C1 — the acceptance test reads a hand-written list, which is the defect B-73 is about.**
+`test_every_platform_the_adapter_registry_knows_is_accepted` hard-codes the seven platforms. A
+hand-written list cannot see a platform nobody added to it, so the CHECK and the adapter registry
+become two hand-maintained vocabularies that can drift apart with the test still green — and
+"the storage layer's idea of a platform disagrees with the registry's" is precisely the state B-73
+exists to make impossible. This is the T6-F3 shape (three hand-written copies of the status
+vocabulary, pinned by nothing) and T7's hand-list finding, recurring.
+
+- [ ] Derive the list from `build_adapters()` rather than restating it.
+- [ ] **Round-trip it in both directions**, which is what makes it a pin rather than a sample:
+      every registry key is accepted by the CHECK, **and** every value the CHECK accepts is a
+      registry key. One direction alone lets the CHECK grow a platform no adapter can serve.
+- [ ] If importing `run_discovery_cron` from `tests/test_db.py` turns out not to be viable, **report
+      that rather than falling back to the hard-coded list** — the derivation is the requirement, the
+      import mechanism is not.
+
+**C2 — the quarantine test cannot tell quarantining from destroying.** The legacy fixture holds
+only the ghost row, so `assert count(*) FROM handles == 0` is satisfied just as well by a migration
+that dropped every handle it had. The recurring class, in the surfacing test of a task whose stated
+danger is *"dropping it silently would destroy the operator's only record."*
+
+- [ ] Seed the legacy database with **one valid handle and one ghost**. Assert the valid handle
+      survives the migration with its fields intact **and** that only the ghost is in
+      `handles_quarantine`. Without the surviving row the test proves nothing about what was kept.
+
+**C3 — no migrated twin for most of what this task adds.** Only the platform CHECK has a
+migrated-database test. This task adds **five** distinct things, and per T7's rule the twin
+discipline applies per behaviour, not per table:
+
+- [ ] the platform CHECK (already covered — keep it)
+- [ ] the extended `status` CHECK, now including `'failing'`
+- [ ] the `consecutive_failures` column
+- [ ] `handles_quarantine` existing and being written to
+- [ ] `creator_id` and its index surviving the rebuild — see C4
+
+  **RED per behaviour**: drop each from the migration in turn and observe a *different* assertion
+  fail each time. T7 applied this per-table and all four of its `ON DELETE CASCADE` clauses could be
+  deleted with 80 tests still green; T9 earned six distinct REDs across four behaviours and that is
+  the standard here.
+
+**C4 — T9's handoff H1 is load-bearing and appears nowhere in the steps above.** This task rebuilds
+`handles` with create-copy-drop-rename, and **the rebuild's `DROP TABLE` destroys
+`idx_handles_creator`**, which T9 created. That is T7-F2's exact shape: a fresh database keeps its
+index, a migrated one silently loses it, and every fresh-database test passes either way.
+
+- [ ] The rebuilt table must declare `creator_id INTEGER REFERENCES creators(id) ON DELETE SET NULL`
+      (the DDL above already does — do not drop it), the copy step must carry the column's **values**
+      across, and the migration must **re-create `idx_handles_creator` after the RENAME**.
+- [ ] **Do not add the index back to `schema.sql`.** T9 established, and T8 before it, that an index
+      a legacy table shape cannot support does not belong there; `init_db` issues the fresh copy
+      after `apply_migrations`, guarded `if not pre_existing:`. Leave that arrangement alone.
+- [ ] Assert `ON DELETE SET NULL` still fires **after** the rebuild, not only before it. A rebuild
+      that drops the clause is invisible to every test that only links and reads.
+
+**C5 — this task invalidates T11's RED, and T11 must be told.** T10 adds `consecutive_failures` and
+`'failing'`, which are **T11's** (finding B-82, per the finding→task map at line 67). Including them
+here is right: the CHECK cannot be altered later without another rebuild, and a second rebuild of
+the same table inside the same version-1 migration is waste. But T11's step reads *"**Run it.**
+`no such column: consecutive_failures`"* — **which can never be observed once this task lands.**
+
+- [ ] Record in T11 that its RED is re-derived: the column and the status value already exist, so
+      T11's failing observation is `AttributeError: module 'db' has no attribute
+      'record_handle_failure'`, not a missing column. A task whose RED cannot fire is a task that
+      proves nothing, and this programme has shipped three of those already.
+
+**C6 — the `xfail` bookkeeping.** Removing
+`test_an_existing_database_is_migrated_not_silently_left_behind`'s marker (`tests/test_db.py:585`)
+is correct and already stated. T9 removed the other one, so **after this task the app suite should
+report zero xfailed.** State the before/after count in the report; under `strict=True` a forgotten
+marker is a hard failure, and the count is the cheapest proof it was not forgotten.
+
 ---
 
 ### T11 — B-82: a handle that dies after registration still looks healthy
