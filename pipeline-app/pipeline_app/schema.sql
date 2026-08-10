@@ -1,3 +1,14 @@
+-- Schema versioning exists because everything below is `IF NOT EXISTS`: on a
+-- database that already has a table, a newly added column, CHECK or UNIQUE is
+-- silently skipped and the first query touching it fails at runtime with
+-- `no such column` in whatever route happens to hit it first (A-72). This file
+-- is the create-from-scratch path; db._MIGRATIONS is the upgrade path, and
+-- test_fresh_schema_matches_migrated_schema keeps the two identical.
+CREATE TABLE IF NOT EXISTS schema_version (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL UNIQUE,

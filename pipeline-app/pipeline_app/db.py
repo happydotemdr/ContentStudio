@@ -205,13 +205,77 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+SCHEMA_VERSION = 1
+
+
+class SchemaVersionError(RuntimeError):
+    """The database was written by a build newer than this code understands."""
+
+
+_MIGRATIONS: list[tuple[int, "Callable[[sqlite3.Connection], None]"]] = [
+    # (1, _migration_1_constrain_core_tables) -- registered in T6.
+]
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
 def init_db(db_path: Path, schema_path: Path) -> None:
     conn = get_connection(db_path)
     try:
+        # A database that already has `projects` predates versioning, so it is
+        # stamped 0 and every migration runs. A database that does not is being
+        # created right now by schema.sql at the target shape, so it is stamped
+        # at the current version and every migration is correctly skipped.
+        pre_existing = _table_exists(conn, "projects")
         conn.executescript(schema_path.read_text(encoding="utf-8"))
         conn.commit()
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, ?)",
+            (0 if pre_existing else SCHEMA_VERSION,),
+        )
+        conn.commit()
+        apply_migrations(conn)
     finally:
         conn.close()
+
+
+def apply_migrations(conn: sqlite3.Connection) -> list[int]:
+    """Run every registered migration the database has not seen, in order.
+
+    Returns the versions applied. Raises SchemaVersionError rather than booting
+    against a database a newer build has already upgraded -- silently running
+    old code over a new schema is how data gets destroyed."""
+    from pipeline_app import obs
+
+    current = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
+    if current > SCHEMA_VERSION:
+        obs.record_event(
+            conn, kind="schema.version_ahead_of_code", severity="critical", source="db.init_db",
+            message=f"database is at schema version {current}, this build understands "
+                    f"{SCHEMA_VERSION}",
+            detail={"db_version": current, "code_version": SCHEMA_VERSION},
+        )
+        raise SchemaVersionError(
+            f"database schema version {current} is newer than this build's {SCHEMA_VERSION}; "
+            f"upgrade the app or restore an older database"
+        )
+    applied: list[int] = []
+    for version, migrate in _MIGRATIONS:
+        if version <= current:
+            continue
+        migrate(conn)
+        conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (version,))
+        conn.commit()
+        applied.append(version)
+        obs.record_event(
+            conn, kind="schema.migration_applied", severity="info", source="db.apply_migrations",
+            message=f"applied schema migration {version}", detail={"version": version},
+        )
+    return applied
 
 
 def create_project(conn: sqlite3.Connection, run_id: str, slug: str, brand: str, created_at: str) -> int:

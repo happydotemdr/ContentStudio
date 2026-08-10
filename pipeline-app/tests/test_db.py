@@ -531,3 +531,94 @@ def test_a_failing_boundary_commit_does_not_leave_the_work_for_the_next_caller(
         assert "OperationalError" in rows[0]["message"]
     finally:
         other.close()
+
+
+LEGACY_SCHEMA_V0 = """
+CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL UNIQUE,
+  slug TEXT NOT NULL, brand TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE stages (id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id), stage_id TEXT NOT NULL,
+  status TEXT NOT NULL, claude_session_id TEXT, approved_at TEXT,
+  UNIQUE(project_id, stage_id));
+CREATE TABLE turns (id INTEGER PRIMARY KEY AUTOINCREMENT,
+  stage_row_id INTEGER NOT NULL REFERENCES stages(id), status TEXT NOT NULL,
+  created_at TEXT NOT NULL, finished_at TEXT, events_path TEXT NOT NULL, cost_usd REAL);
+CREATE TABLE handles (id INTEGER PRIMARY KEY AUTOINCREMENT, platform TEXT NOT NULL,
+  handle TEXT NOT NULL, display_name TEXT, cohort TEXT NOT NULL, keyword_filter TEXT,
+  included INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'pending',
+  added_at TEXT NOT NULL, validated_at TEXT, last_seen_published_at TEXT,
+  UNIQUE(platform, handle));
+"""
+SCHEMA_PATH = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+
+
+def _legacy_db(tmp_path: Path) -> Path:
+    """A database written by the build that predates every constraint in this
+    package -- the operator's real pipeline.db."""
+    db_path = tmp_path / "pipeline.db"
+    c = sqlite3.connect(db_path)
+    c.executescript(LEGACY_SCHEMA_V0)
+    c.commit()
+    c.close()
+    return db_path
+
+
+def test_a_fresh_database_is_stamped_at_the_current_schema_version(tmp_path: Path):
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0] \
+            == db.SCHEMA_VERSION
+    finally:
+        c.close()
+
+
+@pytest.mark.xfail(reason="migration 1 lands in T10", strict=True)
+def test_an_existing_database_is_migrated_not_silently_left_behind(tmp_path: Path):
+    """This is A-72: `CREATE TABLE IF NOT EXISTS` skips the new constraint and
+    init_db reports success anyway."""
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0] \
+            == db.SCHEMA_VERSION
+        ddl = c.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='handles'"
+        ).fetchone()[0]
+        assert "CHECK" in ddl  # the constraint actually landed on the existing table
+    finally:
+        c.close()
+
+
+# NOTE (T5 self-review, not in the brief): the brief predicted this test would
+# PASS at T5 -- only its neighbour above was expected to stay red, on the CHECK
+# assertion. It does not: with `_MIGRATIONS` empty (migration 1 is registered by
+# a later task), a database stamped version 0 by `_legacy_db` has no migration to
+# run and can never reach `db.SCHEMA_VERSION`, so this test fails on the SAME
+# line as its neighbour, for the SAME root cause, before ever reaching the CHECK
+# assertion. Marked xfail for the same reason and removed by the same task that
+# removes the marker above -- see P1-task-5-report.md for the full account.
+@pytest.mark.xfail(reason="migration 1 lands in T10", strict=True)
+def test_migrations_are_applied_exactly_once(tmp_path: Path):
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    db.init_db(db_path, SCHEMA_PATH)  # a second boot must be a no-op, not a re-run
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT count(*) FROM schema_version").fetchone()[0] == 1
+        assert c.execute("SELECT version FROM schema_version").fetchone()[0] == db.SCHEMA_VERSION
+    finally:
+        c.close()
+
+
+def test_a_database_from_a_newer_build_fails_loudly_instead_of_booting(tmp_path: Path):
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    c.execute("UPDATE schema_version SET version = ? WHERE id = 1", (db.SCHEMA_VERSION + 5,))
+    c.commit()
+    c.close()
+    with pytest.raises(db.SchemaVersionError):
+        db.init_db(db_path, SCHEMA_PATH)
