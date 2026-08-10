@@ -4238,6 +4238,52 @@ error branch; **P15** renders the counter). File exclusivity is being honoured c
       and P15 renders it. Recorded as a tracked cross-package handoff in the ledger; the programme's
       definition of done must check the call site exists, not merely that the helper does.
 
+#### T11 fix round 1 — the surfacing test proves nothing, for the fourth time
+
+The T11 task review ran against `be5822d..de70e75`. Full report:
+`.superpowers/sdd/2026-08-08-audit-remediation/P1-task-11-review.md`. **Spec ✅ — all five
+corrections present, no schema or migration touched.** Quality **Needs fixes**: one Critical, one
+Minor.
+
+The reviewer confirmed independently: the `"unknown"` sentinel is gone and `LookupError` is raised
+before any write, with every remaining return value a member of `HANDLE_STATUSES`; the
+`transaction()` boundary genuinely covers all three writes and the `LookupError` path opens no
+boundary at all; `clear_handle_failures`' `CASE` correctly preserves `'invalid'`, and that test is
+non-tautological (it fails under a naive unconditional set); and the docstring still names P8 as
+the caller.
+
+**F1 (Critical) — `test_downgrading_a_handle_records_an_error_event` reads the `events` row back on
+the connection that wrote it.** `tests/test_db.py:2583`. It therefore cannot distinguish a
+**committed** row from one merely visible mid-transaction, and would pass whether or not the event
+survives. That is the surfacing leg of the Three-Test Rule asserting nothing — on the one test whose
+entire job is surfacing.
+
+**This is plan-mandated: the brief's own test code did it.** It is not escalated, because the
+programme has already ruled on this class three separate times and the ruling is settled, not a new
+operator decision — T4's `test_a_rolled_back_transaction_records_an_error_event`, T5's migration
+surfacing assertion, and T8's F1 were each corrected the same way. **This file already contains the
+correct idiom twice**, at `tests/test_db.py:339-364` and `:663-676`, with near-identical explanatory
+comments. This is the fourth instance.
+
+- [ ] Read the `events` row on a **second connection**, following the idiom already in this file at
+      the two line ranges above. Do not invent a third variant.
+- [ ] **RED must be observed and it must be the right RED.** A second-connection read passes against
+      the current code too, because the boundary does commit — so simply switching connections
+      proves nothing on its own. Earn it with a scaffold: make the write not commit (for example by
+      wrapping the `record_handle_failure` call in an outer `db.transaction(conn)` that the test
+      abandons, or by neutering the commit), confirm the **same-connection** version still passes
+      while the **second-connection** version fails, then restore. Paste both outcomes — the
+      contrast is the evidence, not a single failure.
+- [ ] Check the other tests this task added for the same pattern and fix any that share it. One
+      corrected test beside three uncorrected ones is not a fix.
+
+**Minor, deferred — do not action.** `db.py:1645`: the existence pre-check is a check-then-use read
+rather than a `rowcount` test like its siblings, leaving a theoretical TOCTOU that would surface as
+a raw `TypeError` instead of `LookupError` if a handle were deleted mid-call. Recorded for the final
+whole-branch review.
+
+**Scope fence.** F1 only.
+
 ---
 
 ### T12 — the schema-drift guard
