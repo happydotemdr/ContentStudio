@@ -73,17 +73,31 @@ CREATE TABLE IF NOT EXISTS creators (
 
 CREATE TABLE IF NOT EXISTS handles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    platform TEXT NOT NULL,
+    creator_id INTEGER REFERENCES creators(id) ON DELETE SET NULL,
+    -- The adapter registry's vocabulary (run_discovery_cron.build_adapters).
+    -- Unconstrained, a mistyped or hand-posted value is stored happily and then
+    -- raises KeyError in a detached validate subprocess, leaving the row
+    -- 'pending'/included=1 forever: a ghost the handles page polls for a status
+    -- that never arrives (B-73).
+    platform TEXT NOT NULL CHECK (platform IN
+        ('youtube','bluesky','instagram','linkedin-profile','linkedin-company',
+         'facebook','x')),
     handle TEXT NOT NULL,
     display_name TEXT,
     cohort TEXT NOT NULL,
     keyword_filter TEXT,
     included INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'pending',
+    -- discovery_engine writes validating/validated/invalid; this DEFAULT writes
+    -- pending; 'failing' is written by the per-handle failure counter that owns
+    -- consecutive_failures below (B-82). Both are declared here rather than
+    -- later because a CHECK cannot be widened without a second rebuild of this
+    -- same table inside the same unshipped migration 1.
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN
+        ('pending','validating','validated','invalid','failing')),
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
     added_at TEXT NOT NULL,
     validated_at TEXT,
     last_seen_published_at TEXT,
-    creator_id INTEGER REFERENCES creators(id) ON DELETE SET NULL,
     UNIQUE(platform, handle)
 );
 -- `idx_handles_creator` is deliberately NOT here, for the same reason
@@ -98,6 +112,27 @@ CREATE TABLE IF NOT EXISTS handles (
 -- index are added to a pre-existing database by
 -- db._MIGRATION_1_HANDLES_CREATOR_STEPS, and to a fresh one by db.init_db after
 -- apply_migrations returns. See both.
+
+-- Rows migration 1 could not carry across the platform CHECK above. Kept, not
+-- dropped: this is the only record of what the operator actually typed, and it
+-- deliberately carries no CHECK of its own -- constraining the record of a bad
+-- value the same way as the value would make it unstorable here too. Written
+-- only by db._quarantine_unknown_platforms; nothing reads it automatically.
+CREATE TABLE IF NOT EXISTS handles_quarantine (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    quarantined_at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    handle TEXT NOT NULL,
+    display_name TEXT,
+    cohort TEXT,
+    keyword_filter TEXT,
+    included INTEGER,
+    status TEXT,
+    added_at TEXT,
+    validated_at TEXT,
+    last_seen_published_at TEXT
+);
 
 CREATE TABLE IF NOT EXISTS discovery_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

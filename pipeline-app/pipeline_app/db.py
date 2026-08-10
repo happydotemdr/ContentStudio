@@ -268,6 +268,25 @@ STAGE_STATUSES = ("locked", "ready", "running", "awaiting_review", "approved",
 # :210 (aborted), :216 (complete/failed), preflight.py:16 (orphaned) (A-75).
 TURN_STATUSES = ("running", "complete", "failed", "aborted", "orphaned")
 
+# The platforms the discovery engine can actually serve. This is a THIRD copy of
+# a vocabulary whose authority is `run_discovery_cron.build_adapters()` -- the
+# other two being schema.sql's CHECK and _MIGRATION_1_HANDLES_STEPS' -- and it
+# exists only because a migration body cannot import run_discovery_cron without
+# dragging every adapter into the boot path. The copies are pinned to the
+# registry, in both directions, by
+# test_every_platform_the_adapter_registry_knows_is_accepted and
+# test_the_platform_check_accepts_nothing_the_adapter_registry_cannot_serve;
+# adding a platform means editing all three and the registry, and the tests say
+# so if you miss one (B-73).
+KNOWN_PLATFORMS = ("youtube", "bluesky", "instagram", "linkedin-profile",
+                   "linkedin-company", "facebook", "x")
+
+
+def _utcnow_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
 
 def _coerce_unknown_stage_statuses(conn: sqlite3.Connection) -> None:
     """A legacy row can already hold the typo the new CHECK exists to prevent, and
@@ -546,6 +565,129 @@ _MIGRATION_1_HANDLES_CREATOR_STEPS = (
 )
 
 
+def _quarantine_unknown_platforms(conn: sqlite3.Connection) -> None:
+    """Move B-73's ghost rows aside so the rebuild's `INSERT ... SELECT` is not
+    aborted by the very defect the CHECK exists to prevent. Each row is copied
+    verbatim and reported -- deleting it silently would destroy the operator's
+    only record of the typo, which is the same class of failure. Same ruling as
+    `_coerce_unknown_stage_statuses`, one table over: do not brick, do not discard.
+
+    Coercion is not available here the way it was for the two status columns.
+    There is no honest platform to coerce `'instgram'` to -- picking one would
+    invent a claim about which adapter should have run -- so the row leaves
+    `handles` entirely and `handles_quarantine` is what keeps it readable.
+
+    **The ghost's `discovery_run_handles` children go with it, and that is not
+    incidental.** `adapters[handle_row["platform"]]` raises inside
+    discovery_engine's per-handle isolation, which records an 'error' result --
+    so the real operator's ghost has children, one per daily run. `apply_migrations`
+    runs with FK enforcement OFF (SQLite's own rebuild procedure) and replaces it
+    with a whole-database `foreign_key_check`, so `ON DELETE CASCADE` does not
+    fire here and orphaned children would be counted as violations THIS migration
+    introduced: MigrationIntegrityError, out of init_db, boot dead. Deleting them
+    explicitly is the cascade the schema already declares, executed by hand
+    because enforcement is off -- and the count goes into the event so the
+    removal is stated rather than silent.
+
+    Columns are named rather than `SELECT *`, and unpacked positionally:
+    `apply_migrations` is public and a caller's connection need not carry a Row
+    factory (the same reason `_coerce_unknown_stage_statuses` does it), and by
+    this point in the migration `SELECT *` would also pick up `creator_id`, which
+    `handles_quarantine` has no column for.
+
+    No commit here, deliberately -- same reasoning as the two coercion passes:
+    the INSERTs, the DELETEs and their events belong to `apply_migrations`'
+    transaction, so a migration that fails later takes the quarantine records
+    down with the quarantining itself. A raw `conn.commit()` would end that
+    transaction outright (the `_MIGRATIONS` contract names this as the easiest
+    mistake to make in a create-copy-drop-rename)."""
+    from pipeline_app import obs
+
+    placeholders = ",".join("?" * len(KNOWN_PLATFORMS))
+    rows = conn.execute(
+        f"SELECT id, platform, handle, display_name, cohort, keyword_filter, included, "
+        f"status, added_at, validated_at, last_seen_published_at FROM handles "
+        f"WHERE platform NOT IN ({placeholders})", KNOWN_PLATFORMS
+    ).fetchall()
+    if not rows:
+        return
+    now = _utcnow_iso()
+    for (row_id, platform, handle, display_name, cohort, keyword_filter, included,
+            status, added_at, validated_at, last_seen_published_at) in rows:
+        conn.execute(
+            "INSERT INTO handles_quarantine (quarantined_at, reason, platform, handle, "
+            "display_name, cohort, keyword_filter, included, status, added_at, validated_at, "
+            "last_seen_published_at) VALUES (?, 'unknown platform', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (now, platform, handle, display_name, cohort, keyword_filter, included,
+             status, added_at, validated_at, last_seen_published_at),
+        )
+        run_results_removed = conn.execute(
+            "DELETE FROM discovery_run_handles WHERE handle_id = ?", (row_id,)
+        ).rowcount
+        conn.execute("DELETE FROM handles WHERE id = ?", (row_id,))
+        quarantined_id = obs.record_event(
+            conn, kind="schema.handle_quarantined", severity="warning",
+            source="db.migration_1",
+            message=f"handle {handle} names unknown platform {platform!r}; moved to "
+                    f"handles_quarantine with {run_results_removed} recorded run "
+                    f"result(s)",
+            detail={"platform": platform, "handle": handle,
+                    "run_results_removed": run_results_removed,
+                    "known_platforms": list(KNOWN_PLATFORMS)},
+        )
+        if quarantined_id == -1:
+            obs.log("db.handle_quarantine_unrecorded", level="error",
+                    platform=platform, handle=handle,
+                    run_results_removed=run_results_removed)
+
+
+# B-73's migrated half, and the same create-copy-drop-rename recipe as every
+# rebuild above, one statement per execute() for the same reason.
+#
+# `creator_id` is declared here and named in the copy, not left to the ALTER that
+# ran a step earlier: this DROP TABLE removes the table that ALTER just modified,
+# so a rebuild that forgot the column would take B-72 back out again -- and
+# `idx_handles_creator` is re-created after the RENAME because the DROP takes the
+# index down with the table it was on (T7-F2's exact shape: a fresh database
+# keeps its index, a migrated one silently loses it, and every fresh-database
+# test passes either way). init_db's own copy of that CREATE INDEX is guarded
+# `if not pre_existing:` precisely so it cannot paper over an omission here.
+#
+# The `status` CHECK and `consecutive_failures` belong to B-82, not B-73. They
+# are added by this rebuild anyway because widening a CHECK needs another
+# create-copy-drop-rename, and a second rebuild of one table inside one unshipped
+# migration is waste.
+_MIGRATION_1_HANDLES_STEPS = (
+    """CREATE TABLE handles_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        creator_id INTEGER REFERENCES creators(id) ON DELETE SET NULL,
+        platform TEXT NOT NULL CHECK (platform IN
+            ('youtube','bluesky','instagram','linkedin-profile','linkedin-company',
+             'facebook','x')),
+        handle TEXT NOT NULL,
+        display_name TEXT,
+        cohort TEXT NOT NULL,
+        keyword_filter TEXT,
+        included INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN
+            ('pending','validating','validated','invalid','failing')),
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        added_at TEXT NOT NULL,
+        validated_at TEXT,
+        last_seen_published_at TEXT,
+        UNIQUE(platform, handle)
+    )""",
+    """INSERT INTO handles_new (id, creator_id, platform, handle, display_name, cohort,
+        keyword_filter, included, status, added_at, validated_at, last_seen_published_at)
+        SELECT id, creator_id, platform, handle, display_name, cohort,
+        keyword_filter, included, status, added_at, validated_at, last_seen_published_at
+        FROM handles""",
+    "DROP TABLE handles",
+    "ALTER TABLE handles_new RENAME TO handles",
+    "CREATE INDEX IF NOT EXISTS idx_handles_creator ON handles(creator_id)",
+)
+
+
 def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
     """A-47 / A-75: give `stages.status`, `turns.status` and the discovery_run_handles
     foreign keys the constraints schema.sql can never deliver to an existing table.
@@ -569,12 +711,12 @@ def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
     references the table's *temporary* `_new` name, which nothing here ever does.
     B-72's `handles.creator_id` step is appended after `discovery_run_handles`,
     following that same readability convention -- not a correctness requirement,
-    per the paragraph above -- and T10's `handles` rebuild goes after it rather
+    per the paragraph above -- and B-73's `handles` rebuild goes after it rather
     than above it, so `discovery_run_handles` (the child) stays positioned
-    before `handles`' own rebuild step.
+    before `handles`' own rebuild step. That one IS load-bearing: the rebuild's
+    copy step names `creator_id`, so the ALTER that adds it must already have run.
 
-    T10 still extends this same migration further (the `handles` rebuild). It
-    stays version 1 until it has shipped."""
+    It stays version 1 until it has shipped."""
     _coerce_unknown_stage_statuses(conn)
     for statement in _MIGRATION_1_STAGES_STEPS:
         conn.execute(statement)
@@ -593,14 +735,21 @@ def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
     for statement in _MIGRATION_1_DISCOVERY_RUN_HANDLES_STEPS:
         conn.execute(statement)
-    # Last, and T10's `handles` rebuild goes after THIS: the rebuild's
-    # create-copy-drop-rename must carry `creator_id REFERENCES creators(id) ON
-    # DELETE SET NULL` forward and re-create idx_handles_creator, because its
-    # DROP TABLE takes the index down with the table (the T7-F2 shape). Adding
-    # the column before the rebuild rather than only inside it keeps this step
-    # readable on its own and keeps the rebuild's INSERT ... SELECT able to name
-    # the column.
+    # Before the `handles` rebuild below, and that order is load-bearing: the
+    # rebuild's create-copy-drop-rename carries `creator_id REFERENCES
+    # creators(id) ON DELETE SET NULL` forward and re-creates
+    # idx_handles_creator (its DROP TABLE takes the index down with the table --
+    # the T7-F2 shape), and its INSERT ... SELECT can only name the column once
+    # this ALTER has added it.
     for statement in _MIGRATION_1_HANDLES_CREATOR_STEPS:
+        conn.execute(statement)
+    # Before the rebuild, deliberately, and for the same reason the two status
+    # coercions run before theirs: a legacy database can already hold a platform
+    # the new CHECK rejects, and the rebuild's INSERT ... SELECT aborts on it
+    # (CHECK constraint failed) -- bricking the boot on the very defect being
+    # fixed (B-73).
+    _quarantine_unknown_platforms(conn)
+    for statement in _MIGRATION_1_HANDLES_STEPS:
         conn.execute(statement)
 
 

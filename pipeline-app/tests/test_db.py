@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -582,7 +583,6 @@ def test_a_fresh_database_is_stamped_at_the_current_schema_version(tmp_path: Pat
         c.close()
 
 
-@pytest.mark.xfail(reason="migration 1 constrains handles in T10", strict=True)
 def test_an_existing_database_is_migrated_not_silently_left_behind(tmp_path: Path):
     """This is A-72: `CREATE TABLE IF NOT EXISTS` skips the new constraint and
     init_db reports success anyway."""
@@ -2117,5 +2117,287 @@ def test_a_migrated_database_gets_cross_platform_creator_identity_too(
             "deleting the creator destroyed the handle row -- CASCADE, not SET NULL"
         assert surviving["creator_id"] is None, \
             "ON DELETE SET NULL did not fire on a migrated database"
+    finally:
+        c.close()
+
+
+# ---------------------------------------------------------------------------
+# B-73: handles.platform was unconstrained free text.
+# ---------------------------------------------------------------------------
+
+def _platform_vocabulary_the_check_enforces(conn) -> set[str]:
+    """The platform names the LIVE `handles` table actually accepts.
+
+    Read out of sqlite_master rather than out of `db.KNOWN_PLATFORMS`, because
+    the vocabulary now exists in three hand-written copies -- that constant,
+    schema.sql's CHECK, and the migration's CHECK -- and only the one SQLite is
+    enforcing on this database decides what gets stored. Asserting against the
+    constant would be an echo: it would pass while the two CHECKs said something
+    else entirely."""
+    ddl = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='handles'"
+    ).fetchone()[0]
+    match = re.search(r"CHECK\s*\(\s*platform\s+IN\s*\((.*?)\)\s*\)", ddl, re.S)
+    assert match is not None, f"`handles` declares no platform CHECK at all:\n{ddl}"
+    return set(re.findall(r"'([^']*)'", match.group(1)))
+
+
+def _adapter_registry_platforms() -> set[str]:
+    """The authoritative vocabulary: the keys `run_discovery_cron.build_adapters()`
+    can actually serve. A platform outside it has no adapter, which is B-73 --
+    `adapters[handle_row["platform"]]` raises KeyError in a detached subprocess.
+
+    Imported inside the function, and `build_adapters()` only constructs adapter
+    objects -- no import-time or call-time network."""
+    import run_discovery_cron
+
+    return set(run_discovery_cron.build_adapters())
+
+
+def test_an_unknown_platform_is_rejected_at_the_storage_layer(conn):
+    """FAULT. The operation reports failure rather than storing a row that the
+    validate subprocess will later die on."""
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_handle(conn, "instgram", "@a", None, "guru", None, "2026-08-08T00:00:00+00:00")
+
+
+def test_a_rejected_platform_leaves_no_row_unlike_a_valid_one(conn):
+    """DISTINGUISHABILITY. The ghost-platform state -- a row that exists,
+    is included, and will never leave 'pending' -- must be impossible, and must
+    not be confused with the platform simply having no handles yet."""
+    db.create_handle(conn, "instagram", "@real", None, "guru", None, "2026-08-08T00:00:00+00:00")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_handle(conn, "instgram", "@ghost", None, "guru", None,
+                         "2026-08-08T00:00:00+00:00")
+    assert [r["handle"] for r in db.list_handles(conn)] == ["@real"]
+    assert db.list_platform_handles(conn, "instgram") == []
+
+
+def test_every_platform_the_adapter_registry_knows_is_accepted(conn):
+    """Half of the pin, and the list is DERIVED rather than restated: a
+    hand-written copy here cannot see a platform nobody added to it, so the CHECK
+    and the registry could drift apart with this test still green -- which is the
+    very state B-73 exists to make impossible."""
+    registry = _adapter_registry_platforms()
+    for index, platform in enumerate(sorted(registry)):
+        db.create_handle(conn, platform, f"@h{index}", None, "guru", None,
+                         "2026-08-08T00:00:00+00:00")
+    assert {r["platform"] for r in db.list_handles(conn)} == registry
+
+
+def test_the_platform_check_accepts_nothing_the_adapter_registry_cannot_serve(conn):
+    """The other half. One direction alone lets the CHECK grow a platform no
+    adapter can serve -- stored happily, then KeyError in the detached validate
+    subprocess, which is B-73 again with the CHECK's blessing."""
+    assert _platform_vocabulary_the_check_enforces(conn) == _adapter_registry_platforms()
+
+
+def test_a_migrated_database_rejects_an_unknown_platform_too(tmp_path: Path, monkeypatch):
+    """The migrated twin of the CHECK, for the reason every twin in this file
+    exists: `CREATE TABLE IF NOT EXISTS handles` is skipped outright on a
+    pre-existing database, so schema.sql's CHECK never reaches the operator's own
+    pipeline.db and only the migration's rebuild can put it there."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            db.create_handle(c, "instgram", "@ghost", None, "guru", None,
+                             "2026-08-08T00:00:00+00:00")
+        assert _platform_vocabulary_the_check_enforces(c) == _adapter_registry_platforms()
+    finally:
+        c.close()
+
+
+# Verified against the call sites, not the plan: discovery_engine.py writes
+# 'validating' (:243), 'validated' (:248) and 'invalid' (:255, :279);
+# schema.sql's DEFAULT writes 'pending'; T11 (B-82) writes 'failing'.
+HANDLE_STATUSES_THE_APP_WRITES = ("pending", "validating", "validated", "invalid", "failing")
+
+
+def test_a_handle_status_outside_the_vocabulary_is_rejected(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.set_handle_status(conn, handle_id, "validatd")
+
+
+def test_every_handle_status_the_app_writes_is_accepted(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    for status in HANDLE_STATUSES_THE_APP_WRITES:
+        db.set_handle_status(conn, handle_id, status)
+    assert db.get_handle(conn, handle_id)["status"] == HANDLE_STATUSES_THE_APP_WRITES[-1]
+
+
+def test_every_handle_status_the_app_writes_is_accepted_by_the_migrated_table(
+        tmp_path: Path, monkeypatch):
+    """The migrated twin of the status vocabulary. Separate from the platform
+    twin above so that dropping `'failing'` from the migration's CHECK -- and
+    only that -- fails this assertion and no other."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        handle_id = db.create_handle(c, "youtube", "@a", None, "guru", None,
+                                     "2026-08-08T00:00:00+00:00")
+        for status in HANDLE_STATUSES_THE_APP_WRITES:
+            db.set_handle_status(c, handle_id, status)
+        with pytest.raises(sqlite3.IntegrityError):
+            db.set_handle_status(c, handle_id, "validatd")
+    finally:
+        c.close()
+
+
+def test_a_new_handle_starts_with_no_consecutive_failures(conn):
+    """T11 (B-82) counts failures in this column. It is added here rather than
+    there because a CHECK cannot be altered afterwards without a second rebuild
+    of the same table inside the same unshipped migration."""
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None,
+                                 "2026-08-08T00:00:00+00:00")
+    assert db.get_handle(conn, handle_id)["consecutive_failures"] == 0
+
+
+def test_a_migrated_database_has_the_consecutive_failures_column(tmp_path: Path, monkeypatch):
+    """The migrated twin. Its own test, not an extra assertion on a neighbour:
+    dropping the column from the rebuild must fail here and nowhere else."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.execute("INSERT INTO handles (platform, handle, cohort, added_at) "
+              "VALUES ('youtube', '@real', 'guru', '2026-08-08T00:00:00+00:00')")
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        carried = db.get_handle_by_platform_and_handle(c, "youtube", "@real")
+        assert carried["consecutive_failures"] == 0, \
+            "handles.consecutive_failures is missing or unset on a migrated database"
+    finally:
+        c.close()
+
+
+def test_handles_quarantine_exists_on_a_fresh_database(conn):
+    """The fresh half of the quarantine table. Without it schema.sql and the
+    migration disagree about whether the table exists at all, and only the
+    migrated half would notice."""
+    assert conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='handles_quarantine'"
+    ).fetchone()[0] == 1
+    assert conn.execute("SELECT count(*) FROM handles_quarantine").fetchone()[0] == 0
+
+
+def test_migration_quarantines_a_ghost_platform_row_and_records_it(tmp_path: Path, monkeypatch):
+    """SURFACING. A legacy database already contains the ghost the CHECK now
+    forbids. Dropping it silently would destroy the operator's only record of
+    what they typed; aborting the migration would brick the boot on the very
+    defect being fixed.
+
+    Seeded with a valid handle as well as the ghost, deliberately: with only the
+    ghost in the table, `count(*) FROM handles == 0` is satisfied just as well by
+    a migration that dropped every handle it had, and this test could not tell
+    quarantining from destroying. The valid row's non-default fields are asserted
+    one by one for the same reason -- a rebuild that re-defaulted `included` or
+    `status` on the way past would otherwise be invisible."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.execute(
+        "INSERT INTO handles (platform, handle, display_name, cohort, keyword_filter, "
+        "included, status, added_at, validated_at, last_seen_published_at) "
+        "VALUES ('instagram', '@real', 'Real', 'guru', 'kw', 0, 'validated', "
+        "'2026-08-01T00:00:00+00:00', '2026-08-02T00:00:00+00:00', '2026-08-03T00:00:00+00:00')"
+    )
+    c.execute(
+        "INSERT INTO handles (platform, handle, display_name, cohort, keyword_filter, "
+        "included, status, added_at) "
+        "VALUES ('instgram', '@ghost', 'Ghost', 'guru', 'gkw', 1, 'pending', "
+        "'2026-08-08T00:00:00+00:00')"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        survivors = db.list_handles(c)
+        assert [(r["platform"], r["handle"]) for r in survivors] == [("instagram", "@real")]
+        kept = survivors[0]
+        assert (kept["display_name"], kept["cohort"], kept["keyword_filter"],
+                kept["included"], kept["status"], kept["added_at"],
+                kept["validated_at"], kept["last_seen_published_at"]) == \
+            ("Real", "guru", "kw", 0, "validated", "2026-08-01T00:00:00+00:00",
+             "2026-08-02T00:00:00+00:00", "2026-08-03T00:00:00+00:00")
+
+        quarantined = c.execute("SELECT * FROM handles_quarantine").fetchall()
+        assert [(r["platform"], r["handle"]) for r in quarantined] == [("instgram", "@ghost")]
+        ghost = quarantined[0]
+        assert ghost["reason"] == "unknown platform"
+        assert (ghost["display_name"], ghost["cohort"], ghost["keyword_filter"],
+                ghost["included"], ghost["status"], ghost["added_at"]) == \
+            ("Ghost", "guru", "gkw", 1, "pending", "2026-08-08T00:00:00+00:00")
+
+        ev = c.execute("SELECT * FROM events WHERE kind = 'schema.handle_quarantined'").fetchall()
+        assert len(ev) == 1
+        assert ev[0]["severity"] == "warning"
+        assert "instgram" in ev[0]["message"]
+    finally:
+        c.close()
+
+
+def test_quarantining_a_ghost_handle_does_not_brick_a_boot_that_recorded_its_failures(
+        tmp_path: Path, monkeypatch):
+    """The database B-73 actually describes, not a hypothetical one.
+
+    The ghost's KeyError is caught by discovery_engine's per-handle isolation
+    (discovery_engine.py:373), which writes a `discovery_run_handles` row with
+    status 'error' -- "producing an error row on every daily run", in the
+    finding's own words. So the real operator's ghost has CHILDREN.
+
+    `apply_migrations` runs the migration with FK enforcement OFF (SQLite's own
+    rebuild procedure) and replaces it with a whole-database `foreign_key_check`
+    afterwards, so removing the parent row and leaving the children makes the
+    migration itself the author of a brand-new violation: MigrationIntegrityError,
+    raised out of init_db, boot dead. Which is the outcome the quarantine exists
+    to avoid, arrived at from the other side."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.execute("INSERT INTO handles (platform, handle, cohort, added_at) "
+              "VALUES ('instgram', '@ghost', 'guru', '2026-08-08T00:00:00+00:00')")
+    c.execute("INSERT INTO discovery_runs (run_id, trigger, mode, status, started_at) "
+              "VALUES ('r-1', 'scheduled', 'incremental', 'completed_with_errors', "
+              "'2026-08-08T00:00:00+00:00')")
+    c.execute("INSERT INTO discovery_run_handles (run_id, handle_id, status, error_message) "
+              "VALUES (1, 1, 'error', \"'instgram'\")")
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)  # must not raise MigrationIntegrityError
+
+    c = db.get_connection(db_path)
+    try:
+        assert [(r["platform"], r["handle"]) for r in
+                c.execute("SELECT platform, handle FROM handles_quarantine")] == \
+            [("instgram", "@ghost")]
+        # The orphaned run results went with the parent, exactly as the schema's
+        # own `ON DELETE CASCADE` says they should -- but they are COUNTED in the
+        # event, so "the ghost had 1 recorded run result" is still answerable.
+        assert c.execute("SELECT count(*) FROM discovery_run_handles").fetchone()[0] == 0
+        ev = c.execute(
+            "SELECT * FROM events WHERE kind = 'schema.handle_quarantined'"
+        ).fetchone()
+        assert json.loads(ev["detail"])["run_results_removed"] == 1
     finally:
         c.close()
