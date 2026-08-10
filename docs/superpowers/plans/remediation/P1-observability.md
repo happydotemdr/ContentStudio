@@ -4391,6 +4391,43 @@ detect drift is the worst possible version of this test, and it would pass on fi
 - [ ] Six scaffolds, six distinct failures. T10 earned twelve; this is the test that justifies every
       one of them, so it does not get a lighter standard than the tasks it guards.
 
+#### T12 as built — seven dimensions, because C4's six had a hole
+
+**Status: implemented in `99ddaa4`, tests only — no production code changed.**
+
+**C4's scaffold list was wrong, and the implementer found it by running it.** The correction
+prescribed six scaffolds against six dimensions, one of them "drop a partial index's `WHERE`". But
+dropping the predicate flips `index_list`'s `partial` flag, so that scaffold reds the **index**
+dimension and **never reaches the predicate comparison at all** — the predicate dimension had no
+scaffold that could reach it, which is the "a check that cannot fail" defect inside the very task
+whose job is proving checks can fail. Resolved by splitting: dropping the `WHERE` reds `indexes`
+(via the flag), and *changing* the predicate reds `index_predicates`. **Seven dimensions, seven
+scaffolds, seven distinct assertions.**
+
+Built: object names; column order and ordinal position; per-column type / `NOT NULL` / default /
+PK; foreign keys including `on_delete`; indexes via `index_list` + `index_xinfo` (unique, origin,
+partial, collation, sort); partial-index `WHERE` predicates; and CHECK constraints. The last two
+have no pragma and come from DDL normalized for comments, SQLite's rename-quoting and whitespace,
+using a balanced-paren scanner that **generalises T10's `_check_vocabulary`, which now delegates to
+it** — one parser, not a third. A bonus eighth scaffold (dropping `UNIQUE(platform, handle)`) reds
+`indexes` via `origin='u'`.
+
+**Result: no real divergence.** The guard passes. C3's latent case is confirmed benign for now —
+`projects` and `discovery_runs`, which migration 1 never rebuilds, are genuinely structurally
+identical to `schema.sql` today. Named in the test docstring, `LEGACY_SCHEMA_V0` untouched.
+
+#### NEW FINDING raised by T12 — filed for validation, NOT fixed here
+
+**Migration tests that do not pin `obs.LOG_DIR` append to the working tree's real
+`pipeline-app/logs/`.** `apply_migrations` logs at `info`, so any test booting a database through
+`init_db` writes a log line into the developer's actual log directory rather than `tmp_path`.
+T12's own tests pin it; `test_an_existing_database_is_migrated_not_silently_left_behind`
+(`tests/test_db.py:586`) does not, and it is unlikely to be the only one. The directory is
+git-ignored (P0 T16), so `git status` stays clean and nothing fails — which is precisely why it has
+gone unnoticed. Test-hygiene, not a product defect; the fix is either an autouse fixture pinning
+`obs.LOG_DIR` for the whole app suite or a per-test `monkeypatch`. Left for the final whole-branch
+review to place, since an autouse fixture touches `conftest.py`, which P0 owns.
+
 ---
 
 ### T13 — A-85: no lifespan handler, so the connection is never closed
