@@ -1062,6 +1062,23 @@ class SchemaVersionError(RuntimeError):
     """The database was written by a build newer than this code understands."""
 
 
+class StrandedPoisonError(RuntimeError):
+    """The connection carries a transaction poison that predates this call.
+
+    Distinct from NestedMigrationError: this is neither a transaction nor a
+    boundary, so telling the caller to close its boundary would name something that
+    does not exist. _exit_migration_boundary's own comment explains how a poison
+    entry can survive onto a REUSED connection id."""
+
+
+class NestedMigrationError(RuntimeError):
+    """apply_migrations was called on a connection already inside a transaction.
+
+    A dedicated type, not a bare RuntimeError: the migration tests raise
+    RuntimeError from their own migration bodies, so a bare one here would let a
+    precondition failure masquerade as the migration failure under test."""
+
+
 _MIGRATIONS: list[tuple[int, "Callable[[sqlite3.Connection], None]"]] = [
     # (1, _migration_1_constrain_core_tables) -- registered in T6.
     #
@@ -1073,6 +1090,12 @@ _MIGRATIONS: list[tuple[int, "Callable[[sqlite3.Connection], None]"]] = [
     # It must not open a db.transaction() either. That boundary cannot help --
     # it does not cover DDL -- and inside a migration it is non-outermost, so it
     # leaves a _TXN_POISON entry behind on the connection's id.
+    #
+    # And it must not call conn.executescript(): that issues an implicit COMMIT
+    # before running, which destroys apply_migrations' boundary silently. It is
+    # the natural idiom for SQLite's create-copy-drop-rename recipe and is
+    # already used elsewhere in this module, so this is the easiest of these
+    # three mistakes to make. Use separate conn.execute() calls.
 ]
 
 
@@ -1106,12 +1129,21 @@ def _enter_migration_boundary(conn: sqlite3.Connection) -> None:
     the later rollback rolls back nothing, and half-applied is indistinguishable
     from never-ran again. Not hypothetical: SQLite's only recipe for adding a CHECK
     is create-copy-drop-rename, and the copy step is exactly the data movement an
-    author would route through an existing helper."""
+    author would route through an existing helper.
+
+    apply_migrations refuses a connection that already carries poison, and
+    _exit_migration_boundary pops it whenever the depth reaches zero. A body that
+    leaks a depth increment defeats both, and with several migrations registered the
+    next one would then be refused for its predecessor's swallowed failure -- which
+    is loud and wrong rather than silent and wrong, but still worth knowing."""
     with _TXN_LOCK:
         _TXN_DEPTH[id(conn)] = _TXN_DEPTH.get(id(conn), 0) + 1
 
 
 def _exit_migration_boundary(conn: sqlite3.Connection) -> None:
+    """Release the boundary. Cleanup only -- the poison check happens in
+    `apply_migrations` before the stamp and the commit, which is the last moment
+    refusing is still possible."""
     key = id(conn)
     with _TXN_LOCK:
         # A missing key is NOT a normal exit. `.get(key, 1) - 1` yields 0 either way,
@@ -1143,6 +1175,41 @@ def _exit_migration_boundary(conn: sqlite3.Connection) -> None:
 
         obs.log("db.migration_bookkeeping_lost", level="error",
                 note="the migration boundary was gone before the migration finished")
+
+
+def _schema_cookie(conn: sqlite3.Connection) -> "int | None":
+    """SQLite's schema cookie: it bumps when a schema change COMMITS, and a rollback
+    leaves it where it was.
+
+    This exists because every *inferred* answer to "did the migration's changes
+    survive?" has been wrong. Whether `rollback()` raised does not tell you (it is a
+    silent no-op with no open transaction). Whether `conn.in_transaction` is False
+    does not tell you (true both when the body committed and when it rolled itself
+    back). A body can commit its boundary with `executescript()` and then open a
+    fresh transaction, so the rollback succeeds while the DDL is already durable.
+
+    It is NOT a verdict, and this function deliberately does not present it as one:
+    it is blind to DML, and inside an uncommitted write transaction it already shows
+    the bumped value. It goes into the failure event's `detail` as a raw reading for
+    whoever investigates. Returns None when it cannot be read at all."""
+    try:
+        return conn.execute("PRAGMA schema_version").fetchone()[0]
+    except Exception:  # noqa: BLE001 -- an unreadable cookie is its own reading
+        return None
+
+
+def _swallowed_failure(conn: sqlite3.Connection) -> "BaseException | None":
+    """The inner failure a migration body caught and discarded, if there was one.
+
+    Peeks without popping: `_exit_migration_boundary` still owns the cleanup. A
+    `db.transaction()` opened inside a migration body is non-outermost, so its
+    failure sets `_TXN_POISON` and skips `_rollback_and_report` entirely -- nothing
+    reports it. Discarding that quietly would make a migration that swallowed a
+    failure indistinguishable from one that ran cleanly, and it would be stamped and
+    recorded as applied. `transaction()` refuses exactly this on its outermost exit;
+    so does `apply_migrations`."""
+    with _TXN_LOCK:
+        return _TXN_POISON.get(id(conn))
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -1179,7 +1246,14 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
     old code over a new schema is how data gets destroyed.
 
     `conn` must not already be inside a transaction: this opens its own with a
-    raw `BEGIN IMMEDIATE`, and sqlite3 rejects a nested one."""
+    raw `BEGIN IMMEDIATE`, and sqlite3 rejects a nested one.
+
+    **Caller contract on failure:** when this raises, the connection may still hold an
+    open write transaction -- deliberately, because committing it would persist a
+    partial migration. The caller must CLOSE the connection without committing.
+    `init_db` does. A caller that catches and continues will have the partial
+    migration committed by the next leaf helper that calls
+    `commit_unless_in_transaction`."""
     from pipeline_app import obs
 
     # Enforced, not merely documented. If the caller's boundary has already done
@@ -1189,20 +1263,39 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
     # schema.migration_failed row. The one durable record of the failure, lost,
     # with nothing to indicate it.
     if conn.in_transaction or _TXN_DEPTH.get(id(conn)):
-        raise RuntimeError(
+        raise NestedMigrationError(
             "apply_migrations opens its own BEGIN IMMEDIATE and cannot run inside an "
             "existing transaction; commit or close the caller's boundary first"
+        )
+    with _TXN_LOCK:
+        stranded = _TXN_POISON.get(id(conn))
+    if stranded is not None:
+        # Refusing here is also what lets the swallowed-failure check below be a plain
+        # `is not None`: nothing can be inherited past this point, so identity
+        # comparison against a pre-existing entry is unnecessary -- and it would have
+        # been wrong anyway, since transaction() populates the map with setdefault, so
+        # a later genuine failure never replaces an older object.
+        raise StrandedPoisonError(
+            f"connection carries a stranded transaction poison "
+            f"({type(stranded).__name__}: {stranded}); it predates this call. Nothing "
+            f"clears it in-process -- restart the app, and if it recurs the boundary "
+            f"bookkeeping in db.py is leaking"
         )
 
     current = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
     if current > SCHEMA_VERSION:
-        obs.record_event(
+        ahead_id = obs.record_event(
             conn, kind="schema.version_ahead_of_code", severity="critical",
             source="db.apply_migrations",
             message=f"database is at schema version {current}, this build understands "
                     f"{SCHEMA_VERSION}",
             detail={"db_version": current, "code_version": SCHEMA_VERSION},
         )
+        if ahead_id == -1:
+            obs.log("db.version_ahead_unrecorded", level="critical",
+                    db_version=current, code_version=SCHEMA_VERSION,
+                    message=f"database is at schema version {current}, this build "
+                            f"understands {SCHEMA_VERSION}")
         raise SchemaVersionError(
             f"database schema version {current} is newer than this build's {SCHEMA_VERSION}; "
             f"upgrade the app or restore an older database"
@@ -1231,23 +1324,47 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
         # connection shared across threads under WAL a deferred transaction that
         # upgrades to a write can take SQLITE_BUSY_SNAPSHOT, which busy_timeout does
         # not resolve.
+        cookie_before = _schema_cookie(conn)
         conn.execute("BEGIN IMMEDIATE")
         _enter_migration_boundary(conn)
         failure: BaseException | None = None
+        rollback_failed = False
+        pending_when_it_failed: bool | None = None
         try:
             migrate(conn)
+            swallowed = _swallowed_failure(conn)
+            if swallowed is not None:
+                # Checked BEFORE the stamp and the commit, the last moment refusing is
+                # still possible. The body caught an inner transaction()'s failure and
+                # carried on; committing now would stamp a half-done migration as
+                # applied while that inner failure went unreported by anyone, because
+                # non-outermost blocks skip _rollback_and_report entirely.
+                raise TransactionPoisonedError(
+                    f"migration {version} swallowed an inner transaction failure: "
+                    f"{type(swallowed).__name__}: {swallowed}"
+                ) from swallowed
             conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (version,))
             conn.commit()
         except BaseException as exc:
+            failure = exc
+            # Captured HERE, before rollback() destroys it. This is the one reading
+            # that separates "the body committed its work" (False) from "the work was
+            # still pending and is about to be discarded" (True) -- and it is the only
+            # observation on offer that flips when a body commits DML, which the schema
+            # cookie cannot see. It was previously rejected for making a bad VERDICT,
+            # which is a category error: this is a raw reading, and the reader draws
+            # the conclusion.
             try:
+                pending_when_it_failed = conn.in_transaction
+            except Exception:  # noqa: BLE001 -- unreadable is its own reading
+                pending_when_it_failed = None
+            try:
+                # Unconditional: rollback() with no open transaction is a harmless no-op.
                 conn.rollback()
-            except BaseException as rollback_exc:  # noqa: BLE001 -- report it, never mask it
-                # A migration that failed AND could not be rolled back is the worst
-                # state this function can reach. It must not also be the one that
-                # reports least.
+            except Exception as rollback_exc:  # noqa: BLE001 -- report, never mask
+                rollback_failed = True
                 obs.log("db.migration_rollback_failed", level="critical", version=version,
                         error=f"{type(rollback_exc).__name__}: {rollback_exc}")
-            failure = exc
         finally:
             # Leave the boundary BEFORE reporting. record_event commits through
             # commit_unless_in_transaction, which no-ops while the depth is held --
@@ -1255,25 +1372,84 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
             # uncommitted, and it would die with the process that needed to report it.
             _exit_migration_boundary(conn)
         if failure is not None:
-            # The exception reaches whoever called init_db, but this row is the only
-            # record that survives the process.
-            obs.record_event(
-                conn, kind="schema.migration_failed", severity="critical",
-                source="db.apply_migrations",
-                message=f"migration {version} failed and was rolled back: "
-                        f"{type(failure).__name__}: {failure}",
-                detail={"version": version, "exception": type(failure).__name__,
-                        "applied_before_failure": applied},
+            # Report OBSERVATIONS, not a verdict.
+            #
+            # Five attempts to state what survived have each been wrong in a different
+            # way: whether rollback() raised (a no-op with no open transaction), whether
+            # conn.in_transaction is False (true both when the body committed and when
+            # it rolled itself back), whether the body returned normally, whether the
+            # stamp advanced, and the schema cookie (blind to DML, and already bumped
+            # inside an uncommitted transaction). Each new classifier was blind to a
+            # migration shape the previous one handled.
+            #
+            # So this makes no claim it cannot support. The message says what is always
+            # true -- the migration failed, a rollback was attempted, the database must
+            # be checked -- and `detail` carries the raw readings for whoever looks. A
+            # statement that cannot be false cannot conflate "nothing happened" with
+            # "half of it is on disk", which is what every verdict here has done.
+            cookie_after = _schema_cookie(conn)
+            kind = "schema.migration_failed"
+            message = (
+                f"migration {version} failed and a rollback was "
+                f"{'attempted and itself failed' if rollback_failed else 'attempted'}; "
+                f"the database may contain partial changes -- verify before restarting: "
+                f"{type(failure).__name__}: {failure}"
             )
+            detail = {"version": version, "exception": type(failure).__name__,
+                      "rollback_failed": rollback_failed,
+                      "pending_when_it_failed": pending_when_it_failed,
+                      "schema_cookie_before": cookie_before,
+                      "schema_cookie_after": cookie_after,
+                      "applied_before_failure": applied}
+            # Recording COMMITS. If anything is still pending on this connection, that
+            # commit would make a partial migration durable -- turning a state SQLite
+            # discards on close into permanent corruption. So check first, and when it
+            # is not safe, report to the log only. That is not a silent path: `failure`
+            # is re-raised below, init_db's caller aborts the boot, and a process that
+            # refuses to start is itself a surfacing signal.
+            try:
+                still_pending = conn.in_transaction
+                pending_reading = still_pending
+            except Exception:  # noqa: BLE001 -- unreadable means assume the worst
+                still_pending = True
+                pending_reading = "unreadable"
+            if still_pending:
+                # NOTE: nothing renders this. /doctor shows `events`, so the worst
+                # reachable migration failure currently surfaces on no operator-facing
+                # surface -- only in the log file and in the boot abort. Recording it
+                # here is not an option: the commit would make the partial migration
+                # durable. Raised as a known gap rather than pretended away.
+                obs.log("db.migration_failed_unrecoverable", level="critical",
+                        version=version, kind=kind, message=message, detail=detail,
+                        in_transaction=pending_reading,
+                        note="no events row written: a commit here would persist the "
+                             "pending work")
+            else:
+                event_id = obs.record_event(
+                    conn, kind=kind, severity="critical", source="db.apply_migrations",
+                    message=message, detail=detail,
+                )
+                if event_id == -1:
+                    # record_event never raises; it returns -1. Here the database is the
+                    # component that just failed, so this is the likeliest place for the
+                    # record itself to be lost -- and a missing record must not look
+                    # like a migration that never failed.
+                    obs.log("db.migration_failure_unrecorded", level="critical",
+                            version=version, kind=kind, message=message)
             raise failure
         # Keep `current` honest inside the loop, so the skip guard above reflects
         # what has actually been applied rather than the state at entry.
         current = version
         applied.append(version)
-        obs.record_event(
+        applied_id = obs.record_event(
             conn, kind="schema.migration_applied", severity="info", source="db.apply_migrations",
             message=f"applied schema migration {version}", detail={"version": version},
         )
+        if applied_id == -1:
+            # Without this, a migration that ran and a migration whose success was
+            # never recorded look the same in `events` -- and `events` is what an
+            # operator reads to reconstruct what a boot actually did.
+            obs.log("db.migration_success_unrecorded", level="error", version=version)
     return applied
 ```
 
@@ -1297,7 +1473,7 @@ def test_a_migration_that_fails_partway_leaves_neither_the_ddl_nor_the_stamp(tmp
             raise RuntimeError("the second half failed")
 
         monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, half_a_migration)])
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match="the second half failed"):
             db.apply_migrations(conn)
 
         assert "doomed" not in [r[1] for r in conn.execute("PRAGMA table_info(projects)")]
@@ -1341,7 +1517,7 @@ def test_a_migration_body_calling_a_leaf_helper_does_not_commit_mid_migration(
             raise RuntimeError("the second half failed")
 
         monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, migration_using_a_helper)])
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match="the second half failed"):
             db.apply_migrations(conn)
 
         assert db.list_projects(conn) == []   # the helper's write rolled back too
@@ -1354,11 +1530,12 @@ def test_a_migration_body_calling_a_leaf_helper_does_not_commit_mid_migration(
         conn.close()
 
 
-def test_a_migration_that_nests_a_transaction_leaves_no_poison_on_the_connection_id(
+def test_a_refused_migration_leaves_no_poison_on_the_connection_id(
     tmp_path, monkeypatch
 ):
-    """A db.transaction() inside a migration body is non-outermost, so its finally
-    takes the nested branch and leaves _TXN_POISON behind. init_db then closes this
+    """Bookkeeping cleanup after a refusal. A db.transaction() inside a migration
+    body is non-outermost, so its finally takes the nested branch and leaves
+    _TXN_POISON behind. init_db then closes this
     connection and the app allocates a new one on the next line -- CPython reuses the
     freed address readily -- so a stranded entry makes the first SUCCESSFUL outermost
     transaction() on the app's real connection roll back correct work and raise
@@ -1380,13 +1557,292 @@ def test_a_migration_that_nests_a_transaction_leaves_no_poison_on_the_connection
                 pass  # swallowed -- this is what poisons the key
 
         monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, migration_that_nests)])
-        db.apply_migrations(conn)  # the migration itself succeeds
+        # The migration is REFUSED -- see
+        # test_a_migration_that_swallows_an_inner_failure_is_not_stamped_as_applied.
+        # This test's subject is what happens to the bookkeeping afterwards.
+        with pytest.raises(db.TransactionPoisonedError):
+            db.apply_migrations(conn)
 
         assert id(conn) not in db._TXN_POISON
         # ...and the next ordinary boundary is not poisoned by it
         with db.transaction(conn):
             db.create_project(conn, "after", "a", "generic", "2026-08-08T00:00:00+00:00")
         assert [r["run_id"] for r in db.list_projects(conn)] == ["after"]
+    finally:
+        conn.close()
+
+
+def test_a_migration_that_swallows_an_inner_failure_is_not_stamped_as_applied(
+    tmp_path, monkeypatch
+):
+    """A body that catches an inner transaction()'s failure and carries on has, by
+    definition, had that failure reported by nobody -- non-outermost blocks skip
+    _rollback_and_report. Committing and stamping it would make a migration that
+    swallowed a failure indistinguishable from one that ran cleanly."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    conn = db.get_connection(db_path)
+    try:
+        def migration_that_swallows(c):
+            try:
+                with db.transaction(c):
+                    raise RuntimeError("the inner half failed")
+            except RuntimeError:
+                pass
+
+        target = db.SCHEMA_VERSION + 1
+        monkeypatch.setattr(db, "_MIGRATIONS", [(target, migration_that_swallows)])
+        with pytest.raises(db.TransactionPoisonedError) as caught:
+            db.apply_migrations(conn)
+
+        assert "the inner half failed" in str(caught.value)
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert conn.execute(
+            "SELECT version FROM schema_version WHERE id = 1"
+        ).fetchone()[0] != target          # NOT stamped as applied
+    finally:
+        conn.close()
+
+    other = db.get_connection(db_path)
+    try:
+        rows = other.execute(
+            "SELECT * FROM events WHERE kind = 'schema.migration_failed'"
+        ).fetchall()
+    finally:
+        other.close()
+    assert len(rows) == 1                  # ...and it was reported
+
+
+def test_a_failed_rollback_reports_without_committing_the_partial_migration(
+    tmp_path, monkeypatch
+):
+    """record_event commits whatever is still pending, so writing the events row here
+    would make the partial migration DURABLE -- turning a state SQLite discards on
+    close into permanent corruption. The report has to go somewhere that does not
+    touch the database, and the failure has to stay recoverable."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+
+    class _RollbackFails:
+        """sqlite3.Connection is a C type and rejects attribute assignment."""
+
+        def __init__(self, real):
+            self._real = real
+
+        def rollback(self):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    conn = db.get_connection(db_path)
+    wrapped = _RollbackFails(conn)
+    try:
+        def doomed(c):
+            c.execute("ALTER TABLE projects ADD COLUMN doomed TEXT")
+            raise RuntimeError("the migration failed")
+
+        monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, doomed)])
+        with pytest.raises(RuntimeError, match="the migration failed"):
+            db.apply_migrations(wrapped)
+    finally:
+        conn.close()   # discards the transaction the failed rollback could not
+
+    # No events row was written, deliberately: writing one would have COMMITTED the
+    # half-applied ALTER. Closing the connection discarded it instead, so the
+    # database self-heals -- assert that from a second connection.
+    other = db.get_connection(db_path)
+    try:
+        cols = [r[1] for r in other.execute("PRAGMA table_info(projects)")]
+        rows = other.execute(
+            "SELECT * FROM events WHERE kind LIKE 'schema.%'"
+        ).fetchall()
+    finally:
+        other.close()
+    assert "doomed" not in cols
+    assert [r["kind"] for r in rows] == []
+
+    # ...and the failure is still on disk, in the sink that does not touch the database.
+    text = "\n".join(
+        p.read_text(encoding="utf-8") for p in (tmp_path / "logs").glob("app-*.log")
+    )
+    assert "db.migration_rollback_failed" in text
+    assert "db.migration_failed_unrecoverable" in text
+
+
+def test_a_migration_that_commits_its_own_boundary_is_not_reported_as_undone(
+    tmp_path, monkeypatch
+):
+    """The shape that defeated every classifier. executescript() COMMITs the
+    boundary, the following INSERT opens a fresh transaction, so rollback() succeeds
+    and conn.in_transaction reads True -- every proxy signal says "rolled back" while
+    the DDL is already durable. The record must not make that claim, and must keep
+    the readings that show otherwise."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    conn = db.get_connection(db_path)
+    try:
+        def commits_then_fails(c):
+            # executescript() COMMITs the boundary, then the INSERT opens a FRESH
+            # transaction -- so rollback() succeeds and conn.in_transaction reads True.
+            # Every proxy signal says "rolled back" here. Only the cookie disagrees,
+            # and only the cookie is right.
+            c.executescript("ALTER TABLE projects ADD COLUMN half TEXT;")
+            c.execute("INSERT INTO projects (run_id, slug, brand, created_at) "
+                      "VALUES ('x', 'x', 'generic', '2026-08-08T00:00:00+00:00')")
+            raise RuntimeError("the second half failed")
+
+        monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, commits_then_fails)])
+        with pytest.raises(RuntimeError, match="the second half failed"):
+            db.apply_migrations(conn)
+    finally:
+        conn.close()
+
+    other = db.get_connection(db_path)
+    try:
+        cols = [r[1] for r in other.execute("PRAGMA table_info(projects)")]
+        rows = other.execute(
+            "SELECT * FROM events WHERE kind LIKE 'schema.migration%'"
+        ).fetchall()
+    finally:
+        other.close()
+    assert "half" in cols                    # the DDL really is durable...
+    assert len(rows) == 1
+    # The record must not claim the changes were undone -- and it must preserve the
+    # raw evidence that they were not, since it deliberately renders no verdict.
+    assert "may contain partial changes" in rows[0]["message"]
+    detail = json.loads(rows[0]["detail"])
+    assert detail["schema_cookie_before"] != detail["schema_cookie_after"]
+
+
+def test_a_failure_that_left_durable_data_is_distinguishable_from_one_that_left_nothing(
+    tmp_path, monkeypatch
+):
+    """The shape every classifier was blind to. executescript() COMMITs the boundary,
+    so the INSERT is durable -- but it is DML, so the schema cookie does not move and
+    reads identically to a migration that was cleanly rolled back.
+
+    Without a reading that separates them, "nothing happened" and "half of it is on
+    disk" produce byte-identical events rows. `pending_when_it_failed` is that
+    reading: True when the work was still pending and about to be discarded, False
+    when the body had already committed it."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    def run(body) -> dict:
+        db_path = tmp_path / f"{body.__name__}.db"
+        db.init_db(db_path, SCHEMA_PATH)
+        conn = db.get_connection(db_path)
+        try:
+            monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, body)])
+            with pytest.raises(RuntimeError, match="the second half failed"):
+                db.apply_migrations(conn)
+        finally:
+            conn.close()
+        other = db.get_connection(db_path)
+        try:
+            rows = other.execute(
+                "SELECT * FROM events WHERE kind = 'schema.migration_failed'"
+            ).fetchall()
+            survivors = [r["run_id"] for r in db.list_projects(other)]
+        finally:
+            other.close()
+        return {"detail": json.loads(rows[0]["detail"]), "survivors": survivors}
+
+    def commits_its_data(c):
+        c.executescript(
+            "INSERT INTO projects (run_id, slug, brand, created_at) "
+            "VALUES ('survivor', 's', 'generic', '2026-08-08T00:00:00+00:00');"
+        )
+        raise RuntimeError("the second half failed")
+
+    def leaves_nothing(c):
+        c.execute("INSERT INTO projects (run_id, slug, brand, created_at) "
+                  "VALUES ('doomed', 'd', 'generic', '2026-08-08T00:00:00+00:00')")
+        raise RuntimeError("the second half failed")
+
+    durable, discarded = run(commits_its_data), run(leaves_nothing)
+
+    assert durable["survivors"] == ["survivor"]   # half the migration really is on disk
+    assert discarded["survivors"] == []           # ...and here nothing is
+    # The cookie cannot tell them apart -- it is blind to DML. That is the point.
+    assert (durable["detail"]["schema_cookie_before"]
+            == durable["detail"]["schema_cookie_after"])
+    # The records must still differ.
+    assert durable["detail"] != discarded["detail"]
+    assert durable["detail"]["pending_when_it_failed"] is False
+    assert discarded["detail"]["pending_when_it_failed"] is True
+
+
+def test_a_lost_events_row_does_not_look_like_a_migration_that_never_failed(
+    tmp_path, monkeypatch
+):
+    """record_event never raises; it returns -1. Here the database is the component
+    that just failed, so this is the likeliest site for the record itself to be lost
+    -- and a missing record must not be indistinguishable from a clean boot."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    conn = db.get_connection(db_path)
+    try:
+        def doomed(c):
+            raise RuntimeError("the second half failed")
+
+        monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, doomed)])
+        monkeypatch.setattr(obs, "record_event", lambda *a, **k: -1)
+        with pytest.raises(RuntimeError, match="the second half failed"):
+            db.apply_migrations(conn)
+    finally:
+        conn.close()
+
+    text = "\n".join(
+        p.read_text(encoding="utf-8") for p in (tmp_path / "logs").glob("app-*.log")
+    )
+    assert "db.migration_failure_unrecorded" in text
+
+
+def test_apply_migrations_refuses_a_connection_carrying_stranded_poison(tmp_path, monkeypatch):
+    """Stranded poison is neither a transaction nor a boundary, so refusing it with
+    NestedMigrationError's "close the caller's boundary" would name something that
+    does not exist and give an unactionable remedy. _exit_migration_boundary's own
+    comment explains how such an entry survives onto a REUSED connection id."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    conn = db.get_connection(db_path)
+    try:
+        db._TXN_POISON[id(conn)] = RuntimeError("left over from a previous connection")
+        try:
+            with pytest.raises(db.StrandedPoisonError, match="predates this call"):
+                db.apply_migrations(conn)
+        finally:
+            db._TXN_POISON.pop(id(conn), None)   # never leak module state between tests
+    finally:
+        conn.close()
+
+
+def test_apply_migrations_refuses_a_connection_already_inside_a_boundary(tmp_path, monkeypatch):
+    """The silent window this closes: with no DML done yet, BEGIN IMMEDIATE succeeds,
+    the depth goes 1->2, and on the failure path record_event's commit no-ops so the
+    caller's rollback destroys the schema.migration_failed row -- the one durable
+    record, gone with nothing to indicate it."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    conn = db.get_connection(db_path)
+    try:
+        with pytest.raises(db.NestedMigrationError):
+            with db.transaction(conn):          # no DML yet -- the silent window
+                db.apply_migrations(conn)
     finally:
         conn.close()
 
