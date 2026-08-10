@@ -700,6 +700,43 @@ def test_a_migration_body_calling_a_leaf_helper_does_not_commit_mid_migration(
         conn.close()
 
 
+def test_a_migration_that_nests_a_transaction_leaves_no_poison_on_the_connection_id(
+    tmp_path, monkeypatch
+):
+    """A db.transaction() inside a migration body is non-outermost, so its finally
+    takes the nested branch and leaves _TXN_POISON behind. init_db then closes this
+    connection and the app allocates a new one on the next line -- CPython reuses the
+    freed address readily -- so a stranded entry makes the first SUCCESSFUL outermost
+    transaction() on the app's real connection roll back correct work and raise
+    TransactionPoisonedError blaming a boot-time migration.
+
+    The _MIGRATIONS contract forbids nesting a transaction() here. This proves the
+    cleanup holds anyway, because a comment enforces nothing."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    conn = db.get_connection(db_path)
+    try:
+        def migration_that_nests(c):
+            try:
+                with db.transaction(c):
+                    raise RuntimeError("inner half failed")
+            except RuntimeError:
+                pass  # swallowed -- this is what poisons the key
+
+        monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, migration_that_nests)])
+        db.apply_migrations(conn)  # the migration itself succeeds
+
+        assert id(conn) not in db._TXN_POISON
+        # ...and the next ordinary boundary is not poisoned by it
+        with db.transaction(conn):
+            db.create_project(conn, "after", "a", "generic", "2026-08-08T00:00:00+00:00")
+        assert [r["run_id"] for r in db.list_projects(conn)] == ["after"]
+    finally:
+        conn.close()
+
+
 def test_an_out_of_order_or_duplicated_migration_list_is_rejected_at_import():
     """An out-of-order entry stamps the version BACKWARDS: [(2, m2), (1, m1)] on a
     v0 database runs m2, stamps 2, then runs m1 and stamps 1 -- so migration 2 has
