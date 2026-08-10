@@ -4323,10 +4323,73 @@ def test_a_migrated_database_has_the_same_schema_as_a_fresh_one(tmp_path: Path):
         migrated.close()
 ```
 
-- [ ] **Run it.** It fails on whatever T6–T11 got subtly wrong — most likely an `IF NOT EXISTS`
-      present in one form and absent in the other, or a column order difference. Fix the migration
-      SQL (never the assertion) until the two match exactly.
+- [ ] **Run it.** ~~It fails on whatever T6–T11 got subtly wrong. Fix the migration SQL (never the
+      assertion) until the two match exactly.~~ **SUPERSEDED — see the corrections below. That
+      instruction cannot be carried out.**
 - [ ] **Commit.** `test(db): pin the migrated schema to the fresh schema (A-72)`
+
+#### T12 pre-review corrections — the comparison is wrong, and its fix instruction is impossible
+
+Pre-reviewed by **running the proposed comparison against the real tree** rather than predicting it.
+Result: **six objects differ, and every single difference is cosmetic.** Reproduce with the
+scratch probe if needed; the readings are below.
+
+| object | difference | cause |
+|---|---|---|
+| `handles`, `stages`, `turns`, `discovery_run_handles` | `CREATE TABLE "handles"` vs `CREATE TABLE handles` | **SQLite itself.** `ALTER TABLE … RENAME TO` rewrites the stored DDL with the new name **quoted**. Every create-copy-drop-rename migration produces this. |
+| `handles`, `stages`, `turns` | schema.sql's explanatory comment blocks are absent | the migration's `CREATE` statements carry no comments |
+| `projects`, `discovery_runs` | whitespace after `(` | neither table is rebuilt by migration 1, so a legacy database keeps `LEGACY_SCHEMA_V0`'s formatting |
+
+**Every index matched exactly** — a real signal that T7–T11's index handling is correct on both
+shapes.
+
+**C1 — "fix the migration SQL until the two match exactly" is not achievable.** The re-quoting is
+SQLite's, not the migration's; no statement the migration can write avoids it. A step that cannot
+be completed gets abandoned or gets the assertion loosened, and a loosened drift guard protects
+nothing.
+
+**C2 — comparing normalized DDL *text* conflates formatting with divergence, which is the one thing
+this test exists to separate.** Today it is red six times for cosmetic reasons and zero times for a
+real one. The natural way to "fix" the comment differences is to paste schema.sql's comments into
+the migration SQL — pure duplication that makes genuine divergence *harder* to see, not easier. And
+a test that is habitually red for noise is a test whose next real failure gets waved through. This
+programme has already shipped three checks that could not fail; a check that cries wolf is the same
+defect wearing the opposite coat.
+
+- [ ] **Compare resolved structure, not DDL text.** Per table, assert equality of:
+      `PRAGMA table_info` (name, type, `notnull`, `dflt_value`, `pk`, **and ordinal position**),
+      `PRAGMA foreign_key_list` (including `on_delete`), and `PRAGMA index_list` +
+      `PRAGMA index_info` (including `unique` and `partial`). Plus the **set of object names**, so
+      a table or index missing entirely still fails.
+- [ ] **CHECK constraints have no pragma, so they must still come from the DDL** — extract them
+      textually, but normalize away comments and identifier quoting first. T10's
+      `_check_vocabulary` already parses a CHECK out of `sqlite_master`; reuse or generalise it
+      rather than writing a third parser.
+- [ ] **A partial index's `WHERE` predicate is not in `index_info`** either — `index_list` reports
+      only the `partial` flag. Take the predicate from the index's own DDL, normalized the same way.
+      `ux_turns_single_running` is exactly such an index, so this is load-bearing, not theoretical.
+
+**C3 — the probe surfaced something latent that this guard is the right place to catch.**
+`projects` and `discovery_runs` are **never rebuilt by migration 1**, so on a real legacy database
+they keep their v0 definitions permanently. They are semantically identical to `schema.sql`'s today,
+so nothing is broken — but that is A-72's exact mechanism (`CREATE TABLE IF NOT EXISTS` skips the
+change and `init_db` reports success anyway), sitting dormant. The day someone adds a column or a
+constraint to either table in `schema.sql`, a migrated database silently will not have it.
+
+- [ ] Do not "fix" this by reformatting `LEGACY_SCHEMA_V0` — that hides the point. A structural
+      comparison passes today (the tables genuinely match) and fires the day they genuinely diverge,
+      which is the behaviour wanted.
+- [ ] State it in the test's docstring, naming both tables, so the next person to edit them knows
+      the guard is what stands between them and a silent divergence.
+
+**C4 — the test must be proven able to fail, per constraint kind.** A drift guard that cannot
+detect drift is the worst possible version of this test, and it would pass on first write.
+
+- [ ] Earn RED **once per structural dimension**, by breaking the *migration* only and observing a
+      different assertion each time: drop a column, drop a `NOT NULL`, drop an `ON DELETE CASCADE`,
+      drop an index, drop a partial index's `WHERE`, and change a CHECK's value list. Restore each.
+- [ ] Six scaffolds, six distinct failures. T10 earned twelve; this is the test that justifies every
+      one of them, so it does not get a lighter standard than the tasks it guards.
 
 ---
 
