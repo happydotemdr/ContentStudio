@@ -4642,6 +4642,67 @@ checkpoint that fails.
    `obs.log` raises inside the `except` branch, the close never runs — a leak on the error path of
    the very handler that exists to prevent leaks.
 
+#### T13 fix round 1 — this task hollowed out one of P0's guards
+
+The T13 task review ran against `408d0ae..c0d7c16`. Full report:
+`.superpowers/sdd/2026-08-08-audit-remediation/P1-task-13-review.md`. **Spec ✅** — all five
+corrections verified against the tree. Quality **Needs fixes**: two Important, five Minor. Neither
+Important is in `main.py` or `test_main.py`; both are **fallout in files this commit falsified**.
+
+The reviewer confirmed independently: the WAL test now discriminates at **both** ends (the
+precondition forces a real write and asserts `st_size > 0`; the post-condition checks `.exists()`
+before `.stat()`), so C2's tautology was correctly caught; all four `test_main.py` tests build under
+`with TestClient(app)` and all four close in a `finally`, matching P0 T8's shape, with the two new
+tests inlining rather than using the helper because they must assert *after* the `with` exits —
+unavoidable, not a happy-path-only conversion; and the `"P1"` allowlist key is genuinely gone with
+nothing greppable left, while the derived list, the `P\d{1,2}` key check, the `"P0"` self-detection
+and the stale-path test all still work.
+
+The controller closed the review's ⚠️: only three files in the app suite use `with TestClient`
+(`conftest.py:271`, `test_main.py`, `test_routes_doctor.py:87`), and the suite is green at
+**979 passed / 3 skipped**, so no caller breaks under the new close semantics.
+
+**F1 (Important) — the lifespan silently removed the teeth from P0's contract test.**
+`tests/test_harness_contract.py:131-152`. That test exists to prove the canonical `client` fixture
+closes the connection it opens. The lifespan this task added now closes it **first**, so the test
+**stays green even if `conftest.py:273-274` — the fixture's own `finally` close — is deleted**. The
+guard is over-determined and can no longer fail for its own reason. A check that cannot fail is the
+defect this programme exists to remove, and this task created one as a side-effect in a *different
+package's* test.
+
+- [ ] Give the test back a reason to fail. **The acceptance criterion is behavioural, not
+      cosmetic: deleting `conftest.py`'s `finally` close must make this test RED.** Earn that RED by
+      actually deleting those lines, observing the failure, and restoring.
+- [ ] The fixture's close now matters precisely where the lifespan does *not* run or does not
+      complete — construct that path rather than asserting the end state, which both mechanisms
+      satisfy.
+- [ ] If no such path can be constructed, **say so and stop** rather than weakening the test to
+      something that passes. That would be a finding about the fixture's design, not a failure of
+      this task.
+
+**F2 (Important) — four docstrings now state the opposite of reality.** They say the app "wires no
+shutdown handler", which was true until this commit. T8-F1 established the ruling: a docstring
+describing a deleted design is a defect, not a cosmetic, because it is what the next reader will
+believe.
+
+- [ ] `tests/conftest.py:256-260` — **in scope**, the file is already edited by this task and the
+      lines describe the mechanism it added.
+- [ ] `tests/test_harness_contract.py:132-133` — **in scope by consequence**: F1 requires editing
+      that file anyway.
+- [ ] `tests/test_routes_doctor.py:14-18` and `:80-83` — **the fence is deliberately widened by two
+      comment blocks.** That file belongs to P0, which is complete, so nothing else will revisit it;
+      the statements are false *because of this task*; and the change is comment-only with no test
+      behaviour touched. Leaving a false claim in a finished package to honour a fence is the wrong
+      trade. Do not touch anything else in that file.
+
+**Minor, deferred — do not action.** `main.py:39`'s unguarded `conn.close()` is real but
+theoretical: the reviewer traced `obs.log` (`obs.py:54-80`) and found it guards serialisation, print
+and file write in three separate `except Exception` blocks, so it cannot raise on a `str` field. A
+one-word `finally:` fix, recorded for the final whole-branch review. Also deferred: five Minors in
+the review report, including report `file:line` citations that drifted from the committed file.
+
+**Scope fence.** F1 and F2 only.
+
 ---
 
 ### T13b — the shared connection makes a transaction boundary unsafe under concurrent routes
