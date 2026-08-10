@@ -23,6 +23,18 @@ _TXN_DEPTH: dict[int, int] = {}
 # would record only that something failed, never what, which is the difference
 # between an events row a human can act on and one that just says "a thing broke".
 _TXN_POISON: dict[int, BaseException] = {}
+# The thread that opened the boundary currently registered on a connection.
+# Written wherever _TXN_DEPTH goes from absent to present and popped wherever
+# _TXN_DEPTH is popped, so "there is a depth entry" and "we know whose it is"
+# are never out of step. Any OTHER thread reaching commit_unless_in_transaction
+# on that connection is a bystander whose write this boundary is about to
+# swallow (T13b).
+_TXN_OWNER: dict[int, int] = {}
+# How many leaf commits a boundary has no-op'd for a NON-owning thread. A count,
+# not a flag: an operator needs to know whether one write went missing or forty.
+# Incremented under the lock by commit_unless_in_transaction, which reports
+# nothing itself; transaction() drains and reports it on exit.
+_TXN_SUPPRESSED: dict[int, int] = {}
 _TXN_LOCK = threading.Lock()
 
 
@@ -32,9 +44,24 @@ def commit_unless_in_transaction(conn: sqlite3.Connection) -> None:
     Outside a `transaction()` block it commits immediately, byte-for-byte the
     behaviour every existing caller already depends on. Inside one it is a
     no-op, so the boundary owns the commit and a multi-row invariant is atomic
-    for the first time (A-70)."""
+    for the first time (A-70).
+
+    It also **counts** the no-ops it performs for a thread that does not own the
+    boundary. The boundary is keyed by connection and this app shares one
+    connection across Starlette's threadpool and the event loop, so a leaf helper
+    on a thread that is in no boundary at all still stops committing while another
+    thread holds one -- and its write is discarded outright if that boundary rolls
+    back (T13b). Counting here and *reporting* from `transaction()`'s exit is
+    deliberate, not squeamishness: `obs.record_event` calls this function, so
+    reporting from here would recurse through it forever, and one event naming N
+    suppressed writes is more use to an operator than N events. A re-entrancy flag
+    would break the recursion by making the second report silent, which is the
+    defect class this whole mechanism exists to expose."""
+    key = id(conn)
     with _TXN_LOCK:
-        in_txn = _TXN_DEPTH.get(id(conn), 0) > 0
+        in_txn = _TXN_DEPTH.get(key, 0) > 0
+        if in_txn and _TXN_OWNER.get(key) != threading.get_ident():
+            _TXN_SUPPRESSED[key] = _TXN_SUPPRESSED.get(key, 0) + 1
     if not in_txn:
         conn.commit()
 
@@ -57,8 +84,8 @@ def transaction(conn: sqlite3.Connection):
     `conn.execute("BEGIN IMMEDIATE")` around each migration instead, which does make
     DDL atomic. Reach for `transaction()` for row-level invariants only.
 
-    **Known hazard, deliberately not solved here.** The boundary is a property of
-    the *connection*, and this app shares one connection across threads
+    **Known hazard, detected rather than prevented (T13b).** The boundary is a
+    property of the *connection*, and this app shares one connection across threads
     (`get_connection`'s `check_same_thread=False`). So a leaf helper called from a
     thread that is in no boundary at all still stops committing while *another*
     thread holds one, and its write is discarded outright if that boundary rolls
@@ -72,25 +99,36 @@ def transaction(conn: sqlite3.Connection):
       `turn_service.any_turn_running` only gates the run-turn route itself, so
       approving stage Y while a turn streams on stage X is a supported path.
       Inside the approval/creation boundary, that concurrent turn's writes stop
-      committing, and a fault path discards them outright -- with the resulting
-      `db.transaction_rolled_back` event attributing nothing to the collateral
-      write, so a lost turn write is indistinguishable from a turn that never
-      wrote. Filed as T13b; needs an operator decision among several candidate
-      designs (connection-per-boundary / serialize against the turn lock /
-      process-wide write lock / accept-and-detect) -- do not fix it here.
+      committing, and a fault path discards them outright.
     - `discovery_engine._open_heartbeat_connection`, which returns `None` on
       any `sqlite3.Error` and falls back to the shared connection; under a
       rolled-back boundary the heartbeat write vanishes, `heartbeat_at`
       freezes, and another process reclaims a run that is still alive. Making
       that fallback loud belongs to the discovery package; do not fix it here.
 
-    Do not widen the boundary to be thread-local to address either -- that
+    The operator chose accept-and-detect over the three prevention designs
+    (connection-per-boundary / serialize against the turn lock / process-wide
+    write lock), each of which buys prevention at a cost this project should not
+    pay yet. So the loss still happens -- what changed is that it is no longer
+    silent: `commit_unless_in_transaction` counts every commit it swallows for a
+    non-owning thread, and this block emits one `db.cross_thread_commit_suppressed`
+    event on exit naming the count and the owning thread. `error` when the boundary
+    rolled back (the writes are gone), `warning` when it committed (they were only
+    held). Before that event existed, the `db.transaction_rolled_back` row
+    attributed nothing to the collateral write, so a lost turn write and a turn
+    that never wrote were the same record.
+
+    Do not widen the boundary to be thread-local to address any of this -- that
     would break the single-connection design this app depends on."""
     key = id(conn)
     with _TXN_LOCK:
         depth = _TXN_DEPTH.get(key, 0)
         _TXN_DEPTH[key] = depth + 1
+        # setdefault, so a nested block entered from a different thread cannot take
+        # ownership away from the outermost one that actually holds the boundary.
+        _TXN_OWNER.setdefault(key, threading.get_ident())
     outermost = depth == 0
+    rolled_back = False
     try:
         yield conn
     except BaseException as exc:
@@ -98,6 +136,7 @@ def transaction(conn: sqlite3.Connection):
             _TXN_POISON.setdefault(key, exc)
         if outermost:
             _rollback_and_report(conn, exc)
+            rolled_back = True
         raise
     else:
         with _TXN_LOCK:
@@ -114,6 +153,7 @@ def transaction(conn: sqlite3.Connection):
             # `events`, not in the log, not in a traceback.
             exc.__cause__ = original
             _rollback_and_report(conn, exc, original=original)
+            rolled_back = True
             raise exc
         if outermost:
             try:
@@ -125,6 +165,7 @@ def transaction(conn: sqlite3.Connection):
                 # block's work. The caller was told the operation failed and the
                 # data landed anyway -- A-70 with extra steps.
                 _rollback_and_report(conn, commit_exc)
+                rolled_back = True
                 raise
     finally:
         with _TXN_LOCK:
@@ -141,8 +182,18 @@ def transaction(conn: sqlite3.Connection):
             if outermost or remaining <= 0:
                 _TXN_DEPTH.pop(key, None)
                 _TXN_POISON.pop(key, None)
+                # Drained with its siblings, never left behind. A count that outlives
+                # its boundary makes the NEXT boundary on this connection report
+                # suppressed writes that never happened -- a fabricated report, which
+                # is worse than no report at all because it sends an operator hunting
+                # data loss that did not occur.
+                owner = _TXN_OWNER.pop(key, None)
+                suppressed = _TXN_SUPPRESSED.pop(key, 0)
             else:
                 _TXN_DEPTH[key] = remaining
+                # An inner block is not the boundary and has nothing to report; the
+                # outermost one still holds the keys and will drain them.
+                owner, suppressed = None, 0
         if lost:
             # Never silently. Reaching here means the bookkeeping was already gone
             # when an inner block exited -- the anomaly above, caught rather than
@@ -153,6 +204,57 @@ def transaction(conn: sqlite3.Connection):
 
             obs.log("db.transaction_bookkeeping_lost", level="warning",
                     note="an inner transaction exited after its outer block unwound")
+        if suppressed:
+            _report_suppressed_commits(conn, suppressed, owner=owner,
+                                       rolled_back=rolled_back)
+
+
+def _report_suppressed_commits(conn: sqlite3.Connection, count: int, *,
+                               owner: int | None, rolled_back: bool) -> None:
+    """One event for the N leaf writes this boundary stopped another thread committing.
+
+    Call site is the whole design (T13b). It is in `transaction()`'s `finally`,
+    **after** the `_TXN_DEPTH` pop and **outside** `_TXN_LOCK`, and on the rollback
+    path it runs after the rollback has already completed. Each of those is
+    load-bearing:
+
+    * After the pop, because this goes through `obs.record_event`, which calls
+      `commit_unless_in_transaction`. With the depth key still present that commit
+      is a no-op, so the row is never committed -- and on the rollback path it is
+      rolled back along with the very loss it reports. The task would then report
+      nothing at all, while a test that read the row back on the writing connection
+      still passed.
+    * Outside the lock, because `record_event`'s fallback path writes to the
+      filesystem, and nothing that touches a disk should hold a lock every leaf
+      helper in this module takes.
+    * Not from `commit_unless_in_transaction`, which only counts: reporting from
+      there recurses through `record_event` forever, and the obvious fix -- a
+      re-entrancy flag -- makes the second, suppressed report silent, which is the
+      defect class this event exists to expose.
+
+    `rolled_back` picks the severity, and the difference is not cosmetic: on the
+    rollback path those writes are GONE, on the success path they were merely held
+    until this boundary committed and are still there. Reporting the two the same
+    way would be a fresh instance of the same defect one level up."""
+    from pipeline_app import obs
+
+    if rolled_back:
+        severity, outcome = "error", "discarded"
+        message = (
+            f"this boundary rolled back and discarded {count} write(s) made on the "
+            f"same connection from other threads; those writes are gone"
+        )
+    else:
+        severity, outcome = "warning", "delayed"
+        message = (
+            f"this boundary delayed {count} write(s) made on the same connection from "
+            f"other threads until it committed; those writes survived"
+        )
+    obs.record_event(
+        conn, kind="db.cross_thread_commit_suppressed", severity=severity,
+        source="db.transaction", message=message,
+        detail={"suppressed_writes": count, "owner_thread": owner, "outcome": outcome},
+    )
 
 
 def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException,
@@ -887,9 +989,15 @@ def _enter_migration_boundary(conn: sqlite3.Connection) -> None:
     _exit_migration_boundary pops it whenever the depth reaches zero. A body that
     leaks a depth increment defeats both, and with several migrations registered the
     next one would then be refused for its predecessor's swallowed failure -- which
-    is loud and wrong rather than silent and wrong, but still worth knowing."""
+    is loud and wrong rather than silent and wrong, but still worth knowing.
+
+    The owner registration is not decoration either: `commit_unless_in_transaction`
+    counts a suppressed commit whenever the depth entry's owner is not the calling
+    thread, so a depth entry with no owner would make every ordinary leaf call in a
+    migration body look like a cross-thread loss (T13b)."""
     with _TXN_LOCK:
         _TXN_DEPTH[id(conn)] = _TXN_DEPTH.get(id(conn), 0) + 1
+        _TXN_OWNER.setdefault(id(conn), threading.get_ident())
 
 
 def _exit_migration_boundary(conn: sqlite3.Connection) -> None:
@@ -918,6 +1026,14 @@ def _exit_migration_boundary(conn: sqlite3.Connection) -> None:
             # the app's real connection would roll back correct work and raise
             # TransactionPoisonedError citing a boot-time migration failure.
             _TXN_POISON.pop(key, None)
+            # Same reasoning, same reused id, one rung further along: a leaked owner
+            # entry names a thread that is dead by then, so the first real boundary on
+            # the app's connection would count every leaf commit as a cross-thread
+            # loss and report writes that were never suppressed. A migration never
+            # reports a count of its own (it runs on init_db's private connection,
+            # which no other thread has), so draining here loses nothing (T13b).
+            _TXN_OWNER.pop(key, None)
+            _TXN_SUPPRESSED.pop(key, None)
         else:
             _TXN_DEPTH[key] = remaining
     if lost:

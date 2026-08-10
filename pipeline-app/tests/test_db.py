@@ -1,6 +1,8 @@
+import contextlib
 import json
 import re
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -534,6 +536,155 @@ def test_a_failing_boundary_commit_does_not_leave_the_work_for_the_next_caller(
         other.close()
 
 
+@contextlib.contextmanager
+def _an_outsider_writing_on(conn, run_ids):
+    """Inside the `with`, a SECOND thread has already performed `len(run_ids)`
+    ordinary leaf writes on `conn` -- outside any boundary of its own.
+
+    This is the shared-connection shape the app really has (`check_same_thread=False`,
+    sync routes on Starlette's threadpool, the chat route on the event loop), reduced
+    to two threads.
+
+    Deterministic by construction: the outsider blocks on an Event until this
+    thread releases it, and this thread blocks on a second Event until the
+    outsider is done, so no two statements ever run concurrently and no `sleep`
+    appears anywhere. A flaky test guarding data loss is worse than no test."""
+    may_write = threading.Event()
+    finished = threading.Event()
+    failure: list[BaseException] = []
+
+    def body():
+        try:
+            if not may_write.wait(timeout=10):
+                raise AssertionError("the boundary never released the outsider")
+            for run_id in run_ids:
+                db.create_project(conn, run_id, "a", "generic", "2026-08-08T00:00:00+00:00")
+        except BaseException as exc:  # noqa: BLE001 -- handed to the main thread, never swallowed
+            failure.append(exc)
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=body, name="t13b-outsider", daemon=True)
+    thread.start()
+    try:
+        may_write.set()
+        assert finished.wait(timeout=10), "the outsider thread never finished its writes"
+        if failure:
+            # A worker thread's exception is otherwise printed and dropped, and the
+            # test would go on to assert about writes that never happened.
+            raise AssertionError("the outsider thread failed to write") from failure[0]
+        yield
+    finally:
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "the outsider thread outlived the boundary"
+
+
+def _suppression_events(conn) -> list[sqlite3.Row]:
+    """Read the report back on a SECOND connection.
+
+    Reading it on the connection that wrote it passes whether or not the row was
+    ever committed -- and an uncommitted row on the rollback path is rolled back
+    with the very loss it reports. That version of these tests cannot tell a
+    durable report from no report at all."""
+    other = db.get_connection(_db_path(conn))
+    try:
+        return other.execute(
+            "SELECT * FROM events WHERE kind = 'db.cross_thread_commit_suppressed'"
+        ).fetchall()
+    finally:
+        other.close()
+
+
+def test_a_rolled_back_boundary_discards_a_cross_thread_write_and_reports_it(
+    conn, tmp_path, monkeypatch
+):
+    """FAULT + SURFACING (T13b). The boundary is keyed by connection, not by
+    thread, so a leaf helper on another thread stops committing while this
+    boundary is held -- and the rollback discards its write outright. That loss
+    is not prevented here; it must be loud. Both halves, explicitly: "reported"
+    alone would pass if the write happened to survive for some unrelated reason,
+    and "discarded" alone is the defect rather than the fix."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    with pytest.raises(RuntimeError):
+        with db.transaction(conn):
+            with _an_outsider_writing_on(conn, ["outsider-1", "outsider-2"]):
+                raise RuntimeError("the approval failed halfway through")
+
+    other = db.get_connection(_db_path(conn))
+    try:
+        assert db.list_projects(other) == []      # the outsider's writes are GONE...
+    finally:
+        other.close()
+
+    rows = _suppression_events(conn)              # ...and something says so
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "discarded" in rows[0]["message"]
+    detail = json.loads(rows[0]["detail"])
+    assert detail["suppressed_writes"] == 2       # a count, not a flag: both writes
+    assert detail["owner_thread"] == threading.get_ident()
+
+
+def test_a_committed_boundary_reports_a_cross_thread_write_as_delayed_not_discarded(
+    conn, tmp_path, monkeypatch
+):
+    """SURFACING, the other half of the severity split. On the success path the
+    outsider's write was merely held until this boundary committed, so it is
+    still there. Reporting that at the same severity as a write that no longer
+    exists would send an operator hunting data loss that did not happen."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    with db.transaction(conn):
+        with _an_outsider_writing_on(conn, ["outsider-1"]):
+            pass
+
+    other = db.get_connection(_db_path(conn))
+    try:
+        assert [r["run_id"] for r in db.list_projects(other)] == ["outsider-1"]  # survived
+    finally:
+        other.close()
+
+    rows = _suppression_events(conn)
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "warning"       # not `error` -- nothing was lost
+    assert "delayed" in rows[0]["message"]
+    assert "discarded" not in rows[0]["message"]
+    assert json.loads(rows[0]["detail"])["suppressed_writes"] == 1
+
+
+def test_a_boundary_with_no_cross_thread_write_reports_nothing(conn, tmp_path, monkeypatch):
+    """DISTINGUISHABILITY (T13b). "A boundary suppressed another thread's write"
+    and "a boundary suppressed nothing" must not produce the same record.
+
+    This is also the leaked-counter test: a count that survives its boundary
+    makes the NEXT boundary on the same connection report suppressed writes that
+    never happened -- a fabricated report, worse than none, because it sends an
+    operator looking for data loss that did not occur."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    with pytest.raises(RuntimeError):
+        with db.transaction(conn):
+            with _an_outsider_writing_on(conn, ["outsider-1"]):
+                raise RuntimeError("boom")
+    after_the_loss = _suppression_events(conn)
+    assert len(after_the_loss) == 1
+    # Drained, not merely reported. Both keys: a surviving count reports the same
+    # writes twice, and a surviving owner naming a thread that has gone away makes
+    # a later boundary on a REUSED connection id count its own ordinary commits as
+    # somebody else's losses.
+    assert id(conn) not in db._TXN_SUPPRESSED
+    assert id(conn) not in db._TXN_OWNER
+
+    with db.transaction(conn):                    # a second boundary, this thread only
+        db.create_project(conn, "same-thread", "a", "generic", "2026-08-08T00:00:00+00:00")
+
+    assert len(_suppression_events(conn)) == len(after_the_loss)
+
+
 LEGACY_SCHEMA_V0 = """
 CREATE TABLE projects (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL UNIQUE,
   slug TEXT NOT NULL, brand TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -703,6 +854,14 @@ def test_a_migration_body_calling_a_leaf_helper_does_not_commit_mid_migration(
         # subsequent commit on this connection silently stops.
         assert id(conn) not in db._TXN_DEPTH
         assert id(conn) not in db._TXN_POISON
+        # Every key this boundary registers, or the id-reuse hazard the poison pop
+        # above exists for comes straight back wearing a different name: init_db
+        # closes this connection, CPython hands the freed address to the app's next
+        # one, and a leaked owner entry naming a dead thread makes the first real
+        # boundary on it count -- and then report -- suppressed writes that never
+        # happened (T13b).
+        assert id(conn) not in db._TXN_OWNER
+        assert id(conn) not in db._TXN_SUPPRESSED
     finally:
         conn.close()
 
