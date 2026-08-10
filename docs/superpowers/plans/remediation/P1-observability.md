@@ -733,13 +733,28 @@ def transaction(conn: sqlite3.Connection):
     (`get_connection`'s `check_same_thread=False`). So a leaf helper called from a
     thread that is in no boundary at all still stops committing while *another*
     thread holds one, and its write is discarded outright if that boundary rolls
-    back. The known sharer is `discovery_engine._open_heartbeat_connection`, which
-    returns `None` on any `sqlite3.Error` and falls back to the shared connection;
-    under a rolled-back boundary the heartbeat write vanishes, `heartbeat_at`
-    freezes, and another process reclaims a run that is still alive. Making that
-    fallback loud belongs to the discovery package; do not fix it here, and do not
-    widen the boundary to be thread-local -- that would break the single-connection
-    design this app depends on."""
+    back. There are two known sharers, and the first is in-process:
+
+    * **The streaming turn route.** `approve_stage_route` and `create_project_route`
+      are sync `def` routes, so Starlette runs them in the threadpool, and T4b has
+      both open a boundary on `app.state.conn`. The turn route's async generator
+      writes to that same connection from the event-loop thread for the whole life
+      of a streaming turn, and `any_turn_running` gates only the run-turn route --
+      so approving stage Y while a turn streams on stage X is a supported path.
+      Inside the boundary those turn writes stop committing and are discarded by the
+      rollback, and the events row attributes nothing to the collateral write.
+      Project creation holds its boundary across `mkdir` calls, which widens the
+      window.
+    * **The discovery heartbeat.** `_open_heartbeat_connection` returns `None` on any
+      `sqlite3.Error` and falls back to the shared connection; under a rolled-back
+      boundary the heartbeat write vanishes, `heartbeat_at` freezes, and another
+      process reclaims a run that is still alive. It runs in the separate cron
+      process, so it collides only when discovery runs in-process.
+
+    Neither is solved here, and do not widen the boundary to be thread-local -- that
+    would break the single-connection design this app depends on. **T13b owns the
+    decision**; making the discovery fallback loud belongs to the discovery
+    package."""
     key = id(conn)
     with _TXN_LOCK:
         depth = _TXN_DEPTH.get(key, 0)
@@ -894,6 +909,20 @@ The four, located by `grep -rn "create_project(\|_backfill_one_project\|reclaim_
       `test_<operation>_leaves_nothing_behind_when_it_fails_partway`.
       Each must be observed failing **before** the wrapping is added — that failure *is* A-70, and
       it is the only direct evidence in the programme that the finding was ever real.
+- [ ] **Close the other two legs of the Three-Test Rule at a call site.** A-70 is `silent`, and the
+      four tests above are all *fault* tests. At three of the four sites the rolled-back state is
+      byte-identical to "the operation never ran" — no project row, no styleboard row, run still
+      `running` — so on their own they prove a rollback happened without proving anyone could ever
+      tell. T4's `test_a_rolled_back_transaction_records_an_error_event` proves the events row for
+      `transaction()` itself, but nothing ties a *call site* to it. Extend the project-creation test:
+    - **Surfacing** — after the rollback, assert an `events` row of kind `db.transaction_rolled_back`
+      exists. Read it on a **second connection**, as T4's version does; reading it on the connection
+      that wrote it passes whether or not it was ever committed.
+    - **Distinguishability** — assert the failed-creation state differs observably from the
+      legitimate-empty state. Creating no project at all yields zero projects and **zero** such
+      events rows; a failed creation yields zero projects and **one**. That difference is the whole
+      finding: without it, "nothing was created" and "creation blew up halfway" are the same
+      database.
 - [ ] **Implement.** Wrap each operation's body in `with db_mod.transaction(conn):`. **Wrap only.**
       These four files are touched by other packages (P2, P3, P4); do not restructure, rename or
       re-order anything inside them, and do not change a signature. If an operation already returns
@@ -2047,6 +2076,47 @@ T14 first.
 - [ ] **Run it.** Passes. Full app suite green — no existing test uses `with TestClient(app)`
       (verified: zero occurrences), so no existing test's connection is closed early by this.
 - [ ] **Commit.** `fix(main): close the shared connection and checkpoint the WAL on shutdown (A-85)`
+
+---
+
+### T13b — the shared connection makes a transaction boundary unsafe under concurrent routes
+
+**Raised during T4b's review, not in the original audit.** T4 keys a boundary by connection
+identity; T4b then opened boundaries inside `approve_stage_route` and `create_project_route`, which
+are **sync `def`** routes and therefore run in Starlette's threadpool. The turn route's async
+generator writes to the *same* `app.state.conn` from the event-loop thread for the whole life of a
+streaming turn, and `any_turn_running` gates only the run-turn route — so approving stage Y while a
+turn streams on stage X is a supported path. During that window the turn's writes stop committing,
+and on a fault path they are discarded by the boundary's rollback. The `events` row attributes
+nothing to the collateral write, so a lost turn write looks exactly like a turn that never wrote:
+the recurring defect class, reached through the mechanism built to eliminate it.
+
+Probability is low — one local user, short boundaries, sparse turn writes — and the consequence is
+silent data loss, so it does not get to stay unaddressed on probability alone.
+
+**This task needs an architectural decision before it can be executed. Do not dispatch an
+implementer until the operator has chosen.** The options, none obviously correct:
+
+1. **A connection per boundary.** `transaction()` opens its own connection, so a boundary can never
+   suppress another thread's commit. Costs: the boundary can no longer read the caller's uncommitted
+   writes, which `approve_stage` relies on (`list_stages` must see the uncommitted APPROVED row or
+   `stages_to_unlock` computes nothing), so those call sites need restructuring.
+2. **Serialize boundaries against the app's existing single-flight turn lock.** Cheap and uses
+   machinery that already exists, but it couples the DB layer to an application-level lock and makes
+   `db.py` depend on something above it.
+3. **A process-wide write lock held for the boundary's duration.** Simple and local to `db.py`;
+   blocks the event loop if a boundary is held across `mkdir` calls, which project creation does.
+4. **Accept and detect.** Leave the design, but make a suppressed cross-thread commit *loud*: record
+   the calling thread on entry and have `commit_unless_in_transaction` emit an event when it
+   no-ops for a thread that is not the one holding the boundary. Does not fix the loss; does convert
+   it from silent to reported, which is this programme's stated bar.
+
+- [ ] **Decide.** Operator picks. Record the choice and the reasoning in this file before executing.
+- [ ] **Write the failing test.** Two threads, one connection: one holds a boundary that rolls back
+      while the other performs an ordinary write outside any boundary. Assert the outsider's write
+      survives (options 1–3) or is reported (option 4). Observe it fail first.
+- [ ] **Implement.** Per the decision.
+- [ ] **Run it.** Full app suite green; the compatibility rule still holds outside a boundary.
 
 ---
 
