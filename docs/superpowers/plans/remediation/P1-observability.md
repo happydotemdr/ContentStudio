@@ -1168,7 +1168,7 @@ def test_a_migration_that_fails_partway_leaves_neither_the_ddl_nor_the_stamp(tmp
     from pipeline_app import obs
     monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
     db_path = tmp_path / "pipeline.db"
-    db.init_db(db_path, SCHEMA)
+    db.init_db(db_path, SCHEMA_PATH)
     conn = db.get_connection(db_path)
     try:
         def half_a_migration(c):
