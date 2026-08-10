@@ -650,10 +650,62 @@ def test_a_migration_that_fails_partway_leaves_neither_the_ddl_nor_the_stamp(tmp
         assert conn.execute(
             "SELECT version FROM schema_version WHERE id = 1"
         ).fetchone()[0] == db.SCHEMA_VERSION
-        rows = conn.execute(
-            "SELECT * FROM events WHERE kind = 'schema.migration_failed'"
-        ).fetchall()
-        assert len(rows) == 1          # ...and it said so
-        assert rows[0]["severity"] == "critical"
     finally:
         conn.close()
+
+    # Read the event back on a SECOND connection. Reading it on the one that wrote
+    # it passes whether or not the row was ever committed -- and "durable enough to
+    # find after the process dies" is the only property that makes it a surfacing
+    # test at all.
+    other = db.get_connection(db_path)
+    try:
+        rows = other.execute(
+            "SELECT * FROM events WHERE kind = 'schema.migration_failed'"
+        ).fetchall()
+    finally:
+        other.close()
+    assert len(rows) == 1          # ...and it said so
+    assert rows[0]["severity"] == "critical"
+
+
+def test_a_migration_body_calling_a_leaf_helper_does_not_commit_mid_migration(
+    tmp_path, monkeypatch
+):
+    """The raw BEGIN is invisible to _TXN_DEPTH unless apply_migrations registers
+    it, and commit_unless_in_transaction consults _TXN_DEPTH rather than the
+    connection. Without the registration, a migration body that calls any db.py
+    helper commits half the migration, the rollback rolls back nothing, and
+    half-applied is indistinguishable from never-ran all over again."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    conn = db.get_connection(db_path)
+    try:
+        def migration_using_a_helper(c):
+            db.create_project(c, "mid-migration", "a", "generic", "2026-08-08T00:00:00+00:00")
+            raise RuntimeError("the second half failed")
+
+        monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, migration_using_a_helper)])
+        with pytest.raises(RuntimeError):
+            db.apply_migrations(conn)
+
+        assert db.list_projects(conn) == []   # the helper's write rolled back too
+    finally:
+        conn.close()
+
+
+def test_an_out_of_order_or_duplicated_migration_list_is_rejected_at_import():
+    """An out-of-order entry stamps the version BACKWARDS: [(2, m2), (1, m1)] on a
+    v0 database runs m2, stamps 2, then runs m1 and stamps 1 -- so migration 2 has
+    run while the database claims it has not. The next boot re-runs it, hits
+    `duplicate column name`, and is stuck at a version that is neither true nor
+    recoverable. Failing loudly at import is strictly better."""
+    def noop(_conn):
+        pass
+
+    with pytest.raises(RuntimeError):
+        db._validate_migration_order([(2, noop), (1, noop)])
+    with pytest.raises(RuntimeError):
+        db._validate_migration_order([(1, noop), (1, noop)])
+    db._validate_migration_order([(1, noop), (2, noop)])  # the good case must not raise

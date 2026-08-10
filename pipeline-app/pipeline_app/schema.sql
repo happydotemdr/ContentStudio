@@ -2,8 +2,10 @@
 -- database that already has a table, a newly added column, CHECK or UNIQUE is
 -- silently skipped and the first query touching it fails at runtime with
 -- `no such column` in whatever route happens to hit it first (A-72). This file
--- is the create-from-scratch path; db._MIGRATIONS is the upgrade path, and
--- test_fresh_schema_matches_migrated_schema keeps the two identical.
+-- is the create-from-scratch path; db._MIGRATIONS is the upgrade path. They are
+-- two hand-maintained definitions of one schema, and nothing enforces that they
+-- agree until T12 adds test_a_migrated_database_has_the_same_schema_as_a_fresh_one.
+-- Until then, a change here needs a matching migration by hand.
 CREATE TABLE IF NOT EXISTS schema_version (
     id      INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
