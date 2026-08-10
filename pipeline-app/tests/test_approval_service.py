@@ -440,6 +440,42 @@ def test_a_stage_with_no_registered_gates_still_approves_without_an_override(con
     assert db.get_stage(conn, project_id, "ideation")["status"] == StageStatus.APPROVED.value
 
 
+def test_approve_stage_leaves_nothing_behind_when_it_fails_partway(conn, tmp_path: Path, monkeypatch):
+    """FAULT (A-70). approve_stage records the approval, then unlocks each newly-
+    unlockable dependent. Without a transaction boundary the approval commits
+    immediately, so an interruption while unlocking the dependent leaves the
+    approval recorded but the dependent still locked -- a half-written cascade.
+    Force the failure on the second step (the unlock) and assert the first
+    step (the approval) did not survive either."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "awaiting_review")
+    db.create_stage_row(conn, project_id, "scripting", "locked")
+
+    run_dir = tmp_path / "runs" / "abc-1"
+    stage_dir = run_dir / "01-ideation"
+    artifacts.write_artifact(stage_dir, 1, {"status": "draft", "stage": "shorts-ideation"}, "body")
+
+    real_update_stage_status = db.update_stage_status
+    calls = {"n": 0}
+
+    def flaky_update_stage_status(conn_, stage_row_id, status, approved_at=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("boom mid-way through unlocking the dependent")
+        return real_update_stage_status(conn_, stage_row_id, status, approved_at=approved_at)
+
+    monkeypatch.setattr(db, "update_stage_status", flaky_update_stage_status)
+
+    with pytest.raises(RuntimeError):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
+
+    ideation_row = db.get_stage(conn, project_id, "ideation")
+    assert ideation_row["status"] == StageStatus.AWAITING_REVIEW.value
+    assert ideation_row["approved_at"] is None
+    scripting_row = db.get_stage(conn, project_id, "scripting")
+    assert scripting_row["status"] == StageStatus.LOCKED.value
+
+
 def test_reapproving_an_already_final_artifact_with_blank_override_does_not_record_one(conn, tmp_path):
     """The companion case to the test above: an already-final artifact
     re-approved with NO override reason (None, same as a blank form field

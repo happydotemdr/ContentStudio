@@ -74,15 +74,16 @@ def approve_stage(
             # still a real decision and must not be dropped just because the
             # artifact was already final -- see artifacts.record_gate_override.
             artifacts.record_gate_override(latest, override_reason)
-    db_mod.update_stage_status(conn, stage_row["id"], StageStatus.APPROVED.value, approved_at=now)
+    with db_mod.transaction(conn):
+        db_mod.update_stage_status(conn, stage_row["id"], StageStatus.APPROVED.value, approved_at=now)
 
-    all_rows = db_mod.list_stages(conn, project_id)
-    approved_ids = {r["stage_id"] for r in all_rows if r["status"] == StageStatus.APPROVED.value}
-    newly_unlocked = stages_to_unlock(stage_defs, approved_ids)
+        all_rows = db_mod.list_stages(conn, project_id)
+        approved_ids = {r["stage_id"] for r in all_rows if r["status"] == StageStatus.APPROVED.value}
+        newly_unlocked = stages_to_unlock(stage_defs, approved_ids)
 
-    for uid in newly_unlocked:
-        row = db_mod.get_stage(conn, project_id, uid)
-        if row is not None and row["status"] == StageStatus.LOCKED.value:
-            db_mod.update_stage_status(conn, row["id"], StageStatus.READY.value)
+        for uid in newly_unlocked:
+            row = db_mod.get_stage(conn, project_id, uid)
+            if row is not None and row["status"] == StageStatus.LOCKED.value:
+                db_mod.update_stage_status(conn, row["id"], StageStatus.READY.value)
 
     return newly_unlocked

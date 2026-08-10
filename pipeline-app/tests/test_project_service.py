@@ -75,3 +75,21 @@ def test_stages_with_no_dependencies_start_ready_others_locked(conn, tmp_path: P
     scripting = db.get_stage(conn, result["project_id"], "scripting")
     assert ideation["status"] == "ready"
     assert scripting["status"] == "locked"
+
+
+def test_create_project_leaves_nothing_behind_when_it_fails_partway(conn, tmp_path: Path, monkeypatch):
+    """FAULT (A-70). create_project inserts the project row, then a stage row per
+    stage. Without a transaction boundary the project row commits immediately, so
+    an interruption during stage-row creation leaves an orphaned project with no
+    stages -- exactly A-70's failure mode. Force the failure on the second step
+    (the first stage-row insert) and assert the first step's row (the project) did
+    not survive either."""
+    def raise_on_stage_row(*args, **kwargs):
+        raise RuntimeError("boom mid-way through stage row creation")
+
+    monkeypatch.setattr(db, "create_stage_row", raise_on_stage_row)
+
+    with pytest.raises(RuntimeError):
+        create_project(conn, tmp_path, "why-kids-quit", "generic", STAGES)
+
+    assert db.list_projects(conn) == []

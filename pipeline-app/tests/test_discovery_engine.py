@@ -445,6 +445,38 @@ def test_run_discovery_validate_handle_sets_invalid_and_excludes_on_crash(engine
     assert row["included"] == 0
 
 
+def test_reclaim_cascade_leaves_nothing_behind_when_it_fails_partway(engine_conn, tmp_path, monkeypatch):
+    """FAULT (A-70). The staleness cascade first marks reclaimed runs 'abandoned'
+    (db.reclaim_stale_runs), then writes each one's abandoned-run record and sets
+    finished_at/md_path (_write_abandoned_records_for_reclaimed_runs). Without a
+    transaction boundary the 'abandoned' status commits immediately, so an
+    interruption in the second step leaves a run stuck at status='abandoned' with
+    finished_at=NULL and md_path=NULL forever -- nothing else in the app ever
+    revisits an already-abandoned run. Force the failure on the second step and
+    assert the first step's write (the status flip) did not survive either."""
+    import pipeline_app.discovery_engine as de_mod
+
+    stale_started = "2026-07-30T05:00:00+00:00"
+    stale_id = db.insert_running_run(engine_conn, "stale-run", "manual", "incremental", stale_started)
+    db.update_run_heartbeat(engine_conn, stale_id, "2026-07-30T05:01:00+00:00")
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]})
+    now = __import__("datetime").datetime(2026, 7, 30, 6, 0, 0, tzinfo=__import__("datetime").timezone.utc)
+
+    def raise_write_run_record(*args, **kwargs):
+        raise RuntimeError("boom mid-way through the abandoned-run record")
+
+    monkeypatch.setattr(de_mod, "write_run_record", raise_write_run_record)
+
+    with pytest.raises(RuntimeError):
+        run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental", now=now)
+
+    stale_row = db.get_run(engine_conn, stale_id)
+    assert stale_row["status"] == "running"
+    assert stale_row["finished_at"] is None
+    assert stale_row["md_path"] is None
+
+
 class SlowFakeAdapter(SingleFakeAdapter):
     """Sleeps during download_item so the heartbeat loop gets a chance to tick
     at least once during a run, without depending on exact wall-clock timing."""
