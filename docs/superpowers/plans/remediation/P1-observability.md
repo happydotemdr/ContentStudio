@@ -3927,6 +3927,44 @@ is correct and already stated. T9 removed the other one, so **after this task th
 report zero xfailed.** State the before/after count in the report; under `strict=True` a forgotten
 marker is a hard failure, and the count is the cheapest proof it was not forgotten.
 
+#### T10 as built — two more brief defects, one of them another boot-brick
+
+**Status: implemented in `7790aad`.** Recorded so the plan matches the tree before the review reads
+either. Both deviations were the implementer's call, correctly reported, and both are corrections
+to code the brief told it to write.
+
+1. **`_quarantine_unknown_platforms` must not call `conn.commit()`** — a straight violation of the
+   `_MIGRATIONS` contract T5 landed, in the brief's own code.
+2. **It must also delete the ghost row's `discovery_run_handles` rows.** The discovery engine writes
+   an `error` result per handle per daily run, so a ghost that has existed for any length of time
+   has children. FK enforcement is **off** during a migration (`apply_migrations` owns that), so
+   `ON DELETE CASCADE` does **not** fire, and the post-migration `PRAGMA foreign_key_check` T6
+   installed then raises `MigrationIntegrityError` — bricking the boot on precisely the database
+   B-73 describes. Probed, not reasoned. The count of deleted child rows is recorded in the event.
+
+Also corrected during execution: **the brief's "Run it. All four fail." is wrong.**
+`test_every_platform_the_adapter_registry_knows_is_accepted` asserts that *valid* platforms are
+accepted, which is already true before any CHECK exists — it cannot fail pre-fix. RED was earned by
+scaffold instead (`CHECK constraint failed: platform IN`). The reverse direction of C1's round-trip
+reads the live `sqlite_master` CHECK rather than the Python constant, so the two cannot be pinned to
+each other by construction.
+
+Behaviour 5 (`creator_id` / its index / `ON DELETE SET NULL` surviving the rebuild) deliberately
+reuses T9's two existing migrated tests rather than adding duplicates; both were proven to go red
+under scaffolds B5a/B5b.
+
+#### NEW FINDINGS raised by T10 — filed for validation, NOT fixed here
+
+1. **A hand-posted unknown platform is now a 500, where the route's convention is a 400.** The CHECK
+   turns what was silent acceptance into an unhandled `IntegrityError` at the route boundary. This
+   is a strict improvement over a ghost row — the request now fails instead of succeeding wrongly —
+   but 500 is the wrong shape for a caller error. `routes/discovery.py` belongs to **P8**, not P1;
+   routed there rather than widened into this task.
+2. **The `<select>` in `discovery_handles.html` is a fourth hand-maintained copy of the platform
+   vocabulary**, pinned by nothing. C1 closed the CHECK↔registry pair; the template and
+   `email_render.PLATFORM_LABELS` remain unpinned. Same drift class, template-side. Route to the
+   package owning the discovery templates (**P8/P15**).
+
 ---
 
 ### T11 — B-82: a handle that dies after registration still looks healthy
