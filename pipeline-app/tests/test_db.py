@@ -574,7 +574,7 @@ def test_a_fresh_database_is_stamped_at_the_current_schema_version(tmp_path: Pat
         c.close()
 
 
-@pytest.mark.xfail(reason="migration 1 lands in T10", strict=True)
+@pytest.mark.xfail(reason="migration 1 constrains handles in T10", strict=True)
 def test_an_existing_database_is_migrated_not_silently_left_behind(tmp_path: Path):
     """This is A-72: `CREATE TABLE IF NOT EXISTS` skips the new constraint and
     init_db reports success anyway."""
@@ -594,13 +594,16 @@ def test_an_existing_database_is_migrated_not_silently_left_behind(tmp_path: Pat
 
 # NOTE (T5 self-review, not in the brief): the brief predicted this test would
 # PASS at T5 -- only its neighbour above was expected to stay red, on the CHECK
-# assertion. It does not: with `_MIGRATIONS` empty (migration 1 is registered by
-# a later task), a database stamped version 0 by `_legacy_db` has no migration to
-# run and can never reach `db.SCHEMA_VERSION`, so this test fails on the SAME
-# line as its neighbour, for the SAME root cause, before ever reaching the CHECK
-# assertion. Marked xfail for the same reason and removed by the same task that
-# removes the marker above -- see P1-task-5-report.md for the full account.
-@pytest.mark.xfail(reason="migration 1 lands in T10", strict=True)
+# assertion. It does not: with `_MIGRATIONS` empty (no migration registered
+# yet), a database stamped version 0 by `_legacy_db` has no migration to run
+# and can never reach `db.SCHEMA_VERSION`, so this test fails on the SAME line
+# as its neighbour, for the SAME root cause, before ever reaching the CHECK
+# assertion. Unlike its neighbour this test only needs SOME migration to exist
+# -- it never inspects `handles`' DDL -- so it comes back at T6 (which
+# registers migration 1), not T10 (which is what actually constrains
+# `handles`). Coordinator-amended per plan commit 1737fe6; T6 carries an
+# explicit instruction to remove this marker. See P1-task-5-report.md.
+@pytest.mark.xfail(reason="migration 1 is registered in T6", strict=True)
 def test_migrations_are_applied_exactly_once(tmp_path: Path):
     db_path = _legacy_db(tmp_path)
     db.init_db(db_path, SCHEMA_PATH)
