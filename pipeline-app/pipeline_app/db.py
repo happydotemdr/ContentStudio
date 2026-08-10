@@ -239,8 +239,95 @@ class NestedMigrationError(RuntimeError):
     precondition failure masquerade as the migration failure under test."""
 
 
+class MigrationIntegrityError(RuntimeError):
+    """A migration introduced foreign key violations that did not exist before it.
+
+    Distinct from a plain sqlite3.IntegrityError, which SQLite raises per statement
+    while enforcement is on. apply_migrations turns enforcement OFF around its
+    transaction -- SQLite's own documented procedure for a table rebuild, and the
+    only way DROP TABLE can run at all -- so this is what replaces it: a
+    whole-database check whose failure is this code's fault, not the data's."""
+
+
+STAGE_STATUSES = ("locked", "ready", "running", "awaiting_review", "approved",
+                  "stale", "no_artifact")
+
+
+def _coerce_unknown_stage_statuses(conn: sqlite3.Connection) -> None:
+    """A legacy row can already hold the typo the new CHECK exists to prevent, and
+    the rebuild's `INSERT ... SELECT` aborts on it (verified: IntegrityError "CHECK
+    constraint failed") -- bricking the boot on the very defect being fixed. Coerce
+    to 'no_artifact', which is loud in the UI and destroys nothing, and record one
+    event per row.
+
+    No commit here, deliberately: the UPDATEs and their events belong to
+    apply_migrations' transaction, so a migration that fails later takes its
+    coercion records down with the coercions themselves. record_event's own commit
+    no-ops inside the migration boundary, which is what makes that hold."""
+    from pipeline_app import obs
+
+    placeholders = ",".join("?" * len(STAGE_STATUSES))
+    rows = conn.execute(
+        f"SELECT id, project_id, stage_id, status FROM stages "
+        f"WHERE status NOT IN ({placeholders})", STAGE_STATUSES
+    ).fetchall()
+    # Unpacked positionally rather than by column name: apply_migrations is public
+    # and a caller's connection need not carry a Row factory.
+    for row_id, project_id, stage_id, was in rows:
+        conn.execute("UPDATE stages SET status = 'no_artifact' WHERE id = ?", (row_id,))
+        coerced_id = obs.record_event(
+            conn, kind="schema.stage_status_coerced", severity="warning",
+            source="db.migration_1",
+            message=f"stage {stage_id} held unknown status {was!r}; "
+                    f"coerced to 'no_artifact'",
+            detail={"stage_row_id": row_id, "project_id": project_id, "was": was},
+        )
+        if coerced_id == -1:
+            obs.log("db.stage_status_coercion_unrecorded", level="error",
+                    stage_row_id=row_id, was=was)
+
+
+# One statement per execute(), never executescript(): executescript issues an
+# implicit COMMIT before it runs, which would end apply_migrations' transaction and
+# make this rebuild non-atomic. create-copy-drop-rename is exactly where that
+# mistake is easiest to make, which is why the _MIGRATIONS contract names it.
+# Verified: all four run inside BEGIN IMMEDIATE and commit together, and
+# `turns.stage_row_id REFERENCES stages(id)` still resolves afterwards -- no
+# PRAGMA legacy_alter_table needed, because nothing references `stages_new`.
+_MIGRATION_1_STAGES_STEPS = (
+    """CREATE TABLE stages_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        stage_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN
+            ('locked','ready','running','awaiting_review','approved','stale','no_artifact')),
+        claude_session_id TEXT,
+        approved_at TEXT,
+        UNIQUE(project_id, stage_id)
+    )""",
+    """INSERT INTO stages_new (id, project_id, stage_id, status, claude_session_id, approved_at)
+        SELECT id, project_id, stage_id, status, claude_session_id, approved_at FROM stages""",
+    "DROP TABLE stages",
+    "ALTER TABLE stages_new RENAME TO stages",
+)
+
+
+def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
+    """A-47: give `stages.status` the CHECK that schema.sql can never deliver.
+
+    Every statement in schema.sql is `CREATE TABLE IF NOT EXISTS`, so no constraint
+    added there reaches a database that already has the table. This is the only path
+    that applies them, and it is why schema_version exists.
+
+    Later tasks in this package extend this same migration (turns, handles,
+    creators). It stays version 1 until it has shipped."""
+    _coerce_unknown_stage_statuses(conn)
+    for statement in _MIGRATION_1_STAGES_STEPS:
+        conn.execute(statement)
+
+
 _MIGRATIONS: list[tuple[int, "Callable[[sqlite3.Connection], None]"]] = [
-    # (1, _migration_1_constrain_core_tables) -- registered in T6.
+    (1, _migration_1_constrain_core_tables),
     #
     # A migration body must not call conn.commit(), conn.rollback(), or any db.py
     # leaf helper that would. apply_migrations registers its boundary in
@@ -398,6 +485,23 @@ def init_db(db_path: Path, schema_path: Path) -> None:
         conn.close()
 
 
+def _foreign_key_violations(conn: sqlite3.Connection) -> set:
+    """`PRAGMA foreign_key_check` as a comparable set of (child table, rowid, parent, fk index)."""
+    return {tuple(row) for row in conn.execute("PRAGMA foreign_key_check").fetchall()}
+
+
+def _set_foreign_keys(conn: sqlite3.Connection, enabled: bool) -> bool:
+    """Set enforcement and return what it ACTUALLY reads back, not what was asked.
+
+    `PRAGMA foreign_keys` is a documented no-op inside a transaction (verified on
+    sqlite 3.50.4: issued inside BEGIN IMMEDIATE the value does not move). A caller
+    that assumes the write took gets a connection running with no referential
+    integrity and no indication -- "asked and never checked" is the exact shape this
+    package exists to remove, so this returns the reading and every caller compares."""
+    conn.execute(f"PRAGMA foreign_keys = {'ON' if enabled else 'OFF'}")
+    return bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+
+
 def apply_migrations(conn: sqlite3.Connection) -> list[int]:
     """Run every registered migration the database has not seen, in order.
 
@@ -485,6 +589,25 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
         # upgrades to a write can take SQLITE_BUSY_SNAPSHOT, which busy_timeout does
         # not resolve.
         cookie_before = _schema_cookie(conn)
+        # SQLite's only recipe for adding a CHECK to an existing table is
+        # create-copy-drop-rename, and `DROP TABLE stages` performs an implicit
+        # DELETE that trips every child row referencing it (verified:
+        # IntegrityError "FOREIGN KEY constraint failed", against the operator's
+        # own turns table). SQLite's documented procedure disables enforcement
+        # around the rebuild, and the pragma is a no-op inside a transaction -- so
+        # here, before BEGIN, is the only moment it can be done.
+        #
+        # Enforcement is not traded for nothing. `foreign_key_check` below replaces
+        # it and is strictly stronger: it checks the whole database rather than one
+        # statement's rows.
+        fk_was_enabled = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+        if _set_foreign_keys(conn, False):
+            raise MigrationIntegrityError(
+                f"could not disable foreign key enforcement before migration {version}; "
+                f"the rebuild would fail on DROP TABLE, and refusing to start beats a "
+                f"half-applied schema"
+            )
+        violations_before = _foreign_key_violations(conn)
         conn.execute("BEGIN IMMEDIATE")
         _enter_migration_boundary(conn)
         failure: BaseException | None = None
@@ -503,6 +626,28 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
                     f"migration {version} swallowed an inner transaction failure: "
                     f"{type(swallowed).__name__}: {swallowed}"
                 ) from swallowed
+            new_violations = _foreign_key_violations(conn) - violations_before
+            if new_violations:
+                raise MigrationIntegrityError(
+                    f"migration {version} introduced {len(new_violations)} foreign key "
+                    f"violation(s), e.g. {sorted(new_violations)[:3]}"
+                )
+            if violations_before:
+                # Pre-existing, so not this migration's fault and not grounds for
+                # refusing to boot -- but carrying them silently through a rebuild
+                # would be the discard this package exists to remove. Same ruling as
+                # _coerce_unknown_stage_statuses: do not brick, do not discard.
+                pre_id = obs.record_event(
+                    conn, kind="schema.pre_existing_fk_violations", severity="warning",
+                    source="db.apply_migrations",
+                    message=f"{len(violations_before)} foreign key violation(s) predate "
+                            f"migration {version} and were carried through the rebuild",
+                    detail={"version": version, "count": len(violations_before),
+                            "sample": [list(v) for v in sorted(violations_before)[:5]]},
+                )
+                if pre_id == -1:
+                    obs.log("db.pre_existing_fk_violations_unrecorded", level="warning",
+                            version=version, count=len(violations_before))
             conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (version,))
             conn.commit()
         except BaseException as exc:
@@ -539,6 +684,18 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
             # so reporting inside would leave the only durable record of the failure
             # uncommitted, and it would die with the process that needed to report it.
             _exit_migration_boundary(conn)
+            # Restored here, before the failure report below, and VERIFIED. On the
+            # normal failure path rollback() has already ended the transaction so this
+            # takes; on the path where rollback itself failed a transaction is still
+            # open and the pragma silently does nothing. That second case is precisely
+            # a restore that did not restore, so it is read back and reported rather
+            # than assumed.
+            if _set_foreign_keys(conn, fk_was_enabled) != fk_was_enabled:
+                obs.log("db.foreign_keys_not_restored", level="critical", version=version,
+                        wanted=fk_was_enabled,
+                        note="PRAGMA foreign_keys is a no-op inside a transaction; this "
+                             "connection is running without referential integrity "
+                             "enforcement and must be closed, not reused")
         if failure is not None:
             # Report OBSERVATIONS, not a verdict.
             #

@@ -603,7 +603,6 @@ def test_an_existing_database_is_migrated_not_silently_left_behind(tmp_path: Pat
 # registers migration 1), not T10 (which is what actually constrains
 # `handles`). Coordinator-amended per plan commit 1737fe6; T6 carries an
 # explicit instruction to remove this marker. See P1-task-5-report.md.
-@pytest.mark.xfail(reason="migration 1 is registered in T6", strict=True)
 def test_migrations_are_applied_exactly_once(tmp_path: Path):
     db_path = _legacy_db(tmp_path)
     db.init_db(db_path, SCHEMA_PATH)
@@ -1069,3 +1068,193 @@ def test_the_migration_boundary_reports_lost_bookkeeping_instead_of_going_silent
         assert "db.migration_bookkeeping_lost" in text
     finally:
         conn.close()
+
+
+def test_stages_status_rejects_a_value_outside_the_enum(conn):
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_stage_row(conn, project_id, "ideation", "awaiting_reveiw")  # the typo
+
+
+def test_update_stage_status_rejects_a_value_outside_the_enum(conn):
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.update_stage_status(conn, stage_row_id, "aproved")
+    assert db.get_stage_by_row_id(conn, stage_row_id)["status"] == "ready"
+
+
+def test_every_StageStatus_member_is_accepted_by_the_check(conn):
+    """The constraint must not be narrower than the enum -- a CHECK that rejects
+    a legitimate status is worse than none."""
+    from pipeline_app.state_machine import StageStatus
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    for i, member in enumerate(StageStatus):
+        db.create_stage_row(conn, project_id, f"stage-{i}", member.value)
+
+
+def test_deleting_a_project_removes_its_stages(conn):
+    """The rebuild declares `ON DELETE CASCADE` on `stages.project_id`. That is a
+    real behaviour change (a delete used to fail or orphan depending on pragma
+    state), so the task that lands it is the task that tests it. T7 extends the
+    same assertion down to `turns`."""
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    db.create_stage_row(conn, project_id, "ideation", "ready")
+    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+    assert conn.execute("SELECT count(*) FROM stages").fetchone()[0] == 0
+
+
+def test_migration_coerces_a_ghost_stage_status_and_records_it(tmp_path: Path, monkeypatch):
+    """A legacy database can already contain the typo. The migration must not
+    brick the boot on it, and must not discard it silently either."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','awaiting_reveiw');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT status FROM stages WHERE id = 1").fetchone()[0] == "no_artifact"
+        ev = c.execute(
+            "SELECT * FROM events WHERE kind = 'schema.stage_status_coerced'"
+        ).fetchall()
+        assert len(ev) == 1
+        assert "awaiting_reveiw" in ev[0]["message"]
+    finally:
+        c.close()
+
+
+def test_the_rebuild_preserves_child_rows_referencing_stages(tmp_path: Path, monkeypatch):
+    """The load-bearing test of this task.
+
+    `DROP TABLE stages` performs an implicit DELETE, so with foreign key
+    enforcement on it raises `FOREIGN KEY constraint failed` the instant any
+    `turns` row references a stage -- which the operator's real database has, and
+    which `LEGACY_SCHEMA_V0` reproduces. With no child row present the rebuild
+    succeeds while still being wrong, so this is the only test in the file that
+    goes red if `apply_migrations` stops disabling enforcement around its
+    transaction."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','approved');"
+        "INSERT INTO turns (stage_row_id, status, created_at, events_path) "
+        "VALUES (1,'complete','2026-08-08T00:00:00+00:00','e/1.jsonl');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT status FROM stages WHERE id = 1").fetchone()[0] == "approved"
+        # The child still resolves to its parent through the rebuilt table.
+        joined = c.execute(
+            "SELECT s.stage_id FROM turns t JOIN stages s ON s.id = t.stage_row_id"
+        ).fetchall()
+        assert [r["stage_id"] for r in joined] == ["ideation"]
+        assert c.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert "CHECK" in c.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'stages'").fetchone()[0]
+    finally:
+        c.close()
+
+
+def test_foreign_key_enforcement_is_restored_after_a_migration(tmp_path: Path, monkeypatch):
+    """`apply_migrations` turns enforcement off around its transaction. A
+    connection handed back with it still off accepts orphans everywhere
+    afterwards, and nothing else in the app ever looks. The migration body is a
+    no-op here on purpose: this pins the pragma contract, not migration 1."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    monkeypatch.setattr(db, "_MIGRATIONS", [(1, lambda conn: None)])
+    c = db.get_connection(db_path)
+    try:
+        c.execute("UPDATE schema_version SET version = 0 WHERE id = 1")
+        c.commit()
+        assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert db.apply_migrations(c) == [1]
+        assert c.execute("PRAGMA foreign_keys").fetchone()[0] == 1, \
+            "connection is still running without referential integrity enforcement"
+    finally:
+        c.close()
+
+
+def test_a_migration_that_introduces_a_foreign_key_violation_fails_the_boot(
+        tmp_path: Path, monkeypatch):
+    """Disabling enforcement for the rebuild is only defensible because
+    `PRAGMA foreign_key_check` replaces it. Without that gate a migration could
+    write orphans that nothing would ever notice -- trading a loud constraint for
+    a silent one, which is the trade this whole package exists to reverse."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+
+    def orphan_maker(conn):
+        conn.execute("INSERT INTO stages (project_id, stage_id, status) "
+                     "VALUES (9999, 'ideation', 'ready')")
+
+    monkeypatch.setattr(db, "_MIGRATIONS", [(1, orphan_maker)])
+    c = db.get_connection(db_path)
+    try:
+        c.execute("UPDATE schema_version SET version = 0 WHERE id = 1")
+        c.commit()
+        with pytest.raises(db.MigrationIntegrityError):
+            db.apply_migrations(c)
+        # Rolled back whole: neither the orphan nor the stamp survived.
+        assert c.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0] == 0
+        assert c.execute("SELECT count(*) FROM stages").fetchone()[0] == 0
+    finally:
+        c.close()
+
+
+def test_pre_existing_foreign_key_violations_do_not_brick_the_boot(tmp_path: Path, monkeypatch):
+    """A violation the migration did not cause must not stop the app starting --
+    and must not vanish either. Same ruling as the status coercion above."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','ready');"
+        # sqlite3 leaves enforcement OFF by default, so a legacy write path could
+        # and did produce this.
+        "INSERT INTO turns (stage_row_id, status, created_at, events_path) "
+        "VALUES (4242,'complete','2026-08-08T00:00:00+00:00','e/1.jsonl');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)  # must not raise
+
+    c = db.get_connection(db_path)
+    try:
+        ev = c.execute(
+            "SELECT * FROM events WHERE kind = 'schema.pre_existing_fk_violations'"
+        ).fetchall()
+        assert len(ev) == 1
+        assert ev[0]["severity"] == "warning"
+        assert c.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0] \
+            == db.SCHEMA_VERSION
+    finally:
+        c.close()

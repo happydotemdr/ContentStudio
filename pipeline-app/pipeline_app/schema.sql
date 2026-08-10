@@ -21,9 +21,14 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE TABLE IF NOT EXISTS stages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL REFERENCES projects(id),
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     stage_id TEXT NOT NULL,
-    status TEXT NOT NULL,
+    -- Mirrors state_machine.StageStatus. Without it a typo'd literal (three
+    -- call sites already pass bare strings) persists a status no guard
+    -- recognizes: is_locked_or_running returns False for it, so the stage stays
+    -- chattable, editable and approvable regardless of intent (A-47).
+    status TEXT NOT NULL CHECK (status IN
+        ('locked','ready','running','awaiting_review','approved','stale','no_artifact')),
     claude_session_id TEXT,
     approved_at TEXT,
     UNIQUE(project_id, stage_id)
