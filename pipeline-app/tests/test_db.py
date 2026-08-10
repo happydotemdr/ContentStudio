@@ -1611,3 +1611,150 @@ def test_every_turn_status_the_app_writes_is_accepted_by_the_migrated_table(
             db.update_turn(c, turn_id, status)
     finally:
         c.close()
+
+
+def test_a_second_running_turn_is_rejected_by_the_storage_layer(conn):
+    """FAULT. Mirrors test_insert_running_run_then_second_raises for the
+    pipeline's identical invariant."""
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    s1 = db.create_stage_row(conn, project_id, "ideation", "running")
+    s2 = db.create_stage_row(conn, project_id, "scripting", "running")
+    db.create_turn(conn, s1, "running", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_turn(conn, s2, "running", "2026-08-08T00:00:01+00:00", "e/2.jsonl")
+
+
+def test_one_running_turn_coexists_with_any_number_of_finished_ones(conn):
+    """DISTINGUISHABILITY. The rejected-second-turn state must be different from
+    'turns are broken' -- a partial index on the wrong expression would ban the
+    second turn outright."""
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    for i in range(5):
+        t = db.create_turn(conn, stage_row_id, "running", f"2026-08-08T00:0{i}:00+00:00",
+                           f"e/{i}.jsonl")
+        db.update_turn(conn, t, "complete", finished_at=f"2026-08-08T00:0{i}:30+00:00")
+    db.create_turn(conn, stage_row_id, "running", "2026-08-08T00:06:00+00:00", "e/9.jsonl")
+    assert len(db.list_turns(conn, stage_row_id)) == 6
+    assert len(db.list_running_turns(conn)) == 1
+
+
+def test_a_rejected_concurrent_turn_is_visible_as_an_error_event(conn, tmp_path, monkeypatch):
+    """SURFACING. A race the storage layer refuses must leave a row -- an
+    IntegrityError bubbling into a 500 tells the operator nothing findable."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    s1 = db.create_stage_row(conn, project_id, "ideation", "running")
+    s2 = db.create_stage_row(conn, project_id, "scripting", "running")
+    db.create_turn(conn, s1, "running", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.create_turn(conn, s2, "running", "2026-08-08T00:00:01+00:00", "e/2.jsonl")
+    rows = conn.execute(
+        "SELECT * FROM events WHERE kind = 'turn.concurrent_start_rejected'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert json.loads(rows[0]["detail"])["stage_row_id"] == s2
+
+
+def test_migration_orphans_all_but_the_newest_running_turn(tmp_path: Path, monkeypatch):
+    """A legacy database can already hold two running turns -- the exact race
+    this index prevents. The index cannot be created over them, so the migration
+    resolves it loudly instead of failing to boot."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','running');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'scripting','running');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (1,'running','2026-08-08T00:00:00+00:00','e/1.jsonl');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (2,'running','2026-08-08T00:00:05+00:00','e/2.jsonl');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        assert [r["status"] for r in c.execute("SELECT status FROM turns ORDER BY id")] \
+            == ["orphaned", "running"]
+        assert c.execute(
+            "SELECT count(*) FROM events WHERE kind = 'schema.duplicate_running_turn_orphaned'"
+        ).fetchone()[0] == 1
+    finally:
+        c.close()
+
+
+def test_the_migration_does_not_leave_a_stage_wedged_in_running(tmp_path: Path, monkeypatch):
+    """The defect this task would otherwise INTRODUCE.
+
+    `reconcile_orphaned_turns` unwedges a stage by iterating *running* turns
+    (preflight.py:14-18). A turn the migration has already set to 'orphaned' is
+    invisible to it, so its stage sits at 'running' forever --
+    `is_locked_or_running` answers True, and the stage is un-chattable,
+    un-editable and un-approvable with no operator action that can free it. The
+    newest turn survives as 'running', so preflight unwedges *its* stage and only
+    its stage; the losers are stranded silently."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','running');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'scripting','running');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (1,'running','2026-08-08T00:00:00+00:00','e/1.jsonl');"
+        "INSERT INTO turns (stage_row_id,status,created_at,events_path) "
+        "VALUES (2,'running','2026-08-08T00:00:05+00:00','e/2.jsonl');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        # Stage 1 lost its turn to the migration, so nothing downstream will ever
+        # revisit it. It must come back recoverable.
+        assert c.execute("SELECT status FROM stages WHERE id = 1").fetchone()[0] == "ready"
+        # Stage 2 keeps the surviving running turn: preflight owns it, and the
+        # migration must not have touched it.
+        assert c.execute("SELECT status FROM stages WHERE id = 2").fetchone()[0] == "running"
+        detail = json.loads(c.execute(
+            "SELECT detail FROM events "
+            "WHERE kind = 'schema.duplicate_running_turn_orphaned'").fetchone()[0])
+        assert detail["stage_row_id"] == 1
+        assert detail["stage_status_was"] == "running"
+    finally:
+        c.close()
+
+
+def test_a_second_running_turn_is_rejected_on_a_migrated_database(tmp_path: Path, monkeypatch):
+    """The migrated-database twin, for the third time in this package: schema.sql
+    runs before the migration, so `CREATE UNIQUE INDEX` there lands on the OLD
+    turns table and the rebuild's DROP TABLE destroys it. A fresh database would
+    be protected and a migrated one would not, and the fresh test passes either
+    way."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        project_id = db.create_project(c, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+        s1 = db.create_stage_row(c, project_id, "ideation", "running")
+        s2 = db.create_stage_row(c, project_id, "scripting", "running")
+        db.create_turn(c, s1, "running", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+        with pytest.raises(sqlite3.IntegrityError):
+            db.create_turn(c, s2, "running", "2026-08-08T00:00:01+00:00", "e/2.jsonl")
+    finally:
+        c.close()

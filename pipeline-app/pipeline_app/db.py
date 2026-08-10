@@ -395,7 +395,113 @@ _MIGRATION_1_TURNS_STEPS = (
     "DROP TABLE turns",
     "ALTER TABLE turns_new RENAME TO turns",
     "CREATE INDEX IF NOT EXISTS idx_turns_stage_row ON turns(stage_row_id)",
+    # schema.sql's own copy of this index runs BEFORE this migration (init_db's
+    # ordering), so it lands on the OLD turns table and this rebuild's DROP TABLE
+    # takes it down with the table it was on -- a migrated database would
+    # silently come back with no single-running enforcement while a fresh one
+    # would have it, same shape as A-75's idx_turns_stage_row (A-71).
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_single_running "
+    "ON turns(status) WHERE status = 'running'",
 )
+
+
+def _orphan_all_but_newest_running_turn(conn: sqlite3.Connection) -> list[dict]:
+    """A-71's data-repair half. A legacy database can already hold two (or
+    more) 'running' turns -- exactly the race `ux_turns_single_running` exists
+    to prevent -- and a unique index cannot be created over duplicates that
+    already violate it.
+
+    Keeps the turn with the latest `created_at` (ties broken by `id`, both
+    DESC) and orphans every other running turn. For each loser this has a
+    SECOND job, not just the status flip: `preflight.reconcile_orphaned_turns`
+    unwedges a stage by iterating *running* turns (preflight.py:14-18), so a
+    turn this function has already set to 'orphaned' is invisible to it -- its
+    stage would sit at 'running' forever, `is_locked_or_running` would answer
+    True, and no operator action could free it. So a loser's stage, if still
+    'running', is reset to 'ready' here -- the same no-artifact branch
+    `_unwedge_stage` takes, and it destroys nothing (where an artifact does
+    exist the stage merely needs re-approving, which the returned detail
+    says). Not resolved by reaching into the filesystem to choose
+    'awaiting_review' instead: this has no business making that call, and
+    neither of its two call sites are in a position to either.
+
+    Returns one dict per turn orphaned (`turn_id`, `stage_row_id`,
+    `stage_status_was`) rather than recording the event itself, because this
+    is called from two places that differ in whether `events` exists yet:
+
+    1. `init_db`, BEFORE `conn.executescript(schema.sql)` runs, on a database
+       that already has a `turns` table. schema.sql appends
+       `ux_turns_single_running` immediately after the `turns` table
+       definition (implement (a)); creating it over pre-existing duplicates
+       raises `IntegrityError`, and `executescript` aborts every remaining
+       statement in the file when that happens -- including `events`, which
+       schema.sql does not create until near the end. There is nowhere to
+       record an event yet, so `init_db` calls this first, runs schema.sql
+       (now safe), and records the returned details afterward, once `events`
+       exists.
+    2. `_migration_1_constrain_core_tables`, as a precondition for its own
+       `turns` rebuild (`_MIGRATION_1_TURNS_STEPS` appends the same index at
+       the end of that rebuild). By migration time `events` always already
+       exists, so this second call is free to record immediately -- see
+       `_migration_1_constrain_core_tables` for that half. It is also what
+       makes this function safe to call from `apply_migrations` directly
+       (several existing tests do, bypassing `init_db` entirely): the
+       precondition holds regardless of how a caller reached this migration.
+       For any database that went through `init_db`, call (1) already
+       resolved every duplicate, so this second call finds nothing and
+       returns an empty list -- cheap, and not redundant, since it is what
+       protects the direct-`apply_migrations` path.
+
+    Ordered (at both call sites) after any turn-status coercion pass, not
+    because a coerced ghost status could ever read 'running' here (it becomes
+    'orphaned', so it is already excluded from the SELECT below) but to keep a
+    fixed, readable order as more coercion passes are added ahead of it.
+
+    Touches only columns that exist in both the legacy and the rebuilt shape
+    of `turns` and of `stages`, so it is safe to run before either table has
+    been rebuilt by this migration.
+
+    No commit, no pragma, no executescript, no `obs` import -- callable from
+    either context without regard to which one it is."""
+    running = conn.execute(
+        "SELECT id, stage_row_id FROM turns WHERE status = 'running' "
+        "ORDER BY created_at DESC, id DESC"
+    ).fetchall()
+    orphaned: list[dict] = []
+    for turn_id, stage_row_id in running[1:]:
+        conn.execute("UPDATE turns SET status = 'orphaned' WHERE id = ?", (turn_id,))
+        stage_row = conn.execute(
+            "SELECT status FROM stages WHERE id = ?", (stage_row_id,)
+        ).fetchone()
+        stage_status_was = stage_row[0] if stage_row is not None else None
+        if stage_status_was == "running":
+            conn.execute("UPDATE stages SET status = 'ready' WHERE id = ?", (stage_row_id,))
+        orphaned.append({"turn_id": turn_id, "stage_row_id": stage_row_id,
+                          "stage_status_was": stage_status_was})
+    return orphaned
+
+
+def _record_duplicate_running_turns_orphaned(
+    conn: sqlite3.Connection, orphaned: list[dict], *, source: str,
+) -> None:
+    """The event-recording half of `_orphan_all_but_newest_running_turn`,
+    split out so each call site can record at the moment `events` actually
+    exists for it (see that function's docstring for why the two call sites
+    differ). `record_event` never raises -- the same never-mask-the-thing-
+    being-recorded contract as everywhere else it is used."""
+    from pipeline_app import obs
+
+    for detail in orphaned:
+        orphaned_id = obs.record_event(
+            conn, kind="schema.duplicate_running_turn_orphaned", severity="warning",
+            source=source,
+            message=f"turn {detail['turn_id']} on stage_row {detail['stage_row_id']} lost "
+                    f"the race for the single-running-turn invariant "
+                    f"(ux_turns_single_running); orphaned",
+            detail=detail,
+        )
+        if orphaned_id == -1:
+            obs.log("db.duplicate_running_turn_orphan_unrecorded", level="error", **detail)
 
 
 # discovery_run_handles gets no new CHECK (schema.sql never declared a status
@@ -426,6 +532,9 @@ _MIGRATION_1_DISCOVERY_RUN_HANDLES_STEPS = (
 def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
     """A-47 / A-75: give `stages.status`, `turns.status` and the discovery_run_handles
     foreign keys the constraints schema.sql can never deliver to an existing table.
+    Also A-71's migration-side precondition: a legacy `turns` table can already
+    hold more than one 'running' row, which the `ux_turns_single_running`
+    unique index appended to the turns rebuild cannot be created over.
 
     Every statement in schema.sql is `CREATE TABLE IF NOT EXISTS`, so no constraint
     added there reaches a database that already has the table. This is the only path
@@ -453,6 +562,18 @@ def _migration_1_constrain_core_tables(conn: sqlite3.Connection) -> None:
     for statement in _MIGRATION_1_STAGES_STEPS:
         conn.execute(statement)
     _coerce_unknown_turn_statuses(conn)
+    # Before the rebuild, deliberately: a legacy database can already hold two
+    # or more 'running' turns, and ux_turns_single_running (appended to
+    # _MIGRATION_1_TURNS_STEPS below) cannot be created over duplicates that
+    # already violate it (A-71). `events` always exists by migration time, so
+    # this recording call is immediate, unlike init_db's deferred one --
+    # see _orphan_all_but_newest_running_turn's docstring. For a database that
+    # reached init_db normally this is a no-op (init_db's own pre-schema call,
+    # below, already resolved every duplicate) -- it is what protects a caller
+    # that reaches apply_migrations directly, as several existing tests do.
+    _record_duplicate_running_turns_orphaned(
+        conn, _orphan_all_but_newest_running_turn(conn), source="db.migration_1"
+    )
     for statement in _MIGRATION_1_TURNS_STEPS:
         conn.execute(statement)
     for statement in _MIGRATION_1_DISCOVERY_RUN_HANDLES_STEPS:
@@ -606,8 +727,30 @@ def init_db(db_path: Path, schema_path: Path) -> None:
         # created right now by schema.sql at the target shape, so it is stamped
         # at the current version and every migration is correctly skipped.
         pre_existing = _table_exists(conn, "projects")
+        # A-71, discovered by this task's own migrated-database test rather
+        # than predicted by it: schema.sql appends `ux_turns_single_running`
+        # immediately after the `turns` table definition (implement (a)), and
+        # a pre-existing database can already hold more than one 'running'
+        # turn -- exactly the race that index exists to prevent. Creating a
+        # UNIQUE index over an existing violation raises IntegrityError, and
+        # `executescript` aborts every statement after the one that failed --
+        # including every table schema.sql has not created yet, `events`
+        # among them, since it is defined near the end of the file. Resolve
+        # duplicates NOW, on the raw pre-schema table, so that statement can
+        # succeed; `events` does not exist yet, so the resulting orphan
+        # details are recorded further down, once it does.
+        deferred_events = (
+            _orphan_all_but_newest_running_turn(conn)
+            if pre_existing and _table_exists(conn, "turns") else []
+        )
+        if deferred_events:
+            conn.commit()
         conn.executescript(schema_path.read_text(encoding="utf-8"))
         conn.commit()
+        if deferred_events:
+            _record_duplicate_running_turns_orphaned(
+                conn, deferred_events, source="db.init_db"
+            )
         conn.execute(
             "INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, ?)",
             (0 if pre_existing else SCHEMA_VERSION,),
@@ -1004,10 +1147,37 @@ def update_stage_session(conn: sqlite3.Connection, stage_row_id: int, session_id
 
 
 def create_turn(conn: sqlite3.Connection, stage_row_id: int, status: str, created_at: str, events_path: str) -> int:
-    cur = conn.execute(
-        "INSERT INTO turns (stage_row_id, status, created_at, events_path) VALUES (?, ?, ?, ?)",
-        (stage_row_id, status, created_at, events_path),
-    )
+    from pipeline_app import obs
+
+    try:
+        cur = conn.execute(
+            "INSERT INTO turns (stage_row_id, status, created_at, events_path) "
+            "VALUES (?, ?, ?, ?)",
+            (stage_row_id, status, created_at, events_path),
+        )
+    except sqlite3.IntegrityError as exc:
+        # ux_turns_single_running fired: another turn is already running. The
+        # application-level checks (route pre-check and run_stage_turn) both
+        # read zero -- this is the race they cannot see (A-71).
+        event_id = obs.record_event(
+            conn, kind="turn.concurrent_start_rejected", severity="error",
+            source="db.create_turn",
+            message=f"refused a second running turn for stage_row_id={stage_row_id}",
+            detail={"stage_row_id": stage_row_id, "error": str(exc)},
+        )
+        # Outside a db.transaction() the event commits and outlives the raise
+        # (verified: the failed INSERT leaves in_transaction True, and the events
+        # row still survives a reconnect). INSIDE one it does not -- the caller's
+        # boundary rolls back on this very exception and takes the only record of
+        # the race with it. No caller wraps create_turn today, but it is a public
+        # helper, and "the record died with the thing it was recording" is the
+        # defect this package exists to remove.
+        if event_id != -1 and _TXN_DEPTH.get(id(conn), 0) > 0:
+            obs.log("turn.concurrent_start_rejected", level="error",
+                    stage_row_id=stage_row_id, error=str(exc),
+                    note="inside a caller transaction: the events row will be rolled "
+                         "back with it, so this log line is the durable record")
+        raise
     commit_unless_in_transaction(conn)
     return cur.lastrowid
 

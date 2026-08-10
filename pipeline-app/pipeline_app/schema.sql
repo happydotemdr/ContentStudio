@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 CREATE INDEX IF NOT EXISTS idx_turns_stage_row ON turns(stage_row_id);
 
+-- The pipeline's single-running invariant, at the storage layer where discovery
+-- already has it (ux_discovery_single_running). Two concurrent chat POSTs can
+-- both read zero running turns and both insert one, launching two Claude
+-- subprocesses that write the same raw_output.md (A-71).
+CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_single_running
+    ON turns(status) WHERE status = 'running';
+
 CREATE TABLE IF NOT EXISTS handles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     platform TEXT NOT NULL,
