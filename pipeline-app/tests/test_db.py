@@ -299,3 +299,123 @@ def test_update_settings(conn):
 def test_set_last_scheduled_run_date(conn):
     db.set_last_scheduled_run_date(conn, "2026-07-30")
     assert db.get_settings(conn)["last_scheduled_run_date"] == "2026-07-30"
+
+
+def test_transaction_rolls_back_every_statement_in_the_block(conn):
+    """FAULT. A multi-row operation that fails partway leaves nothing behind."""
+    with pytest.raises(RuntimeError):
+        with db.transaction(conn):
+            project_id = db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+            db.create_stage_row(conn, project_id, "ideation", "ready")
+            raise RuntimeError("mkdir failed halfway through create_project")
+    assert db.list_projects(conn) == []
+    assert conn.execute("SELECT count(*) FROM stages").fetchone()[0] == 0
+
+
+def test_a_failed_transaction_is_distinguishable_from_the_unwrapped_path(conn):
+    """DISTINGUISHABILITY. Without the boundary the same failure leaves a
+    half-written project behind -- which is A-70 exactly. The two paths must not
+    produce the same database."""
+    def half_a_project(wrapped: bool) -> int:
+        try:
+            if wrapped:
+                with db.transaction(conn):
+                    db.create_project(conn, "wrapped", "a", "generic", "2026-08-08T00:00:00+00:00")
+                    raise RuntimeError("boom")
+            else:
+                db.create_project(conn, "unwrapped", "a", "generic", "2026-08-08T00:00:00+00:00")
+                raise RuntimeError("boom")
+        except RuntimeError:
+            pass
+        return len(db.list_projects(conn))
+
+    assert half_a_project(wrapped=False) == 1      # today's behaviour, preserved
+    assert half_a_project(wrapped=True) == 1       # still 1 -- the wrapped one rolled back
+    assert [r["run_id"] for r in db.list_projects(conn)] == ["unwrapped"]
+
+
+def test_a_rolled_back_transaction_records_an_error_event(conn, tmp_path, monkeypatch):
+    """SURFACING. A silently discarded half-operation is how A-70 stayed
+    invisible; the rollback has to leave a row a human can find -- and it has to
+    still be there once this connection is gone.
+
+    Read it back on a SECOND connection. Reading it on the connection that wrote
+    it passes whether or not the row was ever committed, so that version of this
+    test cannot tell a durable event from one that dies with the process."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    with pytest.raises(RuntimeError):
+        with db.transaction(conn):
+            db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+            raise RuntimeError("boom")
+
+    other = db.get_connection(Path(conn.execute("PRAGMA database_list").fetchone()[2]))
+    try:
+        rows = other.execute(
+            "SELECT * FROM events WHERE kind = 'db.transaction_rolled_back'"
+        ).fetchall()
+    finally:
+        other.close()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "RuntimeError" in rows[0]["message"]
+    assert db.list_projects(conn) == []  # ...and the half-written project is still gone
+
+
+def test_recording_an_event_inside_a_transaction_does_not_commit_the_caller(
+    conn, tmp_path, monkeypatch
+):
+    """`record_event` is called from inside operations that are failing. If it
+    committed, it would persist the half-finished work the boundary exists to
+    discard -- A-70 defeated by the very module built to report it."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    with pytest.raises(RuntimeError):
+        with db.transaction(conn):
+            db.create_project(conn, "half", "a", "generic", "2026-08-08T00:00:00+00:00")
+            obs.record_event(conn, kind="k", severity="warning", source="s", message="mid-flight")
+            raise RuntimeError("boom")
+
+    assert db.list_projects(conn) == []  # the half project did NOT survive
+    # That event row rolled back with everything else -- correct, but it must not
+    # be the only trace. `record_event` logs unconditionally, so the file survives.
+    text = "\n".join(
+        p.read_text(encoding="utf-8") for p in (tmp_path / "logs").glob("app-*.log")
+    )
+    assert "mid-flight" in text
+
+
+def test_leaf_helpers_still_commit_immediately_outside_a_transaction(conn, tmp_path):
+    """Fourteen other packages' tests depend on this. A second connection to the
+    same file must see the row without any explicit boundary."""
+    db.create_project(conn, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    other = db.get_connection(Path(conn.execute("PRAGMA database_list").fetchone()[2]))
+    try:
+        assert len(db.list_projects(other)) == 1
+    finally:
+        other.close()
+
+
+def test_a_nested_transaction_joins_the_outer_one(conn):
+    with db.transaction(conn):
+        db.create_project(conn, "outer", "a", "generic", "2026-08-08T00:00:00+00:00")
+        with db.transaction(conn):
+            db.create_project(conn, "inner", "b", "generic", "2026-08-08T00:00:00+00:00")
+        assert len(db.list_projects(conn)) == 2  # inner did not commit on its own
+    assert len(db.list_projects(conn)) == 2
+
+
+def test_a_swallowed_inner_failure_still_rolls_the_outer_transaction_back(conn):
+    """A poisoned transaction must not be committable. Without this, an outer
+    block that catches its inner block's exception commits half a cascade --
+    the same defect one level up."""
+    with pytest.raises(db.TransactionPoisonedError):
+        with db.transaction(conn):
+            db.create_project(conn, "outer", "a", "generic", "2026-08-08T00:00:00+00:00")
+            try:
+                with db.transaction(conn):
+                    db.create_project(conn, "inner", "b", "generic", "2026-08-08T00:00:00+00:00")
+                    raise RuntimeError("boom")
+            except RuntimeError:
+                pass
+    assert db.list_projects(conn) == []

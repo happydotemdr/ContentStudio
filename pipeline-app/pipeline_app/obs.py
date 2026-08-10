@@ -100,7 +100,9 @@ def record_event(conn, *, kind: str, severity: str, source: str,
             (_utcnow().isoformat(timespec="seconds"), kind, severity, source, message,
              detail_json, run_id),
         )
-        conn.commit()
+        from pipeline_app.db import commit_unless_in_transaction
+
+        commit_unless_in_transaction(conn)
         event_id = int(cur.lastrowid)
     except Exception as exc:  # noqa: BLE001 -- recording must never mask the recorded
         log("obs.record_event_failed", level="error", kind=kind, severity=severity,

@@ -1,5 +1,110 @@
 import sqlite3
+import threading
+from contextlib import contextmanager
 from pathlib import Path
+
+
+class TransactionPoisonedError(RuntimeError):
+    """An inner transaction failed and its exception was swallowed.
+
+    Committing the outer block would persist half a cascade -- exactly the
+    defect `transaction()` exists to prevent -- so the boundary rolls back and
+    raises this instead of silently succeeding."""
+
+
+# Keyed by connection identity, deliberately NOT by thread: the app shares one
+# connection between the threadpool routes and the event-loop chat route
+# (get_connection's check_same_thread=False), so a transaction is a property of
+# the connection, not of whoever happens to be running. The key is only present
+# while `transaction()` holds a strong reference to the connection, so id reuse
+# cannot collide.
+_TXN_DEPTH: dict[int, int] = {}
+_TXN_POISON: set[int] = set()
+_TXN_LOCK = threading.Lock()
+
+
+def commit_unless_in_transaction(conn: sqlite3.Connection) -> None:
+    """What every leaf helper in this module calls instead of `conn.commit()`.
+
+    Outside a `transaction()` block it commits immediately, byte-for-byte the
+    behaviour every existing caller already depends on. Inside one it is a
+    no-op, so the boundary owns the commit and a multi-row invariant is atomic
+    for the first time (A-70)."""
+    with _TXN_LOCK:
+        in_txn = _TXN_DEPTH.get(id(conn), 0) > 0
+    if not in_txn:
+        conn.commit()
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection):
+    """One explicit boundary around a multi-row invariant.
+
+    Wrap project creation, approval + unlock, the staleness cascade and each
+    per-project backfill in this. Nests: an inner block joins the outer one
+    rather than committing early."""
+    key = id(conn)
+    with _TXN_LOCK:
+        depth = _TXN_DEPTH.get(key, 0)
+        _TXN_DEPTH[key] = depth + 1
+    outermost = depth == 0
+    try:
+        yield conn
+    except BaseException as exc:
+        with _TXN_LOCK:
+            _TXN_POISON.add(key)
+        if outermost:
+            _rollback_and_report(conn, exc)
+        raise
+    else:
+        with _TXN_LOCK:
+            poisoned = key in _TXN_POISON
+        if outermost and poisoned:
+            exc = TransactionPoisonedError(
+                "an inner transaction failed and its exception was swallowed"
+            )
+            _rollback_and_report(conn, exc)
+            raise exc
+        if outermost:
+            conn.commit()
+    finally:
+        with _TXN_LOCK:
+            if outermost:
+                _TXN_DEPTH.pop(key, None)
+                _TXN_POISON.discard(key)
+            else:
+                _TXN_DEPTH[key] = depth
+
+
+def _rollback_and_report(conn: sqlite3.Connection, exc: BaseException) -> None:
+    from pipeline_app import obs
+
+    try:
+        conn.rollback()
+    except Exception as rollback_exc:  # noqa: BLE001 -- report it, never mask the original
+        obs.log("db.rollback_failed", level="critical",
+                error=f"{type(rollback_exc).__name__}: {rollback_exc}")
+    obs.record_event(
+        conn, kind="db.transaction_rolled_back", severity="error", source="db.transaction",
+        message=f"rolled back after {type(exc).__name__}: {exc}",
+        detail={"exception": type(exc).__name__},
+    )
+    # Commit the event row explicitly. We are still nominally inside this
+    # transaction -- `transaction()`'s finally has not popped the depth key yet --
+    # so `record_event`'s `commit_unless_in_transaction` is a no-op here. The
+    # rollback above already discarded the caller's work, so this row is the only
+    # statement pending; committing it cannot resurrect anything.
+    #
+    # Without this the sole durable trace of the rollback dies with the
+    # connection: verified empirically on sqlite3 with the default
+    # isolation_level -- the row is visible on THIS connection, invisible to any
+    # other, and gone entirely after close(). A surfacing mechanism that only the
+    # failing process can see is the exact defect this package exists to remove.
+    try:
+        conn.commit()
+    except Exception as commit_exc:  # noqa: BLE001 -- a lost event must not mask the original
+        obs.log("db.rollback_event_commit_failed", level="critical",
+                error=f"{type(commit_exc).__name__}: {commit_exc}")
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
@@ -34,7 +139,7 @@ def create_project(conn: sqlite3.Connection, run_id: str, slug: str, brand: str,
         "INSERT INTO projects (run_id, slug, brand, created_at) VALUES (?, ?, ?, ?)",
         (run_id, slug, brand, created_at),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
     return cur.lastrowid
 
 
@@ -51,7 +156,7 @@ def create_stage_row(conn: sqlite3.Connection, project_id: int, stage_id: str, s
         "INSERT INTO stages (project_id, stage_id, status) VALUES (?, ?, ?)",
         (project_id, stage_id, status),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
     return cur.lastrowid
 
 
@@ -78,12 +183,12 @@ def update_stage_status(conn: sqlite3.Connection, stage_row_id: int, status: str
         )
     else:
         conn.execute("UPDATE stages SET status = ? WHERE id = ?", (status, stage_row_id))
-    conn.commit()
+    commit_unless_in_transaction(conn)
 
 
 def update_stage_session(conn: sqlite3.Connection, stage_row_id: int, session_id: str) -> None:
     conn.execute("UPDATE stages SET claude_session_id = ? WHERE id = ?", (session_id, stage_row_id))
-    conn.commit()
+    commit_unless_in_transaction(conn)
 
 
 def create_turn(conn: sqlite3.Connection, stage_row_id: int, status: str, created_at: str, events_path: str) -> int:
@@ -91,7 +196,7 @@ def create_turn(conn: sqlite3.Connection, stage_row_id: int, status: str, create
         "INSERT INTO turns (stage_row_id, status, created_at, events_path) VALUES (?, ?, ?, ?)",
         (stage_row_id, status, created_at, events_path),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
     return cur.lastrowid
 
 
@@ -100,7 +205,7 @@ def update_turn(conn: sqlite3.Connection, turn_id: int, status: str, finished_at
         "UPDATE turns SET status = ?, finished_at = COALESCE(?, finished_at), cost_usd = COALESCE(?, cost_usd) WHERE id = ?",
         (status, finished_at, cost_usd, turn_id),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
 
 
 def list_turns(conn: sqlite3.Connection, stage_row_id: int) -> list[sqlite3.Row]:
@@ -122,7 +227,7 @@ def create_handle(
         "VALUES (?, ?, ?, ?, ?, ?)",
         (platform, handle, display_name, cohort, keyword_filter, added_at),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
     return cur.lastrowid
 
 
@@ -162,12 +267,12 @@ def set_handle_status(conn: sqlite3.Connection, handle_id: int, status: str, val
         )
     else:
         conn.execute("UPDATE handles SET status = ? WHERE id = ?", (status, handle_id))
-    conn.commit()
+    commit_unless_in_transaction(conn)
 
 
 def set_handle_included(conn: sqlite3.Connection, handle_id: int, included: bool) -> None:
     conn.execute("UPDATE handles SET included = ? WHERE id = ?", (1 if included else 0, handle_id))
-    conn.commit()
+    commit_unless_in_transaction(conn)
 
 
 def set_handle_last_seen(conn: sqlite3.Connection, handle_id: int, last_seen_published_at: str) -> None:
@@ -175,7 +280,7 @@ def set_handle_last_seen(conn: sqlite3.Connection, handle_id: int, last_seen_pub
         "UPDATE handles SET last_seen_published_at = ? WHERE id = ?",
         (last_seen_published_at, handle_id),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
 
 
 def upsert_handle_from_migration(
@@ -188,7 +293,7 @@ def upsert_handle_from_migration(
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (platform, handle, display_name, cohort, keyword_filter, status, 1 if included else 0, added_at),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
     return get_handle_by_platform_and_handle(conn, platform, handle)["id"]
 
 
@@ -201,7 +306,7 @@ def insert_running_run(
         "VALUES (?, ?, ?, ?, ?, 'running', ?)",
         (run_id, trigger, mode, backfill_start, backfill_end, started_at),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
     return cur.lastrowid
 
 
@@ -211,7 +316,7 @@ def insert_locked_run(conn: sqlite3.Connection, run_id: str, trigger: str, mode:
         "VALUES (?, ?, ?, 'locked', ?, ?)",
         (run_id, trigger, mode, started_at, finished_at),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
     return cur.lastrowid
 
 
@@ -221,7 +326,7 @@ def insert_terminal_run(conn: sqlite3.Connection, run_id: str, trigger: str, mod
         "VALUES (?, ?, ?, ?, ?, ?)",
         (run_id, trigger, mode, status, started_at, finished_at),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
     return cur.lastrowid
 
 
@@ -231,7 +336,7 @@ def get_running_run(conn: sqlite3.Connection) -> sqlite3.Row | None:
 
 def update_run_heartbeat(conn: sqlite3.Connection, run_row_id: int, heartbeat_at: str) -> None:
     conn.execute("UPDATE discovery_runs SET heartbeat_at = ? WHERE id = ?", (heartbeat_at, run_row_id))
-    conn.commit()
+    commit_unless_in_transaction(conn)
 
 
 def reclaim_stale_runs(conn: sqlite3.Connection, now_iso: str, staleness_seconds: int) -> list[int]:
@@ -247,7 +352,7 @@ def reclaim_stale_runs(conn: sqlite3.Connection, now_iso: str, staleness_seconds
     for run_row_id in stale_ids:
         conn.execute("UPDATE discovery_runs SET status = 'abandoned' WHERE id = ?", (run_row_id,))
     if stale_ids:
-        conn.commit()
+        commit_unless_in_transaction(conn)
     return stale_ids
 
 
@@ -256,7 +361,7 @@ def finish_run(conn: sqlite3.Connection, run_row_id: int, status: str, finished_
         "UPDATE discovery_runs SET status = ?, finished_at = ?, md_path = ? WHERE id = ?",
         (status, finished_at, md_path, run_row_id),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
 
 
 def get_run(conn: sqlite3.Connection, run_row_id: int) -> sqlite3.Row | None:
@@ -276,7 +381,7 @@ def record_handle_result(
         "VALUES (?, ?, ?, ?, ?)",
         (run_row_id, handle_id, status, items_downloaded, error_message),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
     return cur.lastrowid
 
 
@@ -295,9 +400,9 @@ def update_settings(conn: sqlite3.Connection, frequency: str, time_of_day: str, 
         "UPDATE discovery_settings SET frequency = ?, time_of_day = ?, timezone = ? WHERE id = 1",
         (frequency, time_of_day, timezone),
     )
-    conn.commit()
+    commit_unless_in_transaction(conn)
 
 
 def set_last_scheduled_run_date(conn: sqlite3.Connection, date_iso: str) -> None:
     conn.execute("UPDATE discovery_settings SET last_scheduled_run_date = ? WHERE id = 1", (date_iso,))
-    conn.commit()
+    commit_unless_in_transaction(conn)
