@@ -2591,15 +2591,47 @@ def _indexed_columns(conn) -> set[tuple[str, str]]:
     return out
 
 
+_FK_COLUMNS_INDEXED_HERE = [("turns", "stage_row_id"),
+                            ("discovery_run_handles", "run_id"),
+                            ("discovery_run_handles", "handle_id")]
+
+
 def test_every_foreign_key_column_is_covered_by_an_index(conn):
     """An unindexed FK makes both the join and every integrity check a full
     scan, and turns is never pruned."""
     indexed = _indexed_columns(conn)
-    for table, column in [("turns", "stage_row_id"),
-                          ("discovery_run_handles", "run_id"),
-                          ("discovery_run_handles", "handle_id"),
-                          ("handles", "creator_id")]:
+    for table, column in _FK_COLUMNS_INDEXED_HERE:
         assert (table, column) in indexed, f"{table}.{column} is an unindexed foreign key"
+
+
+@pytest.mark.xfail(reason="handles.creator_id does not exist until T9", strict=True)
+def test_handles_creator_id_is_covered_by_an_index(conn):
+    """Split out of the test above rather than left as a failing assertion inside
+    it. `handles.creator_id` is created by T9, so asserting it here would leave the
+    suite red for two whole tasks -- and "the suite is red but we know why" is how a
+    real regression gets waved through."""
+    assert ("handles", "creator_id") in _indexed_columns(conn)
+
+
+def test_every_foreign_key_column_is_still_indexed_after_the_migration(
+        tmp_path: Path, monkeypatch):
+    """The migrated-database half, and the reason it exists is a defect T6 hit
+    already: schema.sql runs BEFORE the migration, so its `CREATE INDEX IF NOT
+    EXISTS` lands on the OLD table -- and the rebuild's `DROP TABLE` then takes the
+    index with it. A fresh database keeps its indices and a migrated one silently
+    loses them, and the fresh-database test above passes either way."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        indexed = _indexed_columns(c)
+        for table, column in _FK_COLUMNS_INDEXED_HERE:
+            assert (table, column) in indexed, \
+                f"{table}.{column} lost its index in the rebuild"
+    finally:
+        c.close()
 
 
 def test_turns_status_rejects_a_value_outside_the_vocabulary(conn):
@@ -2629,20 +2661,83 @@ def test_deleting_a_project_cascades_to_its_stages_and_turns(conn):
     conn.commit()
     assert conn.execute("SELECT count(*) FROM stages").fetchone()[0] == 0
     assert conn.execute("SELECT count(*) FROM turns").fetchone()[0] == 0
+
+
+def test_migration_coerces_a_ghost_turn_status_and_records_it(tmp_path: Path, monkeypatch):
+    """Same ruling as the stage coercion in T6: a legacy row already holding a
+    status the new CHECK rejects must not brick the boot, and must not vanish. A
+    turn whose status cannot be interpreted *is* an orphan, so that is where it
+    goes."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    c = sqlite3.connect(db_path)
+    c.executescript(
+        "INSERT INTO projects (run_id, slug, brand, created_at) "
+        "VALUES ('a-1','a','generic','2026-08-08T00:00:00+00:00');"
+        "INSERT INTO stages (project_id, stage_id, status) VALUES (1,'ideation','approved');"
+        "INSERT INTO turns (stage_row_id, status, created_at, events_path) "
+        "VALUES (1,'complet','2026-08-08T00:00:00+00:00','e/1.jsonl');"
+    )
+    c.commit()
+    c.close()
+
+    db.init_db(db_path, SCHEMA_PATH)
+
+    c = db.get_connection(db_path)
+    try:
+        assert c.execute("SELECT status FROM turns WHERE id = 1").fetchone()[0] == "orphaned"
+        ev = c.execute(
+            "SELECT * FROM events WHERE kind = 'schema.turn_status_coerced'").fetchall()
+        assert len(ev) == 1
+        assert "complet" in ev[0]["message"]
+    finally:
+        c.close()
+
+
+def test_every_turn_status_the_app_writes_is_accepted_by_the_migrated_table(
+        tmp_path: Path, monkeypatch):
+    """The migrated-database half of the vocabulary check, for the same reason T6
+    needed one: the fresh-database test exercises schema.sql's copy of the CHECK
+    list and never the migration's."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = _legacy_db(tmp_path)
+    db.init_db(db_path, SCHEMA_PATH)
+    c = db.get_connection(db_path)
+    try:
+        project_id = db.create_project(c, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+        stage_row_id = db.create_stage_row(c, project_id, "ideation", "ready")
+        turn_id = db.create_turn(c, stage_row_id, "running",
+                                 "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+        for status in TURN_STATUSES_THE_APP_WRITES:
+            db.update_turn(c, turn_id, status)
+    finally:
+        c.close()
 ```
 
-- [ ] **Run it.** All five fail.
-- [ ] **Implement.** In `schema.sql`, replace `turns` and add the FK indices; mirror the same DDL
-      into `_MIGRATION_1_TURNS_SQL` in `db.py` and call `_coerce_unknown_turn_statuses` (same
-      shape as `_coerce_unknown_stage_statuses`, coercing to `'orphaned'` with kind
-      `schema.turn_status_coerced` — a turn whose status cannot be interpreted *is* an orphan):
+- [ ] **Run it, and report each test's ACTUAL failure.** Do not match a predicted count. Note that
+      `test_every_turn_status_the_app_writes_is_accepted` and its migrated twin pass vacuously
+      before the CHECK exists — see the scaffold requirement below.
+
+- [ ] **Extend `LEGACY_SCHEMA_V0` first.** It currently declares only `projects`, `stages`, `turns`
+      and `handles`, but `discovery_runs` and `discovery_run_handles` are in `schema.sql` today, so
+      the operator's real database has them — and without them in the fixture, `schema.sql` creates
+      those two fresh at the *new* shape and this task's rebuild of `discovery_run_handles` is
+      never exercised against legacy data at all. Add both in their **pre-constraint** form (copy
+      `schema.sql`'s current DDL, minus the `ON DELETE` clauses and minus every index).
+
+- [ ] **Implement (a) — `schema.sql`.** Replace `turns`, add `ON DELETE CASCADE` to both
+      `discovery_run_handles` foreign keys, and add the three indices:
 
 ```sql
 CREATE TABLE IF NOT EXISTS turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     stage_row_id INTEGER NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
     -- turn_service writes running/aborted/complete/failed; preflight writes
-    -- orphaned. Anything else is a typo that every status comparison in the app
+    -- orphaned. Verified against the call sites, not assumed: turn_service.py:129
+    -- (running), :210 (aborted), :216 (complete/failed), preflight.py:16
+    -- (orphaned). Anything else is a typo that every status comparison in the app
     -- would silently answer False to (A-47's defect, same shape) (A-75).
     status TEXT NOT NULL CHECK (status IN
         ('running','complete','failed','aborted','orphaned')),
@@ -2657,11 +2752,51 @@ CREATE INDEX IF NOT EXISTS idx_drh_run ON discovery_run_handles(run_id);
 CREATE INDEX IF NOT EXISTS idx_drh_handle ON discovery_run_handles(handle_id);
 ```
 
-Also add `ON DELETE CASCADE` to `discovery_run_handles.run_id` and `ON DELETE CASCADE` to
-`discovery_run_handles.handle_id` in the same rebuild.
+- [ ] **Implement (b) — the migration side.** Mirror the same DDL into `db.py` following the
+      shape T6 established. Three things about that shape are load-bearing:
 
-- [ ] **Run it.** The `creator_id` assertion still fails — that is T9's, correct failure. All
-      others pass. Full app suite green.
+      1. **A tuple of single statements, `_MIGRATION_1_TURNS_STEPS`, never an SQL blob run through
+         `executescript()`.** `executescript` issues an implicit COMMIT, which ends
+         `apply_migrations`' transaction and makes the rebuild non-atomic. This is the first item
+         of the `_MIGRATIONS` contract.
+      2. **The migration must re-create the indices itself.** `schema.sql` runs *before* the
+         migration, so `CREATE INDEX IF NOT EXISTS idx_turns_stage_row` lands on the OLD `turns`
+         table, and the rebuild's `DROP TABLE` destroys it. Append the `CREATE INDEX` statements
+         to the steps tuple after the `RENAME`. Same for `discovery_run_handles`.
+      3. **Do not touch a pragma, `commit()`, `rollback()` or `db.transaction()`.** The
+         foreign-key handling now lives in `apply_migrations` and covers every migration; a
+         migration body that reaches for it is the defect T6 fixed.
+
+      Add `_coerce_unknown_turn_statuses` in the same shape as `_coerce_unknown_stage_statuses`
+      (module-level `TURN_STATUSES` tuple, no commit, one `obs.record_event` per row with kind
+      `schema.turn_status_coerced` and severity `warning`, falling back to `obs.log` on `-1`),
+      coercing to `'orphaned'`. Call it before the turns rebuild, exactly as migration 1 already
+      calls the stage coercion before its own.
+
+      Order the rebuilds inside `_migration_1_constrain_core_tables` **children before parents**
+      where it matters, and state the order you chose in a comment — later tasks add `handles`
+      (T10) and `creators` (T9) to this same function, and `discovery_run_handles` references
+      `handles`.
+
+      In `tests/test_db.py`, add the module-level tuple the new test reads:
+
+```python
+# Verified against the call sites, not the plan: turn_service.py writes running,
+# aborted, complete and failed; preflight.py writes orphaned.
+TURN_STATUSES_THE_APP_WRITES = ("complete", "failed", "aborted", "orphaned")
+```
+
+- [ ] **Scaffold required.** `test_every_turn_status_the_app_writes_is_accepted` and
+      `test_every_turn_status_the_app_writes_is_accepted_by_the_migrated_table` both pass before
+      any CHECK exists, so neither proves anything on first write. After implementing, delete
+      `'aborted'` from the CHECK list in `schema.sql` only and confirm the **fresh** test goes red
+      while the **migrated** one stays green; then restore it, delete `'aborted'` from
+      `_MIGRATION_1_TURNS_STEPS` only, and confirm the reverse. That asymmetry is the whole point
+      of having two tests. Report both outputs.
+
+- [ ] **Run it.** Everything green except `test_handles_creator_id_is_covered_by_an_index`, which
+      stays `xfail` until T9. Full app suite green — an XPASS there would fail the suite, which is
+      what `strict=True` is for.
 - [ ] **Commit.** `fix(schema): index every FK, constrain turns.status, declare ON DELETE (A-75)`
 
 ---
