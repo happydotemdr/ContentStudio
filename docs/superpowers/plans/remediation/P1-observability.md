@@ -4766,6 +4766,60 @@ class again. Instead:
 - [ ] **Implement.** Per the decision.
 - [ ] **Run it.** Full app suite green; the compatibility rule still holds outside a boundary.
 
+#### T13b pre-review corrections — five, and one is the trap that has bitten this package four times
+
+Pre-reviewed before dispatch. **These supersede the three steps above wherever they conflict.**
+
+Verified in the tree first: `get_connection` sets **`check_same_thread=False`** (`db.py:200-203`),
+so the two-thread test is constructible. `_TXN_DEPTH` is keyed by `id(conn)` and cleared together
+with `_TXN_POISON` at **`db.py:142-143`**, inside `with _TXN_LOCK` in `transaction()`'s `finally`.
+
+**C1 — the test step's assertion spans two mutually exclusive designs.** "Assert the outsider's
+write survives (options 1–3) **or** is reported (option 4)" was written before the decision. Option
+4 is chosen, and under it the write does **not** survive — so an `or` here would let the test pass
+for the wrong reason, or be trivially satisfiable.
+
+- [ ] Pin the assertion to option 4: the outsider's write is **discarded** *and* the loss is
+      **reported**. Both halves, explicitly — "reported" alone would pass if the write happened to
+      survive for an unrelated reason, and "discarded" alone is the defect, not the fix.
+
+**C2 — the event must be emitted AFTER the depth key is popped, and this is the whole task.** This
+is the fourth time this exact trap has appeared in this package (T4's 17th instance, T5's migration
+surfacing, T8's F1). `obs.record_event` calls `commit_unless_in_transaction`. If `transaction()`
+emits while its own key is still in `_TXN_DEPTH`, the commit no-ops, the events row is never
+committed — and on the **rollback** path it is rolled back with everything else. **The task would
+then report nothing at all, while every test that reads the row on the writing connection passes.**
+
+- [ ] Emit **after** the `finally`'s `_TXN_DEPTH.pop`, and **outside `_TXN_LOCK`** — `record_event`
+      does filesystem I/O on its fallback path and must not hold the lock.
+- [ ] On the rollback path, emit **after** the rollback has completed, so the event is not the thing
+      being rolled back.
+
+**C3 — the surfacing test must read the events row on a SECOND connection.** Same reason, and it is
+the single most repeated defect in this programme. A read on the writing connection passes whether
+or not the row was committed, which is precisely the failure C2 describes. `tests/test_db.py`
+already carries the idiom at `:339-364` and `:663-676` — use it, do not invent a variant.
+
+**C4 — the counter must be cleared exactly where `_TXN_DEPTH` and `_TXN_POISON` are.** A stale count
+surviving a boundary makes the *next* boundary on that connection emit a false event naming
+suppressed writes that never happened — a fabricated report, which is worse than none because it
+sends an operator looking for data loss that did not occur.
+
+- [ ] Key it by `id(conn)` like its siblings, clear it at `db.py:142-143` alongside them, and add a
+      test that a second boundary on the same connection, with no cross-thread activity, emits
+      **nothing**. That test is the one that catches a leaked counter.
+
+**C5 — this finding's failure mode is `silent` by construction**, so the Three-Test Rule binds in
+full: a **fault** test (the cross-thread write is suppressed), a **distinguishability** test (the
+suppressed-write state is observably different from a boundary where nothing was suppressed — C4's
+"emits nothing" case is that leg), and a **surfacing** test (the `events` row, read on a second
+connection per C3). The severity split is part of surfacing, not decoration: `error` on the rollback
+path because the writes were **discarded**, `warning` on success because they were merely
+**delayed**, and the message must say which. Assert both severities, or the split is unproven.
+
+**Do not** reach for a re-entrancy flag anywhere in this task. The plan already rules it out, and
+the reason is the defect class: a flag makes the second, suppressed report silent.
+
 ---
 
 ### T14 — A-76: a second worker orphans a live turn
