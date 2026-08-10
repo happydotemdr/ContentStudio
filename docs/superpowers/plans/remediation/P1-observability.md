@@ -1069,6 +1069,10 @@ _MIGRATIONS: list[tuple[int, "Callable[[sqlite3.Connection], None]"]] = [
     # leaf helper that would. apply_migrations registers its boundary in
     # _TXN_DEPTH so the helpers no-op, but a raw commit still ends the
     # transaction and un-does the atomicity guarantee.
+    #
+    # It must not open a db.transaction() either. That boundary cannot help --
+    # it does not cover DDL -- and inside a migration it is non-outermost, so it
+    # leaves a _TXN_POISON entry behind on the connection's id.
 ]
 
 
@@ -1108,12 +1112,37 @@ def _enter_migration_boundary(conn: sqlite3.Connection) -> None:
 
 
 def _exit_migration_boundary(conn: sqlite3.Connection) -> None:
+    key = id(conn)
     with _TXN_LOCK:
-        remaining = _TXN_DEPTH.get(id(conn), 1) - 1
+        # A missing key is NOT a normal exit. `.get(key, 1) - 1` yields 0 either way,
+        # so without this flag "healthy decrement from 1" and "my boundary was
+        # clobbered" are the same silent return -- and the second means every leaf
+        # helper in the migration body committed with no boundary at all, which is
+        # exactly the defect this registration exists to prevent. transaction()
+        # fixed this class once and kept its detector; copying its arithmetic
+        # without its detector re-introduced it.
+        lost = key not in _TXN_DEPTH
+        remaining = _TXN_DEPTH.get(key, 1) - 1
         if remaining <= 0:
-            _TXN_DEPTH.pop(id(conn), None)
+            _TXN_DEPTH.pop(key, None)
+            # Pop the poison too, or it outlives this connection. A db.transaction()
+            # opened inside a migration body is non-outermost (this boundary already
+            # holds depth 1), so its finally takes the nested branch and leaves
+            # _TXN_POISON[key] behind. init_db then closes its connection and the app
+            # allocates a new one immediately after -- CPython reuses the freed
+            # address readily -- so the first SUCCESSFUL outermost transaction() on
+            # the app's real connection would roll back correct work and raise
+            # TransactionPoisonedError citing a boot-time migration failure.
+            _TXN_POISON.pop(key, None)
         else:
-            _TXN_DEPTH[id(conn)] = remaining
+            _TXN_DEPTH[key] = remaining
+    if lost:
+        # Logged outside the lock: obs.log() touches the filesystem, and it never
+        # raises, so it cannot mask whatever else is going wrong.
+        from pipeline_app import obs
+
+        obs.log("db.migration_bookkeeping_lost", level="error",
+                note="the migration boundary was gone before the migration finished")
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -1152,6 +1181,18 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
     `conn` must not already be inside a transaction: this opens its own with a
     raw `BEGIN IMMEDIATE`, and sqlite3 rejects a nested one."""
     from pipeline_app import obs
+
+    # Enforced, not merely documented. If the caller's boundary has already done
+    # DML, BEGIN IMMEDIATE raises and the failure is loud. If it has NOT, BEGIN
+    # succeeds, the depth goes 1->2, and on the failure path it returns to 1 -- so
+    # record_event's commit no-ops and the caller's rollback destroys the
+    # schema.migration_failed row. The one durable record of the failure, lost,
+    # with nothing to indicate it.
+    if conn.in_transaction or _TXN_DEPTH.get(id(conn)):
+        raise RuntimeError(
+            "apply_migrations opens its own BEGIN IMMEDIATE and cannot run inside an "
+            "existing transaction; commit or close the caller's boundary first"
+        )
 
     current = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
     if current > SCHEMA_VERSION:
@@ -1198,7 +1239,14 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
             conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (version,))
             conn.commit()
         except BaseException as exc:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except BaseException as rollback_exc:  # noqa: BLE001 -- report it, never mask it
+                # A migration that failed AND could not be rolled back is the worst
+                # state this function can reach. It must not also be the one that
+                # reports least.
+                obs.log("db.migration_rollback_failed", level="critical", version=version,
+                        error=f"{type(rollback_exc).__name__}: {rollback_exc}")
             failure = exc
         finally:
             # Leave the boundary BEFORE reporting. record_event commits through
@@ -1297,6 +1345,11 @@ def test_a_migration_body_calling_a_leaf_helper_does_not_commit_mid_migration(
             db.apply_migrations(conn)
 
         assert db.list_projects(conn) == []   # the helper's write rolled back too
+        # The boundary must also clean up after itself. Without this, deleting
+        # _exit_migration_boundary leaves the whole suite green while every
+        # subsequent commit on this connection silently stops.
+        assert id(conn) not in db._TXN_DEPTH
+        assert id(conn) not in db._TXN_POISON
     finally:
         conn.close()
 
