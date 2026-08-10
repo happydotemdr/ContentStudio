@@ -2133,13 +2133,20 @@ def _check_vocabulary(conn, column: str) -> set[str]:
     schema.sql's CHECK, and the migration's CHECK -- and only the one SQLite is
     enforcing on this database decides what gets stored. Asserting a constant
     against itself would be an echo: it would pass while the two CHECKs said
-    something else entirely."""
-    ddl = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='handles'"
-    ).fetchone()[0]
-    match = re.search(rf"CHECK\s*\(\s*{column}\s+IN\s*\((.*?)\)\s*\)", ddl, re.S)
-    assert match is not None, f"`handles` declares no {column} CHECK at all:\n{ddl}"
-    return set(re.findall(r"'([^']*)'", match.group(1)))
+    something else entirely.
+
+    The parsing moved to `_table_check_constraints` in the T12 section at the
+    bottom of this file, which needed every CHECK on a table rather than one
+    named column's. This is now just the value-list projection of it -- one
+    parser, not two."""
+    matching = [
+        check for check in _table_check_constraints(conn, "handles")
+        if re.match(rf"{column}\s+IN\s*\(", check, re.I)
+    ]
+    assert len(matching) == 1, \
+        f"`handles` declares {len(matching)} {column} CHECKs, expected exactly 1: " \
+        f"{sorted(_table_check_constraints(conn, 'handles'))}"
+    return set(re.findall(r"'([^']*)'", matching[0]))
 
 
 def _adapter_registry_platforms() -> set[str]:
@@ -2646,3 +2653,338 @@ def test_clearing_failures_for_a_handle_that_does_not_exist_fails_instead_of_ret
     missing_id = 999999
     with pytest.raises(LookupError, match=str(missing_id)):
         db.clear_handle_failures(conn, missing_id)
+
+
+# ---------------------------------------------------------------------------
+# T12 -- A-72: schema.sql and migration 1 are two hand-written definitions of
+# one schema, and until now nothing compared them.
+#
+# `_structural_schema` below reads the shape out of pragmas wherever a pragma
+# exists, and out of normalized DDL text only for the two things SQLite exposes
+# no pragma for: a CHECK expression, and a partial index's WHERE predicate. The
+# helpers above it are that text parser.
+# ---------------------------------------------------------------------------
+
+
+def _skip_string_literal(sql: str, start: int) -> int:
+    """Index just past the single-quoted literal that begins at `start`.
+
+    SQLite escapes a quote by doubling it, so a scanner that stops at the first
+    closing `'` reads the tail of `'it''s'` as if it were code -- and then
+    happily reports whatever it found there. Doubling is handled, an unterminated
+    literal is reported."""
+    assert sql[start] == "'", f"expected a string literal at {start} in:\n{sql}"
+    i = start + 1
+    while True:
+        i = sql.find("'", i)
+        assert i != -1, f"unterminated string literal in DDL:\n{sql}"
+        if sql[i + 1:i + 2] == "'":
+            i += 2
+            continue
+        return i + 1
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """`-- ...` comments removed; string literals copied through untouched."""
+    out: list[str] = []
+    i, n = 0, len(sql)
+    while i < n:
+        if sql[i] == "'":
+            j = _skip_string_literal(sql, i)
+            out.append(sql[i:j])
+            i = j
+        elif sql.startswith("--", i):
+            newline = sql.find("\n", i)
+            i = n if newline == -1 else newline
+        else:
+            out.append(sql[i])
+            i += 1
+    return "".join(out)
+
+
+def _normalize_ddl(sql: str) -> str:
+    """Comments gone, identifier quoting gone, whitespace collapsed.
+
+    Each of the three is a difference the two schema definitions have today for
+    a reason that means nothing:
+
+    * schema.sql explains every constraint it declares in a comment block and
+      the migration's CREATE statements carry none (`handles`, `stages`,
+      `turns`);
+    * `ALTER TABLE ... RENAME TO` makes SQLite ITSELF re-store a rebuilt table
+      as `CREATE TABLE "handles"`, quoted, so every create-copy-drop-rename in
+      migration 1 comes back quoted and the same table built by schema.sql does
+      not -- no statement the migration can write avoids this;
+    * `projects` and `discovery_runs` are never rebuilt, so a legacy database
+      keeps LEGACY_SCHEMA_V0's whitespace.
+
+    Normalizing them away here is what lets everything else stay strict."""
+    return " ".join(
+        re.sub(r'"([A-Za-z_][A-Za-z0-9_]*)"', r"\1", _strip_sql_comments(sql)).split()
+    )
+
+
+def _matching_paren(sql: str, open_at: int) -> int:
+    """Index of the `)` that closes the `(` at `open_at`, quotes respected."""
+    assert sql[open_at] == "(", f"expected '(' at {open_at} in:\n{sql}"
+    depth, i, n = 0, open_at, len(sql)
+    while i < n:
+        char = sql[i]
+        if char == "'":
+            i = _skip_string_literal(sql, i)
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise AssertionError(f"unbalanced parentheses in DDL:\n{sql}")
+
+
+_CHECK_OPEN = re.compile(r"\bCHECK\b\s*\(", re.I)
+_CHECK_WORD = re.compile(r"\bCHECK\b", re.I)
+
+
+def _check_constraints_in(table: str, ddl: str) -> frozenset[str]:
+    """Every CHECK expression `ddl` declares, normalized.
+
+    Balanced-paren scanning rather than a non-greedy regex, because a CHECK's
+    own parentheses -- `CHECK (status IN ('a','b'))` -- are exactly what `.*?`
+    stops on.
+
+    Refuses to be silently empty. An extractor that finds nothing in a table
+    that declares a CHECK returns the same value as a table that declares none,
+    and the comparison below would then call two tables equal on the strength of
+    having read neither."""
+    found: set[str] = set()
+    pos = 0
+    while (match := _CHECK_OPEN.search(ddl, pos)) is not None:
+        open_at = match.end() - 1
+        close_at = _matching_paren(ddl, open_at)
+        found.add(ddl[open_at + 1:close_at].strip())
+        pos = close_at + 1
+    assert found or not _CHECK_WORD.search(ddl), \
+        f"{table} declares a CHECK the extractor could not read:\n{ddl}"
+    return frozenset(found)
+
+
+def _table_check_constraints(conn, table: str) -> frozenset[str]:
+    """`_check_constraints_in` against the definition SQLite is enforcing.
+
+    sqlite_master rather than schema.sql or a Python constant, for the reason
+    `_check_vocabulary` gives above: only the DDL on THIS database decides what
+    this database stores. No pragma exposes a CHECK, so this is one of the two
+    dimensions the comparison has to read out of text."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", (table,)
+    ).fetchone()
+    assert row is not None and row[0], f"no stored DDL for table {table!r}"
+    return _check_constraints_in(table, _normalize_ddl(row[0]))
+
+
+def _index_predicate(conn, name: str, partial: int) -> str | None:
+    """A partial index's WHERE predicate, normalized; None when it has none.
+
+    `PRAGMA index_list` reports only a `partial` flag and `index_info` only
+    columns, so the predicate itself lives nowhere but the DDL.
+    `ux_turns_single_running` (`WHERE status = 'running'`) and
+    `ux_discovery_single_running` are both real instances, and the first of them
+    is created by two different statements on the two database shapes -- the
+    migration's turns rebuild and init_db's post-migration line -- so this is
+    load-bearing rather than theoretical.
+
+    The two `partial` cross-checks are not belt-and-braces: they are what keeps
+    "this index has no WHERE" distinguishable from "this parser did not find
+    the WHERE it has"."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?", (name,)
+    ).fetchone()
+    if row is None or row[0] is None:
+        # An index SQLite generated for a UNIQUE or PRIMARY KEY constraint
+        # stores no DDL of its own. Such an index is never partial.
+        assert not partial, f"index_list says {name} is partial but it stores no DDL"
+        return None
+    ddl = _normalize_ddl(row[0])
+    tail = ddl[_matching_paren(ddl, ddl.index("(")) + 1:].strip()
+    if not tail:
+        assert not partial, \
+            f"index_list says {name} is partial but its DDL has no WHERE:\n{ddl}"
+        return None
+    match = re.match(r"WHERE\s+(?P<predicate>.+)$", tail, re.I)
+    assert match is not None, f"unparsed trailing DDL on index {name}: {tail!r}"
+    assert partial, \
+        f"index {name} carries a WHERE clause that index_list does not report:\n{ddl}"
+    return match.group("predicate").strip()
+
+
+def _structural_schema(conn) -> dict:
+    """The schema SQLite is actually enforcing on this database.
+
+    Every value here is derived from the database itself -- sqlite_master and
+    the pragmas -- never from a hand-written list of what the schema is supposed
+    to contain. A hand-written list cannot see the table nobody added to it,
+    which is the drift this exists to catch.
+
+    Each nested extraction refuses to come back empty where the object exists:
+    a table with no columns, an index with no entries, a partial index with no
+    predicate, or a CHECK that could not be parsed all fail here rather than
+    quietly reducing to a value the other database also has."""
+    objects = {
+        (row["type"], row["name"])
+        for row in conn.execute(
+            "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    }
+    assert objects, "sqlite_master holds no objects at all -- this database is not built"
+
+    tables: dict[str, dict] = {}
+    for kind, name in objects:
+        if kind != "table":
+            continue
+        columns = conn.execute(f'PRAGMA table_info("{name}")').fetchall()
+        assert columns, f"PRAGMA table_info returned nothing for table {name!r}"
+
+        indexes: dict[str, tuple] = {}
+        predicates: dict[str, str | None] = {}
+        for index in conn.execute(f'PRAGMA index_list("{name}")').fetchall():
+            index_name = index["name"]
+            # index_xinfo rather than index_info: it carries sort direction and
+            # collation as well as the columns, so a DESC that silently became
+            # ASC on one shape is a difference too.
+            entries = tuple(
+                (e["seqno"], e["name"], e["desc"], e["coll"], e["key"])
+                for e in sorted(
+                    conn.execute(f'PRAGMA index_xinfo("{index_name}")').fetchall(),
+                    key=lambda e: e["seqno"],
+                )
+            )
+            assert entries, f"PRAGMA index_xinfo returned nothing for index {index_name!r}"
+            indexes[index_name] = (index["unique"], index["origin"], index["partial"], entries)
+            predicates[index_name] = _index_predicate(conn, index_name, index["partial"])
+
+        tables[name] = {
+            "column_order": tuple(c["name"] for c in sorted(columns, key=lambda c: c["cid"])),
+            "column_attrs": {
+                c["name"]: (c["type"], c["notnull"], c["dflt_value"], c["pk"])
+                for c in columns
+            },
+            # `seq` is included so a composite foreign key's column order counts;
+            # every foreign key on this schema is single-column today.
+            "foreign_keys": frozenset(
+                (fk["seq"], fk["table"], fk["from"], fk["to"],
+                 fk["on_update"], fk["on_delete"], fk["match"])
+                for fk in conn.execute(f'PRAGMA foreign_key_list("{name}")').fetchall()
+            ),
+            "checks": _table_check_constraints(conn, name),
+            "indexes": indexes,
+            "index_predicates": predicates,
+        }
+    return {"objects": objects, "tables": tables}
+
+
+def test_the_ddl_parser_reports_malformed_input_instead_of_finding_nothing_in_it():
+    """Adversarial test for the text-parsing half of the guard -- the only part
+    of `_structural_schema` that is not a pragma.
+
+    Every failure mode below returns "nothing found" if the parser is written
+    the easy way, and "nothing found" is precisely what two identical schemas
+    also look like. That is the recurring defect class of this programme aimed
+    at the guard itself: a comparison that returns equal because it read nothing
+    is indistinguishable from one that returns equal because the schemas match."""
+    with pytest.raises(AssertionError, match="unbalanced parentheses"):
+        _matching_paren("CHECK (status IN ('a','b')", 6)
+    with pytest.raises(AssertionError, match="unterminated string literal"):
+        _strip_sql_comments("status TEXT DEFAULT 'oops -- not a comment")
+    with pytest.raises(AssertionError, match="could not read"):
+        _check_constraints_in("stages", "CREATE TABLE stages (status TEXT CHECK status IN (1))")
+
+    # A doubled quote is SQLite's escape, not the end of the literal. A scanner
+    # that stops at the first `'` treats ` -- fine' ` as a comment and drops the
+    # rest of the statement, silently.
+    assert _strip_sql_comments("DEFAULT 'it''s -- fine' -- gone") == "DEFAULT 'it''s -- fine' "
+    assert _check_constraints_in("t", "CREATE TABLE t (a TEXT)") == frozenset()
+
+
+def test_a_migrated_database_has_the_same_schema_as_a_fresh_one(tmp_path: Path, monkeypatch):
+    """schema.sql and migration 1 express the same constraints twice, and a
+    database upgraded from v0 must end up structurally indistinguishable from
+    one created today -- or the next `no such column` at runtime is already
+    written (A-72).
+
+    STRUCTURE, NOT DDL TEXT, and the distinction is the whole test. Comparing
+    normalized DDL strings reports six differences on this tree and every one is
+    cosmetic (see `_normalize_ddl` for the three causes). Six false alarms and
+    zero real ones is how a guard's next genuine failure gets waved through, and
+    the obvious way to silence them -- pasting schema.sql's comment blocks into
+    the migration's CREATE statements -- is pure duplication that makes real
+    divergence harder to see, not easier.
+
+    `projects` and `discovery_runs` are the reason to keep it strict. Migration
+    1 never rebuilds either table, so on a real legacy database they keep their
+    v0 definitions permanently. They are semantically identical to schema.sql's
+    today, so nothing is broken -- but that is A-72's exact mechanism sitting
+    dormant: the day someone adds a column or a constraint to either table in
+    schema.sql, `CREATE TABLE IF NOT EXISTS` skips it on a pre-existing
+    database, init_db reports success anyway, and a migrated database silently
+    does not have it. This test is what stands between the next editor of those
+    two tables and that. Add to schema.sql, add the matching migration step, or
+    this fails.
+
+    Six dimensions, one assertion each so a failure names the kind of drift:
+    the set of object names, column names and order, per-column
+    type/NOT NULL/DEFAULT/PK, foreign keys including ON DELETE, indexes
+    including UNIQUE and the partial flag, and partial-index WHERE predicates.
+    CHECK constraints are the seventh, and the one dimension with no pragma
+    behind it."""
+    # apply_migrations logs `schema.migration_applied`, so without this the
+    # migrated half writes into the app's real logs/ directory -- same reason
+    # every other migration test in this file pins it.
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+
+    fresh_path = tmp_path / "fresh.db"
+    db.init_db(fresh_path, SCHEMA_PATH)
+
+    migrated_path = _legacy_db(tmp_path)
+    db.init_db(migrated_path, SCHEMA_PATH)
+
+    fresh_conn = db.get_connection(fresh_path)
+    migrated_conn = db.get_connection(migrated_path)
+    try:
+        fresh = _structural_schema(fresh_conn)
+        migrated = _structural_schema(migrated_conn)
+    finally:
+        fresh_conn.close()
+        migrated_conn.close()
+
+    assert migrated["objects"] == fresh["objects"], \
+        "a table or index exists on one database shape and not the other"
+
+    # The two dimensions read out of text are floored against reality before
+    # anything is compared. A parser that silently returned nothing would make
+    # both databases agree on having no CHECKs and no partial-index predicates
+    # -- "equal because we looked at nothing" wearing the same face as "equal
+    # because they match".
+    assert any(t["checks"] for t in fresh["tables"].values()), \
+        "no CHECK was extracted from ANY table -- the extractor is broken, not the schema"
+    assert any(predicate is not None
+               for t in fresh["tables"].values()
+               for predicate in t["index_predicates"].values()), \
+        "no partial-index WHERE was extracted from ANY index -- the extractor is broken"
+
+    for table in sorted(fresh["tables"]):
+        expected, actual = fresh["tables"][table], migrated["tables"][table]
+        assert actual["column_order"] == expected["column_order"], \
+            f"{table}: the migrated table's columns differ in name or position"
+        assert actual["column_attrs"] == expected["column_attrs"], \
+            f"{table}: a column's type, NOT NULL, DEFAULT or PRIMARY KEY differs"
+        assert actual["foreign_keys"] == expected["foreign_keys"], \
+            f"{table}: a foreign key differs, or its ON DELETE / ON UPDATE action does"
+        assert actual["checks"] == expected["checks"], \
+            f"{table}: a CHECK constraint differs"
+        assert actual["indexes"] == expected["indexes"], \
+            f"{table}: an index differs in columns, UNIQUE, origin or partial flag"
+        assert actual["index_predicates"] == expected["index_predicates"], \
+            f"{table}: a partial index's WHERE predicate differs"
