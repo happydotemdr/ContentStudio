@@ -32,6 +32,25 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _merge(reserved: dict, fields: dict) -> dict:
+    """Reserved keys always win; a colliding caller field is preserved, never dropped.
+
+    `ts` is the one field that makes two log lines comparable, so a caller must
+    never be able to replace it. But silently *discarding* the caller's value
+    would be the same bug wearing a different hat: a mistaken call would look
+    exactly like a correct one. A collision is therefore re-keyed to
+    `field_<name>`, which keeps the record self-describing.
+
+    Only `ts` can actually collide today -- `level` and `event` are named
+    parameters, so passing either twice is a TypeError at the call site. All
+    three are guarded anyway, so a later signature change cannot open the hole.
+    """
+    merged = dict(reserved)
+    for key, value in fields.items():
+        merged[f"field_{key}" if key in reserved else key] = value
+    return merged
+
+
 def log(event: str, *, level: str = "info", **fields) -> None:
     """Structured line to stderr AND to pipeline-app/logs/app-YYYY-MM-DD.log.
 
@@ -39,7 +58,10 @@ def log(event: str, *, level: str = "info", **fields) -> None:
     now = _utcnow()
     try:
         line = json.dumps(
-            {"ts": now.isoformat(timespec="seconds"), "level": level, "event": event, **fields},
+            _merge(
+                {"ts": now.isoformat(timespec="seconds"), "level": level, "event": event},
+                fields,
+            ),
             default=repr,
             ensure_ascii=False,
         )

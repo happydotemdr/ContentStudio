@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -38,3 +39,21 @@ def test_log_does_not_raise_when_the_log_directory_cannot_be_created(tmp_path: P
 def test_log_does_not_raise_on_an_unserializable_field(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
     obs.log("adapter.fetch_failed", level="error", conn=object())  # must not raise
+
+
+def test_a_caller_field_can_never_replace_the_real_timestamp(tmp_path: Path, monkeypatch):
+    """`ts` is the one field that makes two log lines comparable.
+
+    A caller passing `ts=` must not be able to replace it -- and must not have
+    its value silently dropped either, or a mistaken call would be
+    indistinguishable from a correct one.
+    """
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    obs.log("adapter.fetch_failed", level="error", ts="1999-01-01T00:00:00+00:00", handle="@a")
+
+    files = list((tmp_path / "logs").glob("app-*.log"))
+    record = json.loads(files[0].read_text(encoding="utf-8").strip())
+    assert record["ts"] != "1999-01-01T00:00:00+00:00"          # the caller did not win
+    assert record["ts"].startswith(str(datetime.now(timezone.utc).year))
+    assert record["field_ts"] == "1999-01-01T00:00:00+00:00"    # ...and was not silently dropped
+    assert record["handle"] == "@a"                             # a non-colliding field is untouched
