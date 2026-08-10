@@ -52,13 +52,30 @@ def transaction(conn: sqlite3.Connection):
     (`get_connection`'s `check_same_thread=False`). So a leaf helper called from a
     thread that is in no boundary at all still stops committing while *another*
     thread holds one, and its write is discarded outright if that boundary rolls
-    back. The known sharer is `discovery_engine._open_heartbeat_connection`, which
-    returns `None` on any `sqlite3.Error` and falls back to the shared connection;
-    under a rolled-back boundary the heartbeat write vanishes, `heartbeat_at`
-    freezes, and another process reclaims a run that is still alive. Making that
-    fallback loud belongs to the discovery package; do not fix it here, and do not
-    widen the boundary to be thread-local -- that would break the single-connection
-    design this app depends on."""
+    back. Two known sharers, the in-process one first:
+
+    - `approve_stage_route` and `create_project_route` (routes/stages.py,
+      routes/projects.py) are sync `def` routes, so Starlette runs them in the
+      threadpool, and T4b has both open a boundary on `request.app.state.conn`
+      -- the SAME connection the turn route's `async def stage_chat` writes to
+      from the event-loop thread for the whole life of a streaming turn.
+      `turn_service.any_turn_running` only gates the run-turn route itself, so
+      approving stage Y while a turn streams on stage X is a supported path.
+      Inside the approval/creation boundary, that concurrent turn's writes stop
+      committing, and a fault path discards them outright -- with the resulting
+      `db.transaction_rolled_back` event attributing nothing to the collateral
+      write, so a lost turn write is indistinguishable from a turn that never
+      wrote. Filed as T13b; needs an operator decision among several candidate
+      designs (connection-per-boundary / serialize against the turn lock /
+      process-wide write lock / accept-and-detect) -- do not fix it here.
+    - `discovery_engine._open_heartbeat_connection`, which returns `None` on
+      any `sqlite3.Error` and falls back to the shared connection; under a
+      rolled-back boundary the heartbeat write vanishes, `heartbeat_at`
+      freezes, and another process reclaims a run that is still alive. Making
+      that fallback loud belongs to the discovery package; do not fix it here.
+
+    Do not widen the boundary to be thread-local to address either -- that
+    would break the single-connection design this app depends on."""
     key = id(conn)
     with _TXN_LOCK:
         depth = _TXN_DEPTH.get(key, 0)
