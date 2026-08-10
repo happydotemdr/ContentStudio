@@ -1042,8 +1042,10 @@ def test_a_database_from_a_newer_build_fails_loudly_instead_of_booting(tmp_path:
 -- database that already has a table, a newly added column, CHECK or UNIQUE is
 -- silently skipped and the first query touching it fails at runtime with
 -- `no such column` in whatever route happens to hit it first (A-72). This file
--- is the create-from-scratch path; db._MIGRATIONS is the upgrade path, and
--- test_fresh_schema_matches_migrated_schema keeps the two identical.
+-- is the create-from-scratch path; db._MIGRATIONS is the upgrade path. They are
+-- two hand-maintained definitions of one schema, and nothing enforces that they
+-- agree until T12 adds test_a_migrated_database_has_the_same_schema_as_a_fresh_one.
+-- Until then, a change here needs a matching migration by hand.
 CREATE TABLE IF NOT EXISTS schema_version (
     id      INTEGER PRIMARY KEY CHECK (id = 1),
     version INTEGER NOT NULL
@@ -1062,7 +1064,56 @@ class SchemaVersionError(RuntimeError):
 
 _MIGRATIONS: list[tuple[int, "Callable[[sqlite3.Connection], None]"]] = [
     # (1, _migration_1_constrain_core_tables) -- registered in T6.
+    #
+    # A migration body must not call conn.commit(), conn.rollback(), or any db.py
+    # leaf helper that would. apply_migrations registers its boundary in
+    # _TXN_DEPTH so the helpers no-op, but a raw commit still ends the
+    # transaction and un-does the atomicity guarantee.
 ]
+
+
+def _validate_migration_order(migrations) -> None:
+    """Fail at import rather than wedge a database at runtime.
+
+    apply_migrations walks this list as written and skips anything already
+    applied, so an out-of-order entry runs late and stamps the version BACKWARDS:
+    with [(2, m2), (1, m1)] on a v0 database, m2 runs and stamps 2, then m1 runs
+    and stamps 1. Migration 2 has run but the database claims it has not, so the
+    next boot re-runs it, hits `duplicate column name`, and is stuck at a version
+    that is neither true nor recoverable. A duplicate version does the same."""
+    versions = [version for version, _ in migrations]
+    if versions != sorted(set(versions)):
+        raise RuntimeError(
+            f"_MIGRATIONS must be strictly increasing with no duplicates, got {versions}"
+        )
+
+
+_validate_migration_order(_MIGRATIONS)
+
+
+def _enter_migration_boundary(conn: sqlite3.Connection) -> None:
+    """Make db.py's own leaf helpers no-op inside a migration.
+
+    `apply_migrations` opens its boundary with a raw `BEGIN IMMEDIATE`, because
+    `transaction()` relies on implicit transaction control and so cannot cover DDL.
+    But `commit_unless_in_transaction` decides "am I inside a boundary?" by
+    consulting `_TXN_DEPTH`, which only `transaction()` populates -- so without this
+    registration a migration body calling ANY db.py helper commits mid-migration,
+    the later rollback rolls back nothing, and half-applied is indistinguishable
+    from never-ran again. Not hypothetical: SQLite's only recipe for adding a CHECK
+    is create-copy-drop-rename, and the copy step is exactly the data movement an
+    author would route through an existing helper."""
+    with _TXN_LOCK:
+        _TXN_DEPTH[id(conn)] = _TXN_DEPTH.get(id(conn), 0) + 1
+
+
+def _exit_migration_boundary(conn: sqlite3.Connection) -> None:
+    with _TXN_LOCK:
+        remaining = _TXN_DEPTH.get(id(conn), 1) - 1
+        if remaining <= 0:
+            _TXN_DEPTH.pop(id(conn), None)
+        else:
+            _TXN_DEPTH[id(conn)] = remaining
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -1096,13 +1147,17 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
 
     Returns the versions applied. Raises SchemaVersionError rather than booting
     against a database a newer build has already upgraded -- silently running
-    old code over a new schema is how data gets destroyed."""
+    old code over a new schema is how data gets destroyed.
+
+    `conn` must not already be inside a transaction: this opens its own with a
+    raw `BEGIN IMMEDIATE`, and sqlite3 rejects a nested one."""
     from pipeline_app import obs
 
     current = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
     if current > SCHEMA_VERSION:
         obs.record_event(
-            conn, kind="schema.version_ahead_of_code", severity="critical", source="db.init_db",
+            conn, kind="schema.version_ahead_of_code", severity="critical",
+            source="db.apply_migrations",
             message=f"database is at schema version {current}, this build understands "
                     f"{SCHEMA_VERSION}",
             detail={"db_version": current, "code_version": SCHEMA_VERSION},
@@ -1115,7 +1170,7 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
     for version, migrate in _MIGRATIONS:
         if version <= current:
             continue
-        # Explicit BEGIN, not db.transaction(). Python's sqlite3 opens an implicit
+        # Explicit BEGIN IMMEDIATE, not db.transaction(). Python's sqlite3 opens an implicit
         # transaction only for DML, never for DDL -- so under the default
         # transaction control a migration's CREATE/ALTER lands on disk the instant
         # it executes and survives any rollback. Verified: without BEGIN,
@@ -1130,24 +1185,42 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
         # with "duplicate column name", and the database is wedged at that version
         # permanently, with every boot reporting the same error and no way to tell
         # which half already happened.
-        conn.execute("BEGIN")
+        #
+        # IMMEDIATE rather than deferred: this boundary only ever writes, and on a
+        # connection shared across threads under WAL a deferred transaction that
+        # upgrades to a write can take SQLITE_BUSY_SNAPSHOT, which busy_timeout does
+        # not resolve.
+        conn.execute("BEGIN IMMEDIATE")
+        _enter_migration_boundary(conn)
+        failure: BaseException | None = None
         try:
             migrate(conn)
             conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (version,))
             conn.commit()
         except BaseException as exc:
             conn.rollback()
-            # Report before re-raising: the exception reaches whoever called
-            # init_db, but this is the only record that survives the process.
+            failure = exc
+        finally:
+            # Leave the boundary BEFORE reporting. record_event commits through
+            # commit_unless_in_transaction, which no-ops while the depth is held --
+            # so reporting inside would leave the only durable record of the failure
+            # uncommitted, and it would die with the process that needed to report it.
+            _exit_migration_boundary(conn)
+        if failure is not None:
+            # The exception reaches whoever called init_db, but this row is the only
+            # record that survives the process.
             obs.record_event(
                 conn, kind="schema.migration_failed", severity="critical",
                 source="db.apply_migrations",
                 message=f"migration {version} failed and was rolled back: "
-                        f"{type(exc).__name__}: {exc}",
-                detail={"version": version, "exception": type(exc).__name__,
+                        f"{type(failure).__name__}: {failure}",
+                detail={"version": version, "exception": type(failure).__name__,
                         "applied_before_failure": applied},
             )
-            raise
+            raise failure
+        # Keep `current` honest inside the loop, so the skip guard above reflects
+        # what has actually been applied rather than the state at entry.
+        current = version
         applied.append(version)
         obs.record_event(
             conn, kind="schema.migration_applied", severity="info", source="db.apply_migrations",
@@ -1183,13 +1256,65 @@ def test_a_migration_that_fails_partway_leaves_neither_the_ddl_nor_the_stamp(tmp
         assert conn.execute(
             "SELECT version FROM schema_version WHERE id = 1"
         ).fetchone()[0] == db.SCHEMA_VERSION
-        rows = conn.execute(
-            "SELECT * FROM events WHERE kind = 'schema.migration_failed'"
-        ).fetchall()
-        assert len(rows) == 1          # ...and it said so
-        assert rows[0]["severity"] == "critical"
     finally:
         conn.close()
+
+    # Read the event back on a SECOND connection. Reading it on the one that wrote
+    # it passes whether or not the row was ever committed -- and "durable enough to
+    # find after the process dies" is the only property that makes it a surfacing
+    # test at all.
+    other = db.get_connection(db_path)
+    try:
+        rows = other.execute(
+            "SELECT * FROM events WHERE kind = 'schema.migration_failed'"
+        ).fetchall()
+    finally:
+        other.close()
+    assert len(rows) == 1          # ...and it said so
+    assert rows[0]["severity"] == "critical"
+
+
+def test_a_migration_body_calling_a_leaf_helper_does_not_commit_mid_migration(
+    tmp_path, monkeypatch
+):
+    """The raw BEGIN is invisible to _TXN_DEPTH unless apply_migrations registers
+    it, and commit_unless_in_transaction consults _TXN_DEPTH rather than the
+    connection. Without the registration, a migration body that calls any db.py
+    helper commits half the migration, the rollback rolls back nothing, and
+    half-applied is indistinguishable from never-ran all over again."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA_PATH)
+    conn = db.get_connection(db_path)
+    try:
+        def migration_using_a_helper(c):
+            db.create_project(c, "mid-migration", "a", "generic", "2026-08-08T00:00:00+00:00")
+            raise RuntimeError("the second half failed")
+
+        monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, migration_using_a_helper)])
+        with pytest.raises(RuntimeError):
+            db.apply_migrations(conn)
+
+        assert db.list_projects(conn) == []   # the helper's write rolled back too
+    finally:
+        conn.close()
+
+
+def test_an_out_of_order_or_duplicated_migration_list_is_rejected_at_import():
+    """An out-of-order entry stamps the version BACKWARDS: [(2, m2), (1, m1)] on a
+    v0 database runs m2, stamps 2, then runs m1 and stamps 1 -- so migration 2 has
+    run while the database claims it has not. The next boot re-runs it, hits
+    `duplicate column name`, and is stuck at a version that is neither true nor
+    recoverable. Failing loudly at import is strictly better."""
+    def noop(_conn):
+        pass
+
+    with pytest.raises(RuntimeError):
+        db._validate_migration_order([(2, noop), (1, noop)])
+    with pytest.raises(RuntimeError):
+        db._validate_migration_order([(1, noop), (1, noop)])
+    db._validate_migration_order([(1, noop), (2, noop)])  # the good case must not raise
 ```
 
 > Observe this fail against the un-guarded version first: the `doomed` column **survives**, because
@@ -1197,7 +1322,7 @@ def test_a_migration_that_fails_partway_leaves_neither_the_ddl_nor_the_stamp(tmp
 > instance of the recurring defect class found in this programme, and it is the reason the explicit
 > `BEGIN` above is not optional.
 
-- [ ] **Run it.** The first, fourth and fifth pass. **The second *and third* both stay red**, for the same
+- [ ] **Run it.** The first, fourth, fifth, sixth and seventh pass. **The second *and third* both stay red**, for the same
       root cause: `_MIGRATIONS` is still empty here, so a legacy database has nothing to lift it off
       version 0. They come back at different tasks, so they carry different markers — getting this
       wrong points the next reader at the wrong task:
@@ -1215,6 +1340,16 @@ def test_a_migration_that_fails_partway_leaves_neither_the_ddl_nor_the_stamp(tmp
 ---
 
 ### T6 — A-47: `stages.status` accepts any string
+
+> **Blocking hazard, know this before writing the migration.** SQLite's only recipe for adding a
+> `CHECK` to an existing table is create-copy-drop-rename, and that recipe normally disables foreign
+> keys around itself. **`PRAGMA foreign_keys` is a no-op inside a transaction**, and T5's
+> `apply_migrations` opens an explicit `BEGIN IMMEDIATE` before calling the migration body — so the
+> pragma cannot be used from inside a migration. `projects` and `stages` are FK targets
+> (`stages.project_id REFERENCES projects(id)`), so a naive rebuild will either fail or silently
+> orphan children. Resolve this deliberately: use `PRAGMA legacy_alter_table`, rewrite the children,
+> or have `apply_migrations` set the pragma before its `BEGIN` — and write down which and why. Do
+> not discover it mid-migration.
 
 > **Also remove** `test_migrations_are_applied_exactly_once`'s `xfail` marker here —
 > registering migration 1 is exactly what makes it pass. `strict=True` will fail the suite as an
