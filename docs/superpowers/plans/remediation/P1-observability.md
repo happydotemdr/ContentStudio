@@ -754,7 +754,14 @@ def transaction(conn: sqlite3.Connection):
     Neither is solved here, and do not widen the boundary to be thread-local -- that
     would break the single-connection design this app depends on. **T13b owns the
     decision**; making the discovery fallback loud belongs to the discovery
-    package."""
+    package.
+
+    **This boundary does not cover DDL.** Python's sqlite3 opens an implicit
+    transaction only for DML, so a CREATE/ALTER/DROP inside a `transaction()` block
+    executes in autocommit mode and survives the rollback. Nothing at runtime issues
+    DDL -- only migrations do, and `apply_migrations` issues its own explicit
+    `BEGIN` for exactly this reason. Do not reach for `transaction()` to make schema
+    changes atomic."""
     key = id(conn)
     with _TXN_LOCK:
         depth = _TXN_DEPTH.get(key, 0)
@@ -1108,9 +1115,39 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
     for version, migrate in _MIGRATIONS:
         if version <= current:
             continue
-        migrate(conn)
-        conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (version,))
-        conn.commit()
+        # Explicit BEGIN, not db.transaction(). Python's sqlite3 opens an implicit
+        # transaction only for DML, never for DDL -- so under the default
+        # transaction control a migration's CREATE/ALTER lands on disk the instant
+        # it executes and survives any rollback. Verified: without BEGIN,
+        # `in_transaction` is False after a CREATE TABLE and rollback leaves the
+        # table; with BEGIN it is True and the table is gone. db.transaction()
+        # relies on that same implicit control, so it does NOT make DDL atomic and
+        # is the wrong tool here.
+        #
+        # Without this, a migration that raises halfway leaves its DDL applied and
+        # the version stamp untouched -- "partially applied" and "never ran" become
+        # the same state. The next boot re-runs it, the already-applied ALTER fails
+        # with "duplicate column name", and the database is wedged at that version
+        # permanently, with every boot reporting the same error and no way to tell
+        # which half already happened.
+        conn.execute("BEGIN")
+        try:
+            migrate(conn)
+            conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (version,))
+            conn.commit()
+        except BaseException as exc:
+            conn.rollback()
+            # Report before re-raising: the exception reaches whoever called
+            # init_db, but this is the only record that survives the process.
+            obs.record_event(
+                conn, kind="schema.migration_failed", severity="critical",
+                source="db.apply_migrations",
+                message=f"migration {version} failed and was rolled back: "
+                        f"{type(exc).__name__}: {exc}",
+                detail={"version": version, "exception": type(exc).__name__,
+                        "applied_before_failure": applied},
+            )
+            raise
         applied.append(version)
         obs.record_event(
             conn, kind="schema.migration_applied", severity="info", source="db.apply_migrations",
@@ -1119,7 +1156,48 @@ def apply_migrations(conn: sqlite3.Connection) -> list[int]:
     return applied
 ```
 
-- [ ] **Run it.** The first and fourth pass. **The second *and third* both stay red**, for the same
+- [ ] **Write one more failing test.** A migration that applies DDL and *then* raises must leave no
+      trace of either half, and must be distinguishable from one that never ran:
+
+```python
+def test_a_migration_that_fails_partway_leaves_neither_the_ddl_nor_the_stamp(tmp_path, monkeypatch):
+    """Half-applied and never-applied must not be the same state. If the DDL
+    survives while the stamp does not, the next boot re-runs the migration, the
+    already-applied ALTER fails with "duplicate column name", and the database is
+    wedged at that version forever."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "logs")
+    db_path = tmp_path / "pipeline.db"
+    db.init_db(db_path, SCHEMA)
+    conn = db.get_connection(db_path)
+    try:
+        def half_a_migration(c):
+            c.execute("ALTER TABLE projects ADD COLUMN doomed TEXT")
+            raise RuntimeError("the second half failed")
+
+        monkeypatch.setattr(db, "_MIGRATIONS", [(db.SCHEMA_VERSION + 1, half_a_migration)])
+        with pytest.raises(RuntimeError):
+            db.apply_migrations(conn)
+
+        assert "doomed" not in [r[1] for r in conn.execute("PRAGMA table_info(projects)")]
+        assert conn.execute(
+            "SELECT version FROM schema_version WHERE id = 1"
+        ).fetchone()[0] == db.SCHEMA_VERSION
+        rows = conn.execute(
+            "SELECT * FROM events WHERE kind = 'schema.migration_failed'"
+        ).fetchall()
+        assert len(rows) == 1          # ...and it said so
+        assert rows[0]["severity"] == "critical"
+    finally:
+        conn.close()
+```
+
+> Observe this fail against the un-guarded version first: the `doomed` column **survives**, because
+> Python's sqlite3 never opens an implicit transaction for DDL. That failure is the nineteenth
+> instance of the recurring defect class found in this programme, and it is the reason the explicit
+> `BEGIN` above is not optional.
+
+- [ ] **Run it.** The first, fourth and fifth pass. **The second *and third* both stay red**, for the same
       root cause: `_MIGRATIONS` is still empty here, so a legacy database has nothing to lift it off
       version 0. They come back at different tasks, so they carry different markers — getting this
       wrong points the next reader at the wrong task:
