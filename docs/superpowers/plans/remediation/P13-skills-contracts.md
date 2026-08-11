@@ -795,6 +795,50 @@ consumes: shorts-assembly#Shot table
 
 ---
 
+#### NEW FINDING raised in the field 2026-08-10 — AWAITING OPERATOR VALIDATION, not yet a task
+
+**The script format Gate D enforces is authoritatively defined nowhere, and the skill's own worked
+example does not parse under its own gate.**
+
+Raised while root-causing a real Gate D failure on an authored Short. Full evidence:
+`.superpowers/sdd/2026-08-08-audit-remediation/GATE-D-PARSE-design.md` §0/§1. The parser-side defect
+is filed separately as **C-88b → P12 T1b**; this is the larger, documentation-side half, and every
+file it touches is already in this package's §1 scope.
+
+**Four partial definitions, and they disagree:**
+
+| Where | What it defines |
+|---|---|
+| `shorts-scripting/SKILL.md:162-201` | the format, inline |
+| `shorts-scripting/references/worked-example.md:49-75` | a *continuation* form |
+| `shorts-scripting/references/read-aloud-gates.md:102-103` | a third partial statement |
+| the design spec `:288-297` | "indented sub-ranges" |
+
+**The sub-beat grammar exists only in `SUBRANGE_RE` (`scripts/lint_script_language.py:26`) plus six
+fixture lines.** Authors and the parser are therefore two hand-maintained copies of one contract
+with no round-trip check — the same shape this programme has already found three times in status
+and platform vocabularies, and the reason C-88b was writable in the first place.
+
+**Measured, not asserted: the skill's own worked example produces 1 VO line and 5 `PARSE` findings
+when run through Gate D.** The same continuation form appears in two live
+`runs/*/02-scripting/artifact.v*.md`. So a script written by faithfully following the documented
+example is mis-parsed by the gate that judges it — and, before C-88b lands, mis-parsed *silently*.
+
+**Why this is filed rather than fixed:** it is a documentation-and-format question this package
+owns, it is larger than the parser defect, and one part of it is an operator decision (below). It
+should become a task here after validation, sequenced **after** P12 T1b so the documented grammar
+and the enforced grammar are reconciled in one direction rather than two.
+
+> **OPERATOR DECISION REQUIRED — do not decide this inside a package.**
+> Should **label-first sub-beats** (`mechanism: (11–18s | 19 words)`) become **legal**?
+> Making them legal is a ~4-line parser change with **zero measured collateral** across all 19 real
+> script artifacts. Keeping them illegal is the status quo and is what P12 T1b enforces loudly.
+> This is a format decision to be made once and written down — **not** a parser fix, and not P12's
+> to take. Either answer is coherent; what is incoherent is the present state, where the rule
+> exists only as a regex and the documentation contradicts it.
+
+---
+
 ### T7 — `shorts-scripting` and `shorts-ideation`
 
 Closes **C-05** and **C-11**.
