@@ -5780,6 +5780,86 @@ def acknowledge(request: Request, event_id: int):
 - [ ] **Run it.** All four pass.
 - [ ] **Commit.** `feat(doctor): surface unacknowledged error events on the health page`
 
+**POST-REVIEW AMENDMENT.** The task reviewer found a second, load-bearing gap after implementation
+(the first — `doctor.html` not yet rendering `recent_events` — is confirmed correct scope: P15
+owns that rendering, per this task's own title and the frozen `P1 → P15` contract; no action
+needed, only a note that P15 must actually pick it up). `RECENT_EVENT_WINDOW_DAYS = 7` and
+`list_unacknowledged_events`'s `limit=50` are both sound, deliberate design choices on their own,
+but together they mean an unacknowledged `critical` event 8 days old, or the 51st of a burst,
+produces the exact same `recent_events` as a genuinely clean system — the recurring defect class
+this whole package exists to remove, reappearing one layer up inside its own dashboard. Not a
+product/policy question (the window and limit stay as designed; only the silence around their
+edges is the defect) — fixed by adding an unbounded total count alongside the bounded list, so a
+future renderer can distinguish "nothing to show" from "N exist, M shown."
+
+- [ ] **Add, in `db.py`, next to `list_unacknowledged_events`:**
+
+```python
+def count_unacknowledged_events(conn: sqlite3.Connection) -> int:
+    """ALL-TIME count of unacknowledged error/critical events -- deliberately
+    unbounded by `list_unacknowledged_events`'s window or limit. Read
+    together, the two distinguish "nothing else to show" from "more exist,
+    silently excluded by the window or the row cap" -- the recurring defect
+    class, reappearing inside this task's own dashboard if left unpaired."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM events WHERE acknowledged = 0 "
+        "AND severity IN ('error','critical')"
+    ).fetchone()
+    return row["n"]
+```
+
+- [ ] **Add, in `routes/doctor.py`'s context dict, alongside `recent_events`:**
+
+```python
+            "unacknowledged_error_total": db_mod.count_unacknowledged_events(
+                request.app.state.conn
+            ),
+```
+
+- [ ] **Write the failing test.** Append to `tests/test_obs.py`:
+
+```python
+def test_the_total_count_does_not_share_the_windows_blind_spot(tmp_path, monkeypatch):
+    """An unacknowledged error older than RECENT_EVENT_WINDOW_DAYS is correctly
+    excluded from `recent_events` (the window is a deliberate design choice),
+    but the total count must not share that exclusion -- otherwise an old,
+    ignored critical event renders identically to a clean system."""
+    from fastapi.testclient import TestClient
+    from pipeline_app.main import create_app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    try:
+        old_id = obs.record_event(app.state.conn, kind="a.old", severity="critical",
+                                  source="s", message="ancient, still unacknowledged")
+        app.state.conn.execute(
+            "UPDATE events SET occurred_at = '2020-01-01T00:00:00+00:00' WHERE id = ?",
+            (old_id,))
+        app.state.conn.commit()
+
+        captured = {}
+        real = app.state.templates.TemplateResponse
+
+        def spy(request, name, context, *args, **kwargs):
+            captured.update(context)
+            return real(request, name, context, *args, **kwargs)
+
+        monkeypatch.setattr(app.state.templates, "TemplateResponse", spy)
+        TestClient(app).get("/doctor")
+
+        assert captured["recent_events"] == []                      # window correctly excludes it
+        assert captured["unacknowledged_error_total"] == 1          # total does not share the gap
+    finally:
+        app.state.conn.close()
+```
+
+- [ ] **Run it.** Fails: `KeyError: 'unacknowledged_error_total'`.
+- [ ] **Run it again after implementing.** Passes. Full app suite green.
+- [ ] **Commit** (fix round, same finding scope): `feat(doctor): expose the unacknowledged-error total so the 7-day window and 50-row cap cannot render silently`
+
 ---
 
 ### T18 — F-26: two tests that assert on the value they injected into a mock
