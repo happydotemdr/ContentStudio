@@ -313,3 +313,37 @@ def test_released_version_is_burnt_not_reissued(tmp_path):
     res = reserve_version(tmp_path)
     release_version(res)
     assert reserve_version(tmp_path).version == res.version + 1
+
+
+def test_high_water_mark_sidecar_never_regresses_under_racing_writers(tmp_path):
+    """A-66 follow-up: _record_high_water_mark's read (_high_water_mark) and
+    write (_atomic_write_text) are two separate operations. Without a lock
+    around that span, a low-version caller's read can happen before any
+    higher-numbered value exists, get descheduled, and then have its stale
+    "write low" land *after* a higher-version caller has already written a
+    bigger number -- regressing the sidecar back down. This calls
+    _record_high_water_mark directly (bypassing reserve_version) so the exact
+    values racing are controlled, with a barrier forcing every thread to
+    start its read-decide-write span at the same instant -- the scenario most
+    likely to interleave a low write after a high one. Every value is written
+    by some thread; the assertion is that the sidecar's FINAL on-disk value is
+    the max of everything written, never a value some other thread already
+    beat it with."""
+    values = [1, 12, 2, 11, 3, 10, 4, 9, 5, 8, 6, 7]
+    n = len(values)
+    barrier = threading.Barrier(n)
+
+    def record(v):
+        barrier.wait(timeout=10)
+        artifacts._record_high_water_mark(tmp_path, v)
+
+    threads = [threading.Thread(target=record, args=(v,)) for v in values]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+
+    assert artifacts._high_water_mark(tmp_path) == max(values), (
+        "sidecar regressed: a lower-version writer's stale write landed after "
+        "the highest-version writer's write"
+    )

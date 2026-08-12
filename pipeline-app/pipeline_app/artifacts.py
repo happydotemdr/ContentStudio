@@ -2,6 +2,7 @@ import hashlib
 import os
 import re
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -143,6 +144,18 @@ def write_artifact(stage_dir: Path, version: int, meta: dict, body: str) -> Path
 
 _HWM_NAME = ".artifact-version-hwm"
 
+# Guards _record_high_water_mark's read-decide-write span (A-66 follow-up). The
+# read (_high_water_mark) and the write (_atomic_write_text) are two separate
+# operations; without a lock, a low-version thread's read can observe an empty
+# sidecar, get descheduled, and then land its stale "write N" *after* a
+# higher-version thread has already written a bigger number, regressing the
+# sidecar downward. The lock only serializes callers within this process --
+# it does not close a cross-process race (two OS processes writing the same
+# stage_dir). A real cross-process guarantee needs a database row, and
+# schema.sql/db.py belong to P1, out of this package's file ownership; the
+# sidecar has always been a best-effort, lock-free-across-processes design.
+_HWM_LOCK = threading.Lock()
+
 
 def _high_water_mark(stage_dir: Path) -> int:
     """The highest version number ever ALLOCATED in this stage dir, not the
@@ -188,27 +201,33 @@ def _high_water_mark(stage_dir: Path) -> int:
 
 
 def _record_high_water_mark(stage_dir: Path, version: int) -> None:
-    # >=, not >: both call sites (write_artifact, reserve_version) invoke this
-    # AFTER the artifact file or reservation marker for `version` already
-    # exists on disk, so _high_water_mark's own scan already counts `version`
-    # among `seen` -- `version > _high_water_mark(...)` can never be true at
-    # either call site and the sidecar would never actually get written.
-    if version >= _high_water_mark(stage_dir):
-        # Windows: reserve_version's concurrency test drives many threads to
-        # replace this exact sidecar file at once. os.replace needs the
-        # destination free of any handle lacking delete-sharing, and a sibling
-        # thread's read of the same path (in _high_water_mark, above) can hold
-        # one for a moment -- os.replace then raises PermissionError
-        # (WinError 5) rather than blocking. The write itself is idempotent
-        # (same or higher version), so retrying is safe.
-        for attempt in range(50):
-            try:
-                _atomic_write_text(stage_dir / _HWM_NAME, f"{version}\n")
-                break
-            except PermissionError:
-                if attempt == 49:
-                    raise
-                time.sleep(0.001)
+    """Read-decide-write span guarded by _HWM_LOCK (see comment there): closes
+    the in-process TOCTOU race where a low-version caller's read predates a
+    higher-version caller's write, but the low-version caller's own write
+    lands after it and regresses the sidecar back down. Does NOT close a
+    cross-process race -- see _HWM_LOCK's comment."""
+    with _HWM_LOCK:
+        # >=, not >: both call sites (write_artifact, reserve_version) invoke this
+        # AFTER the artifact file or reservation marker for `version` already
+        # exists on disk, so _high_water_mark's own scan already counts `version`
+        # among `seen` -- `version > _high_water_mark(...)` can never be true at
+        # either call site and the sidecar would never actually get written.
+        if version >= _high_water_mark(stage_dir):
+            # Windows: reserve_version's concurrency test drives many threads to
+            # replace this exact sidecar file at once. os.replace needs the
+            # destination free of any handle lacking delete-sharing, and a sibling
+            # thread's read of the same path (in _high_water_mark, above) can hold
+            # one for a moment -- os.replace then raises PermissionError
+            # (WinError 5) rather than blocking. The write itself is idempotent
+            # (same or higher version), so retrying is safe.
+            for attempt in range(50):
+                try:
+                    _atomic_write_text(stage_dir / _HWM_NAME, f"{version}\n")
+                    break
+                except PermissionError:
+                    if attempt == 49:
+                        raise
+                    time.sleep(0.001)
 
 
 def next_version_number(stage_dir: Path) -> int:
