@@ -153,7 +153,7 @@ def stamp_final(path: Path, finalized_at: str, gate_override_reason: str | None 
         # untouched -- an override says a human accepted the finding, not that
         # the finding was wrong.
         meta["gate_override_reason"] = gate_override_reason
-    path.write_text(render_frontmatter(meta, body), encoding="utf-8")
+    _atomic_write_text(path, render_frontmatter(meta, body))
 
 
 def record_gate_override(path: Path, gate_override_reason: str) -> None:
@@ -170,4 +170,4 @@ def record_gate_override(path: Path, gate_override_reason: str) -> None:
     finding, not that the finding was wrong."""
     meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
     meta["gate_override_reason"] = gate_override_reason
-    path.write_text(render_frontmatter(meta, body), encoding="utf-8")
+    _atomic_write_text(path, render_frontmatter(meta, body))

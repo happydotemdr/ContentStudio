@@ -177,3 +177,19 @@ def test_write_artifact_uses_the_atomic_primitive(tmp_path, monkeypatch):
     )
     write_artifact(tmp_path, 1, {"stage": "x"}, "body")
     assert (tmp_path / "artifact.v1.md") in calls
+
+
+def test_approval_stamp_does_not_destroy_the_approved_artifact_on_crash(tmp_path, monkeypatch):
+    """A-63's sharpest edge: stamp_final is a read-modify-write over the ONLY copy
+    of an already-approved artifact. A crash mid-write loses the approved output."""
+    path = write_artifact(tmp_path, 1, {"status": "final", "version": 1}, "approved content")
+    before = path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("power loss")))
+
+    with pytest.raises(OSError):
+        stamp_final(path, "2026-08-08T00:00:00+00:00")
+
+    assert path.read_text(encoding="utf-8") == before
+    meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert meta["status"] == "final"
