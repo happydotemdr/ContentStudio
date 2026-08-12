@@ -5372,29 +5372,45 @@ def test_a_cross_origin_post_is_rejected(repo_root: Path):
     from fastapi.testclient import TestClient
 
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    client = TestClient(app)
-    resp = client.post("/discovery/run", headers={"Origin": "https://evil.example"})
-    assert resp.status_code == 403
+    try:
+        client = TestClient(app)
+        resp = client.post("/discovery/settings", headers={"Origin": "https://evil.example"})
+        assert resp.status_code == 403
+    finally:
+        app.state.conn.close()
 
 
 def test_a_same_origin_post_is_not_rejected(repo_root: Path):
     """DISTINGUISHABILITY. Rejecting every POST would pass the test above and
-    break the app -- the guard has to tell the two apart."""
+    break the app -- the guard has to tell the two apart. Posts real form data
+    to a real, DB-only route (no subprocess, no vendor call) so a genuine 303
+    proves the request reached its handler, not merely that it wasn't 403."""
     from fastapi.testclient import TestClient
 
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    client = TestClient(app)
-    resp = client.post("/discovery/run", headers={"Origin": "http://testserver"})
-    assert resp.status_code != 403
+    try:
+        client = TestClient(app)
+        resp = client.post(
+            "/discovery/settings",
+            data={"time_of_day": "09:00", "timezone": "UTC"},
+            headers={"Origin": "http://testserver"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+    finally:
+        app.state.conn.close()
 
 
 def test_a_cross_origin_referer_is_rejected_when_origin_is_absent(repo_root: Path):
     from fastapi.testclient import TestClient
 
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    client = TestClient(app)
-    resp = client.post("/discovery/run", headers={"Referer": "https://evil.example/x"})
-    assert resp.status_code == 403
+    try:
+        client = TestClient(app)
+        resp = client.post("/discovery/settings", headers={"Referer": "https://evil.example/x"})
+        assert resp.status_code == 403
+    finally:
+        app.state.conn.close()
 
 
 def test_a_rejected_cross_origin_post_records_an_error_event(repo_root: Path, tmp_path,
@@ -5406,22 +5422,48 @@ def test_a_rejected_cross_origin_post_records_an_error_event(repo_root: Path, tm
 
     monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    TestClient(app).post("/discovery/run", headers={"Origin": "https://evil.example"})
-    rows = app.state.conn.execute(
-        "SELECT * FROM events WHERE kind = 'security.cross_origin_post_rejected'"
-    ).fetchall()
-    assert len(rows) == 1
-    assert rows[0]["severity"] == "error"
-    assert "evil.example" in rows[0]["message"]
+    try:
+        TestClient(app).post("/discovery/settings", headers={"Origin": "https://evil.example"})
+        rows = app.state.conn.execute(
+            "SELECT * FROM events WHERE kind = 'security.cross_origin_post_rejected'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["severity"] == "error"
+        assert "evil.example" in rows[0]["message"]
+    finally:
+        app.state.conn.close()
 
 
 def test_a_get_is_never_rejected_for_its_origin(repo_root: Path):
     from fastapi.testclient import TestClient
 
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    resp = TestClient(app).get("/doctor", headers={"Origin": "https://evil.example"})
-    assert resp.status_code == 200
+    try:
+        resp = TestClient(app).get("/doctor", headers={"Origin": "https://evil.example"})
+        assert resp.status_code == 200
+    finally:
+        app.state.conn.close()
 ```
+
+**PRE-REVIEW, PLAN AMENDED BEFORE DISPATCH.** Two problems found before any implementer touched
+this task:
+
+1. **All five tests targeted `/discovery/run`, which does not exist as a route.** The real routes
+   in `routes/discovery.py` are `/discovery/run-now`, `/discovery/run-now-backfill`,
+   `/discovery/handles`, `/discovery/settings`, and others — none of them `/discovery/run`. For the
+   three rejection tests this is harmless (the CSRF middleware runs before routing, so a 403 fires
+   regardless of whether the path exists), but `test_a_same_origin_post_is_not_rejected` would have
+   passed **vacuously**: FastAPI returns 404 for an unmatched path, and `404 != 403` satisfies the
+   assertion without ever proving a legitimate same-origin mutation reaches a real handler. Worse,
+   had the wrong path *happened* to collide with a real one, `/discovery/run-now` spawns
+   `subprocess.Popen(...)` running the discovery cron — a path this task must never exercise
+   unmocked, per the standing "never let a test reach a live vendor API" rule (Bright Data bills per
+   record, and `run_now`'s cron subprocess can reach it). Retargeted all five tests to
+   `/discovery/settings`, whose handler (`db_mod.update_settings`) is a pure DB write with no
+   subprocess and no network call, and gave the same-origin test real form data so it earns a
+   genuine `303`, not a coincidental non-403.
+2. **All five tests leaked `app.state.conn`** — same shape as T14 and T15's pre-review findings, same
+   file, same shrink-only allowlist that no longer covers it. Wrapped in `try/finally`.
 
 - [ ] **Run it.** The first, third and fourth fail — every POST is accepted today.
 - [ ] **Implement.** In `main.py`, register a second middleware (registered after
@@ -5460,8 +5502,10 @@ async def _reject_cross_origin_mutations(request, call_next):
     return await call_next(request)
 ```
 
-- [ ] **Run it.** All five pass. Full app suite green — no existing test sends an `Origin` or
-      `Referer` header (verified), and the guard allows requests carrying neither.
+- [ ] **Run it.** All five pass — including `test_a_same_origin_post_is_not_rejected`, which now
+      gets a genuine `303` from `/discovery/settings`'s real handler, not merely a non-403. Full app
+      suite green — no existing test sends an `Origin` or `Referer` header (verified), and the guard
+      allows requests carrying neither.
 - [ ] **Commit.** `fix(main): reject cross-origin mutating requests (D-48)`
 
 ---
