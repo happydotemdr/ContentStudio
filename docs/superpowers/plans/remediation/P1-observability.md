@@ -4840,16 +4840,21 @@ def test_a_second_app_instance_does_not_orphan_a_live_turn(repo_root: Path):
 
     db_path = repo_root / "pipeline.db"
     first = create_app(repo_root=repo_root, db_path=db_path)
-    project_id = db_mod.create_project(first.state.conn, "a-1", "a", "generic",
-                                       "2026-08-08T00:00:00+00:00")
-    stage_row_id = db_mod.create_stage_row(first.state.conn, project_id, "ideation", "running")
-    db_mod.create_turn(first.state.conn, stage_row_id, "running",
-                       "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    try:
+        project_id = db_mod.create_project(first.state.conn, "a-1", "a", "generic",
+                                           "2026-08-08T00:00:00+00:00")
+        stage_row_id = db_mod.create_stage_row(first.state.conn, project_id, "ideation", "running")
+        db_mod.create_turn(first.state.conn, stage_row_id, "running",
+                           "2026-08-08T00:00:00+00:00", "e/1.jsonl")
 
-    second = create_app(repo_root=repo_root, db_path=db_path)
-
-    assert len(db_mod.list_running_turns(second.state.conn)) == 1
-    assert db_mod.get_stage_by_row_id(second.state.conn, stage_row_id)["status"] == "running"
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            assert len(db_mod.list_running_turns(second.state.conn)) == 1
+            assert db_mod.get_stage_by_row_id(second.state.conn, stage_row_id)["status"] == "running"
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
 
 
 def test_a_skipped_sweep_is_distinguishable_from_a_clean_one(repo_root: Path):
@@ -4858,10 +4863,16 @@ def test_a_skipped_sweep_is_distinguishable_from_a_clean_one(repo_root: Path):
     thing -- that equivalence is the whole defect."""
     db_path = repo_root / "pipeline.db"
     first = create_app(repo_root=repo_root, db_path=db_path)
-    assert first.state.orphaned_count == 0
+    try:
+        assert first.state.orphaned_count == 0
 
-    second = create_app(repo_root=repo_root, db_path=db_path)
-    assert second.state.orphaned_count is None
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            assert second.state.orphaned_count is None
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
 
 
 def test_a_skipped_sweep_records_a_warning_event(repo_root: Path, tmp_path: Path, monkeypatch):
@@ -4870,30 +4881,80 @@ def test_a_skipped_sweep_records_a_warning_event(repo_root: Path, tmp_path: Path
     monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
     db_path = repo_root / "pipeline.db"
     first = create_app(repo_root=repo_root, db_path=db_path)
-    create_app(repo_root=repo_root, db_path=db_path)
-    rows = first.state.conn.execute(
-        "SELECT * FROM events WHERE kind = 'app.startup.reconcile_skipped'"
-    ).fetchall()
-    assert len(rows) == 1
-    assert rows[0]["severity"] == "warning"
+    try:
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            rows = first.state.conn.execute(
+                "SELECT * FROM events WHERE kind = 'app.startup.reconcile_skipped'"
+            ).fetchall()
+            assert len(rows) == 1
+            assert rows[0]["severity"] == "warning"
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
 
 
 def test_an_expired_lease_is_reclaimed_so_a_real_restart_still_sweeps(repo_root: Path):
     """A crashed instance must not block reconciliation forever."""
-    from pipeline_app import main as main_mod
+    db_path = repo_root / "pipeline.db"
+    first = create_app(repo_root=repo_root, db_path=db_path)
+    try:
+        first.state.conn.execute(
+            "UPDATE app_instances SET heartbeat_at = '2020-01-01T00:00:00+00:00' WHERE id = 1"
+        )
+        first.state.conn.commit()
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            assert second.state.orphaned_count == 0  # swept, not skipped
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
+
+
+def test_a_clean_shutdown_releases_the_lease_so_a_restart_sweeps_immediately(repo_root: Path):
+    """A crash leaves the lease to expire (the test above). A CLEAN shutdown
+    must not make a genuine restart wait out the same window -- that is
+    exactly what `_release_reconcile_lease` exists for, and none of the four
+    tests above calls it at all."""
+    from fastapi.testclient import TestClient
 
     db_path = repo_root / "pipeline.db"
     first = create_app(repo_root=repo_root, db_path=db_path)
-    first.state.conn.execute(
-        "UPDATE app_instances SET heartbeat_at = '2020-01-01T00:00:00+00:00' WHERE id = 1"
-    )
-    first.state.conn.commit()
+    with TestClient(first):
+        pass  # drives the lifespan: startup is a no-op here, shutdown releases the lease
+
     second = create_app(repo_root=repo_root, db_path=db_path)
-    assert second.state.orphaned_count == 0  # swept, not skipped
+    try:
+        assert second.state.orphaned_count == 0  # swept immediately, not after a 120s wait
+    finally:
+        second.state.conn.close()
 ```
+
+**PRE-REVIEW, PLAN AMENDED BEFORE DISPATCH.** Two problems in the brief's own code, found before
+any implementer touched it:
+
+1. **All four tests leaked both `sqlite3` connections they opened.** `tests/test_main.py` is the
+   exact module T13 just converted to `with TestClient(app)` and then deleted from
+   `_CONNECTION_LEAKS_BY_PACKAGE["P1"]` in `conftest.py` -- that list is explicitly shrink-only
+   ("Nothing may be ADDED"), so a new leak in this file is not silently tolerated, it is a hard
+   `pytest.fail` from `_no_leaked_sqlite_connections`. The brief's four tests called `create_app`
+   directly and never closed `.state.conn` on either instance -- the exact defect class T13 spent
+   its own fix round closing, reopened one task later. Now wrapped in `try/finally`.
+2. **`_release_reconcile_lease` was defined but never called.** Its own docstring on
+   `_claim_reconcile_lease` asserts "a clean shutdown releases the lease... so a genuine restart
+   sweeps immediately," but nothing in the shown diff wires it into the `lifespan` function T13
+   created, and none of the four tests exercises the release path -- only the 120-second expiry
+   path. A fifth test (`test_a_clean_shutdown_releases_the_lease_so_a_restart_sweeps_immediately`)
+   now covers it, and Implement (b) below adds the missing call.
 
 - [ ] **Run it.** `test_a_second_app_instance_does_not_orphan_a_live_turn` fails with
       `status == "awaiting_review"` / zero running turns — A-76 reproduced exactly.
+      `test_a_clean_shutdown_releases_the_lease_so_a_restart_sweeps_immediately` fails too, once
+      the other four are made to pass without the lifespan wiring below: the lease row `first`
+      claimed is never released, so `second`'s claim attempt sees a fresh `heartbeat_at` and
+      correctly refuses -- `orphaned_count` comes back `None`, not `0`.
 - [ ] **Implement (a).** Append to `schema.sql`:
 
 ```sql
@@ -4973,7 +5034,26 @@ and in `create_app`, replacing line 28-30:
         )
 ```
 
-- [ ] **Run it.** All four pass. Full app suite green — every existing test builds its app against
+and in the `lifespan` function T13 added, release the lease before the WAL checkpoint -- this is
+the missing call the pre-review found:
+
+```python
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        _release_reconcile_lease(app.state.conn, app.state.instance_token)
+        try:
+            app.state.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception as exc:  # noqa: BLE001 -- shutdown must not raise
+            obs.log("db.checkpoint_failed", level="warning",
+                    error=f"{type(exc).__name__}: {exc}")
+        app.state.conn.close()
+```
+
+`_release_reconcile_lease` already swallows and logs its own exceptions (see Implement (b) above),
+so this call needs no extra `try/except` around it.
+
+- [ ] **Run it.** All five pass. Full app suite green — every existing test builds its app against
       a fresh `tmp_path` database, so each claims the lease unopposed (verified: no test calls
       `create_app` twice against one `db_path`).
 - [ ] **Commit.** `fix(main): lease startup reconciliation so a second worker cannot orphan a live turn (A-76)`
