@@ -5058,6 +5058,101 @@ so this call needs no extra `try/except` around it.
       `create_app` twice against one `db_path`).
 - [ ] **Commit.** `fix(main): lease startup reconciliation so a second worker cannot orphan a live turn (A-76)`
 
+**POST-REVIEW AMENDMENT.** The task reviewer found one Important, load-bearing gap after
+implementation: `heartbeat_at` is written once, at claim time, and never refreshed again for the
+life of the process. `_claim_reconcile_lease`'s own docstring calls `lease_seconds` "long enough
+that uvicorn's other workers, which start within seconds, are correctly refused" — true only
+during the startup race the five tests above cover. Any instance that has simply been running
+longer than `RECONCILE_LEASE_SECONDS` (120s) has a heartbeat that now reads as stale to a *new*
+instance for reasons that have nothing to do with whether it crashed — a second instance starting
+an hour later reclaims the lease and re-runs the destructive sweep against turns the first instance
+is still actively running. That is A-76 itself, reopened past the narrow window the shipped fix
+actually covers. Not a product/policy question — the fix is a mechanical liveness heartbeat, the
+same shape `discovery_engine`'s existing heartbeat thread already uses in this codebase for the
+identical problem (proving a process is alive independent of request traffic, since a single
+long-running turn stream may not touch any other route for extended periods).
+
+- [ ] **Add, in `main.py`:**
+
+```python
+import asyncio
+
+HEARTBEAT_INTERVAL_SECONDS = 30  # several ticks inside the 120s lease window
+
+
+async def _heartbeat_reconcile_lease(conn, token: str) -> None:
+    """Keeps this instance's `app_instances` row fresh for as long as the
+    process is alive, independent of request traffic -- a single long-running
+    turn stream can hold one HTTP request open for minutes without touching
+    any other route, and `heartbeat_at` must not go stale during that time."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            conn.execute(
+                "UPDATE app_instances SET heartbeat_at = ? WHERE id = 1 AND owner_token = ?",
+                (now_iso, token),
+            )
+            db_mod.commit_unless_in_transaction(conn)
+        except Exception as exc:  # noqa: BLE001 -- a missed heartbeat must not kill the app
+            obs.log("app.heartbeat_failed", level="warning", error=f"{type(exc).__name__}: {exc}")
+```
+
+  and start/stop it around the lifespan's `yield`, so a non-owning instance (the `else` branch)
+  does not spawn a task that will only ever no-op:
+
+```python
+    async def lifespan(app: FastAPI):
+        heartbeat_task = (
+            asyncio.create_task(_heartbeat_reconcile_lease(app.state.conn, app.state.instance_token))
+            if app.state.orphaned_count is not None else None
+        )
+        yield
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        _release_reconcile_lease(app.state.conn, app.state.instance_token)
+        ...  # WAL checkpoint + close, unchanged
+```
+
+- [ ] **Write the failing test.** Append to `tests/test_main.py`:
+
+```python
+def test_a_long_running_instance_keeps_its_heartbeat_fresh(repo_root: Path, monkeypatch):
+    """A-76 REOPENED past the startup window, caught in review: without a
+    periodic refresh, ANY instance older than RECONCILE_LEASE_SECONDS looks
+    stale to a later instance regardless of whether it is still alive.
+    Compared against a fixed 2020 timestamp rather than a freshly-read one,
+    so the assertion cannot pass on second-level rounding coincidence."""
+    import time
+    from fastapi.testclient import TestClient
+    from pipeline_app import main as main_mod
+
+    monkeypatch.setattr(main_mod, "HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    db_path = repo_root / "pipeline.db"
+    app = create_app(repo_root=repo_root, db_path=db_path)
+    app.state.conn.execute(
+        "UPDATE app_instances SET heartbeat_at = '2020-01-01T00:00:00+00:00' WHERE id = 1"
+    )
+    app.state.conn.commit()
+    with TestClient(app):
+        time.sleep(0.3)
+        refreshed = app.state.conn.execute(
+            "SELECT heartbeat_at FROM app_instances WHERE id = 1"
+        ).fetchone()["heartbeat_at"]
+    assert refreshed != "2020-01-01T00:00:00+00:00"
+```
+
+- [ ] **Run it.** Fails before the fix: `heartbeat_at` stays at the seeded 2020 value for the whole
+      `with` block (nothing refreshes it). Passes after. Re-run the full app suite: no new
+      `asyncio` warnings (P0's `filterwarnings = error` turns any into a failure) — the task is
+      cancelled and awaited before the connection closes, so no "Task was destroyed but it is
+      pending" warning fires at teardown.
+- [ ] **Commit** (fix round, same finding ID): `fix(main): refresh the reconcile lease heartbeat while the process is alive (A-76)`
+
 ---
 
 ### T15 — A-83: a startup snapshot rendered beside a live probe of the same fact
@@ -5290,6 +5385,21 @@ async def _reject_cross_origin_mutations(request, call_next):
 ---
 
 ### T17 — `recent_events` on `/doctor` (the surface P15 renders)
+
+**HANDOFF FROM T14's REVIEW.** T14's task reviewer flagged that `orphaned_count: None` renders on
+the `/doctor` page as the bare Jinja2 default — verified empirically: `{{ orphaned_count }}` with
+`None` renders the literal text `"None"`, with `0` renders `"0"`. That already satisfies the
+frozen P1→P15 contract's letter (`None` must render differently from `0`, and it does, byte for
+byte) but nothing tests it at the rendered-page level — T14's own tests only assert on
+`app.state.orphaned_count` directly, never on `/doctor`'s HTML. T14 does not touch `doctor.py` or
+`doctor.html` at all (verified: `git show --stat` on its commit lists only `main.py`, `schema.sql`,
+`test_main.py`), so this is not T14's file to fix. **T17 owns `routes/doctor.py` and rewrites this
+exact context dict below — add a test asserting the page distinguishably renders both states**
+(e.g. `orphaned_count=None` → `"reconciled at startup: None"` in the response text,
+`orphaned_count=0` → `"reconciled at startup: 0"`, and the two differ), closing the same gap P0's
+own handoff note already named at T14's dispatch (`getattr(..., "orphaned_count", 0)` — confirm the
+default clause is genuinely unreachable now that `create_app` always sets the attribute explicitly,
+never leaves it absent).
 
 Without this, every `events` row written by all sixteen packages is invisible unless someone opens
 the database by hand — the same silence one layer down.
