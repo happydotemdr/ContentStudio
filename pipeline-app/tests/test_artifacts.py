@@ -1,8 +1,11 @@
+import os
 from pathlib import Path
 
 import pytest
 
+from pipeline_app import artifacts
 from pipeline_app.artifacts import (
+    _atomic_write_text,
     compute_sha256,
     latest_artifact_path,
     next_version_number,
@@ -112,3 +115,40 @@ def test_resolve_latest_artifact_grounding_pointer_target_missing_returns_none(t
     stage_dir = tmp_path / "runs" / "r1" / "00-grounding"
     write_pointer(stage_dir, "rgs-briefs/does-not-exist.md")
     assert resolve_latest_artifact(tmp_path, "grounding", stage_dir) is None
+
+
+def test_atomic_write_leaves_prior_bytes_intact_when_the_write_dies_midway(tmp_path, monkeypatch):
+    """A-63: the whole point. Path.write_text opens "w", truncating the target
+    to zero before a byte of new content lands. Kill the write partway and the
+    previous content must still be there, in full, and still parseable."""
+    target = tmp_path / "artifact.v1.md"
+    original = "---\nstatus: final\nversion: 1\n---\n\napproved body\n"
+    target.write_text(original, encoding="utf-8")
+
+    real_fsync = os.fsync
+
+    def die_after_partial_write(fd):
+        real_fsync(fd)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "fsync", die_after_partial_write)
+
+    with pytest.raises(OSError):
+        _atomic_write_text(target, "---\nstatus: final\nversion: 2\n---\n\nnew body\n")
+
+    assert target.read_text(encoding="utf-8") == original
+    meta, body = artifacts.parse_frontmatter(target.read_text(encoding="utf-8"))
+    assert meta["status"] == "final"
+    assert "approved body" in body
+
+
+def test_atomic_write_leaves_no_temp_file_behind_on_failure(tmp_path, monkeypatch):
+    target = tmp_path / "artifact.v1.md"
+    target.write_text("original", encoding="utf-8")
+    monkeypatch.setattr(os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+
+    with pytest.raises(OSError):
+        _atomic_write_text(target, "replacement")
+
+    assert target.read_text(encoding="utf-8") == "original"
+    assert list(tmp_path.iterdir()) == [target]

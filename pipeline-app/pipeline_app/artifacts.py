@@ -1,5 +1,7 @@
 import hashlib
+import os
 import re
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -8,6 +10,57 @@ from pipeline_app import grounding_service
 
 _DELIM = "---"
 _VERSION_RE = re.compile(r"artifact\.v(\d+)\.md$")
+
+
+class MalformedArtifactError(Exception):
+    """An artifact file exists but cannot be read as an artifact.
+
+    One typed error for every way an artifact can be unreadable, always naming
+    the offending path. Before this, three distinct conditions -- no
+    frontmatter, an unterminated block, and a non-mapping YAML value --
+    collapsed into the same indistinguishable ({}, text) return (A-68), and
+    yaml.YAMLError propagated uncaught into route, approval and staleness
+    paths (A-69).
+    """
+
+    def __init__(self, reason: str, path: Path | None = None):
+        self.reason = reason
+        self.path = path
+        super().__init__(f"{path if path is not None else '<text>'}: {reason}")
+
+
+class ArtifactExistsError(Exception):
+    """Refused to overwrite an artifact file that already exists."""
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write `text` to `path` such that a crash leaves either the old bytes or
+    the new bytes -- never a truncation.
+
+    Path.write_text opens in "w" mode: the existing file is truncated to zero
+    before a byte of new content is written, and nothing is fsynced. For
+    stamp_final and record_gate_override that target is the ONLY copy of an
+    already-approved artifact and runs/ is git-ignored, so a crash mid-write
+    destroyed the approved output with nothing to recover from (A-63). Worse,
+    a partial write typically loses the closing `---`, and parse_frontmatter
+    used to report that wreckage as a legitimate no-frontmatter artifact
+    rather than as damage.
+
+    The temp file is named with a leading dot and a .tmp suffix so it can never
+    match the `artifact.v*.md` glob, and is unlinked on any failure.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
