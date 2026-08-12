@@ -5882,23 +5882,32 @@ def test_cli_availability_is_recorded_on_app_state(repo_root: Path, monkeypatch)
                         lambda *a, **k: {"available": True, "path": r"C:\fake\claude.CMD",
                                          "error": None})
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    assert app.state.cli_available is True
+    try:
+        assert app.state.cli_available is True
+    finally:
+        app.state.conn.close()
 
 
 def test_app_factory_creates_the_database_schema(repo_root: Path):
     """FAULT. 34 statements were covered by a one-attribute round trip."""
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    tables = {r[0] for r in app.state.conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert {"projects", "stages", "turns", "handles", "events", "creators",
-            "schema_version", "app_instances"} <= tables
+    try:
+        tables = {r[0] for r in app.state.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert {"projects", "stages", "turns", "handles", "events", "creators",
+                "schema_version", "app_instances"} <= tables
+    finally:
+        app.state.conn.close()
 
 
 def test_app_factory_mounts_every_router(repo_root: Path):
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    paths = {r.path for r in app.routes}
-    for expected in ("/", "/doctor", "/discovery/handles", "/skills", "/inspector", "/browse"):
-        assert any(p == expected or p.startswith(expected) for p in paths), expected
+    try:
+        paths = {r.path for r in app.routes}
+        for expected in ("/", "/doctor", "/discovery/handles", "/skills", "/inspector", "/browse"):
+            assert any(p == expected or p.startswith(expected) for p in paths), expected
+    finally:
+        app.state.conn.close()
 
 
 def test_app_factory_runs_the_startup_orphan_sweep(repo_root: Path):
@@ -5914,8 +5923,11 @@ def test_app_factory_runs_the_startup_orphan_sweep(repo_root: Path):
     seed.close()
 
     app = create_app(repo_root=repo_root, db_path=db_path)
-    assert app.state.orphaned_count == 1
-    assert db_mod.list_running_turns(app.state.conn) == []
+    try:
+        assert app.state.orphaned_count == 1
+        assert db_mod.list_running_turns(app.state.conn) == []
+    finally:
+        app.state.conn.close()
 
 
 def test_a_broken_pipeline_yaml_is_distinguishable_from_an_empty_one(
@@ -5927,11 +5939,16 @@ def test_a_broken_pipeline_yaml_is_distinguishable_from_an_empty_one(
     monkeypatch.chdir(tmp_path)
     (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
     empty = create_app(repo_root=tmp_path, db_path=tmp_path / "empty.db")
-    assert empty.state.stage_defs == []
+    try:
+        assert empty.state.stage_defs == []
+    finally:
+        empty.state.conn.close()
 
     (tmp_path / "pipeline.yaml").write_text("stages: [{id: a}]\n", encoding="utf-8")
     with pytest.raises(KeyError):
         create_app(repo_root=tmp_path, db_path=tmp_path / "broken.db")
+    # No connection to close here: the production fix below closes it internally
+    # before re-raising, since create_app never returns an app object on this path.
 
 
 def test_a_topology_load_failure_records_a_critical_event(tmp_path: Path, monkeypatch):
@@ -5969,6 +5986,23 @@ def test_create_default_app_targets_the_repo_root_database(monkeypatch):
     assert (seen["repo_root"] / "pipeline-app" / "pipeline_app" / "main.py").exists()
 ```
 
+**PRE-REVIEW, PLAN AMENDED BEFORE DISPATCH.** Two problems found before any implementer touched
+this task:
+
+1. **Five of the seven new tests leaked `app.state.conn`** — same shape as every other task in this
+   pause window. Wrapped in `try/finally`.
+2. **The reorder itself creates a real, production connection leak, not just a test artifact.**
+   Before this task, a broken `pipeline.yaml` made `load_topology` raise BEFORE the database
+   connection was ever opened — no leak, because nothing existed to leak. This task deliberately
+   reorders so the connection opens FIRST (so the failure can be recorded on it), which means the
+   `except` block's `raise` now propagates out of `create_app` while `app.state.conn` stays open —
+   and since `create_app` never returns an app object on this path, no caller has a reference left
+   to close it with. Every real deployment with a broken `pipeline.yaml` would now leak a live
+   connection and its `-wal`/`-shm` files forever (A-85's exact defect, reopened by this task's own
+   fix). Fixed by closing the connection immediately after recording the event and before
+   re-raising — the row is already durably committed by then (`obs.record_event` commits internally
+   via `commit_unless_in_transaction`), so closing does not risk losing the very event just written.
+
 - [ ] **Run it.** `test_a_topology_load_failure_records_a_critical_event` fails: no event, because
       `load_topology` runs before the connection exists and nothing catches it.
 - [ ] **Implement.** In `main.py`, reorder so the database opens first and the topology load is
@@ -5991,6 +6025,14 @@ def test_create_default_app_targets_the_repo_root_database(monkeypatch):
                     f"{type(exc).__name__}: {exc}",
             detail={"path": str(repo_root / "pipeline.yaml"), "error": type(exc).__name__},
         )
+        # This reorder opens the connection BEFORE the topology load so the
+        # failure above can be recorded on it -- but create_app never returns
+        # an app object on this path, so nothing else is left to close it.
+        # Without this, every caller with a broken pipeline.yaml leaks a real
+        # connection and its -wal/-shm files (A-85's defect, reopened by this
+        # task's own fix). The event row is already committed by record_event
+        # above, so closing here cannot lose it.
+        app.state.conn.close()
         raise
 ```
 
