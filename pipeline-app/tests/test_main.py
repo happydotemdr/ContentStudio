@@ -297,3 +297,80 @@ def test_a_long_running_instance_keeps_its_heartbeat_fresh(repo_root: Path, monk
             "SELECT heartbeat_at FROM app_instances WHERE id = 1"
         ).fetchone()["heartbeat_at"]
     assert refreshed != "2020-01-01T00:00:00+00:00"
+
+
+def test_a_cross_origin_post_is_rejected(repo_root: Path):
+    from fastapi.testclient import TestClient
+
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    try:
+        client = TestClient(app)
+        resp = client.post("/discovery/settings", headers={"Origin": "https://evil.example"})
+        assert resp.status_code == 403
+    finally:
+        app.state.conn.close()
+
+
+def test_a_same_origin_post_is_not_rejected(repo_root: Path):
+    """DISTINGUISHABILITY. Rejecting every POST would pass the test above and
+    break the app -- the guard has to tell the two apart. Posts real form data
+    to a real, DB-only route (no subprocess, no vendor call) so a genuine 303
+    proves the request reached its handler, not merely that it wasn't 403."""
+    from fastapi.testclient import TestClient
+
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    try:
+        client = TestClient(app)
+        resp = client.post(
+            "/discovery/settings",
+            data={"time_of_day": "09:00", "timezone": "UTC"},
+            headers={"Origin": "http://testserver"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+    finally:
+        app.state.conn.close()
+
+
+def test_a_cross_origin_referer_is_rejected_when_origin_is_absent(repo_root: Path):
+    from fastapi.testclient import TestClient
+
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    try:
+        client = TestClient(app)
+        resp = client.post("/discovery/settings", headers={"Referer": "https://evil.example/x"})
+        assert resp.status_code == 403
+    finally:
+        app.state.conn.close()
+
+
+def test_a_rejected_cross_origin_post_records_an_error_event(repo_root: Path, tmp_path,
+                                                             monkeypatch):
+    """SURFACING. A 403 the operator never sees is the same silence this whole
+    package exists to end."""
+    from fastapi.testclient import TestClient
+    from pipeline_app import obs
+
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    try:
+        TestClient(app).post("/discovery/settings", headers={"Origin": "https://evil.example"})
+        rows = app.state.conn.execute(
+            "SELECT * FROM events WHERE kind = 'security.cross_origin_post_rejected'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["severity"] == "error"
+        assert "evil.example" in rows[0]["message"]
+    finally:
+        app.state.conn.close()
+
+
+def test_a_get_is_never_rejected_for_its_origin(repo_root: Path):
+    from fastapi.testclient import TestClient
+
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    try:
+        resp = TestClient(app).get("/doctor", headers={"Origin": "https://evil.example"})
+        assert resp.status_code == 200
+    finally:
+        app.state.conn.close()

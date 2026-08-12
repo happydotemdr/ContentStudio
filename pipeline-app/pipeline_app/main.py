@@ -5,8 +5,10 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -21,6 +23,17 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 
 RECONCILE_LEASE_SECONDS = 120
 HEARTBEAT_INTERVAL_SECONDS = 30  # several ticks inside the 120s lease window
+
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _same_host(candidate: str, host_header: str) -> bool:
+    """A form POST carries Origin in every current browser; Referer is the
+    fallback for the ones that strip it. Neither present means a non-browser
+    client (curl, the test suite, the cron runner's own HTTP calls), which no
+    cross-site attack can produce -- so that case is allowed, deliberately and
+    with the residual gap recorded here rather than left implicit."""
+    return urlsplit(candidate).netloc.casefold() == host_header.casefold()
 
 
 class _CliProbe:
@@ -175,6 +188,24 @@ def create_app(repo_root: Path, db_path: Path) -> FastAPI:
         # bool -- it is just refreshed from the same snapshot /doctor reads,
         # once, at the top of the request.
         request.app.state.cli_available = request.app.state.cli_probe.get()["available"]
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def _reject_cross_origin_mutations(request, call_next):
+        if request.method in _MUTATING_METHODS:
+            claimed = request.headers.get("origin") or request.headers.get("referer")
+            host = request.headers.get("host", "")
+            if claimed and not _same_host(claimed, host):
+                obs.record_event(
+                    request.app.state.conn,
+                    kind="security.cross_origin_post_rejected", severity="error",
+                    source="main.csrf_guard",
+                    message=f"rejected {request.method} {request.url.path} claiming origin "
+                            f"{claimed}",
+                    detail={"method": request.method, "path": request.url.path,
+                            "claimed_origin": claimed, "host": host},
+                )
+                return PlainTextResponse("cross-origin request rejected", status_code=403)
         return await call_next(request)
 
     app.state.templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
