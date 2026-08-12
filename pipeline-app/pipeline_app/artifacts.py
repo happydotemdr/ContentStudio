@@ -12,7 +12,9 @@ import yaml
 from pipeline_app import obs
 
 _DELIM = "---"
-_VERSION_RE = re.compile(r"artifact\.v(\d+)\.md$")
+# Injective by construction: exactly one filename maps to any given version, so
+# a zero-padded duplicate cannot produce an arbitrary tie-break (A-67).
+_VERSION_RE = re.compile(r"^artifact\.v(0|[1-9]\d*)\.md$")
 _RESERVED_RE = re.compile(r"^\.artifact\.v(0|[1-9]\d*)\.reserved$")
 
 
@@ -90,12 +92,33 @@ def compute_sha256(path: Path) -> str:
 
 
 def _versions_in(stage_dir: Path) -> list[tuple[int, Path]]:
-    versions = []
-    for p in stage_dir.glob("artifact.v*.md"):
+    versions: list[tuple[int, Path]] = []
+    for p in sorted(stage_dir.glob("artifact.v*.md")):
         m = _VERSION_RE.match(p.name)
-        if m:
-            versions.append((int(m.group(1)), p))
-    return versions
+        if not m:
+            obs.log(
+                "artifacts.unversioned_sibling",
+                level="warning",
+                path=str(p),
+                detail="matches artifact.v*.md but not artifact.v<N>.md; invisible to "
+                       "version allocation and to latest-artifact resolution",
+            )
+            continue
+        versions.append((int(m.group(1)), p))
+    return sorted(versions)
+
+
+def list_unversioned_siblings(stage_dir: Path) -> list[Path]:
+    """Files that look like artifacts but that the version regex rejects.
+
+    Exposed so /doctor (P1) can show an operator the rescued or hand-annotated
+    file the app is ignoring, instead of it vanishing silently (A-67).
+    """
+    if not stage_dir.exists():
+        return []
+    return sorted(
+        p for p in stage_dir.glob("artifact.v*.md") if not _VERSION_RE.match(p.name)
+    )
 
 
 def latest_artifact_path(stage_dir: Path) -> Path | None:

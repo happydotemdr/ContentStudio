@@ -347,3 +347,38 @@ def test_high_water_mark_sidecar_never_regresses_under_racing_writers(tmp_path):
         "sidecar regressed: a lower-version writer's stale write landed after "
         "the highest-version writer's write"
     )
+
+
+def test_zero_padded_duplicate_does_not_make_latest_artifact_nondeterministic(tmp_path):
+    """A-67: artifact.v07.md and artifact.v7.md both parsed to 7, and
+    max(..., key=...) resolved the tie by glob iteration order -- which one the
+    app treated as the stage's output was filesystem-dependent."""
+    (tmp_path / "artifact.v7.md").write_text("the real one", encoding="utf-8")
+    (tmp_path / "artifact.v07.md").write_text("an OS copy", encoding="utf-8")
+
+    assert artifacts.latest_artifact_path(tmp_path).name == "artifact.v7.md"
+    assert [v for v, _ in artifacts._versions_in(tmp_path)] == [7]
+
+
+def test_unparseable_sibling_is_warned_and_enumerable_not_silently_dropped(tmp_path, monkeypatch):
+    """A rescued or hand-annotated artifact used to vanish from the app while
+    sitting in plain sight in the directory."""
+    events = []
+    monkeypatch.setattr(artifacts.obs, "log", lambda e, **k: events.append((e, k)))
+    (tmp_path / "artifact.v1.md").write_text("real", encoding="utf-8")
+    (tmp_path / "artifact.vfinal.md").write_text("rescued", encoding="utf-8")
+    (tmp_path / "artifact.v3 (copy).md").write_text("os copy", encoding="utf-8")
+
+    artifacts._versions_in(tmp_path)
+    assert sum(1 for e, _ in events if e == "artifacts.unversioned_sibling") == 2
+
+    names = {p.name for p in artifacts.list_unversioned_siblings(tmp_path)}
+    assert names == {"artifact.vfinal.md", "artifact.v3 (copy).md"}
+
+
+def test_v10_still_outranks_v9(tmp_path):
+    """Verified non-issue -- pinned so nobody "fixes" the numeric comparison
+    into a string one."""
+    (tmp_path / "artifact.v9.md").write_text("nine", encoding="utf-8")
+    (tmp_path / "artifact.v10.md").write_text("ten", encoding="utf-8")
+    assert artifacts.latest_artifact_path(tmp_path).name == "artifact.v10.md"
