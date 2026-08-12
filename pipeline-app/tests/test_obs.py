@@ -133,3 +133,134 @@ def test_record_event_does_not_raise_on_a_closed_connection(tmp_path, monkeypatc
     closed = sqlite3.connect(tmp_path / "closed.db")
     closed.close()
     assert obs.record_event(closed, kind="k", severity="error", source="s", message="m") == -1
+
+
+def test_doctor_context_carries_unacknowledged_error_events_newest_first(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from pipeline_app.main import create_app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    try:
+        conn = app.state.conn
+
+        obs.record_event(conn, kind="a.info", severity="info", source="s", message="ignored")
+        obs.record_event(conn, kind="a.warn", severity="warning", source="s", message="ignored")
+        old_id = obs.record_event(conn, kind="a.old", severity="error", source="s", message="stale")
+        conn.execute("UPDATE events SET occurred_at = '2020-01-01T00:00:00+00:00' WHERE id = ?",
+                     (old_id,))
+        ack_id = obs.record_event(conn, kind="a.ack", severity="error", source="s", message="handled")
+        conn.execute("UPDATE events SET acknowledged = 1 WHERE id = ?", (ack_id,))
+        first = obs.record_event(conn, kind="adapter.fetch_failed", severity="error",
+                                 source="discovery_youtube", message="first",
+                                 detail={"handle": "@a"}, run_id=3)
+        second = obs.record_event(conn, kind="run.aborted", severity="critical",
+                                  source="discovery_engine", message="second")
+        conn.commit()
+
+        captured = {}
+        real = app.state.templates.TemplateResponse
+
+        def spy(request, name, context, *args, **kwargs):
+            captured.update(context)
+            return real(request, name, context, *args, **kwargs)
+
+        monkeypatch.setattr(app.state.templates, "TemplateResponse", spy)
+        TestClient(app).get("/doctor")
+
+        events = captured["recent_events"]
+        assert [e["id"] for e in events] == [second, first]      # newest first, filtered
+        assert events[1] == {
+            "id": first, "occurred_at": events[1]["occurred_at"], "kind": "adapter.fetch_failed",
+            "severity": "error", "source": "discovery_youtube", "message": "first",
+            "detail": {"handle": "@a"}, "run_id": 3, "acknowledged": False,
+        }
+    finally:
+        app.state.conn.close()
+
+
+def test_recent_events_parses_detail_and_never_drops_a_malformed_one(tmp_path, monkeypatch):
+    """A detail column written by a future caller as non-JSON must not make the
+    event disappear -- losing the event is the defect, not the formatting."""
+    conn_path = tmp_path / "pipeline.db"
+    schema = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db.init_db(conn_path, schema)
+    c = db.get_connection(conn_path)
+    try:
+        c.execute(
+            "INSERT INTO events (occurred_at, kind, severity, source, message, detail) "
+            "VALUES (?, 'k', 'error', 's', 'm', 'not json')",
+            (db._utcnow_iso(),),
+        )
+        c.commit()
+        rows = db.list_unacknowledged_events(c, since_iso="2000-01-01T00:00:00+00:00")
+        assert len(rows) == 1
+        assert rows[0]["detail"] == {"raw": "not json"}
+    finally:
+        c.close()
+
+
+def test_acknowledging_an_event_removes_it_from_the_doctor_list(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from pipeline_app.main import create_app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    try:
+        event_id = obs.record_event(app.state.conn, kind="k", severity="error",
+                                    source="s", message="m")
+        client = TestClient(app)
+        resp = client.post(f"/doctor/events/{event_id}/ack",
+                           headers={"Origin": "http://testserver"})
+        assert resp.status_code in (200, 303, 307)
+        assert db.list_unacknowledged_events(
+            app.state.conn, since_iso="2000-01-01T00:00:00+00:00") == []
+    finally:
+        app.state.conn.close()
+
+
+def test_the_doctor_page_renders_a_skipped_sweep_distinguishably_from_a_clean_one(
+        tmp_path, monkeypatch):
+    """HANDOFF FROM T14's REVIEW, closed here. P0 originally flagged
+    `getattr(request.app.state, "orphaned_count", 0)` for collapsing three
+    states (attribute missing / explicitly 0 / explicitly None) into two
+    renderings. T14 made the value itself correctly `None` vs `0`; this test
+    is what actually proves the RENDERED PAGE tells them apart, which
+    nothing before this task ever checked -- T14's own tests only assert on
+    `app.state.orphaned_count` directly, never on `/doctor`'s HTML."""
+    from fastapi.testclient import TestClient
+    from pipeline_app.main import create_app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+
+    # Separate db files, deliberately: each instance then claims T14's reconcile
+    # lease unopposed, so `orphaned_count` starts as a real `0` from the actual
+    # sweep on both -- this test is about page RENDERING, not lease contention
+    # (T14 already covers that), so `skipped` overrides the attribute directly
+    # afterward rather than reproducing a second-instance race here.
+    clean = create_app(repo_root=tmp_path, db_path=tmp_path / "clean.db")
+    try:
+        assert clean.state.orphaned_count == 0
+        clean_text = TestClient(clean).get("/doctor").text
+    finally:
+        clean.state.conn.close()
+
+    skipped = create_app(repo_root=tmp_path, db_path=tmp_path / "skipped.db")
+    try:
+        skipped.state.orphaned_count = None  # stand in for A-76's skipped-sweep path
+        skipped_text = TestClient(skipped).get("/doctor").text
+    finally:
+        skipped.state.conn.close()
+
+    assert "Orphaned turns reconciled at startup: 0" in clean_text
+    assert "Orphaned turns reconciled at startup: None" in skipped_text
+    assert clean_text != skipped_text
