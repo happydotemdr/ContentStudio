@@ -262,6 +262,13 @@ def test_write_reserved_artifact_lands_at_the_reserved_version(tmp_path):
     assert not res.reservation_path.exists()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="A-66, not A-65: needs T6's real _record_high_water_mark. T2's stub is a "
+           "no-op until T6 lands, so a released version's HWM entry is never durably "
+           "recorded and the next reserve_version() call reissues it. T6 removes this "
+           "marker as part of its own task.",
+)
 def test_released_version_is_burnt_not_reissued(tmp_path):
     """A released number must never be reissued: anything that observed it --
     a log line, a `supersedes` field, a half-written temp -- must not be able
