@@ -1,4 +1,5 @@
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -11,10 +12,13 @@ from pipeline_app.artifacts import (
     latest_artifact_path,
     next_version_number,
     parse_frontmatter,
+    release_version,
     render_frontmatter,
+    reserve_version,
     resolve_latest_artifact,
     stamp_final,
     write_artifact,
+    write_reserved_artifact,
 )
 from pipeline_app.grounding_service import write_pointer
 
@@ -193,3 +197,75 @@ def test_approval_stamp_does_not_destroy_the_approved_artifact_on_crash(tmp_path
     assert path.read_text(encoding="utf-8") == before
     meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
     assert meta["status"] == "final"
+
+
+def test_two_concurrent_callers_get_two_distinct_versions(tmp_path):
+    """A-65: next_version_number globs and returns max+1 with no lock, and its
+    caller runs the entire gate suite between the read and the write. Two
+    overlapping edit POSTs both computed N, and the second silently overwrote
+    the first -- an artifact version and its gate results gone, no error."""
+    barrier = threading.Barrier(2)
+    results: list[int] = []
+    lock = threading.Lock()
+
+    def allocate():
+        barrier.wait(timeout=5)          # force the two scans to interleave
+        res = reserve_version(tmp_path)
+        with lock:
+            results.append(res.version)
+
+    threads = [threading.Thread(target=allocate) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert sorted(results) == [1, 2], f"lost write: both callers got {results}"
+
+
+def test_many_concurrent_callers_all_get_distinct_versions(tmp_path):
+    n = 12
+    barrier = threading.Barrier(n)
+    results: list[int] = []
+    lock = threading.Lock()
+
+    def allocate():
+        barrier.wait(timeout=10)
+        res = reserve_version(tmp_path)
+        with lock:
+            results.append(res.version)
+
+    threads = [threading.Thread(target=allocate) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+
+    assert len(set(results)) == n
+    assert sorted(results) == list(range(1, n + 1))
+
+
+def test_a_reservation_is_invisible_to_latest_artifact_path(tmp_path):
+    """A held reservation must not be selectable as the stage's output --
+    latest_artifact_path is what the approval and staleness paths read."""
+    write_artifact(tmp_path, 1, {"stage": "x"}, "real")
+    res = reserve_version(tmp_path)
+    assert res.version == 2
+    assert artifacts.latest_artifact_path(tmp_path).name == "artifact.v1.md"
+    assert not list(tmp_path.glob("artifact.v2.md"))
+
+
+def test_write_reserved_artifact_lands_at_the_reserved_version(tmp_path):
+    res = reserve_version(tmp_path)
+    path = write_reserved_artifact(res, {"stage": "x", "version": res.version}, "body")
+    assert path.name == "artifact.v1.md"
+    assert not res.reservation_path.exists()
+
+
+def test_released_version_is_burnt_not_reissued(tmp_path):
+    """A released number must never be reissued: anything that observed it --
+    a log line, a `supersedes` field, a half-written temp -- must not be able
+    to point at different content later (A-66)."""
+    res = reserve_version(tmp_path)
+    release_version(res)
+    assert reserve_version(tmp_path).version == res.version + 1

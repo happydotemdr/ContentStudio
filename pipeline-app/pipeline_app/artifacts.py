@@ -2,12 +2,14 @@ import hashlib
 import os
 import re
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 _DELIM = "---"
 _VERSION_RE = re.compile(r"artifact\.v(\d+)\.md$")
+_RESERVED_RE = re.compile(r"^\.artifact\.v(0|[1-9]\d*)\.reserved$")
 
 
 class MalformedArtifactError(Exception):
@@ -143,6 +145,83 @@ def write_artifact(stage_dir: Path, version: int, meta: dict, body: str) -> Path
 
 def _record_high_water_mark(stage_dir: Path, version: int) -> None:
     pass  # T6 replaces this body with the real sidecar-file writer.
+
+
+@dataclass(frozen=True)
+class VersionReservation:
+    version: int
+    stage_dir: Path
+    reservation_path: Path
+
+    @property
+    def artifact_path(self) -> Path:
+        return self.stage_dir / f"artifact.v{self.version}.md"
+
+
+def reserve_version(stage_dir: Path, *, max_attempts: int = 256) -> VersionReservation:
+    """Exclusively allocate the next artifact version.
+
+    next_version_number is an unlocked read-then-write, and on the edit path
+    the read and the write are separated by the whole gate run -- a window wide
+    enough to load and execute a linter (A-65). Reservation closes it by making
+    the ALLOCATION the exclusive operation: O_CREAT|O_EXCL either creates the
+    marker or fails, atomically, at the filesystem. There is no lock to
+    acquire, nothing to release on a hard kill, and the worst outcome of a
+    crash is a burnt version number -- never a lost artifact.
+
+    The marker is dot-prefixed so it cannot match the artifact.v*.md glob and
+    can never be selected as a stage's output.
+    """
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    # §0 amendment: seed from next_version_number(), NOT _high_water_mark() directly --
+    # _high_water_mark is defined in T6, which has not run yet at T5. next_version_number
+    # is the pre-existing equivalent (max version on disk, default 0, + 1); T6 later
+    # redefines next_version_number to route through _high_water_mark, which upgrades
+    # this call's behaviour automatically with no further edit here.
+    candidate = next_version_number(stage_dir)
+    for _ in range(max_attempts):
+        marker = stage_dir / f".artifact.v{candidate}.reserved"
+        try:
+            fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            candidate += 1
+            continue
+        os.close(fd)
+        _record_high_water_mark(stage_dir, candidate)
+        return VersionReservation(candidate, stage_dir, marker)
+    raise RuntimeError(
+        f"could not reserve an artifact version in {stage_dir} after {max_attempts} attempts"
+    )
+
+
+def write_reserved_artifact(reservation: VersionReservation, meta: dict, body: str) -> Path:
+    """Write the artifact a reservation holds, then drop the marker."""
+    path = reservation.artifact_path
+    if path.exists():
+        raise ArtifactExistsError(f"{path} already exists; the reservation was not honoured.")
+    _atomic_write_text(path, render_frontmatter(meta, body))
+    reservation.reservation_path.unlink(missing_ok=True)
+    return path
+
+
+def release_version(reservation: VersionReservation) -> None:
+    """Drop a reservation whose write never happened.
+
+    Deliberately does NOT lower the high-water mark. A released number is
+    burnt: reissuing it would let two different bodies occupy the same version
+    over the life of a stage, which is exactly the history-lying failure A-66
+    describes.
+    """
+    reservation.reservation_path.unlink(missing_ok=True)
+
+
+def _reserved_versions_in(stage_dir: Path) -> list[int]:
+    out = []
+    for p in stage_dir.glob(".artifact.v*.reserved"):
+        m = _RESERVED_RE.match(p.name)
+        if m:
+            out.append(int(m.group(1)))
+    return out
 
 
 def stamp_final(path: Path, finalized_at: str, gate_override_reason: str | None = None) -> None:
