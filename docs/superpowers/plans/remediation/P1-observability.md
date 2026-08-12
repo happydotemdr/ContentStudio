@@ -5171,22 +5171,33 @@ so the fix has to keep that attribute a plain bool — and make it fresh.
 ```python
 def test_the_banner_and_the_doctor_panel_never_disagree_in_one_response(
         repo_root: Path, monkeypatch):
-    """A-83: two answers to the same question in one HTML response. The probe
-    flips on every call, so a snapshot and a live probe are guaranteed to
-    differ -- unless both read one snapshot per request."""
+    """A-83: two answers to the same question in one HTML response must be
+    the SAME answer, on every host -- not merely equal on the host that
+    happens to be running the test. A plain boolean flip cannot prove this
+    reliably: if only ONE reader is actually wired to the shared probe, the
+    unwired reader falls through to the REAL machine's `claude`-on-PATH
+    state, and on any host where that happens to be `True`, it coincidentally
+    matches the mock's first value and the test passes with the defect fully
+    present. A fake, unmistakable `path` cannot coincidentally match
+    anything real, so any reader that bypasses the shared probe is caught
+    unconditionally."""
     from fastapi.testclient import TestClient
     from pipeline_app import preflight
 
-    (repo_root / ".claude" / "skills").mkdir(parents=True)
+    (repo_root / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
     flip = iter([True, False] * 20)
     monkeypatch.setattr(
         preflight, "check_cli_available",
-        lambda *a, **k: {"available": next(flip), "path": None, "error": None},
+        lambda *a, **k: {"available": next(flip), "path": r"C:\sentinel\claude.cmd", "error": None},
     )
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
     try:
         client = TestClient(app)
         resp = client.get("/doctor")
+        # The panel must be reading the probe, not the host: pre-fix doctor.py's
+        # `from ... import` binding escaped a plain module-attribute patch and
+        # rendered the real machine's path instead.
+        assert r"C:\sentinel\claude.cmd" in resp.text
         banner_online = "SYSTEM ONLINE" in resp.text
         panel_found = "NOT FOUND" not in resp.text
         assert banner_online == panel_found
@@ -5329,6 +5340,19 @@ and in `create_app`, replacing line 31:
       effect (the previous `from ... import` binding in `doctor.py` did not respond to that patch
       at all).
 - [ ] **Commit.** `fix(main): serve the CLI banner and the doctor panel from one probe (A-83)`
+
+**POST-REVIEW AMENDMENT.** The task reviewer found one Important, load-bearing gap: the first new
+test above was landed *knowing* it had not been observed red (the implementer's own report
+disclosed this), on the theory that its design was sound and only failed to fail because of this
+one dev machine's environment. The reviewer traced it further and found the test is incapable of
+failing on **any** host with `claude` on PATH, in either direction — reverting Implement (b) alone,
+or Implement (a) alone, both still leave it green, because a plain boolean flip can coincidentally
+match whatever the real, unpatched machine state happens to be. That is the exact "a test that
+passes on first write proved nothing; re-derive it" rule CONSTRAINTS.md states as a hard rule, left
+unsatisfied. Not a product/policy question — the fix (a fake `path` value the real machine cannot
+produce) does not change the test's design or intent, it only makes the mock unmistakable. The test
+code shown above already reflects this fix; a prior version used `"path": None` and no sentinel
+assertion — if you are reading an older copy of this task, replace it with the version shown.
 
 ---
 
