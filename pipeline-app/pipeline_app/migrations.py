@@ -137,6 +137,20 @@ def _backfill_one_project(
     project: sqlite3.Row,
     now: str,
 ) -> None:
+    """Give one legacy project its styleboard row and, where recoverable, a
+    synthetic styleboard artifact behind it.
+
+    Ordering. A-73 proposes inserting the DB row before the disk write, or
+    making the pair transactional. Neither is available here:
+    db_mod.create_stage_row calls conn.commit() internally (db.py:67, via
+    commit_unless_in_transaction), and db.py
+    belongs to package P1. The equivalent property is bought with idempotent
+    adoption instead -- _adoptable_synthetic recognises this migration's own
+    prior output by (backfilled, run_id) and returns it UNCHANGED, so a crash
+    between the disk write and the row insert converges on the next boot
+    without rewriting a byte. The artifact's sha256 is stable across the retry,
+    so no dependent is spuriously staled.
+    """
     project_id = project["id"]
     run_dir = repo_root / "runs" / project["run_id"]
     world_block = None

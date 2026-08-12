@@ -206,6 +206,48 @@ def test_refusing_to_overwrite_records_an_error_event(conn, tmp_path, monkeypatc
                for e in recorded)
 
 
+def test_a_crash_between_the_artifact_write_and_the_db_row_does_not_churn_the_artifact(
+    conn, tmp_path, monkeypatch
+):
+    """A-73's second hazard: the disk write precedes the DB write, so a failure
+    in between left an artifact with no row -- and the next boot rewrote it
+    with a fresh `now`, changing its sha256 and spuriously staling every
+    dependent.
+
+    create_stage_row raising OSError is caught by backfill_styleboard_rows'
+    own _PER_PROJECT_RECOVERABLE guard (OSError is in that tuple), so the
+    project is skipped for this run rather than the whole migration crashing
+    -- assert on that skip, not pytest.raises. The property under test is the
+    one that must hold either way: the artifact this crash left behind on disk
+    must come back byte-identical (same sha256) on the retry, not be rewritten
+    with a fresh timestamp.
+    """
+    pid = _legacy_project(conn, tmp_path, "legacy-crash", "approved", sheet=LEGACY_SHEET)
+
+    real_create = db_mod.create_stage_row
+
+    def crash_once(*a, **k):
+        raise OSError("killed between the disk write and the row insert")
+
+    monkeypatch.setattr(db_mod, "create_stage_row", crash_once)
+
+    touched = backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+    assert touched == []
+    assert db_mod.get_stage(conn, pid, "styleboard") is None
+
+    written = tmp_path / "runs" / "legacy-crash" / "02b-styleboard" / "artifact.v1.md"
+    assert written.exists()
+    sha_after_crash = artifacts.compute_sha256(written)
+
+    monkeypatch.setattr(db_mod, "create_stage_row", real_create)
+    touched_again = backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    assert touched_again == [pid]
+    assert artifacts.compute_sha256(written) == sha_after_crash, \
+        "the retry rewrote the artifact with a fresh timestamp and staled its dependents"
+    assert len(list((written.parent).glob("artifact.v*.md"))) == 1
+
+
 def test_backfill_allocates_its_version_rather_than_hardcoding_one(conn, tmp_path):
     """_write_synthetic_artifact passed a literal 1 to write_artifact rather
     than allocating."""
