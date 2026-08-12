@@ -249,12 +249,17 @@ def test_resolve_latest_artifact_grounding_no_pointer_returns_none(tmp_path: Pat
 
 
 def test_resolve_latest_artifact_grounding_pointer_target_missing_returns_none(tmp_path: Path):
-    """The pointer file exists but the brief it names was deleted or never
-    written -- must return None, not raise. This is the exact case the old
-    inline branches in approval_service.py and routes/stages.py got wrong in
-    two of three copies (they skipped the .exists() check)."""
+    """The pointer file exists but the brief it names was deleted after the
+    pointer was written -- must return None, not raise. This is the exact
+    case the old inline branches in approval_service.py and routes/stages.py
+    got wrong in two of three copies (they skipped the .exists() check)."""
+    rgs_briefs = tmp_path / "rgs-briefs"
+    rgs_briefs.mkdir()
+    brief = rgs_briefs / "will-be-deleted.md"
+    brief.write_text("body", encoding="utf-8")
     stage_dir = tmp_path / "runs" / "r1" / "00-grounding"
-    write_pointer(stage_dir, "rgs-briefs/does-not-exist.md", tmp_path)
+    write_pointer(stage_dir, "rgs-briefs/will-be-deleted.md", tmp_path)
+    brief.unlink()
     assert resolve_latest_artifact(tmp_path, "grounding", stage_dir) is None
 
 
