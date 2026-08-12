@@ -5184,17 +5184,20 @@ def test_the_banner_and_the_doctor_panel_never_disagree_in_one_response(
         lambda *a, **k: {"available": next(flip), "path": None, "error": None},
     )
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    client = TestClient(app)
-    resp = client.get("/doctor")
-    banner_online = "SYSTEM ONLINE" in resp.text
-    panel_found = "NOT FOUND" not in resp.text
-    assert banner_online == panel_found
+    try:
+        client = TestClient(app)
+        resp = client.get("/doctor")
+        banner_online = "SYSTEM ONLINE" in resp.text
+        panel_found = "NOT FOUND" not in resp.text
+        assert banner_online == panel_found
+    finally:
+        app.state.conn.close()
 
 
 def test_the_banner_reflects_a_cli_that_appeared_after_startup(repo_root: Path, monkeypatch):
     """Restart was the only way to reconcile the two, and nothing said so."""
     from fastapi.testclient import TestClient
-    from pipeline_app import main as main_mod, preflight
+    from pipeline_app import preflight
 
     available = {"value": False}
     monkeypatch.setattr(
@@ -5202,13 +5205,38 @@ def test_the_banner_reflects_a_cli_that_appeared_after_startup(repo_root: Path, 
         lambda *a, **k: {"available": available["value"], "path": None, "error": "not found"},
     )
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    client = TestClient(app)
-    assert "CLI UNAVAILABLE" in client.get("/").text
+    try:
+        client = TestClient(app)
+        assert "CLI UNAVAILABLE" in client.get("/").text
 
-    available["value"] = True
-    app.state.cli_probe.invalidate()  # stand in for the TTL elapsing
-    assert "SYSTEM ONLINE" in client.get("/").text
+        available["value"] = True
+        app.state.cli_probe.invalidate()  # stand in for the TTL elapsing
+        assert "SYSTEM ONLINE" in client.get("/").text
+    finally:
+        app.state.conn.close()
 ```
+
+**PRE-REVIEW, PLAN AMENDED BEFORE DISPATCH.** Two problems found before any implementer touched
+this task:
+
+1. **Both tests leaked `app.state.conn`.** Same shape as T14's pre-review finding, same file
+   (`tests/test_main.py`), same shrink-only allowlist that no longer covers it. Neither test used
+   `with TestClient(app)` nor closed the connection explicitly. Now wrapped in `try/finally`.
+2. **This task breaks an existing, currently-green test.** `tests/test_routes_doctor.py`'s
+   `test_doctor_distinguishes_a_missing_cli_from_a_found_one` does
+   `monkeypatch.setattr(doctor, "check_cli_available", ...)` — patching the name
+   `pipeline_app.routes.doctor` binds via its own `from pipeline_app.preflight import
+   check_cli_available`. Implement (b) below deletes that import entirely. The next time that test
+   runs, `monkeypatch.setattr` raises `AttributeError: <module 'pipeline_app.routes.doctor'> does
+   not have the attribute 'check_cli_available'` — not a new gap this task introduces silently, a
+   dead-on-arrival test failure the very next full-suite run would have caught, but "run the suite
+   and see what broke" is not how a plan-mandated regression should be found. `test_routes_doctor.py`
+   is not in this task's stated file list, but it belongs to P1 (P0's T19 handoff note already
+   records `routes/doctor.py` as P1's file), so fixing its own test here is in scope, not a
+   cross-package reach. Retargeted to patch `preflight.check_cli_available` instead — see
+   Implement (c) below — which is consistent with, not a workaround of, this task's own design:
+   after Implement (b), `doctor.py` no longer imports `check_cli_available` at all, so
+   `preflight.check_cli_available` is the only binding left to patch, not merely the safer one.
 
 - [ ] **Run it.** The first fails (banner and panel disagree); the second fails with
       `AttributeError: cli_probe`.
@@ -5266,10 +5294,40 @@ and in `create_app`, replacing line 31:
 +            "cli": request.app.state.cli_probe.get(),
 ```
 
-- [ ] **Run it.** Both pass. Full app suite green, including `test_routes_browse.py`'s
-      `preflight.check_cli_available` monkeypatches — the probe calls it through the module
-      attribute, so patching still takes effect (the previous `from ... import` binding in
-      `doctor.py` did not respond to that patch at all).
+- [ ] **Implement (c).** In `tests/test_routes_doctor.py`, retarget the monkeypatch the pre-review
+      found (its own module docstring at the top of the file explains at length why it originally
+      patched `doctor.check_cli_available` rather than `shutil.which` or
+      `check_cli_available.__defaults__` — that reasoning about avoiding `preflight.py`'s internals
+      is now moot, since after Implement (b) there is no other binding left):
+
+```python
+-from pipeline_app.routes import doctor
++from pipeline_app import preflight
+```
+
+      and in `test_doctor_distinguishes_a_missing_cli_from_a_found_one`, both occurrences:
+
+```python
+-    monkeypatch.setattr(
+-        doctor, "check_cli_available",
++    monkeypatch.setattr(
++        preflight, "check_cli_available",
+```
+
+      Update the test's own docstring (it currently says "patches the `check_cli_available` name
+      bound into doctor.py's own namespace rather than shutil.which or
+      check_cli_available.__defaults__") to name `pipeline_app.preflight.check_cli_available`
+      instead — a docstring describing a deleted design is a defect, not a cosmetic (established at
+      T8-F1 in this same programme). The module-level docstring's longer explanation of the same
+      choice (the paragraph starting "Instead, this patches the name `doctor.py` itself binds...")
+      needs the same correction.
+
+- [ ] **Run it.** Both new tests pass. Full app suite green, including
+      `test_routes_doctor.py::test_doctor_distinguishes_a_missing_cli_from_a_found_one` (retargeted,
+      not merely re-passing by accident) and `test_routes_browse.py`'s `preflight.check_cli_available`
+      monkeypatches — the probe calls it through the module attribute, so patching still takes
+      effect (the previous `from ... import` binding in `doctor.py` did not respond to that patch
+      at all).
 - [ ] **Commit.** `fix(main): serve the CLI banner and the doctor panel from one probe (A-83)`
 
 ---
