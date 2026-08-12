@@ -6,6 +6,7 @@ import pytest
 from pipeline_app import artifacts
 from pipeline_app.artifacts import (
     _atomic_write_text,
+    ArtifactExistsError,
     compute_sha256,
     latest_artifact_path,
     next_version_number,
@@ -152,3 +153,27 @@ def test_atomic_write_leaves_no_temp_file_behind_on_failure(tmp_path, monkeypatc
 
     assert target.read_text(encoding="utf-8") == "original"
     assert list(tmp_path.iterdir()) == [target]
+
+
+def test_write_artifact_refuses_to_overwrite_an_existing_version(tmp_path):
+    """A-65/A-73: write_text overwrote silently, so two callers that computed
+    the same N discarded one artifact version and its recorded gate results
+    with no error surfaced anywhere."""
+    write_artifact(tmp_path, 1, {"stage": "shorts-styleboard"}, "the real world lock")
+
+    with pytest.raises(ArtifactExistsError) as exc:
+        write_artifact(tmp_path, 1, {"stage": "shorts-styleboard"}, "clobber")
+
+    assert "artifact.v1.md" in str(exc.value)
+    assert "the real world lock" in (tmp_path / "artifact.v1.md").read_text(encoding="utf-8")
+
+
+def test_write_artifact_uses_the_atomic_primitive(tmp_path, monkeypatch):
+    calls = []
+    real = artifacts._atomic_write_text
+    monkeypatch.setattr(
+        artifacts, "_atomic_write_text",
+        lambda p, t: (calls.append(p), real(p, t))[1],
+    )
+    write_artifact(tmp_path, 1, {"stage": "x"}, "body")
+    assert (tmp_path / "artifact.v1.md") in calls

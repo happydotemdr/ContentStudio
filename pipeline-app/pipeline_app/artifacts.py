@@ -123,10 +123,25 @@ def resolve_latest_artifact(repo_root: Path, stage_id: str, stage_dir: Path) -> 
 
 
 def write_artifact(stage_dir: Path, version: int, meta: dict, body: str) -> Path:
+    """Mint artifact.v{version}.md. Refuses to overwrite: an existing file at
+    that path means the caller's version allocation raced or was hardcoded
+    (A-65, A-73), and overwriting silently discarded an artifact version and
+    its recorded gate results. Callers that are about to write should allocate
+    with reserve_version() rather than next_version_number()."""
     stage_dir.mkdir(parents=True, exist_ok=True)
     path = stage_dir / f"artifact.v{version}.md"
-    path.write_text(render_frontmatter(meta, body), encoding="utf-8")
+    if path.exists():
+        raise ArtifactExistsError(
+            f"{path} already exists; refusing to overwrite an artifact. "
+            "Allocate a version with reserve_version() instead of reusing one."
+        )
+    _atomic_write_text(path, render_frontmatter(meta, body))
+    _record_high_water_mark(stage_dir, version)
     return path
+
+
+def _record_high_water_mark(stage_dir: Path, version: int) -> None:
+    pass  # T6 replaces this body with the real sidecar-file writer.
 
 
 def stamp_final(path: Path, finalized_at: str, gate_override_reason: str | None = None) -> None:
