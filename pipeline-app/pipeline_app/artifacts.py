@@ -69,6 +69,23 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def _load_frontmatter_yaml(yaml_text: str) -> dict:
+    """One predictable failure mode for a frontmatter block that is not a
+    mapping. Two uncontained failures shared one root (A-69): safe_load's
+    return was used unvalidated, and YAMLError escaped the parse boundary."""
+    try:
+        meta = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as exc:
+        raise MalformedArtifactError(f"frontmatter is not valid YAML: {exc}") from exc
+    if meta is None:
+        return {}
+    if not isinstance(meta, dict):
+        raise MalformedArtifactError(
+            f"frontmatter parsed to {type(meta).__name__}, not a mapping"
+        )
+    return meta
+
+
 def parse_frontmatter(text: str) -> tuple[dict, str]:
     """The frontmatter mapping and the body.
 
@@ -92,11 +109,7 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             continue
         yaml_text = "\n".join(lines[1:i])
         body = "\n".join(lines[i + 1:])
-        # §0 amendment: inline the pre-existing load here (byte-identical to what
-        # parse_frontmatter already did) rather than forward-referencing T9's
-        # _load_frontmatter_yaml, which does not exist yet. T9 replaces this one
-        # line with `meta = _load_frontmatter_yaml(yaml_text)` and defines the helper.
-        meta = yaml.safe_load(yaml_text) or {}
+        meta = _load_frontmatter_yaml(yaml_text)
         return meta, body.lstrip("\n")
     raise MalformedArtifactError(
         "frontmatter block opened with '---' and was never closed -- the file is "
@@ -295,7 +308,10 @@ def read_artifact(path: Path) -> tuple[dict, str]:
     try:
         meta, body = parse_frontmatter(text)
     except MalformedArtifactError as exc:
-        raise MalformedArtifactError(exc.reason, path=path) from exc
+        # Chain to the original root cause (e.g. the yaml.YAMLError from
+        # _load_frontmatter_yaml) rather than to this intermediate wrapper,
+        # so callers can still isinstance-check __cause__ for the real fault.
+        raise MalformedArtifactError(exc.reason, path=path) from (exc.__cause__ or exc)
     m = _VERSION_RE.match(path.name)
     if m is not None and isinstance(meta.get("version"), int) and meta["version"] != int(m.group(1)):
         raise MalformedArtifactError(

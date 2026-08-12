@@ -3,6 +3,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import yaml
 
 from pipeline_app import artifacts
 from pipeline_app.artifacts import (
@@ -78,6 +79,41 @@ def test_a_truncated_artifact_names_its_own_path_in_the_error(tmp_path):
 def test_empty_frontmatter_block_is_still_an_empty_mapping(tmp_path):
     """A genuinely empty block is benign and must keep working."""
     assert artifacts.parse_frontmatter("---\n---\n\nbody") == ({}, "body")
+
+
+@pytest.mark.parametrize("block,kind", [
+    ("---\njust a string\n---\n\nbody", "str"),
+    ("---\n- a\n- b\n---\n\nbody", "list"),
+    ("---\n42\n---\n\nbody", "int"),
+])
+def test_non_mapping_frontmatter_raises_a_named_error_not_attributeerror(block, kind):
+    """A-69(a): yaml.safe_load returned whatever the block parsed to, and every
+    caller immediately called .get() on it -- AttributeError and a bare 500
+    with no indication of which artifact was at fault."""
+    with pytest.raises(artifacts.MalformedArtifactError) as exc:
+        artifacts.parse_frontmatter(block)
+    assert "not a mapping" in str(exc.value)
+    assert kind in str(exc.value)
+
+
+def test_malformed_yaml_is_contained_into_one_predictable_error(tmp_path):
+    """A-69(b): yaml.YAMLError propagated uncaught into the route, approval and
+    staleness paths. The worst site is propagate_staleness's phase-1 loop,
+    where one malformed dependent aborted the cascade MID-ITERATION."""
+    bad = tmp_path / "artifact.v1.md"
+    bad.write_text("---\nstatus: 'unterminated\nversion: 1\n---\n\nbody", encoding="utf-8")
+    with pytest.raises(artifacts.MalformedArtifactError) as exc:
+        artifacts.read_artifact(bad)
+    assert "not valid YAML" in str(exc.value)
+    assert str(bad) in str(exc.value)
+    assert isinstance(exc.value.__cause__, yaml.YAMLError)
+
+
+def test_a_body_starting_with_a_horizontal_rule_is_rejected_not_misparsed():
+    """The reachable-by-accident case: a body that begins with a markdown
+    horizontal rule was mistaken for a frontmatter opener."""
+    with pytest.raises(artifacts.MalformedArtifactError):
+        artifacts.parse_frontmatter("---\n\nA heading\n\n---\n\nmore body")
 
 
 def test_next_version_number_empty_dir_is_one(tmp_path: Path):
