@@ -1492,7 +1492,48 @@ def test_a_failure_to_record_the_event_does_not_mask_the_skip(conn, tmp_path, mo
     assert backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS) == [pid_good]
 ```
 
-- [ ] **Run.** All three fail — there is no `obs.record_event` call.
+**§0 amendment 3 (pre-review, before dispatch):** all three tests above mock `obs.record_event`
+entirely (`monkeypatch.setattr(migrations.obs, "record_event", lambda c, **kw: ...)`), so NONE of
+them proves the event row is actually durably committed and readable using the CORRECT `conn` object
+— a bug where the migration passed a stale, wrong, or already-closed connection to `record_event`
+would go completely undetected, since the mock intercepts the call regardless of what `conn` argument
+was passed. This is exactly the "second-connection idiom" defect class the orchestration prompt
+flags as the single most repeated defect in P1 (4 instances). Add a FOURTH test that does NOT mock
+`record_event` — it must actually run and read back a real row on a second connection to the same
+database file:
+
+```python
+def test_a_skip_event_is_durably_committed_and_readable_on_a_second_connection(conn, tmp_path):
+    """SURFACING, end-to-end. The other three tests all mock obs.record_event, so none of them
+    proves the row survives using the CORRECT connection -- a wrong/stale conn object would pass
+    those tests undetected. This test uses no mock: it runs the real migration against a real
+    broken project, then reads the events table back on a SEPARATE connection to the same file."""
+    import sqlite3
+
+    db_path = tmp_path / "test.db"
+    pid_bad = _legacy_project(conn, tmp_path, "legacy-bad3", "approved")
+    (tmp_path / "runs" / "legacy-bad3" / "03-visual" / "artifact.v1.md").write_text(
+        "---\nschema_version: 1\nstatus: 'unterminated\n---\n\nWORLD LOCK\n  x: y\n",
+        encoding="utf-8",
+    )
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    second_conn = sqlite3.connect(db_path)
+    second_conn.row_factory = sqlite3.Row
+    try:
+        rows = second_conn.execute(
+            "SELECT kind, severity, message, detail FROM events WHERE kind = ?",
+            ("migration.backfill_skipped",),
+        ).fetchall()
+    finally:
+        second_conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "legacy-bad3" in rows[0]["message"]
+```
+
+- [ ] **Run.** All four fail — there is no `obs.record_event` call.
 - [ ] **Implement.** §0 amendment: `migrations.py` does not import `obs` yet — add
   `from pipeline_app import obs` to its imports (alongside the existing
   `from pipeline_app import artifacts, db as db_mod`). Then, in `backfill_styleboard_rows`'s
