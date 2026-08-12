@@ -277,25 +277,33 @@ def backfill_styleboard_rows(
             )
         except _PER_PROJECT_RECOVERABLE as exc:
             message = (
-                f"skipping project {project_id} (run_id={project['run_id']!r}) -- "
-                f"unreadable or malformed legacy artifact: {type(exc).__name__}: {exc}"
+                "migrations.backfill_styleboard_rows: skipping project "
+                f"{project_id} (run_id={project['run_id']!r}) -- unreadable, "
+                f"malformed, or already-occupied styleboard: "
+                f"{type(exc).__name__}: {exc}"
             )
-            print(f"migrations.backfill_styleboard_rows: {message}", file=sys.stderr)
-            if isinstance(exc, BackfillWouldOverwriteError):
-                # A-73 SURFACING: declining to destroy a real artifact must not be a
-                # quiet outcome either -- an operator staring at a project stuck
-                # without a styleboard row needs a findable reason why the
-                # migration refused to touch it. (A-74/T14 generalizes this
-                # recording to every _PER_PROJECT_RECOVERABLE skip; this one is
-                # the S0-adjacent case that cannot wait.)
+            print(message, file=sys.stderr)
+            # A-74: the print alone left the project with no styleboard row, so
+            # `visual` was permanently locked and the styleboard page returned
+            # "Stage not applicable to this project" -- a message asserting a
+            # brand-scoping decision when the real cause is a failed migration.
+            # The event row is what makes that findable.
+            try:
                 obs.record_event(
                     conn,
-                    kind="migrations.backfill_would_overwrite",
+                    kind="migration.backfill_skipped",
                     severity="error",
                     source="migrations.backfill_styleboard_rows",
                     message=message,
-                    detail={"project_id": project_id, "run_id": project["run_id"]},
+                    detail={
+                        "project_id": project_id,
+                        "run_id": project["run_id"],
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
                 )
+            except Exception:  # noqa: BLE001 -- recording must never mask the skip
+                pass
             continue
 
         touched.append(project_id)

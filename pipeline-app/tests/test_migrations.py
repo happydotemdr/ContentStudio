@@ -141,10 +141,16 @@ def test_backfill_one_project_leaves_nothing_behind_when_it_fails_partway(conn, 
     assert db_mod.get_stage(conn, pid, "styleboard") is None
 
 
-def test_backfill_skips_a_broken_legacy_project_without_blocking_others(conn, tmp_path):
+def test_backfill_skips_a_broken_legacy_project_without_blocking_others(
+    conn, tmp_path, monkeypatch
+):
     """One project with an unreadable/malformed legacy artifact must not crash the
     whole migration (and therefore app startup) -- it should be skipped, and every
     other project still gets backfilled."""
+    recorded = []
+    monkeypatch.setattr(migrations.obs, "record_event",
+                        lambda c, **kw: recorded.append(kw) or 1)
+
     pid_bad = _legacy_project(conn, tmp_path, "legacy-bad", "approved")
     bad_sheet = tmp_path / "runs" / "legacy-bad" / "03-visual" / "artifact.v1.md"
     bad_sheet.write_text(
@@ -159,10 +165,97 @@ def test_backfill_skips_a_broken_legacy_project_without_blocking_others(conn, tm
     assert db_mod.get_stage(conn, pid_bad, "styleboard") is None
     assert db_mod.get_stage(conn, pid_good, "styleboard") is not None
 
+    # A-74: the skip must be findable, not stderr-only.
+    skips = [e for e in recorded if e["kind"] == "migration.backfill_skipped"]
+    assert len(skips) == 1
+    assert skips[0]["severity"] == "error"
+    assert skips[0]["detail"]["project_id"] == pid_bad
+    assert skips[0]["detail"]["run_id"] == "legacy-bad"
+
     # Nothing was committed for the broken project, so a later startup retries it
     # cleanly rather than skipping it forever or leaving orphaned state.
     touched_again = backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
     assert touched_again == []
+
+
+def test_a_skipped_project_records_an_error_event(conn, tmp_path, monkeypatch):
+    """SURFACING. A-74: a per-project OSError/UnicodeDecodeError/YAMLError
+    printed one line to stderr and continued. backfilled_projects records only
+    successes, /doctor surfaces nothing about backfill, and an operator running
+    under a service manager or a detached uvicorn never sees the stderr line."""
+    recorded = []
+    monkeypatch.setattr(migrations.obs, "record_event",
+                        lambda c, **kw: recorded.append(kw) or 1)
+
+    pid_bad = _legacy_project(conn, tmp_path, "legacy-bad", "approved")
+    (tmp_path / "runs" / "legacy-bad" / "03-visual" / "artifact.v1.md").write_text(
+        "---\nschema_version: 1\nstatus: 'unterminated\n---\n\nWORLD LOCK\n  x: y\n",
+        encoding="utf-8",
+    )
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    skips = [e for e in recorded if e["kind"] == "migration.backfill_skipped"]
+    assert len(skips) == 1
+    assert skips[0]["severity"] == "error"
+    assert skips[0]["detail"]["project_id"] == pid_bad
+    assert skips[0]["detail"]["run_id"] == "legacy-bad"
+    assert "legacy-bad" in skips[0]["message"]
+
+
+def test_a_run_with_no_skips_records_no_skip_event(conn, tmp_path, monkeypatch):
+    """DISTINGUISHABILITY. A migration that skipped a project must be
+    observably different from one that had nothing to do."""
+    recorded = []
+    monkeypatch.setattr(migrations.obs, "record_event",
+                        lambda c, **kw: recorded.append(kw) or 1)
+    _legacy_project(conn, tmp_path, "legacy-fine", "locked")
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+    assert [e for e in recorded if e["kind"] == "migration.backfill_skipped"] == []
+
+
+def test_a_failure_to_record_the_event_does_not_mask_the_skip(conn, tmp_path, monkeypatch):
+    """FAULT. obs.record_event never raises by contract, but the migration must
+    not depend on that: the loop still continues and the other project is still
+    backfilled."""
+    monkeypatch.setattr(migrations.obs, "record_event",
+                        lambda c, **kw: (_ for _ in ()).throw(RuntimeError("db gone")))
+    _legacy_project(conn, tmp_path, "legacy-bad2", "approved")
+    (tmp_path / "runs" / "legacy-bad2" / "03-visual" / "artifact.v1.md").write_text(
+        "---\nstatus: 'unterminated\n---\n\nWORLD LOCK\n  x: y\n", encoding="utf-8")
+    pid_good = _legacy_project(conn, tmp_path, "legacy-good2", "locked")
+
+    assert backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS) == [pid_good]
+
+
+def test_a_skip_event_is_durably_committed_and_readable_on_a_second_connection(conn, tmp_path):
+    """SURFACING, end-to-end. The other three tests all mock obs.record_event, so none of
+    them proves the row survives using the CORRECT connection -- a wrong/stale conn object
+    would pass those tests undetected. This test uses no mock: it runs the real migration
+    against a real broken project, then reads the events table back on a SEPARATE
+    connection to the same file."""
+    import sqlite3
+
+    db_path = tmp_path / "test.db"
+    pid_bad = _legacy_project(conn, tmp_path, "legacy-bad3", "approved")
+    (tmp_path / "runs" / "legacy-bad3" / "03-visual" / "artifact.v1.md").write_text(
+        "---\nschema_version: 1\nstatus: 'unterminated\n---\n\nWORLD LOCK\n  x: y\n",
+        encoding="utf-8",
+    )
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    second_conn = sqlite3.connect(db_path)
+    second_conn.row_factory = sqlite3.Row
+    try:
+        rows = second_conn.execute(
+            "SELECT kind, severity, message, detail FROM events WHERE kind = ?",
+            ("migration.backfill_skipped",),
+        ).fetchall()
+    finally:
+        second_conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "legacy-bad3" in rows[0]["message"]
 
 
 def test_backfill_refuses_to_overwrite_a_real_styleboard_artifact(conn, tmp_path):
