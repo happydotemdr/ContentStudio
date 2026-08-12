@@ -1,4 +1,7 @@
+import os
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -14,11 +17,50 @@ from pipeline_app.routes import browse, discovery, doctor, inspector, projects, 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 
+RECONCILE_LEASE_SECONDS = 120
+
+
+def _claim_reconcile_lease(conn, token: str, now: datetime,
+                           lease_seconds: int = RECONCILE_LEASE_SECONDS) -> bool:
+    """True if this process may run the startup sweep.
+
+    A clean shutdown releases the lease (see the lifespan handler), so a genuine
+    restart sweeps immediately. A crash leaves it, and the lease expires after
+    `lease_seconds` -- long enough that uvicorn's other workers, which start
+    within seconds, are correctly refused."""
+    now_iso = now.isoformat(timespec="seconds")
+    with db_mod.transaction(conn):
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO app_instances (id, owner_token, claimed_at, heartbeat_at) "
+            "VALUES (1, ?, ?, ?)", (token, now_iso, now_iso),
+        )
+        if cur.rowcount == 1:
+            return True
+        row = conn.execute("SELECT * FROM app_instances WHERE id = 1").fetchone()
+        age = (now - datetime.fromisoformat(row["heartbeat_at"])).total_seconds()
+        if age < lease_seconds:
+            return False
+        conn.execute(
+            "UPDATE app_instances SET owner_token = ?, claimed_at = ?, heartbeat_at = ? "
+            "WHERE id = 1 AND owner_token = ?", (token, now_iso, now_iso, row["owner_token"]),
+        )
+        return True
+
+
+def _release_reconcile_lease(conn, token: str) -> None:
+    try:
+        conn.execute("DELETE FROM app_instances WHERE id = 1 AND owner_token = ?", (token,))
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001 -- shutdown must not raise
+        obs.log("app.lease_release_failed", level="warning",
+                error=f"{type(exc).__name__}: {exc}")
+
 
 def create_app(repo_root: Path, db_path: Path) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         yield
+        _release_reconcile_lease(app.state.conn, app.state.instance_token)
         # `init_db` already opens and closes its own short-lived connection;
         # the shared one had no shutdown hook at all, so the WAL was never
         # checkpointed and every caller that built an app leaked a connection
@@ -49,9 +91,23 @@ def create_app(repo_root: Path, db_path: Path) -> FastAPI:
     app.state.backfilled_projects = migrations.backfill_styleboard_rows(
         app.state.conn, app.state.repo_root, app.state.stage_defs
     )
-    app.state.orphaned_count = preflight.reconcile_orphaned_turns(
-        app.state.conn, app.state.repo_root, app.state.stage_defs
-    )
+    app.state.instance_token = f"{os.getpid()}:{uuid.uuid4().hex[:8]}"
+    if _claim_reconcile_lease(app.state.conn, app.state.instance_token,
+                              datetime.now(timezone.utc)):
+        app.state.orphaned_count = preflight.reconcile_orphaned_turns(
+            app.state.conn, app.state.repo_root, app.state.stage_defs
+        )
+    else:
+        # None, not 0: "I swept and found nothing" and "I never swept" are
+        # different facts, and collapsing them is how A-76 stayed invisible.
+        app.state.orphaned_count = None
+        obs.record_event(
+            app.state.conn, kind="app.startup.reconcile_skipped", severity="warning",
+            source="main.create_app",
+            message="another live app instance holds the reconcile lease; "
+                    "skipped the startup orphan sweep",
+            detail={"instance_token": app.state.instance_token},
+        )
     app.state.cli_available = preflight.check_cli_available()["available"]
 
     app.state.templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))

@@ -116,3 +116,101 @@ def test_shutdown_logs_and_survives_a_checkpoint_that_fails(repo_root: Path, mon
         assert "ProgrammingError" in logged
     finally:
         app.state.conn.close()
+
+
+def test_a_second_app_instance_does_not_orphan_a_live_turn(repo_root: Path):
+    """FAULT. This is `uvicorn --workers 2` against a running turn."""
+    from pipeline_app import db as db_mod
+
+    db_path = repo_root / "pipeline.db"
+    first = create_app(repo_root=repo_root, db_path=db_path)
+    try:
+        project_id = db_mod.create_project(first.state.conn, "a-1", "a", "generic",
+                                           "2026-08-08T00:00:00+00:00")
+        stage_row_id = db_mod.create_stage_row(first.state.conn, project_id, "ideation", "running")
+        db_mod.create_turn(first.state.conn, stage_row_id, "running",
+                           "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            assert len(db_mod.list_running_turns(second.state.conn)) == 1
+            assert db_mod.get_stage_by_row_id(second.state.conn, stage_row_id)["status"] == "running"
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
+
+
+def test_a_skipped_sweep_is_distinguishable_from_a_clean_one(repo_root: Path):
+    """DISTINGUISHABILITY. `orphaned_count == 0` means 'I swept and found
+    nothing'. A second instance that never swept must not report the same
+    thing -- that equivalence is the whole defect."""
+    db_path = repo_root / "pipeline.db"
+    first = create_app(repo_root=repo_root, db_path=db_path)
+    try:
+        assert first.state.orphaned_count == 0
+
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            assert second.state.orphaned_count is None
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
+
+
+def test_a_skipped_sweep_records_a_warning_event(repo_root: Path, tmp_path: Path, monkeypatch):
+    """SURFACING."""
+    from pipeline_app import obs
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    db_path = repo_root / "pipeline.db"
+    first = create_app(repo_root=repo_root, db_path=db_path)
+    try:
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            rows = first.state.conn.execute(
+                "SELECT * FROM events WHERE kind = 'app.startup.reconcile_skipped'"
+            ).fetchall()
+            assert len(rows) == 1
+            assert rows[0]["severity"] == "warning"
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
+
+
+def test_an_expired_lease_is_reclaimed_so_a_real_restart_still_sweeps(repo_root: Path):
+    """A crashed instance must not block reconciliation forever."""
+    db_path = repo_root / "pipeline.db"
+    first = create_app(repo_root=repo_root, db_path=db_path)
+    try:
+        first.state.conn.execute(
+            "UPDATE app_instances SET heartbeat_at = '2020-01-01T00:00:00+00:00' WHERE id = 1"
+        )
+        first.state.conn.commit()
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            assert second.state.orphaned_count == 0  # swept, not skipped
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
+
+
+def test_a_clean_shutdown_releases_the_lease_so_a_restart_sweeps_immediately(repo_root: Path):
+    """A crash leaves the lease to expire (the test above). A CLEAN shutdown
+    must not make a genuine restart wait out the same window -- that is
+    exactly what `_release_reconcile_lease` exists for, and none of the four
+    tests above calls it at all."""
+    from fastapi.testclient import TestClient
+
+    db_path = repo_root / "pipeline.db"
+    first = create_app(repo_root=repo_root, db_path=db_path)
+    with TestClient(first):
+        pass  # drives the lifespan: startup is a no-op here, shutdown releases the lease
+
+    second = create_app(repo_root=repo_root, db_path=db_path)
+    try:
+        assert second.state.orphaned_count == 0  # swept immediately, not after a 120s wait
+    finally:
+        second.state.conn.close()
