@@ -166,6 +166,64 @@ def test_stamp_final_sets_status_and_hash_reflects_stamped_content(tmp_path: Pat
     assert hash_before_stamp != hash_after_stamp
 
 
+def test_two_overrides_on_one_artifact_both_survive(tmp_path):
+    """A-38: record_gate_override assigned meta["gate_override_reason"] = ...,
+    overwriting any prior value -- approving the same artifact twice with
+    different reasons left only the second."""
+    path = write_artifact(tmp_path, 1, {"status": "final", "version": 1}, "body")
+    artifacts.record_gate_override(path, "accepted: known false positive",
+                                   at="2026-08-08T10:00:00+00:00", actor="brian")
+    artifacts.record_gate_override(path, "accepted again after re-review",
+                                   at="2026-08-08T11:00:00+00:00", actor="brian")
+
+    overrides = artifacts.read_gate_overrides(path)
+    assert [o["reason"] for o in overrides] == [
+        "accepted: known false positive",
+        "accepted again after re-review",
+    ]
+
+
+def test_an_override_on_an_already_final_artifact_carries_a_timestamp(tmp_path):
+    """A-38: the record_gate_override branch deliberately did not touch
+    finalized_at, so an override applied to an already-final artifact carried
+    NO timestamp at all -- only stages.approved_at moved, and nothing linked
+    the two."""
+    path = write_artifact(tmp_path, 1, {"status": "final", "version": 1}, "body")
+    artifacts.record_gate_override(path, "accepted", at="2026-08-08T12:00:00+00:00")
+    entry = artifacts.read_gate_overrides(path)[0]
+    assert entry["at"] == "2026-08-08T12:00:00+00:00"
+    assert entry["actor"]
+
+
+def test_stamp_final_override_lands_in_the_same_append_only_list(tmp_path):
+    path = write_artifact(tmp_path, 1, {"status": "draft", "version": 1}, "body")
+    artifacts.stamp_final(path, "2026-08-08T09:00:00+00:00",
+                          gate_override_reason="accepted at approval")
+    entry = artifacts.read_gate_overrides(path)[0]
+    assert entry["reason"] == "accepted at approval"
+    assert entry["at"] == "2026-08-08T09:00:00+00:00"
+
+
+def test_a_legacy_scalar_override_is_migrated_forward_not_dropped(tmp_path):
+    """The old scalar field is the only record of an override applied before
+    this change; it must survive into the list."""
+    path = write_artifact(
+        tmp_path, 1,
+        {"status": "final", "version": 1, "gate_override_reason": "old decision"},
+        "body",
+    )
+    artifacts.record_gate_override(path, "new decision", at="2026-08-08T12:00:00+00:00")
+    reasons = [o["reason"] for o in artifacts.read_gate_overrides(path)]
+    assert reasons == ["old decision", "new decision"]
+
+
+def test_read_gate_overrides_is_empty_for_an_artifact_with_none(tmp_path):
+    """A-37's render accessor: the gates panel iterates this. An artifact with
+    no override must yield [] -- not None, not a KeyError."""
+    path = write_artifact(tmp_path, 1, {"status": "final", "version": 1}, "body")
+    assert artifacts.read_gate_overrides(path) == []
+
+
 def test_resolve_latest_artifact_delegates_for_non_grounding_stage(tmp_path: Path):
     stage_dir = tmp_path / "01-ideation"
     write_artifact(stage_dir, 1, {"stage": "shorts-ideation"}, "body")

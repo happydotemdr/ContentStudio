@@ -399,30 +399,70 @@ def _reserved_versions_in(stage_dir: Path) -> list[int]:
     return out
 
 
-def stamp_final(path: Path, finalized_at: str, gate_override_reason: str | None = None) -> None:
-    meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
+_DEFAULT_ACTOR = "operator"
+
+
+def _append_override(meta: dict, reason: str, at: str | None, actor: str | None) -> None:
+    """Append an override rather than assign one.
+
+    A-38: this was `meta["gate_override_reason"] = reason` -- last-write-wins,
+    with no actor anywhere and, on the record_gate_override path, no timestamp
+    at all. A migrated legacy scalar is carried into the list rather than
+    dropped, because it is the only record of an override applied before this
+    change.
+    """
+    history = meta.get("gate_overrides")
+    if not isinstance(history, list):
+        history = []
+    legacy = meta.pop("gate_override_reason", None)
+    if isinstance(legacy, str) and legacy.strip():
+        history.append({"reason": legacy, "at": None, "actor": None})
+    history.append({"reason": reason, "at": at, "actor": actor or _DEFAULT_ACTOR})
+    meta["gate_overrides"] = history
+
+
+def stamp_final(path: Path, finalized_at: str, gate_override_reason: str | None = None,
+                *, actor: str | None = None) -> None:
+    meta, body = read_artifact(path)
     meta["status"] = "final"
     meta["finalized_at"] = finalized_at
     if gate_override_reason:
         # Recorded alongside the failing gate result, which is deliberately left
         # untouched -- an override says a human accepted the finding, not that
         # the finding was wrong.
-        meta["gate_override_reason"] = gate_override_reason
+        _append_override(meta, gate_override_reason, finalized_at, actor)
     _atomic_write_text(path, render_frontmatter(meta, body))
 
 
-def record_gate_override(path: Path, gate_override_reason: str) -> None:
-    """Record an override reason on an artifact that is ALREADY stamped final.
+def record_gate_override(path: Path, gate_override_reason: str, *,
+                         at: str, actor: str | None = None) -> None:
+    """Record an override on an artifact that is ALREADY stamped final.
 
-    Re-approving an already-final artifact deliberately skips stamp_final
-    (see approval_service.approve_stage) so that finalized_at -- and therefore
-    the file's sha256 -- does not churn on a no-op re-approval. But an
-    override reason supplied on that path is a real decision, not a no-op,
-    and dropping it silently would be exactly the "unknown gate result
-    quietly passes" failure mode this whole mechanism exists to close. This
-    writes only gate_override_reason: status, finalized_at, and the `gates`
-    entry itself are left untouched -- an override says a human accepted the
-    finding, not that the finding was wrong."""
-    meta, body = parse_frontmatter(path.read_text(encoding="utf-8"))
-    meta["gate_override_reason"] = gate_override_reason
+    `at` is required and keyword-only: the old signature had no timestamp
+    parameter and deliberately did not touch finalized_at, so an override on an
+    already-final artifact carried no time anywhere in the file (A-38).
+    Writes only the override history: status, finalized_at and the `gates`
+    entry itself are left untouched.
+    """
+    meta, body = read_artifact(path)
+    _append_override(meta, gate_override_reason, at, actor)
     _atomic_write_text(path, render_frontmatter(meta, body))
+
+
+def read_gate_overrides(path: Path) -> list[dict]:
+    """Every override recorded on an artifact, oldest first.
+
+    A-37: gate_override_reason was write-only -- stage_page read only
+    output_meta.get("gates") and stage.html never referenced the override, so
+    an operator saw a red failing gate with no indication that anyone
+    consciously accepted it or why. This is the accessor the gates panel
+    renders (see the P3/P15 contract in the plan).
+    """
+    meta, _ = read_artifact(path)
+    history = meta.get("gate_overrides")
+    if isinstance(history, list):
+        return [h for h in history if isinstance(h, dict)]
+    legacy = meta.get("gate_override_reason")
+    if isinstance(legacy, str) and legacy.strip():
+        return [{"reason": legacy, "at": None, "actor": None}]
+    return []
