@@ -471,6 +471,13 @@ def test_write_reserved_artifact_lands_at_the_reserved_version(tmp_path):
     assert not res.reservation_path.exists()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="A-66, not A-65: needs T6's real _record_high_water_mark. T2's stub is a "
+           "no-op until T6 lands, so a released version's HWM entry is never durably "
+           "recorded and the next reserve_version() call reissues it. T6 removes this "
+           "marker as part of its own task.",
+)
 def test_released_version_is_burnt_not_reissued(tmp_path):
     """A released number must never be reissued: anything that observed it --
     a log line, a `supersedes` field, a half-written temp -- must not be able
@@ -479,6 +486,15 @@ def test_released_version_is_burnt_not_reissued(tmp_path):
     release_version(res)
     assert reserve_version(tmp_path).version == res.version + 1
 ```
+
+**§0-amendment correction, found by T5's implementer:** this test's own docstring cites A-66,
+not A-65 -- it was misplaced in T5's task list. It genuinely cannot pass until T6's real
+`_record_high_water_mark` lands (T2's stub is `pass`, so nothing survives a release across a
+fresh `reserve_version` call). Marked `xfail(strict=True)` here, per the same pattern the
+programme already uses for genuine cross-task tripwires (P1 T5) -- `strict=True` means the
+suite goes **red**, not silently green, if T6 forgets to actually fix it (an unexpected pass
+reports as a failure). **T6 must remove this xfail marker as part of its own task** and confirm
+the test then passes for the real reason (HWM persists past release), not vacuously.
 
 - [ ] **Run.** Every one fails with `ImportError`/`AttributeError` on `reserve_version`.
 - [ ] **Implement** in `artifacts.py`:
@@ -620,7 +636,11 @@ def test_corrupt_high_water_mark_is_warned_and_ignored_not_fatal(tmp_path, monke
     assert any(e == "artifacts.hwm_unreadable" for e, _ in events)
 ```
 
-- [ ] **Run.** All four fail.
+- [ ] **Run.** All four fail. **Also remove the `@pytest.mark.xfail(strict=True, ...)` marker T5 put
+  on `test_released_version_is_burnt_not_reissued`** (it cites A-66, was misplaced in T5's task list
+  per that task's own §0-amendment correction) — after this task's implementation lands, run it and
+  confirm it passes for the real reason (the HWM sidecar file persists past `release_version`), not
+  vacuously.
 - [ ] **Implement** in `artifacts.py` (add `from pipeline_app import obs` to the imports). §0
   amendment: T2 already added a stub `_record_high_water_mark(stage_dir, version) -> None: pass`.
   **Replace that stub's body** with the real implementation below — do not add a second definition:
