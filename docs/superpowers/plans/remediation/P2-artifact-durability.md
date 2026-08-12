@@ -8,6 +8,61 @@
 
 ---
 
+## 0. Pre-review amendments (2026-08-12, before T1 dispatch)
+
+Adversarial pre-review against the actual current source (`artifacts.py`, `grounding_service.py`,
+`migrations.py`, and their three test files) plus empirical probes of `os.replace` (with T1's exact
+`tempfile.mkstemp` naming scheme) and `O_CREAT|O_EXCL` on this host confirmed both platform claims in
+§T1/§T5 hold. `compile_plan.py` baseline for this plan: 42 python blocks, 36 compile, 6 fail — all six
+are non-executable fragments (T12's docstring-only snippet, T14's except-clause insert, and §6's
+signature-only contract blocks for P3/P4), none inside a standalone "Implement" block. All test/line
+citations against the pre-existing three files were verified byte-accurate (e.g. `artifacts.py:88`,
+`:105`; `test_grounding_service.py:22-50`).
+
+Five real defects found and fixed here, before any dispatch:
+
+1. **T5 ↔ T6 circular forward-reference.** T5's `reserve_version` reads `candidate = _high_water_mark(stage_dir) + 1`
+   and calls `_record_high_water_mark(...)` — both defined only in T6, which runs *after* T5 in this
+   plan's strict numeric order. Simultaneously, T6's own tests call `reserve_version(tmp_path)` (T5's
+   function). Neither task can be implemented standalone as written. **Fix:** T5's `reserve_version`
+   now seeds `candidate = next_version_number(stage_dir)` — the pre-existing helper, not the
+   not-yet-defined `_high_water_mark`. `next_version_number` currently does exactly
+   `max(existing versions on disk, default 0) + 1`, semantically equivalent for T5's own tests (none
+   of which exercise post-deletion HWM survival — that's T6's job). Because T5 calls
+   `next_version_number()` rather than reimplementing the max-scan inline, T6's later redefinition of
+   `next_version_number` (to route through `_high_water_mark`) upgrades `reserve_version`'s behaviour
+   automatically, with **no further edit to `reserve_version` needed** when T6 lands. The
+   `_record_high_water_mark(stage_dir, candidate)` call in T5 is satisfied by T2's stub (next point) —
+   it no-ops until T6 replaces the stub with the real sidecar-file writer.
+2. **T2's `_record_high_water_mark` stub is now REQUIRED, not conditional.** T2's text said "stub it
+   ... only if T6 is not executed in the same sitting". This programme executes strictly T1→T18, so T6
+   is never immediately after T2. T2 **must** add `def _record_high_water_mark(stage_dir: Path, version: int) -> None: pass`
+   (module-level, above or below `write_artifact`) so `write_artifact`'s call to it — and T5's, per
+   point 1 — no-ops safely until T6 replaces the stub body outright (same name, same module: T6
+   overwrites the stub, it does not add a second definition).
+3. **T8's `parse_frontmatter` forward-references T9's `_load_frontmatter_yaml`** via a bare `# T9`
+   comment on the line `meta = _load_frontmatter_yaml(yaml_text)`. T8's own acceptance test
+   `test_empty_frontmatter_block_is_still_an_empty_mapping` (`"---\n---\n\nbody"`) reaches that exact
+   line and would raise `NameError` if dispatched before T9 defines the helper. **Fix:** T8's
+   `parse_frontmatter` body uses `meta = yaml.safe_load(yaml_text) or {}` instead — byte-identical to
+   what the pre-existing code already does on that line, so T8 needs no new symbol. T9 then replaces
+   that one line with `meta = _load_frontmatter_yaml(yaml_text)` and defines the function, exactly as
+   T9's own section already shows. This keeps every task's dispatch self-contained and independently
+   testable, and removes the plan's own "land together in the body, commit separately" ambiguity.
+4. **T14 must add `from pipeline_app import obs` to `migrations.py`'s imports.** Verified against the
+   current file: `migrations.py` imports only `artifacts, db as db_mod` — no `obs`. T14's own
+   `obs.record_event(...)` call needs it. Not shown in the plan's T14 text; added here so the
+   implementer isn't left to discover it via `NameError`.
+5. **T15 must add `from pipeline_app import obs` to `grounding_service.py`'s imports.** Same gap:
+   current file imports only `hashlib`, `Path`, `yaml`. T15's `verify_pointer` calls
+   `obs.log("grounding.pointer_unpinned", ...)`.
+
+T17's path-containment logic (`PureWindowsPath`/`PurePosixPath` absolute-detection plus `".." in parts`
+plus the `rgs-briefs` root check) was probed against all 6 of its own test cases on this host and
+produces the exact `RAISE`/no-raise verdict the tests expect — no amendment needed there.
+
+---
+
 ## 1. Scope
 
 ### Files this package owns (no other package may touch these)
@@ -248,7 +303,14 @@ def write_artifact(stage_dir: Path, version: int, meta: dict, body: str) -> Path
     return path
 ```
 
-  `_record_high_water_mark` lands in T6; until then, stub it as a one-line `pass` **only if** T6 is not executed in the same sitting — preferred order is T6 immediately after T2.
+  **§0 amendment (required, not conditional):** this programme executes strictly T1→T18, so T6 never
+  lands immediately after T2. Add this stub to `artifacts.py` in this task (T6 will replace its body,
+  not add a second definition):
+
+```python
+def _record_high_water_mark(stage_dir: Path, version: int) -> None:
+    pass  # T6 replaces this body with the real sidecar-file writer.
+```
 
 - [ ] **Run.** Pass.
 - [ ] **Commit:** `fix(artifacts): write_artifact is atomic and refuses to clobber (A-63, A-65)`
@@ -453,7 +515,12 @@ def reserve_version(stage_dir: Path, *, max_attempts: int = 256) -> VersionReser
     can never be selected as a stage's output.
     """
     stage_dir.mkdir(parents=True, exist_ok=True)
-    candidate = _high_water_mark(stage_dir) + 1
+    # §0 amendment: seed from next_version_number(), NOT _high_water_mark() directly --
+    # _high_water_mark is defined in T6, which has not run yet at T5. next_version_number
+    # is the pre-existing equivalent (max version on disk, default 0, + 1); T6 later
+    # redefines next_version_number to route through _high_water_mark, which upgrades
+    # this call's behaviour automatically with no further edit here.
+    candidate = next_version_number(stage_dir)
     for _ in range(max_attempts):
         marker = stage_dir / f".artifact.v{candidate}.reserved"
         try:
@@ -554,7 +621,9 @@ def test_corrupt_high_water_mark_is_warned_and_ignored_not_fatal(tmp_path, monke
 ```
 
 - [ ] **Run.** All four fail.
-- [ ] **Implement** in `artifacts.py` (add `from pipeline_app import obs` to the imports):
+- [ ] **Implement** in `artifacts.py` (add `from pipeline_app import obs` to the imports). §0
+  amendment: T2 already added a stub `_record_high_water_mark(stage_dir, version) -> None: pass`.
+  **Replace that stub's body** with the real implementation below — do not add a second definition:
 
 ```python
 _HWM_NAME = ".artifact-version-hwm"
@@ -788,7 +857,11 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             continue
         yaml_text = "\n".join(lines[1:i])
         body = "\n".join(lines[i + 1:])
-        meta = _load_frontmatter_yaml(yaml_text)   # T9
+        # §0 amendment: inline the pre-existing load here (byte-identical to what
+        # parse_frontmatter already did) rather than forward-referencing T9's
+        # _load_frontmatter_yaml, which does not exist yet. T9 replaces this one
+        # line with `meta = _load_frontmatter_yaml(yaml_text)` and defines the helper.
+        meta = yaml.safe_load(yaml_text) or {}
         return meta, body.lstrip("\n")
     raise MalformedArtifactError(
         "frontmatter block opened with '---' and was never closed -- the file is "
@@ -842,7 +915,9 @@ def test_a_body_starting_with_a_horizontal_rule_is_rejected_not_misparsed():
 ```
 
 - [ ] **Run.** All fail with `AttributeError`/`yaml.YAMLError` rather than `MalformedArtifactError`.
-- [ ] **Implement:**
+- [ ] **Implement.** T8 left `parse_frontmatter` calling `meta = yaml.safe_load(yaml_text) or {}` inline
+  (§0 amendment). Replace that one line with `meta = _load_frontmatter_yaml(yaml_text)` and add the
+  helper below:
 
 ```python
 def _load_frontmatter_yaml(yaml_text: str) -> dict:
@@ -1364,7 +1439,10 @@ def test_a_failure_to_record_the_event_does_not_mask_the_skip(conn, tmp_path, mo
 ```
 
 - [ ] **Run.** All three fail — there is no `obs.record_event` call.
-- [ ] **Implement** in `backfill_styleboard_rows`'s except clause. Keep the `print` (the orchestration plan's adoption rule):
+- [ ] **Implement.** §0 amendment: `migrations.py` does not import `obs` yet — add
+  `from pipeline_app import obs` to its imports (alongside the existing
+  `from pipeline_app import artifacts, db as db_mod`). Then, in `backfill_styleboard_rows`'s
+  except clause, keep the `print` (the orchestration plan's adoption rule):
 
 ```python
         except _PER_PROJECT_RECOVERABLE as exc:
@@ -1471,7 +1549,9 @@ def test_verify_pointer_names_each_broken_state_distinctly(tmp_path, state, setu
 ```
 
 - [ ] **Run.** All fail — no `verify_pointer`, no hash in the pointer.
-- [ ] **Implement** in `grounding_service.py`:
+- [ ] **Implement** in `grounding_service.py`. §0 amendment: this file does not import `obs` yet —
+  add `from pipeline_app import obs` (alongside the existing `hashlib`/`Path`/`yaml` imports).
+  `verify_pointer`'s `obs.log(...)` call needs it:
 
 ```python
 import datetime
