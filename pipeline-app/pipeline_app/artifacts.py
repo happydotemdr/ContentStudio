@@ -70,16 +70,38 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
+    """The frontmatter mapping and the body.
+
+    Returns ({}, text) for EXACTLY one condition: the text does not open with a
+    `---` delimiter -- i.e. a legitimately plain markdown artifact. Every other
+    departure raises MalformedArtifactError.
+
+    Three distinct conditions used to collapse into that same ({}, text)
+    return: no frontmatter at all, an opening `---` with no closing delimiter,
+    and an empty YAML block (A-68). The middle one is precisely the shape a
+    crash-truncated artifact takes (A-63), so returning it as "an artifact with
+    no provenance" is how truncation became invisible -- downstream,
+    depends_on yielded [], gates yielded [], and status yielded None so an
+    already-final artifact was re-stamped.
+    """
     lines = text.split("\n")
     if not lines or lines[0].strip() != _DELIM:
         return {}, text
     for i in range(1, len(lines)):
-        if lines[i].strip() == _DELIM:
-            yaml_text = "\n".join(lines[1:i])
-            body = "\n".join(lines[i + 1:])
-            meta = yaml.safe_load(yaml_text) or {}
-            return meta, body.lstrip("\n")
-    return {}, text
+        if lines[i].strip() != _DELIM:
+            continue
+        yaml_text = "\n".join(lines[1:i])
+        body = "\n".join(lines[i + 1:])
+        # §0 amendment: inline the pre-existing load here (byte-identical to what
+        # parse_frontmatter already did) rather than forward-referencing T9's
+        # _load_frontmatter_yaml, which does not exist yet. T9 replaces this one
+        # line with `meta = _load_frontmatter_yaml(yaml_text)` and defines the helper.
+        meta = yaml.safe_load(yaml_text) or {}
+        return meta, body.lstrip("\n")
+    raise MalformedArtifactError(
+        "frontmatter block opened with '---' and was never closed -- the file is "
+        "truncated, not unversioned"
+    )
 
 
 def render_frontmatter(meta: dict, body: str) -> str:

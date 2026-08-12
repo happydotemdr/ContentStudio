@@ -38,6 +38,48 @@ def test_parse_frontmatter_on_plain_text_returns_empty_meta():
     assert body == "just plain text, no frontmatter"
 
 
+def test_unterminated_frontmatter_raises_instead_of_masquerading_as_unversioned(tmp_path):
+    """FAULT. A-68: an opening --- with no closing delimiter fell through the
+    loop and returned ({}, text) -- exactly the shape a crash-truncated
+    artifact takes (A-63), reported as a legitimate plain-markdown file."""
+    truncated = "---\nschema_version: 1\nstatus: final\nversion: 1\n"
+    with pytest.raises(artifacts.MalformedArtifactError) as exc:
+        artifacts.parse_frontmatter(truncated)
+    assert "never closed" in str(exc.value)
+
+
+def test_truncated_artifact_is_distinguishable_from_a_genuinely_plain_one(tmp_path):
+    """DISTINGUISHABILITY. Three conditions used to collapse to the same
+    indistinguishable ({}, text)."""
+    plain = tmp_path / "artifact.v1.md"
+    plain.write_text("just a plain markdown artifact, no frontmatter", encoding="utf-8")
+    truncated = tmp_path / "artifact.v2.md"
+    truncated.write_text("---\nstatus: final\nversion: 2\n", encoding="utf-8")
+
+    plain_result = artifacts.read_artifact(plain)
+    assert plain_result == ({}, "just a plain markdown artifact, no frontmatter")
+
+    with pytest.raises(artifacts.MalformedArtifactError):
+        artifacts.read_artifact(truncated)
+
+
+def test_a_truncated_artifact_names_its_own_path_in_the_error(tmp_path):
+    """SURFACING. The human-reachable signal is a typed error naming the file;
+    an operator (or an obs event recorded by the caller) can act on it. Before,
+    nothing anywhere logged that a --- was opened and never closed."""
+    bad = tmp_path / "artifact.v1.md"
+    bad.write_text("---\nstatus: final\n", encoding="utf-8")
+    with pytest.raises(artifacts.MalformedArtifactError) as exc:
+        artifacts.read_artifact(bad)
+    assert str(bad) in str(exc.value)
+    assert exc.value.path == bad
+
+
+def test_empty_frontmatter_block_is_still_an_empty_mapping(tmp_path):
+    """A genuinely empty block is benign and must keep working."""
+    assert artifacts.parse_frontmatter("---\n---\n\nbody") == ({}, "body")
+
+
 def test_next_version_number_empty_dir_is_one(tmp_path: Path):
     assert next_version_number(tmp_path) == 1
 
