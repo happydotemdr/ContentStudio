@@ -218,9 +218,16 @@ def test_a_clean_shutdown_releases_the_lease_so_a_restart_sweeps_immediately(rep
 
 def test_the_banner_and_the_doctor_panel_never_disagree_in_one_response(
         repo_root: Path, monkeypatch):
-    """A-83: two answers to the same question in one HTML response. The probe
-    flips on every call, so a snapshot and a live probe are guaranteed to
-    differ -- unless both read one snapshot per request."""
+    """A-83: two answers to the same question in one HTML response must be
+    the SAME answer, on every host -- not merely equal on the host that
+    happens to be running the test. A plain boolean flip cannot prove this
+    reliably: if only ONE reader is actually wired to the shared probe, the
+    unwired reader falls through to the REAL machine's `claude`-on-PATH
+    state, and on any host where that happens to be `True`, it coincidentally
+    matches the mock's first value and the test passes with the defect fully
+    present. A fake, unmistakable `path` cannot coincidentally match
+    anything real, so any reader that bypasses the shared probe is caught
+    unconditionally."""
     from fastapi.testclient import TestClient
     from pipeline_app import preflight
 
@@ -228,12 +235,16 @@ def test_the_banner_and_the_doctor_panel_never_disagree_in_one_response(
     flip = iter([True, False] * 20)
     monkeypatch.setattr(
         preflight, "check_cli_available",
-        lambda *a, **k: {"available": next(flip), "path": None, "error": None},
+        lambda *a, **k: {"available": next(flip), "path": r"C:\sentinel\claude.cmd", "error": None},
     )
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
     try:
         client = TestClient(app)
         resp = client.get("/doctor")
+        # The panel must be reading the probe, not the host: pre-fix doctor.py's
+        # `from ... import` binding escaped a plain module-attribute patch and
+        # rendered the real machine's path instead.
+        assert r"C:\sentinel\claude.cmd" in resp.text
         banner_online = "SYSTEM ONLINE" in resp.text
         panel_found = "NOT FOUND" not in resp.text
         assert banner_online == panel_found
