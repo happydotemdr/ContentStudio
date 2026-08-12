@@ -61,6 +61,22 @@ T17's path-containment logic (`PureWindowsPath`/`PurePosixPath` absolute-detecti
 plus the `rgs-briefs` root check) was probed against all 6 of its own test cases on this host and
 produces the exact `RAISE`/no-raise verdict the tests expect — no amendment needed there.
 
+**Amendment 2 (found by T9's implementer, during T9, not pre-review):** T9 makes `parse_frontmatter`
+raise `MalformedArtifactError` for malformed YAML instead of letting `yaml.YAMLError` propagate.
+`migrations.py`'s `_PER_PROJECT_RECOVERABLE = (OSError, UnicodeDecodeError, yaml.YAMLError)` — this
+package's OWN file, unlike the expected cross-package breakage in `routes/stages.py` et al. — no
+longer catches the new exception type, so a malformed legacy artifact now CRASHES the whole backfill
+migration instead of being skipped per-project (worse than before this task, not better). This broke
+`tests/test_migrations.py::test_backfill_skips_a_broken_legacy_project_without_blocking_others`, a
+PRE-EXISTING test that was green before T9. T11's own text already plans to add
+`artifacts.MalformedArtifactError` to `_PER_PROJECT_RECOVERABLE` (alongside `BackfillWouldOverwriteError`,
+which doesn't exist until T11) — but leaving this package's own file broken for two more tasks
+violates the same standard applied everywhere else in this programme (an untracked broken test in a
+file this package owns is not acceptable, unlike genuinely cross-package fallout). **Pulled forward
+into T9's own task**, since T9 is what caused it: add `artifacts.MalformedArtifactError` to
+`_PER_PROJECT_RECOVERABLE` now. T11 still adds `BackfillWouldOverwriteError` to the same tuple when
+that class is defined — do not remove or duplicate the earlier addition.
+
 ---
 
 ## 1. Scope
@@ -1234,7 +1250,7 @@ def _write_synthetic_artifact(
         raise
 ```
 
-  Add `BackfillWouldOverwriteError` and `artifacts.MalformedArtifactError` to `_PER_PROJECT_RECOVERABLE`, and update both `_write_synthetic_artifact` call sites to pass `depends_on` (T13 computes it; pass `[]` for this task only if T13 has not run).
+  Add `BackfillWouldOverwriteError` to `_PER_PROJECT_RECOVERABLE` (§0 amendment 2: `artifacts.MalformedArtifactError` was already added there in T9, pulled forward because T9's own change broke this package's pre-existing test otherwise — do not duplicate it, just confirm it's present), and update both `_write_synthetic_artifact` call sites to pass `depends_on` (T13 computes it; pass `[]` for this task only if T13 has not run).
 
 - [ ] **Run.** Pass.
 - [ ] **Commit:** `fix(migrations): backfill refuses to overwrite a real styleboard (A-73)`
