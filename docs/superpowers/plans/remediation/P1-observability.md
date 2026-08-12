@@ -4840,16 +4840,21 @@ def test_a_second_app_instance_does_not_orphan_a_live_turn(repo_root: Path):
 
     db_path = repo_root / "pipeline.db"
     first = create_app(repo_root=repo_root, db_path=db_path)
-    project_id = db_mod.create_project(first.state.conn, "a-1", "a", "generic",
-                                       "2026-08-08T00:00:00+00:00")
-    stage_row_id = db_mod.create_stage_row(first.state.conn, project_id, "ideation", "running")
-    db_mod.create_turn(first.state.conn, stage_row_id, "running",
-                       "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    try:
+        project_id = db_mod.create_project(first.state.conn, "a-1", "a", "generic",
+                                           "2026-08-08T00:00:00+00:00")
+        stage_row_id = db_mod.create_stage_row(first.state.conn, project_id, "ideation", "running")
+        db_mod.create_turn(first.state.conn, stage_row_id, "running",
+                           "2026-08-08T00:00:00+00:00", "e/1.jsonl")
 
-    second = create_app(repo_root=repo_root, db_path=db_path)
-
-    assert len(db_mod.list_running_turns(second.state.conn)) == 1
-    assert db_mod.get_stage_by_row_id(second.state.conn, stage_row_id)["status"] == "running"
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            assert len(db_mod.list_running_turns(second.state.conn)) == 1
+            assert db_mod.get_stage_by_row_id(second.state.conn, stage_row_id)["status"] == "running"
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
 
 
 def test_a_skipped_sweep_is_distinguishable_from_a_clean_one(repo_root: Path):
@@ -4858,10 +4863,16 @@ def test_a_skipped_sweep_is_distinguishable_from_a_clean_one(repo_root: Path):
     thing -- that equivalence is the whole defect."""
     db_path = repo_root / "pipeline.db"
     first = create_app(repo_root=repo_root, db_path=db_path)
-    assert first.state.orphaned_count == 0
+    try:
+        assert first.state.orphaned_count == 0
 
-    second = create_app(repo_root=repo_root, db_path=db_path)
-    assert second.state.orphaned_count is None
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            assert second.state.orphaned_count is None
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
 
 
 def test_a_skipped_sweep_records_a_warning_event(repo_root: Path, tmp_path: Path, monkeypatch):
@@ -4870,30 +4881,80 @@ def test_a_skipped_sweep_records_a_warning_event(repo_root: Path, tmp_path: Path
     monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
     db_path = repo_root / "pipeline.db"
     first = create_app(repo_root=repo_root, db_path=db_path)
-    create_app(repo_root=repo_root, db_path=db_path)
-    rows = first.state.conn.execute(
-        "SELECT * FROM events WHERE kind = 'app.startup.reconcile_skipped'"
-    ).fetchall()
-    assert len(rows) == 1
-    assert rows[0]["severity"] == "warning"
+    try:
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            rows = first.state.conn.execute(
+                "SELECT * FROM events WHERE kind = 'app.startup.reconcile_skipped'"
+            ).fetchall()
+            assert len(rows) == 1
+            assert rows[0]["severity"] == "warning"
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
 
 
 def test_an_expired_lease_is_reclaimed_so_a_real_restart_still_sweeps(repo_root: Path):
     """A crashed instance must not block reconciliation forever."""
-    from pipeline_app import main as main_mod
+    db_path = repo_root / "pipeline.db"
+    first = create_app(repo_root=repo_root, db_path=db_path)
+    try:
+        first.state.conn.execute(
+            "UPDATE app_instances SET heartbeat_at = '2020-01-01T00:00:00+00:00' WHERE id = 1"
+        )
+        first.state.conn.commit()
+        second = create_app(repo_root=repo_root, db_path=db_path)
+        try:
+            assert second.state.orphaned_count == 0  # swept, not skipped
+        finally:
+            second.state.conn.close()
+    finally:
+        first.state.conn.close()
+
+
+def test_a_clean_shutdown_releases_the_lease_so_a_restart_sweeps_immediately(repo_root: Path):
+    """A crash leaves the lease to expire (the test above). A CLEAN shutdown
+    must not make a genuine restart wait out the same window -- that is
+    exactly what `_release_reconcile_lease` exists for, and none of the four
+    tests above calls it at all."""
+    from fastapi.testclient import TestClient
 
     db_path = repo_root / "pipeline.db"
     first = create_app(repo_root=repo_root, db_path=db_path)
-    first.state.conn.execute(
-        "UPDATE app_instances SET heartbeat_at = '2020-01-01T00:00:00+00:00' WHERE id = 1"
-    )
-    first.state.conn.commit()
+    with TestClient(first):
+        pass  # drives the lifespan: startup is a no-op here, shutdown releases the lease
+
     second = create_app(repo_root=repo_root, db_path=db_path)
-    assert second.state.orphaned_count == 0  # swept, not skipped
+    try:
+        assert second.state.orphaned_count == 0  # swept immediately, not after a 120s wait
+    finally:
+        second.state.conn.close()
 ```
+
+**PRE-REVIEW, PLAN AMENDED BEFORE DISPATCH.** Two problems in the brief's own code, found before
+any implementer touched it:
+
+1. **All four tests leaked both `sqlite3` connections they opened.** `tests/test_main.py` is the
+   exact module T13 just converted to `with TestClient(app)` and then deleted from
+   `_CONNECTION_LEAKS_BY_PACKAGE["P1"]` in `conftest.py` -- that list is explicitly shrink-only
+   ("Nothing may be ADDED"), so a new leak in this file is not silently tolerated, it is a hard
+   `pytest.fail` from `_no_leaked_sqlite_connections`. The brief's four tests called `create_app`
+   directly and never closed `.state.conn` on either instance -- the exact defect class T13 spent
+   its own fix round closing, reopened one task later. Now wrapped in `try/finally`.
+2. **`_release_reconcile_lease` was defined but never called.** Its own docstring on
+   `_claim_reconcile_lease` asserts "a clean shutdown releases the lease... so a genuine restart
+   sweeps immediately," but nothing in the shown diff wires it into the `lifespan` function T13
+   created, and none of the four tests exercises the release path -- only the 120-second expiry
+   path. A fifth test (`test_a_clean_shutdown_releases_the_lease_so_a_restart_sweeps_immediately`)
+   now covers it, and Implement (b) below adds the missing call.
 
 - [ ] **Run it.** `test_a_second_app_instance_does_not_orphan_a_live_turn` fails with
       `status == "awaiting_review"` / zero running turns — A-76 reproduced exactly.
+      `test_a_clean_shutdown_releases_the_lease_so_a_restart_sweeps_immediately` fails too, once
+      the other four are made to pass without the lifespan wiring below: the lease row `first`
+      claimed is never released, so `second`'s claim attempt sees a fresh `heartbeat_at` and
+      correctly refuses -- `orphaned_count` comes back `None`, not `0`.
 - [ ] **Implement (a).** Append to `schema.sql`:
 
 ```sql
@@ -4973,10 +5034,124 @@ and in `create_app`, replacing line 28-30:
         )
 ```
 
-- [ ] **Run it.** All four pass. Full app suite green — every existing test builds its app against
+and in the `lifespan` function T13 added, release the lease before the WAL checkpoint -- this is
+the missing call the pre-review found:
+
+```python
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        _release_reconcile_lease(app.state.conn, app.state.instance_token)
+        try:
+            app.state.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception as exc:  # noqa: BLE001 -- shutdown must not raise
+            obs.log("db.checkpoint_failed", level="warning",
+                    error=f"{type(exc).__name__}: {exc}")
+        app.state.conn.close()
+```
+
+`_release_reconcile_lease` already swallows and logs its own exceptions (see Implement (b) above),
+so this call needs no extra `try/except` around it.
+
+- [ ] **Run it.** All five pass. Full app suite green — every existing test builds its app against
       a fresh `tmp_path` database, so each claims the lease unopposed (verified: no test calls
       `create_app` twice against one `db_path`).
 - [ ] **Commit.** `fix(main): lease startup reconciliation so a second worker cannot orphan a live turn (A-76)`
+
+**POST-REVIEW AMENDMENT.** The task reviewer found one Important, load-bearing gap after
+implementation: `heartbeat_at` is written once, at claim time, and never refreshed again for the
+life of the process. `_claim_reconcile_lease`'s own docstring calls `lease_seconds` "long enough
+that uvicorn's other workers, which start within seconds, are correctly refused" — true only
+during the startup race the five tests above cover. Any instance that has simply been running
+longer than `RECONCILE_LEASE_SECONDS` (120s) has a heartbeat that now reads as stale to a *new*
+instance for reasons that have nothing to do with whether it crashed — a second instance starting
+an hour later reclaims the lease and re-runs the destructive sweep against turns the first instance
+is still actively running. That is A-76 itself, reopened past the narrow window the shipped fix
+actually covers. Not a product/policy question — the fix is a mechanical liveness heartbeat, the
+same shape `discovery_engine`'s existing heartbeat thread already uses in this codebase for the
+identical problem (proving a process is alive independent of request traffic, since a single
+long-running turn stream may not touch any other route for extended periods).
+
+- [ ] **Add, in `main.py`:**
+
+```python
+import asyncio
+
+HEARTBEAT_INTERVAL_SECONDS = 30  # several ticks inside the 120s lease window
+
+
+async def _heartbeat_reconcile_lease(conn, token: str) -> None:
+    """Keeps this instance's `app_instances` row fresh for as long as the
+    process is alive, independent of request traffic -- a single long-running
+    turn stream can hold one HTTP request open for minutes without touching
+    any other route, and `heartbeat_at` must not go stale during that time."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            conn.execute(
+                "UPDATE app_instances SET heartbeat_at = ? WHERE id = 1 AND owner_token = ?",
+                (now_iso, token),
+            )
+            db_mod.commit_unless_in_transaction(conn)
+        except Exception as exc:  # noqa: BLE001 -- a missed heartbeat must not kill the app
+            obs.log("app.heartbeat_failed", level="warning", error=f"{type(exc).__name__}: {exc}")
+```
+
+  and start/stop it around the lifespan's `yield`, so a non-owning instance (the `else` branch)
+  does not spawn a task that will only ever no-op:
+
+```python
+    async def lifespan(app: FastAPI):
+        heartbeat_task = (
+            asyncio.create_task(_heartbeat_reconcile_lease(app.state.conn, app.state.instance_token))
+            if app.state.orphaned_count is not None else None
+        )
+        yield
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        _release_reconcile_lease(app.state.conn, app.state.instance_token)
+        ...  # WAL checkpoint + close, unchanged
+```
+
+- [ ] **Write the failing test.** Append to `tests/test_main.py`:
+
+```python
+def test_a_long_running_instance_keeps_its_heartbeat_fresh(repo_root: Path, monkeypatch):
+    """A-76 REOPENED past the startup window, caught in review: without a
+    periodic refresh, ANY instance older than RECONCILE_LEASE_SECONDS looks
+    stale to a later instance regardless of whether it is still alive.
+    Compared against a fixed 2020 timestamp rather than a freshly-read one,
+    so the assertion cannot pass on second-level rounding coincidence."""
+    import time
+    from fastapi.testclient import TestClient
+    from pipeline_app import main as main_mod
+
+    monkeypatch.setattr(main_mod, "HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    db_path = repo_root / "pipeline.db"
+    app = create_app(repo_root=repo_root, db_path=db_path)
+    app.state.conn.execute(
+        "UPDATE app_instances SET heartbeat_at = '2020-01-01T00:00:00+00:00' WHERE id = 1"
+    )
+    app.state.conn.commit()
+    with TestClient(app):
+        time.sleep(0.3)
+        refreshed = app.state.conn.execute(
+            "SELECT heartbeat_at FROM app_instances WHERE id = 1"
+        ).fetchone()["heartbeat_at"]
+    assert refreshed != "2020-01-01T00:00:00+00:00"
+```
+
+- [ ] **Run it.** Fails before the fix: `heartbeat_at` stays at the seeded 2020 value for the whole
+      `with` block (nothing refreshes it). Passes after. Re-run the full app suite: no new
+      `asyncio` warnings (P0's `filterwarnings = error` turns any into a failure) — the task is
+      cancelled and awaited before the connection closes, so no "Task was destroyed but it is
+      pending" warning fires at teardown.
+- [ ] **Commit** (fix round, same finding ID): `fix(main): refresh the reconcile lease heartbeat while the process is alive (A-76)`
 
 ---
 
@@ -4996,30 +5171,44 @@ so the fix has to keep that attribute a plain bool — and make it fresh.
 ```python
 def test_the_banner_and_the_doctor_panel_never_disagree_in_one_response(
         repo_root: Path, monkeypatch):
-    """A-83: two answers to the same question in one HTML response. The probe
-    flips on every call, so a snapshot and a live probe are guaranteed to
-    differ -- unless both read one snapshot per request."""
+    """A-83: two answers to the same question in one HTML response must be
+    the SAME answer, on every host -- not merely equal on the host that
+    happens to be running the test. A plain boolean flip cannot prove this
+    reliably: if only ONE reader is actually wired to the shared probe, the
+    unwired reader falls through to the REAL machine's `claude`-on-PATH
+    state, and on any host where that happens to be `True`, it coincidentally
+    matches the mock's first value and the test passes with the defect fully
+    present. A fake, unmistakable `path` cannot coincidentally match
+    anything real, so any reader that bypasses the shared probe is caught
+    unconditionally."""
     from fastapi.testclient import TestClient
     from pipeline_app import preflight
 
-    (repo_root / ".claude" / "skills").mkdir(parents=True)
+    (repo_root / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
     flip = iter([True, False] * 20)
     monkeypatch.setattr(
         preflight, "check_cli_available",
-        lambda *a, **k: {"available": next(flip), "path": None, "error": None},
+        lambda *a, **k: {"available": next(flip), "path": r"C:\sentinel\claude.cmd", "error": None},
     )
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    client = TestClient(app)
-    resp = client.get("/doctor")
-    banner_online = "SYSTEM ONLINE" in resp.text
-    panel_found = "NOT FOUND" not in resp.text
-    assert banner_online == panel_found
+    try:
+        client = TestClient(app)
+        resp = client.get("/doctor")
+        # The panel must be reading the probe, not the host: pre-fix doctor.py's
+        # `from ... import` binding escaped a plain module-attribute patch and
+        # rendered the real machine's path instead.
+        assert r"C:\sentinel\claude.cmd" in resp.text
+        banner_online = "SYSTEM ONLINE" in resp.text
+        panel_found = "NOT FOUND" not in resp.text
+        assert banner_online == panel_found
+    finally:
+        app.state.conn.close()
 
 
 def test_the_banner_reflects_a_cli_that_appeared_after_startup(repo_root: Path, monkeypatch):
     """Restart was the only way to reconcile the two, and nothing said so."""
     from fastapi.testclient import TestClient
-    from pipeline_app import main as main_mod, preflight
+    from pipeline_app import preflight
 
     available = {"value": False}
     monkeypatch.setattr(
@@ -5027,13 +5216,38 @@ def test_the_banner_reflects_a_cli_that_appeared_after_startup(repo_root: Path, 
         lambda *a, **k: {"available": available["value"], "path": None, "error": "not found"},
     )
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    client = TestClient(app)
-    assert "CLI UNAVAILABLE" in client.get("/").text
+    try:
+        client = TestClient(app)
+        assert "CLI UNAVAILABLE" in client.get("/").text
 
-    available["value"] = True
-    app.state.cli_probe.invalidate()  # stand in for the TTL elapsing
-    assert "SYSTEM ONLINE" in client.get("/").text
+        available["value"] = True
+        app.state.cli_probe.invalidate()  # stand in for the TTL elapsing
+        assert "SYSTEM ONLINE" in client.get("/").text
+    finally:
+        app.state.conn.close()
 ```
+
+**PRE-REVIEW, PLAN AMENDED BEFORE DISPATCH.** Two problems found before any implementer touched
+this task:
+
+1. **Both tests leaked `app.state.conn`.** Same shape as T14's pre-review finding, same file
+   (`tests/test_main.py`), same shrink-only allowlist that no longer covers it. Neither test used
+   `with TestClient(app)` nor closed the connection explicitly. Now wrapped in `try/finally`.
+2. **This task breaks an existing, currently-green test.** `tests/test_routes_doctor.py`'s
+   `test_doctor_distinguishes_a_missing_cli_from_a_found_one` does
+   `monkeypatch.setattr(doctor, "check_cli_available", ...)` — patching the name
+   `pipeline_app.routes.doctor` binds via its own `from pipeline_app.preflight import
+   check_cli_available`. Implement (b) below deletes that import entirely. The next time that test
+   runs, `monkeypatch.setattr` raises `AttributeError: <module 'pipeline_app.routes.doctor'> does
+   not have the attribute 'check_cli_available'` — not a new gap this task introduces silently, a
+   dead-on-arrival test failure the very next full-suite run would have caught, but "run the suite
+   and see what broke" is not how a plan-mandated regression should be found. `test_routes_doctor.py`
+   is not in this task's stated file list, but it belongs to P1 (P0's T19 handoff note already
+   records `routes/doctor.py` as P1's file), so fixing its own test here is in scope, not a
+   cross-package reach. Retargeted to patch `preflight.check_cli_available` instead — see
+   Implement (c) below — which is consistent with, not a workaround of, this task's own design:
+   after Implement (b), `doctor.py` no longer imports `check_cli_available` at all, so
+   `preflight.check_cli_available` is the only binding left to patch, not merely the safer one.
 
 - [ ] **Run it.** The first fails (banner and panel disagree); the second fails with
       `AttributeError: cli_probe`.
@@ -5091,11 +5305,54 @@ and in `create_app`, replacing line 31:
 +            "cli": request.app.state.cli_probe.get(),
 ```
 
-- [ ] **Run it.** Both pass. Full app suite green, including `test_routes_browse.py`'s
-      `preflight.check_cli_available` monkeypatches — the probe calls it through the module
-      attribute, so patching still takes effect (the previous `from ... import` binding in
-      `doctor.py` did not respond to that patch at all).
+- [ ] **Implement (c).** In `tests/test_routes_doctor.py`, retarget the monkeypatch the pre-review
+      found (its own module docstring at the top of the file explains at length why it originally
+      patched `doctor.check_cli_available` rather than `shutil.which` or
+      `check_cli_available.__defaults__` — that reasoning about avoiding `preflight.py`'s internals
+      is now moot, since after Implement (b) there is no other binding left):
+
+```python
+-from pipeline_app.routes import doctor
++from pipeline_app import preflight
+```
+
+      and in `test_doctor_distinguishes_a_missing_cli_from_a_found_one`, both occurrences:
+
+```python
+-    monkeypatch.setattr(
+-        doctor, "check_cli_available",
++    monkeypatch.setattr(
++        preflight, "check_cli_available",
+```
+
+      Update the test's own docstring (it currently says "patches the `check_cli_available` name
+      bound into doctor.py's own namespace rather than shutil.which or
+      check_cli_available.__defaults__") to name `pipeline_app.preflight.check_cli_available`
+      instead — a docstring describing a deleted design is a defect, not a cosmetic (established at
+      T8-F1 in this same programme). The module-level docstring's longer explanation of the same
+      choice (the paragraph starting "Instead, this patches the name `doctor.py` itself binds...")
+      needs the same correction.
+
+- [ ] **Run it.** Both new tests pass. Full app suite green, including
+      `test_routes_doctor.py::test_doctor_distinguishes_a_missing_cli_from_a_found_one` (retargeted,
+      not merely re-passing by accident) and `test_routes_browse.py`'s `preflight.check_cli_available`
+      monkeypatches — the probe calls it through the module attribute, so patching still takes
+      effect (the previous `from ... import` binding in `doctor.py` did not respond to that patch
+      at all).
 - [ ] **Commit.** `fix(main): serve the CLI banner and the doctor panel from one probe (A-83)`
+
+**POST-REVIEW AMENDMENT.** The task reviewer found one Important, load-bearing gap: the first new
+test above was landed *knowing* it had not been observed red (the implementer's own report
+disclosed this), on the theory that its design was sound and only failed to fail because of this
+one dev machine's environment. The reviewer traced it further and found the test is incapable of
+failing on **any** host with `claude` on PATH, in either direction — reverting Implement (b) alone,
+or Implement (a) alone, both still leave it green, because a plain boolean flip can coincidentally
+match whatever the real, unpatched machine state happens to be. That is the exact "a test that
+passes on first write proved nothing; re-derive it" rule CONSTRAINTS.md states as a hard rule, left
+unsatisfied. Not a product/policy question — the fix (a fake `path` value the real machine cannot
+produce) does not change the test's design or intent, it only makes the mock unmistakable. The test
+code shown above already reflects this fix; a prior version used `"path": None` and no sentinel
+assertion — if you are reading an older copy of this task, replace it with the version shown.
 
 ---
 
@@ -5115,29 +5372,45 @@ def test_a_cross_origin_post_is_rejected(repo_root: Path):
     from fastapi.testclient import TestClient
 
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    client = TestClient(app)
-    resp = client.post("/discovery/run", headers={"Origin": "https://evil.example"})
-    assert resp.status_code == 403
+    try:
+        client = TestClient(app)
+        resp = client.post("/discovery/settings", headers={"Origin": "https://evil.example"})
+        assert resp.status_code == 403
+    finally:
+        app.state.conn.close()
 
 
 def test_a_same_origin_post_is_not_rejected(repo_root: Path):
     """DISTINGUISHABILITY. Rejecting every POST would pass the test above and
-    break the app -- the guard has to tell the two apart."""
+    break the app -- the guard has to tell the two apart. Posts real form data
+    to a real, DB-only route (no subprocess, no vendor call) so a genuine 303
+    proves the request reached its handler, not merely that it wasn't 403."""
     from fastapi.testclient import TestClient
 
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    client = TestClient(app)
-    resp = client.post("/discovery/run", headers={"Origin": "http://testserver"})
-    assert resp.status_code != 403
+    try:
+        client = TestClient(app)
+        resp = client.post(
+            "/discovery/settings",
+            data={"time_of_day": "09:00", "timezone": "UTC"},
+            headers={"Origin": "http://testserver"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+    finally:
+        app.state.conn.close()
 
 
 def test_a_cross_origin_referer_is_rejected_when_origin_is_absent(repo_root: Path):
     from fastapi.testclient import TestClient
 
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    client = TestClient(app)
-    resp = client.post("/discovery/run", headers={"Referer": "https://evil.example/x"})
-    assert resp.status_code == 403
+    try:
+        client = TestClient(app)
+        resp = client.post("/discovery/settings", headers={"Referer": "https://evil.example/x"})
+        assert resp.status_code == 403
+    finally:
+        app.state.conn.close()
 
 
 def test_a_rejected_cross_origin_post_records_an_error_event(repo_root: Path, tmp_path,
@@ -5149,22 +5422,48 @@ def test_a_rejected_cross_origin_post_records_an_error_event(repo_root: Path, tm
 
     monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    TestClient(app).post("/discovery/run", headers={"Origin": "https://evil.example"})
-    rows = app.state.conn.execute(
-        "SELECT * FROM events WHERE kind = 'security.cross_origin_post_rejected'"
-    ).fetchall()
-    assert len(rows) == 1
-    assert rows[0]["severity"] == "error"
-    assert "evil.example" in rows[0]["message"]
+    try:
+        TestClient(app).post("/discovery/settings", headers={"Origin": "https://evil.example"})
+        rows = app.state.conn.execute(
+            "SELECT * FROM events WHERE kind = 'security.cross_origin_post_rejected'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["severity"] == "error"
+        assert "evil.example" in rows[0]["message"]
+    finally:
+        app.state.conn.close()
 
 
 def test_a_get_is_never_rejected_for_its_origin(repo_root: Path):
     from fastapi.testclient import TestClient
 
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    resp = TestClient(app).get("/doctor", headers={"Origin": "https://evil.example"})
-    assert resp.status_code == 200
+    try:
+        resp = TestClient(app).get("/doctor", headers={"Origin": "https://evil.example"})
+        assert resp.status_code == 200
+    finally:
+        app.state.conn.close()
 ```
+
+**PRE-REVIEW, PLAN AMENDED BEFORE DISPATCH.** Two problems found before any implementer touched
+this task:
+
+1. **All five tests targeted `/discovery/run`, which does not exist as a route.** The real routes
+   in `routes/discovery.py` are `/discovery/run-now`, `/discovery/run-now-backfill`,
+   `/discovery/handles`, `/discovery/settings`, and others — none of them `/discovery/run`. For the
+   three rejection tests this is harmless (the CSRF middleware runs before routing, so a 403 fires
+   regardless of whether the path exists), but `test_a_same_origin_post_is_not_rejected` would have
+   passed **vacuously**: FastAPI returns 404 for an unmatched path, and `404 != 403` satisfies the
+   assertion without ever proving a legitimate same-origin mutation reaches a real handler. Worse,
+   had the wrong path *happened* to collide with a real one, `/discovery/run-now` spawns
+   `subprocess.Popen(...)` running the discovery cron — a path this task must never exercise
+   unmocked, per the standing "never let a test reach a live vendor API" rule (Bright Data bills per
+   record, and `run_now`'s cron subprocess can reach it). Retargeted all five tests to
+   `/discovery/settings`, whose handler (`db_mod.update_settings`) is a pure DB write with no
+   subprocess and no network call, and gave the same-origin test real form data so it earns a
+   genuine `303`, not a coincidental non-403.
+2. **All five tests leaked `app.state.conn`** — same shape as T14 and T15's pre-review findings, same
+   file, same shrink-only allowlist that no longer covers it. Wrapped in `try/finally`.
 
 - [ ] **Run it.** The first, third and fourth fail — every POST is accepted today.
 - [ ] **Implement.** In `main.py`, register a second middleware (registered after
@@ -5203,16 +5502,50 @@ async def _reject_cross_origin_mutations(request, call_next):
     return await call_next(request)
 ```
 
-- [ ] **Run it.** All five pass. Full app suite green — no existing test sends an `Origin` or
-      `Referer` header (verified), and the guard allows requests carrying neither.
+- [ ] **Run it.** All five pass — including `test_a_same_origin_post_is_not_rejected`, which now
+      gets a genuine `303` from `/discovery/settings`'s real handler, not merely a non-403. Full app
+      suite green — no existing test sends an `Origin` or `Referer` header (verified), and the guard
+      allows requests carrying neither.
 - [ ] **Commit.** `fix(main): reject cross-origin mutating requests (D-48)`
 
 ---
 
 ### T17 — `recent_events` on `/doctor` (the surface P15 renders)
 
+**HANDOFF FROM T14's REVIEW.** T14's task reviewer flagged that `orphaned_count: None` renders on
+the `/doctor` page as the bare Jinja2 default — verified empirically: `{{ orphaned_count }}` with
+`None` renders the literal text `"None"`, with `0` renders `"0"`. That already satisfies the
+frozen P1→P15 contract's letter (`None` must render differently from `0`, and it does, byte for
+byte) but nothing tests it at the rendered-page level — T14's own tests only assert on
+`app.state.orphaned_count` directly, never on `/doctor`'s HTML. T14 does not touch `doctor.py` or
+`doctor.html` at all (verified: `git show --stat` on its commit lists only `main.py`, `schema.sql`,
+`test_main.py`), so this is not T14's file to fix. **T17 owns `routes/doctor.py` and rewrites this
+exact context dict below — add a test asserting the page distinguishably renders both states**
+(e.g. `orphaned_count=None` → `"reconciled at startup: None"` in the response text,
+`orphaned_count=0` → `"reconciled at startup: 0"`, and the two differ), closing the same gap P0's
+own handoff note already named at T14's dispatch (`getattr(..., "orphaned_count", 0)` — confirm the
+default clause is genuinely unreachable now that `create_app` always sets the attribute explicitly,
+never leaves it absent).
+
 Without this, every `events` row written by all sixteen packages is invisible unless someone opens
 the database by hand — the same silence one layer down.
+
+**PRE-REVIEW, PLAN AMENDED BEFORE DISPATCH.** Three problems found before any implementer touched
+this task:
+
+1. **The first and third new tests leaked `app.state.conn`** — same shape as every other task in
+   this pause window, wrapped in `try/finally`.
+2. **The handoff above was not actually closed by the task's own shown code.** Implement (b) still
+   showed `getattr(request.app.state, "orphaned_count", 0)`, unchanged, with no test exercising the
+   rendered page at all. Closed two ways: the `getattr` default is now a plain attribute read
+   (`request.app.state.orphaned_count`) — defensible only when the attribute could genuinely be
+   absent, and `create_app` (T14) never leaves it absent, so the default was a live route back to
+   the exact ambiguity this package removes, not defensive code with a reason — and a fourth test,
+   `test_the_doctor_page_renders_a_skipped_sweep_distinguishably_from_a_clean_one`, now proves the
+   rendered HTML actually differs, not merely that the two Python values differ.
+3. The new fourth test does not depend on `recent_events` at all and would pass before the rest of
+   this task's implementation lands — that is expected, not a defect; it is included in this batch
+   because it closes T14's handoff and belongs beside the code it pins.
 
 - [ ] **Write the failing test.** Append to `tests/test_obs.py`:
 
@@ -5226,39 +5559,42 @@ def test_doctor_context_carries_unacknowledged_error_events_newest_first(tmp_pat
     (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
     (tmp_path / ".claude" / "skills").mkdir(parents=True)
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
-    conn = app.state.conn
+    try:
+        conn = app.state.conn
 
-    obs.record_event(conn, kind="a.info", severity="info", source="s", message="ignored")
-    obs.record_event(conn, kind="a.warn", severity="warning", source="s", message="ignored")
-    old_id = obs.record_event(conn, kind="a.old", severity="error", source="s", message="stale")
-    conn.execute("UPDATE events SET occurred_at = '2020-01-01T00:00:00+00:00' WHERE id = ?",
-                 (old_id,))
-    ack_id = obs.record_event(conn, kind="a.ack", severity="error", source="s", message="handled")
-    conn.execute("UPDATE events SET acknowledged = 1 WHERE id = ?", (ack_id,))
-    first = obs.record_event(conn, kind="adapter.fetch_failed", severity="error",
-                             source="discovery_youtube", message="first",
-                             detail={"handle": "@a"}, run_id=3)
-    second = obs.record_event(conn, kind="run.aborted", severity="critical",
-                              source="discovery_engine", message="second")
-    conn.commit()
+        obs.record_event(conn, kind="a.info", severity="info", source="s", message="ignored")
+        obs.record_event(conn, kind="a.warn", severity="warning", source="s", message="ignored")
+        old_id = obs.record_event(conn, kind="a.old", severity="error", source="s", message="stale")
+        conn.execute("UPDATE events SET occurred_at = '2020-01-01T00:00:00+00:00' WHERE id = ?",
+                     (old_id,))
+        ack_id = obs.record_event(conn, kind="a.ack", severity="error", source="s", message="handled")
+        conn.execute("UPDATE events SET acknowledged = 1 WHERE id = ?", (ack_id,))
+        first = obs.record_event(conn, kind="adapter.fetch_failed", severity="error",
+                                 source="discovery_youtube", message="first",
+                                 detail={"handle": "@a"}, run_id=3)
+        second = obs.record_event(conn, kind="run.aborted", severity="critical",
+                                  source="discovery_engine", message="second")
+        conn.commit()
 
-    captured = {}
-    real = app.state.templates.TemplateResponse
+        captured = {}
+        real = app.state.templates.TemplateResponse
 
-    def spy(request, name, context, *args, **kwargs):
-        captured.update(context)
-        return real(request, name, context, *args, **kwargs)
+        def spy(request, name, context, *args, **kwargs):
+            captured.update(context)
+            return real(request, name, context, *args, **kwargs)
 
-    monkeypatch.setattr(app.state.templates, "TemplateResponse", spy)
-    TestClient(app).get("/doctor")
+        monkeypatch.setattr(app.state.templates, "TemplateResponse", spy)
+        TestClient(app).get("/doctor")
 
-    events = captured["recent_events"]
-    assert [e["id"] for e in events] == [second, first]      # newest first, filtered
-    assert events[1] == {
-        "id": first, "occurred_at": events[1]["occurred_at"], "kind": "adapter.fetch_failed",
-        "severity": "error", "source": "discovery_youtube", "message": "first",
-        "detail": {"handle": "@a"}, "run_id": 3, "acknowledged": False,
-    }
+        events = captured["recent_events"]
+        assert [e["id"] for e in events] == [second, first]      # newest first, filtered
+        assert events[1] == {
+            "id": first, "occurred_at": events[1]["occurred_at"], "kind": "adapter.fetch_failed",
+            "severity": "error", "source": "discovery_youtube", "message": "first",
+            "detail": {"handle": "@a"}, "run_id": 3, "acknowledged": False,
+        }
+    finally:
+        app.state.conn.close()
 
 
 def test_recent_events_parses_detail_and_never_drops_a_malformed_one(tmp_path, monkeypatch):
@@ -5291,17 +5627,63 @@ def test_acknowledging_an_event_removes_it_from_the_doctor_list(tmp_path, monkey
     (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
     (tmp_path / ".claude" / "skills").mkdir(parents=True)
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
-    event_id = obs.record_event(app.state.conn, kind="k", severity="error",
-                                source="s", message="m")
-    client = TestClient(app)
-    resp = client.post(f"/doctor/events/{event_id}/ack",
-                       headers={"Origin": "http://testserver"})
-    assert resp.status_code in (200, 303, 307)
-    assert db.list_unacknowledged_events(
-        app.state.conn, since_iso="2000-01-01T00:00:00+00:00") == []
+    try:
+        event_id = obs.record_event(app.state.conn, kind="k", severity="error",
+                                    source="s", message="m")
+        client = TestClient(app)
+        resp = client.post(f"/doctor/events/{event_id}/ack",
+                           headers={"Origin": "http://testserver"})
+        assert resp.status_code in (200, 303, 307)
+        assert db.list_unacknowledged_events(
+            app.state.conn, since_iso="2000-01-01T00:00:00+00:00") == []
+    finally:
+        app.state.conn.close()
+
+
+def test_the_doctor_page_renders_a_skipped_sweep_distinguishably_from_a_clean_one(
+        tmp_path, monkeypatch):
+    """HANDOFF FROM T14's REVIEW, closed here. P0 originally flagged
+    `getattr(request.app.state, "orphaned_count", 0)` for collapsing three
+    states (attribute missing / explicitly 0 / explicitly None) into two
+    renderings. T14 made the value itself correctly `None` vs `0`; this test
+    is what actually proves the RENDERED PAGE tells them apart, which
+    nothing before this task ever checked -- T14's own tests only assert on
+    `app.state.orphaned_count` directly, never on `/doctor`'s HTML."""
+    from fastapi.testclient import TestClient
+    from pipeline_app.main import create_app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+
+    # Separate db files, deliberately: each instance then claims T14's reconcile
+    # lease unopposed, so `orphaned_count` starts as a real `0` from the actual
+    # sweep on both -- this test is about page RENDERING, not lease contention
+    # (T14 already covers that), so `skipped` overrides the attribute directly
+    # afterward rather than reproducing a second-instance race here.
+    clean = create_app(repo_root=tmp_path, db_path=tmp_path / "clean.db")
+    try:
+        assert clean.state.orphaned_count == 0
+        clean_text = TestClient(clean).get("/doctor").text
+    finally:
+        clean.state.conn.close()
+
+    skipped = create_app(repo_root=tmp_path, db_path=tmp_path / "skipped.db")
+    try:
+        skipped.state.orphaned_count = None  # stand in for A-76's skipped-sweep path
+        skipped_text = TestClient(skipped).get("/doctor").text
+    finally:
+        skipped.state.conn.close()
+
+    assert "Orphaned turns reconciled at startup: 0" in clean_text
+    assert "Orphaned turns reconciled at startup: None" in skipped_text
+    assert clean_text != skipped_text
 ```
 
-- [ ] **Run it.** Fails: `KeyError: 'recent_events'`.
+- [ ] **Run it.** Fails: `KeyError: 'recent_events'`. The new distinguishability test passes
+      immediately once the rest of the task lands (it does not depend on `recent_events`), but keep
+      it in this batch — see Implement (b)'s note on `getattr` below, which it exists to pin.
 - [ ] **Implement (a).** Add to `db.py`:
 
 ```python
@@ -5372,9 +5754,14 @@ def doctor_page(request: Request):
             "db_path": str(getattr(request.app.state, "db_path", "")),
             "cli": request.app.state.cli_probe.get(),
             "skill_names": skill_names,
-            # None means "this instance never ran the startup sweep because
-            # another one holds the lease" -- different from 0 (A-76).
-            "orphaned_count": getattr(request.app.state, "orphaned_count", 0),
+            # Direct attribute access, not getattr(..., 0): create_app (T14)
+            # unconditionally sets this to an int or to None, never leaves it
+            # absent, so a default that collapses "missing" into "0" is not
+            # defensive, it is a third route back to the exact ambiguity this
+            # package exists to remove. None means "this instance never ran
+            # the startup sweep because another one holds the lease" --
+            # different from 0 (A-76).
+            "orphaned_count": request.app.state.orphaned_count,
             "recent_events": db_mod.list_unacknowledged_events(
                 request.app.state.conn, since_iso=since
             ),
@@ -5390,8 +5777,88 @@ def acknowledge(request: Request, event_id: int):
     return RedirectResponse("/doctor", status_code=303)
 ```
 
-- [ ] **Run it.** All three pass.
+- [ ] **Run it.** All four pass.
 - [ ] **Commit.** `feat(doctor): surface unacknowledged error events on the health page`
+
+**POST-REVIEW AMENDMENT.** The task reviewer found a second, load-bearing gap after implementation
+(the first — `doctor.html` not yet rendering `recent_events` — is confirmed correct scope: P15
+owns that rendering, per this task's own title and the frozen `P1 → P15` contract; no action
+needed, only a note that P15 must actually pick it up). `RECENT_EVENT_WINDOW_DAYS = 7` and
+`list_unacknowledged_events`'s `limit=50` are both sound, deliberate design choices on their own,
+but together they mean an unacknowledged `critical` event 8 days old, or the 51st of a burst,
+produces the exact same `recent_events` as a genuinely clean system — the recurring defect class
+this whole package exists to remove, reappearing one layer up inside its own dashboard. Not a
+product/policy question (the window and limit stay as designed; only the silence around their
+edges is the defect) — fixed by adding an unbounded total count alongside the bounded list, so a
+future renderer can distinguish "nothing to show" from "N exist, M shown."
+
+- [ ] **Add, in `db.py`, next to `list_unacknowledged_events`:**
+
+```python
+def count_unacknowledged_events(conn: sqlite3.Connection) -> int:
+    """ALL-TIME count of unacknowledged error/critical events -- deliberately
+    unbounded by `list_unacknowledged_events`'s window or limit. Read
+    together, the two distinguish "nothing else to show" from "more exist,
+    silently excluded by the window or the row cap" -- the recurring defect
+    class, reappearing inside this task's own dashboard if left unpaired."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM events WHERE acknowledged = 0 "
+        "AND severity IN ('error','critical')"
+    ).fetchone()
+    return row["n"]
+```
+
+- [ ] **Add, in `routes/doctor.py`'s context dict, alongside `recent_events`:**
+
+```python
+            "unacknowledged_error_total": db_mod.count_unacknowledged_events(
+                request.app.state.conn
+            ),
+```
+
+- [ ] **Write the failing test.** Append to `tests/test_obs.py`:
+
+```python
+def test_the_total_count_does_not_share_the_windows_blind_spot(tmp_path, monkeypatch):
+    """An unacknowledged error older than RECENT_EVENT_WINDOW_DAYS is correctly
+    excluded from `recent_events` (the window is a deliberate design choice),
+    but the total count must not share that exclusion -- otherwise an old,
+    ignored critical event renders identically to a clean system."""
+    from fastapi.testclient import TestClient
+    from pipeline_app.main import create_app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    try:
+        old_id = obs.record_event(app.state.conn, kind="a.old", severity="critical",
+                                  source="s", message="ancient, still unacknowledged")
+        app.state.conn.execute(
+            "UPDATE events SET occurred_at = '2020-01-01T00:00:00+00:00' WHERE id = ?",
+            (old_id,))
+        app.state.conn.commit()
+
+        captured = {}
+        real = app.state.templates.TemplateResponse
+
+        def spy(request, name, context, *args, **kwargs):
+            captured.update(context)
+            return real(request, name, context, *args, **kwargs)
+
+        monkeypatch.setattr(app.state.templates, "TemplateResponse", spy)
+        TestClient(app).get("/doctor")
+
+        assert captured["recent_events"] == []                      # window correctly excludes it
+        assert captured["unacknowledged_error_total"] == 1          # total does not share the gap
+    finally:
+        app.state.conn.close()
+```
+
+- [ ] **Run it.** Fails: `KeyError: 'unacknowledged_error_total'`.
+- [ ] **Run it again after implementing.** Passes. Full app suite green.
+- [ ] **Commit** (fix round, same finding scope): `feat(doctor): expose the unacknowledged-error total so the 7-day window and 50-row cap cannot render silently`
 
 ---
 
@@ -5415,23 +5882,32 @@ def test_cli_availability_is_recorded_on_app_state(repo_root: Path, monkeypatch)
                         lambda *a, **k: {"available": True, "path": r"C:\fake\claude.CMD",
                                          "error": None})
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    assert app.state.cli_available is True
+    try:
+        assert app.state.cli_available is True
+    finally:
+        app.state.conn.close()
 
 
 def test_app_factory_creates_the_database_schema(repo_root: Path):
     """FAULT. 34 statements were covered by a one-attribute round trip."""
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    tables = {r[0] for r in app.state.conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert {"projects", "stages", "turns", "handles", "events", "creators",
-            "schema_version", "app_instances"} <= tables
+    try:
+        tables = {r[0] for r in app.state.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert {"projects", "stages", "turns", "handles", "events", "creators",
+                "schema_version", "app_instances"} <= tables
+    finally:
+        app.state.conn.close()
 
 
 def test_app_factory_mounts_every_router(repo_root: Path):
     app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
-    paths = {r.path for r in app.routes}
-    for expected in ("/", "/doctor", "/discovery/handles", "/skills", "/inspector", "/browse"):
-        assert any(p == expected or p.startswith(expected) for p in paths), expected
+    try:
+        paths = {r.path for r in app.routes}
+        for expected in ("/", "/doctor", "/discovery/handles", "/skills", "/inspector", "/browse"):
+            assert any(p == expected or p.startswith(expected) for p in paths), expected
+    finally:
+        app.state.conn.close()
 
 
 def test_app_factory_runs_the_startup_orphan_sweep(repo_root: Path):
@@ -5447,8 +5923,11 @@ def test_app_factory_runs_the_startup_orphan_sweep(repo_root: Path):
     seed.close()
 
     app = create_app(repo_root=repo_root, db_path=db_path)
-    assert app.state.orphaned_count == 1
-    assert db_mod.list_running_turns(app.state.conn) == []
+    try:
+        assert app.state.orphaned_count == 1
+        assert db_mod.list_running_turns(app.state.conn) == []
+    finally:
+        app.state.conn.close()
 
 
 def test_a_broken_pipeline_yaml_is_distinguishable_from_an_empty_one(
@@ -5460,11 +5939,16 @@ def test_a_broken_pipeline_yaml_is_distinguishable_from_an_empty_one(
     monkeypatch.chdir(tmp_path)
     (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
     empty = create_app(repo_root=tmp_path, db_path=tmp_path / "empty.db")
-    assert empty.state.stage_defs == []
+    try:
+        assert empty.state.stage_defs == []
+    finally:
+        empty.state.conn.close()
 
     (tmp_path / "pipeline.yaml").write_text("stages: [{id: a}]\n", encoding="utf-8")
     with pytest.raises(KeyError):
         create_app(repo_root=tmp_path, db_path=tmp_path / "broken.db")
+    # No connection to close here: the production fix below closes it internally
+    # before re-raising, since create_app never returns an app object on this path.
 
 
 def test_a_topology_load_failure_records_a_critical_event(tmp_path: Path, monkeypatch):
@@ -5502,6 +5986,23 @@ def test_create_default_app_targets_the_repo_root_database(monkeypatch):
     assert (seen["repo_root"] / "pipeline-app" / "pipeline_app" / "main.py").exists()
 ```
 
+**PRE-REVIEW, PLAN AMENDED BEFORE DISPATCH.** Two problems found before any implementer touched
+this task:
+
+1. **Five of the seven new tests leaked `app.state.conn`** — same shape as every other task in this
+   pause window. Wrapped in `try/finally`.
+2. **The reorder itself creates a real, production connection leak, not just a test artifact.**
+   Before this task, a broken `pipeline.yaml` made `load_topology` raise BEFORE the database
+   connection was ever opened — no leak, because nothing existed to leak. This task deliberately
+   reorders so the connection opens FIRST (so the failure can be recorded on it), which means the
+   `except` block's `raise` now propagates out of `create_app` while `app.state.conn` stays open —
+   and since `create_app` never returns an app object on this path, no caller has a reference left
+   to close it with. Every real deployment with a broken `pipeline.yaml` would now leak a live
+   connection and its `-wal`/`-shm` files forever (A-85's exact defect, reopened by this task's own
+   fix). Fixed by closing the connection immediately after recording the event and before
+   re-raising — the row is already durably committed by then (`obs.record_event` commits internally
+   via `commit_unless_in_transaction`), so closing does not risk losing the very event just written.
+
 - [ ] **Run it.** `test_a_topology_load_failure_records_a_critical_event` fails: no event, because
       `load_topology` runs before the connection exists and nothing catches it.
 - [ ] **Implement.** In `main.py`, reorder so the database opens first and the topology load is
@@ -5524,6 +6025,14 @@ def test_create_default_app_targets_the_repo_root_database(monkeypatch):
                     f"{type(exc).__name__}: {exc}",
             detail={"path": str(repo_root / "pipeline.yaml"), "error": type(exc).__name__},
         )
+        # This reorder opens the connection BEFORE the topology load so the
+        # failure above can be recorded on it -- but create_app never returns
+        # an app object on this path, so nothing else is left to close it.
+        # Without this, every caller with a broken pipeline.yaml leaks a real
+        # connection and its -wal/-shm files (A-85's defect, reopened by this
+        # task's own fix). The event row is already committed by record_event
+        # above, so closing here cannot lose it.
+        app.state.conn.close()
         raise
 ```
 

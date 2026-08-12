@@ -187,3 +187,14 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_occurred ON events(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_severity ON events(severity, occurred_at DESC);
+
+-- Which process owns startup reconciliation. reconcile_orphaned_turns marks
+-- EVERY running turn orphaned and unwedges its stage; run once per uvicorn
+-- worker it declares an actively-streaming turn dead and releases the
+-- single-flight lock mid-write (A-76). One row, one lease, one sweeper.
+CREATE TABLE IF NOT EXISTS app_instances (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    owner_token  TEXT NOT NULL,
+    claimed_at   TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL
+);

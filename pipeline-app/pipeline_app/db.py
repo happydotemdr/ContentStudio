@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -1989,3 +1990,53 @@ def update_settings(conn: sqlite3.Connection, frequency: str, time_of_day: str, 
 def set_last_scheduled_run_date(conn: sqlite3.Connection, date_iso: str) -> None:
     conn.execute("UPDATE discovery_settings SET last_scheduled_run_date = ? WHERE id = 1", (date_iso,))
     commit_unless_in_transaction(conn)
+
+
+def list_unacknowledged_events(conn: sqlite3.Connection, *, since_iso: str,
+                               limit: int = 50) -> list[dict]:
+    """Unacknowledged error/critical events since `since_iso`, newest first.
+
+    Returns plain dicts, not Rows: `detail` is parsed out of its JSON column so
+    a template can iterate it, and the shape is the contract /doctor renders
+    (see P1's published interface). A detail that will not parse becomes
+    {"raw": <text>} -- losing the whole event over a formatting problem would be
+    the same silence this table exists to end."""
+    rows = conn.execute(
+        "SELECT * FROM events WHERE acknowledged = 0 AND severity IN ('error','critical') "
+        "AND occurred_at >= ? ORDER BY occurred_at DESC, id DESC LIMIT ?",
+        (since_iso, limit),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        detail = None
+        if row["detail"] is not None:
+            try:
+                parsed = json.loads(row["detail"])
+                detail = parsed if isinstance(parsed, dict) else {"raw": row["detail"]}
+            except (ValueError, TypeError):
+                detail = {"raw": row["detail"]}
+        out.append({
+            "id": row["id"], "occurred_at": row["occurred_at"], "kind": row["kind"],
+            "severity": row["severity"], "source": row["source"], "message": row["message"],
+            "detail": detail, "run_id": row["run_id"],
+            "acknowledged": bool(row["acknowledged"]),
+        })
+    return out
+
+
+def acknowledge_event(conn: sqlite3.Connection, event_id: int) -> None:
+    conn.execute("UPDATE events SET acknowledged = 1 WHERE id = ?", (event_id,))
+    commit_unless_in_transaction(conn)
+
+
+def count_unacknowledged_events(conn: sqlite3.Connection) -> int:
+    """ALL-TIME count of unacknowledged error/critical events -- deliberately
+    unbounded by `list_unacknowledged_events`'s window or limit. Read
+    together, the two distinguish "nothing else to show" from "more exist,
+    silently excluded by the window or the row cap" -- the recurring defect
+    class, reappearing inside this task's own dashboard if left unpaired."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM events WHERE acknowledged = 0 "
+        "AND severity IN ('error','critical')"
+    ).fetchone()
+    return row["n"]

@@ -59,6 +59,7 @@ Total coverage: every one of the 15 IDs has a primary task.
 | Finding | Sev | failure_mode | Primary task | Also exercised by |
 |---|---|---|---|---|
 | C-88 | S1 | silent | **T1** (disguised heading fails closed) + **T2** (five-label cross-check) | T7, T8 |
+| **C-88b** | **S1** | **silent** | **T1b** (a refused *sub-beat* line blocks instead of vanishing) | T7 |
 | C-89 | S1 | silent | **T3** (`\| N words` is mandatory, not opt-in) | T7 |
 | C-90 | S2 | silent | **T4** (ratable-fraction floor; malformed range blocks) | T7, T8 |
 | C-91 | S3 | loud | **T5** (template match, not the pipe heuristic; fence scoping) | T7 |
@@ -188,6 +189,102 @@ and inside `parse_script`'s loop, replacing the bare `continue`:
 
 - [ ] **Run**, see all three pass. **Run the whole file** — `python -m pytest tests/test_lint_script_language.py -q` — and confirm the four shipped fixtures still parse to 6/6/7/8 VO lines with zero parse findings (`test_shipped_fixtures_parse_to_expected_counts`, `test_authorial_rounding_on_the_shipped_fixtures_never_fires_the_detector`).
 - [ ] **Commit:** `fix(gate-d): a disguised beat heading blocks instead of vanishing (C-88)`
+
+---
+
+### T1b — A refused *sub-beat* line must block, not vanish
+
+> **New finding C-88b, raised in the field on 2026-08-10, not in the original audit.** Filed after
+> a real Gate D run on an authored Short. Root-cause and design reports:
+> `.superpowers/sdd/2026-08-08-audit-remediation/GATE-D-PARSE-rootcause.md` and
+> `-design.md`. **Must land after T1** — it extends the same refused-line branch, so sequencing it
+> earlier only creates a conflict.
+
+**C-88b (S1, silent).** `_beat_name()` (`scripts/lint_script_language.py:63-72`) returns `None` for
+**both** "this line is prose and ignoring it is correct" **and** "this is a beat line carrying
+spoken text in a shape I do not recognise", and the caller `continue`s on that shared value
+(`:171`). The refused line is deleted from the lint surface before any state, finding, or its own
+`| N words` witness is read — `DECLARED_WORDS_RE` runs at `:173`, *after* the `continue`, so the
+one independent witness sitting on the line that broke is discarded in the same statement as the
+words. The recurring defect class, in a text-to-structure parser.
+
+**How it presented.** An author wrote a sub-beat label-first — `mechanism: (11–18s | 19 words)` —
+which `SUBRANGE_RE = ^\(\d+` does not match because it requires the range to *start* the line. 49
+of 62 words vanished. It surfaced only because a parent heading declared a total that then
+disagreed with the extracted sum, and the response at the time was to **rewrite the script** to
+satisfy the parser. That inverts causation: the parser never asserted the script was malformed, it
+merely declined to read part of it.
+
+**Why the existing tasks do not catch it — verified against their proposed implementations, not
+assumed.** T1 adds `_disguised_beat_label` *beside* `_beat_name` and never modifies it, and its
+detector matches only the five top-level `BEAT_LABELS`, so a sub-beat label names no beat label and
+falls straight through. T2's `check_beat_set` is satisfied — all five labels are present. T3
+operates on lines that already parsed, which a refused line never reaches. **No existing task
+touches `_beat_name` or `SUBRANGE_RE`.**
+
+**Two measurements that decide the design. Both were run; do not re-derive them.**
+
+- **The declared-vs-extracted check is a coincidence, not a backstop.** Its threshold is
+  `shortfall >= 3 AND >= 0.25 × declared`, so ~25% of any declared beat can vanish silently; it
+  does not fire at all when `declared is None`; and it never fires on over-counts. Proven
+  end-to-end with identical script bodies: declaring `62` prints `PASS`/exit 0, declaring `63`
+  prints `FAIL` — one word apart. (T3 makes the budget mandatory, which closes the `declared is
+  None` half; it does not close the 25% window.)
+- **Refusing *every* unrecognised line inside a beat is not viable.** Measured: **100 false
+  positives** scoped between headings and **2,186** scoped to EOF, because the format has no
+  end-of-beat-block marker and "inside a beat" is therefore undefined after `LOOP/CTA`.
+
+**The design: keep the format strict, and make refusal loud.** A refused line that carries a
+parenthesised word budget is the author asserting it is a beat line — that is the signal, and it is
+what visual-note lines like `Hook (0–3s): …` lack. Measured **2/2 true positives, 0 false
+positives across all 19 real script artifacts**.
+
+**Backward compatibility: zero files invalidated.** 0 hits across the 4 `tests/fixtures/script_*.md`,
+0 across the 4 `rgs-briefs/` scripts, 0 under `docs/**`. One of 8 live
+`runs/*/02-scripting/artifact.v*.md` gains findings, and it already fails today and is already
+superseded by a passing v2.
+
+**Gate C stays convergent.** `lint_prompt_sheet.py:84` has the identical bare skip and today prints
+`Gate C: PASS — 10 shots, 0 findings` with a shot deleted (proven, mid-sheet and last-shot). P11's
+C-70 gives Gate C a `parse_sheet(...).findings` channel — the same policy this task gives Gate D.
+Accepting label-first sub-beats instead would have made the two gates **divergent**, which is why
+that option was rejected here rather than merely deferred.
+
+- [ ] **Write the failing tests** in `tests/test_lint_script_language.py`:
+
+| Test | Role | Must prove |
+|---|---|---|
+| `test_a_label_first_sub_beat_is_a_blocking_parse_finding` | **fault** | `parse_script` returns a `("PARSE", "BUILD/VALUE", …, kind="fail")` finding whose message names the offending line number. Assert on the **emitted finding**, not the VO-line count — the count is the symptom, the finding is the behaviour. |
+| `test_a_refused_sub_beat_is_distinguishable_from_a_beat_that_has_none` | **distinguishability** | `parse_script(with_refused)[1] != parse_script(with_none)[1]`, and the second is `[]`. This is the defect exactly: "the author wrote nothing" and "the parser ate what the author wrote" are the same empty list today. |
+| `test_a_refused_sub_beat_reaches_the_shell_as_exit_1` | **surfacing** | `main([...]) == 1`. **It must still fail with the parent heading's `\| N words` stripped**, proving the new detector fired and not T3's dropped-text check. Asserting a `print()` happened does not count. |
+| `test_a_visual_note_line_carrying_a_time_range_is_not_a_refused_sub_beat` | **calibration** | A `Hook (0–3s): …` line taken verbatim from `tests/fixtures/script_decline.md:189` produces **no** finding. This is the shape separating a 100%-precision detector from a 98%-false-positive one. |
+| `test_the_shipped_fixtures_produce_no_refused_sub_beat_finding` | **calibration** | All four `tests/fixtures/script_*.md` yield zero findings from the new detector, pinning it to real artifacts and honouring §1's "fixtures stay byte-identical" guarantee. |
+
+- [ ] **Run them.** Each must fail with `findings == []` — "no finding emitted". A failure that is an
+      `ImportError` or `NameError` is not the RED this task needs; re-derive it.
+- [ ] **Implement** in `scripts/lint_script_language.py`:
+      - `BUDGET_GROUP_RE = re.compile(r"\([^)\n]*\|\s*\d+\s*words[^)\n]*\)")`, sited beside
+        `DECLARED_WORDS_RE` (`:35`), with a comment recording **why the anchor is the budget and not
+        the range**: measured identical precision (2/2, zero false positives) and it additionally
+        catches `mechanism (11-18 sec | 19 words):`, which a `RANGE_RE and DECLARED_WORDS_RE` anchor
+        misses.
+      - inside the `if beat is None:` branch, **after** T1's `_disguised_beat_label` check and
+        before its `continue`: when `current_label is not None` and `BUDGET_GROUP_RE.search(stripped)`,
+        append `Finding("PARSE", current_label, …, kind="fail")` naming the line number, a truncated
+        `repr` of the line, and the concrete fix.
+      - a `parse_script` docstring paragraph stating the **known limit**: a refused line carrying no
+        budget group is not detected here, and T3's dropped-text check is the independent second
+        detector for that case. State the limit rather than implying coverage the code lacks.
+- [ ] **Add one row to T7's mutation matrix** — an addition to T7, not a contradiction of it:
+      `("C88b-label-first-subbeat", '  (10–24s | 20 words): "Kids hand over…', '  mechanism (10–24s | 20 words): "Kids hand over…', "PARSE")`.
+      `CLEAN_SCRIPT` has no sub-beat, so add one indented sub-beat under `BUILD/VALUE` — the smaller
+      change, and it makes the base representative of real scripts, all four of which have one.
+- [ ] **Deliberately NOT in this task:** no new `kind` (`NON_BLOCKING_KINDS` stays `{"skipped",
+      "info"}` per T6, so P3's contract is untouched); no exit-code or output-format change; **no
+      indentation requirement** — `parse_script` does not look at leading whitespace today and must
+      not start, since nothing declares that rule and inventing it would add a second undocumented
+      one.
+- [ ] **Commit.** `fix(gate-d): a refused sub-beat line blocks instead of vanishing (C-88b)`
 
 ---
 
