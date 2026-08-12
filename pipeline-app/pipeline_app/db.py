@@ -2027,3 +2027,16 @@ def list_unacknowledged_events(conn: sqlite3.Connection, *, since_iso: str,
 def acknowledge_event(conn: sqlite3.Connection, event_id: int) -> None:
     conn.execute("UPDATE events SET acknowledged = 1 WHERE id = ?", (event_id,))
     commit_unless_in_transaction(conn)
+
+
+def count_unacknowledged_events(conn: sqlite3.Connection) -> int:
+    """ALL-TIME count of unacknowledged error/critical events -- deliberately
+    unbounded by `list_unacknowledged_events`'s window or limit. Read
+    together, the two distinguish "nothing else to show" from "more exist,
+    silently excluded by the window or the row cap" -- the recurring defect
+    class, reappearing inside this task's own dashboard if left unpaired."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM events WHERE acknowledged = 0 "
+        "AND severity IN ('error','critical')"
+    ).fetchone()
+    return row["n"]

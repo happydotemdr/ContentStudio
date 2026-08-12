@@ -264,3 +264,40 @@ def test_the_doctor_page_renders_a_skipped_sweep_distinguishably_from_a_clean_on
     assert "Orphaned turns reconciled at startup: 0" in clean_text
     assert "Orphaned turns reconciled at startup: None" in skipped_text
     assert clean_text != skipped_text
+
+
+def test_the_total_count_does_not_share_the_windows_blind_spot(tmp_path, monkeypatch):
+    """An unacknowledged error older than RECENT_EVENT_WINDOW_DAYS is correctly
+    excluded from `recent_events` (the window is a deliberate design choice),
+    but the total count must not share that exclusion -- otherwise an old,
+    ignored critical event renders identically to a clean system."""
+    from fastapi.testclient import TestClient
+    from pipeline_app.main import create_app
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    (tmp_path / ".claude" / "skills").mkdir(parents=True)
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    try:
+        old_id = obs.record_event(app.state.conn, kind="a.old", severity="critical",
+                                  source="s", message="ancient, still unacknowledged")
+        app.state.conn.execute(
+            "UPDATE events SET occurred_at = '2020-01-01T00:00:00+00:00' WHERE id = ?",
+            (old_id,))
+        app.state.conn.commit()
+
+        captured = {}
+        real = app.state.templates.TemplateResponse
+
+        def spy(request, name, context, *args, **kwargs):
+            captured.update(context)
+            return real(request, name, context, *args, **kwargs)
+
+        monkeypatch.setattr(app.state.templates, "TemplateResponse", spy)
+        TestClient(app).get("/doctor")
+
+        assert captured["recent_events"] == []                      # window correctly excludes it
+        assert captured["unacknowledged_error_total"] == 1          # total does not share the gap
+    finally:
+        app.state.conn.close()

@@ -35,6 +35,9 @@ def doctor_page(request: Request):
             "recent_events": db_mod.list_unacknowledged_events(
                 request.app.state.conn, since_iso=since
             ),
+            "unacknowledged_error_total": db_mod.count_unacknowledged_events(
+                request.app.state.conn
+            ),
             "active_nav": "doctor",
             "cli_available": request.app.state.cli_available,
         },
