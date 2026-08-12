@@ -262,13 +262,50 @@ def test_write_reserved_artifact_lands_at_the_reserved_version(tmp_path):
     assert not res.reservation_path.exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A-66, not A-65: needs T6's real _record_high_water_mark. T2's stub is a "
-           "no-op until T6 lands, so a released version's HWM entry is never durably "
-           "recorded and the next reserve_version() call reissues it. T6 removes this "
-           "marker as part of its own task.",
-)
+def test_deleting_the_newest_artifact_does_not_reissue_its_version(tmp_path):
+    """A-66: the sequence used to be whatever the directory currently contained,
+    so deleting artifact.v3.md made the next write v3 again -- the version
+    number, the supersedes chain and the `version:` field all lying about
+    history, and any dependent whose depends_on recorded the old v3 hash now
+    comparing against a different file at the same path."""
+    for v in (1, 2, 3):
+        write_artifact(tmp_path, v, {"version": v}, f"body {v}")
+    (tmp_path / "artifact.v3.md").unlink()
+
+    assert artifacts.next_version_number(tmp_path) == 4
+    assert reserve_version(tmp_path).version == 4
+
+
+def test_high_water_mark_survives_deleting_every_artifact(tmp_path):
+    write_artifact(tmp_path, 1, {"version": 1}, "a")
+    write_artifact(tmp_path, 2, {"version": 2}, "b")
+    for p in tmp_path.glob("artifact.v*.md"):
+        p.unlink()
+    assert artifacts.next_version_number(tmp_path) == 3
+
+
+def test_read_artifact_rejects_a_frontmatter_version_that_disagrees_with_the_filename(tmp_path):
+    """A rename desynchronizes them permanently and silently -- nothing ever
+    cross-checked the two."""
+    write_artifact(tmp_path, 1, {"version": 1, "status": "final"}, "body")
+    renamed = tmp_path / "artifact.v9.md"
+    (tmp_path / "artifact.v1.md").rename(renamed)
+
+    with pytest.raises(artifacts.MalformedArtifactError) as exc:
+        artifacts.read_artifact(renamed)
+    assert "does not match filename" in str(exc.value)
+
+
+def test_corrupt_high_water_mark_is_warned_and_ignored_not_fatal(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(artifacts.obs, "log", lambda e, **k: events.append((e, k)))
+    write_artifact(tmp_path, 1, {"version": 1}, "a")
+    (tmp_path / ".artifact-version-hwm").write_text("not a number", encoding="utf-8")
+
+    assert artifacts.next_version_number(tmp_path) == 2
+    assert any(e == "artifacts.hwm_unreadable" for e, _ in events)
+
+
 def test_released_version_is_burnt_not_reissued(tmp_path):
     """A released number must never be reissued: anything that observed it --
     a log line, a `supersedes` field, a half-written temp -- must not be able

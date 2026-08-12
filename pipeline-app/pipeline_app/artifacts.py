@@ -2,10 +2,13 @@ import hashlib
 import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+from pipeline_app import obs
 
 _DELIM = "---"
 _VERSION_RE = re.compile(r"artifact\.v(\d+)\.md$")
@@ -94,11 +97,6 @@ def _versions_in(stage_dir: Path) -> list[tuple[int, Path]]:
     return versions
 
 
-def next_version_number(stage_dir: Path) -> int:
-    versions = _versions_in(stage_dir)
-    return (max(v for v, _ in versions) if versions else 0) + 1
-
-
 def latest_artifact_path(stage_dir: Path) -> Path | None:
     versions = _versions_in(stage_dir)
     if not versions:
@@ -143,8 +141,105 @@ def write_artifact(stage_dir: Path, version: int, meta: dict, body: str) -> Path
     return path
 
 
+_HWM_NAME = ".artifact-version-hwm"
+
+
+def _high_water_mark(stage_dir: Path) -> int:
+    """The highest version number ever ALLOCATED in this stage dir, not the
+    highest currently on disk.
+
+    A-66: with no table recording versions, the sequence was whatever the
+    directory happened to contain, and runs/ is git-ignored and hand-managed --
+    an ordinary operator deletion silently reissued a live version number. A
+    sidecar high-water mark keeps allocation monotonic without a schema change
+    (schema.sql and db.py belong to P1).
+    """
+    seen = [v for v, _ in _versions_in(stage_dir)]
+    seen += _reserved_versions_in(stage_dir)
+    hwm_path = stage_dir / _HWM_NAME
+    if hwm_path.exists():
+        # Windows: _atomic_write_text's os.replace briefly makes the destination
+        # unreadable mid-rename (ERROR_SHARING_VIOLATION -> PermissionError) to a
+        # concurrent reader here -- reserve_version calls this under many
+        # simultaneous threads, all racing writes to the same sidecar file. The
+        # window is exactly one rename syscall, so a few immediate retries clear
+        # it without needing a lock.
+        raw = None
+        for attempt in range(50):
+            try:
+                raw = hwm_path.read_text(encoding="utf-8").strip()
+                break
+            except (PermissionError, FileNotFoundError):
+                if attempt == 49:
+                    raise
+                time.sleep(0.001)
+        if raw.isdigit():
+            seen.append(int(raw))
+        else:
+            obs.log(
+                "artifacts.hwm_unreadable",
+                level="warning",
+                stage_dir=str(stage_dir),
+                raw=raw[:80],
+                detail="version high-water mark is not an integer; falling back to the "
+                       "filesystem, which can reissue a deleted version number",
+            )
+    return max(seen) if seen else 0
+
+
 def _record_high_water_mark(stage_dir: Path, version: int) -> None:
-    pass  # T6 replaces this body with the real sidecar-file writer.
+    # >=, not >: both call sites (write_artifact, reserve_version) invoke this
+    # AFTER the artifact file or reservation marker for `version` already
+    # exists on disk, so _high_water_mark's own scan already counts `version`
+    # among `seen` -- `version > _high_water_mark(...)` can never be true at
+    # either call site and the sidecar would never actually get written.
+    if version >= _high_water_mark(stage_dir):
+        # Windows: reserve_version's concurrency test drives many threads to
+        # replace this exact sidecar file at once. os.replace needs the
+        # destination free of any handle lacking delete-sharing, and a sibling
+        # thread's read of the same path (in _high_water_mark, above) can hold
+        # one for a moment -- os.replace then raises PermissionError
+        # (WinError 5) rather than blocking. The write itself is idempotent
+        # (same or higher version), so retrying is safe.
+        for attempt in range(50):
+            try:
+                _atomic_write_text(stage_dir / _HWM_NAME, f"{version}\n")
+                break
+            except PermissionError:
+                if attempt == 49:
+                    raise
+                time.sleep(0.001)
+
+
+def next_version_number(stage_dir: Path) -> int:
+    """Advisory: the version reserve_version() will TRY first.
+
+    This is no longer an allocator -- it is an unlocked read and always was
+    (A-65). Kept for read-only introspection and for callers not yet migrated;
+    anything about to WRITE must call reserve_version().
+    """
+    return _high_water_mark(stage_dir) + 1
+
+
+def read_artifact(path: Path) -> tuple[dict, str]:
+    """parse_frontmatter over a file, naming the path in every failure and
+    cross-checking the frontmatter `version` against the filename (A-66)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise MalformedArtifactError(f"unreadable: {type(exc).__name__}: {exc}", path=path) from exc
+    try:
+        meta, body = parse_frontmatter(text)
+    except MalformedArtifactError as exc:
+        raise MalformedArtifactError(exc.reason, path=path) from exc
+    m = _VERSION_RE.match(path.name)
+    if m is not None and isinstance(meta.get("version"), int) and meta["version"] != int(m.group(1)):
+        raise MalformedArtifactError(
+            f"frontmatter version {meta['version']} does not match filename version "
+            f"{int(m.group(1))} -- the file was renamed or hand-copied",
+            path=path,
+        )
+    return meta, body
 
 
 @dataclass(frozen=True)
