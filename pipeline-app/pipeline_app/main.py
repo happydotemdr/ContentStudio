@@ -153,11 +153,32 @@ def create_app(repo_root: Path, db_path: Path) -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     app.state.repo_root = repo_root
     app.state.db_path = db_path
-    app.state.stage_defs = load_topology(repo_root / "pipeline.yaml")
 
     schema_path = PACKAGE_DIR / "schema.sql"
     db_mod.init_db(db_path, schema_path)
     app.state.conn = db_mod.get_connection(db_path)
+    try:
+        app.state.stage_defs = load_topology(repo_root / "pipeline.yaml")
+    except Exception as exc:
+        # The failure is loud but unrecorded: create_app dies with a traceback
+        # into a console Windows Task Scheduler destroys. Record it, then let it
+        # propagate -- booting with an empty topology would be worse (F-26).
+        obs.record_event(
+            app.state.conn, kind="app.topology_load_failed", severity="critical",
+            source="main.create_app",
+            message=f"could not load {repo_root / 'pipeline.yaml'}: "
+                    f"{type(exc).__name__}: {exc}",
+            detail={"path": str(repo_root / "pipeline.yaml"), "error": type(exc).__name__},
+        )
+        # This reorder opens the connection BEFORE the topology load so the
+        # failure above can be recorded on it -- but create_app never returns
+        # an app object on this path, so nothing else is left to close it.
+        # Without this, every caller with a broken pipeline.yaml leaks a real
+        # connection and its -wal/-shm files (A-85's defect, reopened by this
+        # task's own fix). The event row is already committed by record_event
+        # above, so closing here cannot lose it.
+        app.state.conn.close()
+        raise
     app.state.backfilled_projects = migrations.backfill_styleboard_rows(
         app.state.conn, app.state.repo_root, app.state.stage_defs
     )

@@ -37,22 +37,117 @@ def _app_client(repo_root: Path):
         app.state.conn.close()
 
 
-def test_cli_available_true_when_binary_found(repo_root: Path, monkeypatch):
-    monkeypatch.setattr(
-        "pipeline_app.preflight.check_cli_available",
-        lambda: {"available": True, "path": r"C:\fake\claude.CMD", "error": None},
-    )
-    with _app_client(repo_root) as client:
-        assert client.app.state.cli_available is True
+def test_cli_availability_is_recorded_on_app_state(repo_root: Path, monkeypatch):
+    """Renamed from test_cli_available_true_when_binary_found. It still round-
+    trips a mock, and that is all it claims to do -- the app factory's real
+    behaviour is the four tests below."""
+    from pipeline_app import preflight
+    monkeypatch.setattr(preflight, "check_cli_available",
+                        lambda *a, **k: {"available": True, "path": r"C:\fake\claude.CMD",
+                                         "error": None})
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    try:
+        assert app.state.cli_available is True
+    finally:
+        app.state.conn.close()
 
 
-def test_cli_available_false_when_missing(repo_root: Path, monkeypatch):
-    monkeypatch.setattr(
-        "pipeline_app.preflight.check_cli_available",
-        lambda: {"available": False, "path": None, "error": "not found"},
-    )
-    with _app_client(repo_root) as client:
-        assert client.app.state.cli_available is False
+def test_app_factory_creates_the_database_schema(repo_root: Path):
+    """FAULT. 34 statements were covered by a one-attribute round trip."""
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    try:
+        tables = {r[0] for r in app.state.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert {"projects", "stages", "turns", "handles", "events", "creators",
+                "schema_version", "app_instances"} <= tables
+    finally:
+        app.state.conn.close()
+
+
+def test_app_factory_mounts_every_router(repo_root: Path):
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    try:
+        paths = {r.path for r in app.routes}
+        for expected in ("/", "/doctor", "/discovery/handles", "/skills", "/inspector", "/browse"):
+            assert any(p == expected or p.startswith(expected) for p in paths), expected
+    finally:
+        app.state.conn.close()
+
+
+def test_app_factory_runs_the_startup_orphan_sweep(repo_root: Path):
+    from pipeline_app import db as db_mod
+
+    db_path = repo_root / "pipeline.db"
+    schema = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db_mod.init_db(db_path, schema)
+    seed = db_mod.get_connection(db_path)
+    project_id = db_mod.create_project(seed, "a-1", "a", "generic", "2026-08-08T00:00:00+00:00")
+    stage_row_id = db_mod.create_stage_row(seed, project_id, "ideation", "running")
+    db_mod.create_turn(seed, stage_row_id, "running", "2026-08-08T00:00:00+00:00", "e/1.jsonl")
+    seed.close()
+
+    app = create_app(repo_root=repo_root, db_path=db_path)
+    try:
+        assert app.state.orphaned_count == 1
+        assert db_mod.list_running_turns(app.state.conn) == []
+    finally:
+        app.state.conn.close()
+
+
+def test_a_broken_pipeline_yaml_is_distinguishable_from_an_empty_one(
+        tmp_path: Path, monkeypatch):
+    """DISTINGUISHABILITY. `stages: []` is a legitimate empty topology. A
+    pipeline.yaml that cannot be parsed must not produce the same app -- an app
+    with zero stages and no complaint is how a config error becomes a
+    mystery."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
+    empty = create_app(repo_root=tmp_path, db_path=tmp_path / "empty.db")
+    try:
+        assert empty.state.stage_defs == []
+    finally:
+        empty.state.conn.close()
+
+    (tmp_path / "pipeline.yaml").write_text("stages: [{id: a}]\n", encoding="utf-8")
+    with pytest.raises(KeyError):
+        create_app(repo_root=tmp_path, db_path=tmp_path / "broken.db")
+    # No connection to close here: the production fix below closes it internally
+    # before re-raising, since create_app never returns an app object on this path.
+
+
+def test_a_topology_load_failure_records_a_critical_event(tmp_path: Path, monkeypatch):
+    """SURFACING. Today the traceback goes to a console Task Scheduler
+    destroys."""
+    from pipeline_app import db as db_mod, obs
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(obs, "LOG_DIR", tmp_path / "obs-logs")
+    (tmp_path / "pipeline.yaml").write_text("stages: [{id: a}]\n", encoding="utf-8")
+    db_path = tmp_path / "pipeline.db"
+    with pytest.raises(KeyError):
+        create_app(repo_root=tmp_path, db_path=db_path)
+
+    conn = db_mod.get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM events WHERE kind = 'app.topology_load_failed'").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["severity"] == "critical"
+    finally:
+        conn.close()
+
+
+def test_create_default_app_targets_the_repo_root_database(monkeypatch):
+    """main.py:56-57 -- the two uncovered lines F-26 named."""
+    from pipeline_app import main as main_mod
+
+    seen = {}
+    monkeypatch.setattr(main_mod, "create_app",
+                        lambda *, repo_root, db_path: seen.update(
+                            repo_root=repo_root, db_path=db_path))
+    main_mod.create_default_app()
+    assert seen["db_path"] == seen["repo_root"] / "pipeline-app" / "pipeline.db"
+    assert (seen["repo_root"] / "pipeline-app" / "pipeline_app" / "main.py").exists()
 
 
 def test_app_shutdown_closes_the_connection_and_truncates_the_wal(repo_root: Path, monkeypatch):
