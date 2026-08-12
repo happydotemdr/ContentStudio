@@ -1,11 +1,12 @@
-# Resume prompt — audit-remediation programme, P1 T14 → end of P1
+# Resume prompt — audit-remediation programme, P2 (T1 → T18)
 
 Paste everything below the line into a fresh session. It is self-contained and assumes zero prior
 context. `EXECUTION-KICKOFF-PROMPT.md` beside this file is the original programme brief and is
 still binding verbatim; this document is the delta — where execution got to, what the next session
 must do, where it must stop, and everything learned the hard way that is written down nowhere else.
 
-Last updated 2026-08-10, after P1 T13b closed, PR #25 merged, and field finding C-88b was filed.
+Last updated 2026-08-12, after P1 closed in full, PR #26 merged, and both the worktree and the
+operator's main checkout synced.
 
 ---
 
@@ -35,74 +36,128 @@ Two commits must never be altered: `1d39c9d` (the audit) and `6c61f14` (the reme
 2. `.superpowers/sdd/2026-08-08-audit-remediation/progress.md` — the ledger. Git-ignored, so it
    exists only on this machine. It is the recovery map: the commits it names exist in `git log`
    even where nothing else remembers creating them. Trust it and `git log` over recollection.
-3. `docs/superpowers/plans/remediation/P1-observability.md` — the plan being executed.
+3. `docs/superpowers/plans/remediation/P2-artifact-durability.md` — the plan being executed.
 
 ## Where execution is
 
-**P0: complete (23 findings). P1: complete through T13b (13 findings). 36 of 328 closed.**
+**P0: complete (23 findings). P1: complete (13 findings, T1–T18 incl. T4b/T13b). 49 of 328
+closed.**
 
-Suites, verified in both the worktree and the operator's main checkout:
-**app 982 passed / 3 skipped / 0 xfailed**, **root 247 passed**, zero warnings, tree clean.
+Suites, verified in the worktree, the operator's main checkout, and CI:
+**app 1005 passed / 3 skipped / 0 xfailed**, **root 247 passed**, zero warnings, tree clean.
 Baseline at programme start was 201 root / 833 app with ~65,700 warnings.
 
 CI exists and is green (3 jobs). It covers more than local — two symlink tests skip on Windows and
 execute only on the runner, so a local pass is strictly weaker than a CI pass.
 
-**PR #25 is merged.** It was **squash**-merged as `69a834c`, so none of this branch's commits are
-ancestors of main. That was already reconciled by merging `origin/main` back in, and
-`git diff origin/main HEAD` is empty apart from later work. **Do not rebase this branch** — its
-history is where every RED observation and defect rationale lives, and the plan files cite specific
-SHAs. A future PR will list the historical commits in its Commits tab; that is cosmetic, the diff
-is what governs.
+**PR #26 is merged** as a genuine two-parent merge commit (`6dde406` — *not* a squash, unlike #25),
+so this branch's commits are already ancestors of `main`. No reconciliation needed this time:
+`git merge-base --is-ancestor <branch-tip> origin/main` is true as-is. The operator's main checkout
+was fast-forwarded `69a834c..6dde406` and both suites verified green there too. **Do not rebase
+this branch** — its history is where every RED observation and defect rationale lives, and the
+plan files cite specific SHAs.
 
-## YOUR TASK THIS SESSION: P1 T14 → T18, then STOP
+The live database at `C:\Projects\ContentStudio\pipeline-app\pipeline.db` is still legacy v0 (the
+migration has not run against it yet — it runs automatically on the operator's next real boot). A
+dry run against a copy already proved it migrates cleanly: every row preserved, only pre-existing
+benign FK-violation warnings.
 
-**Start at T14.** Everything through T13b is closed with a clean review.
+## YOUR TASK THIS SESSION: P2 (T1 → T18), then STOP
+
+**Start at T1.** P2 is untouched — nothing in it has been pre-reviewed or dispatched yet.
+
+P2 carries **3 of the audit's 4 S0 (data-destroying) findings** and is Wave B1's first half —
+execute it before P10, never in parallel with it, per the landing order below.
+
+### Files this package owns (no other package may touch these)
+
+```
+pipeline-app/pipeline_app/artifacts.py
+pipeline-app/pipeline_app/migrations.py
+pipeline-app/pipeline_app/grounding_service.py
+pipeline-app/tests/test_artifacts.py
+pipeline-app/tests/test_migrations.py
+pipeline-app/tests/test_grounding_service.py
+```
+
+### The 18 tasks, 15 finding IDs, all in `P2-artifact-durability.md`
 
 | Task | Finding | Sev / mode | What it does |
 |---|---|---|---|
-| **T14** | A-76 | S3 silent | `app_instances` reconcile lease; a second instance skips the sweep **and says so** |
-| **T15** | A-83 | S4 docs-drift | one cached live CLI probe feeding both the banner and the `/doctor` panel in a single request |
-| **T16** | D-48 | S3 latent | same-origin `Origin`/`Referer` middleware on every mutating request, with an event on rejection |
-| **T17** | — | — | `recent_events` on `/doctor` — the surface P15 renders |
-| **T18** | F-26 | S2 silent | both mock-echo tests in `test_main.py` replaced with real app-factory coverage |
+| T1 | A-63 (1/4) | **S0** silent | `_atomic_write_text` — temp file + `fsync` + `os.replace`, unlinked on any failure |
+| T2 | A-63 (2/4), A-65 partial | **S0** silent | `write_artifact` becomes atomic and refuses to clobber |
+| T3 | A-63 (3/4) | **S0** silent | `stamp_final` and `record_gate_override` become atomic |
+| T4 | A-63 (4/4) | **S0** silent | `write_pointer` becomes atomic (grounding half) |
+| T5 | A-65 | **S0** silent ⭐ | Exclusive version allocation: `reserve_version()`/`write_reserved_artifact()`/`release_version()` via `O_CREAT\|O_EXCL` |
+| T6 | A-66 | S3 latent | Version high-water mark survives deletion; frontmatter `version` cross-checked against filename |
+| T7 | A-67 | S3 silent | Strict, injective version regex; unparseable siblings warned and enumerable |
+| T8 | A-68 | S2 silent ⭐ | Unterminated frontmatter block raises `MalformedArtifactError`, not "unversioned" |
+| T9 | A-69 | S2 loud | Non-mapping frontmatter and `yaml.YAMLError` contained into one typed, path-naming error |
+| T10 | A-38, A-37 | S2 silent | Overrides become an append-only `{reason, at, actor}` list; `read_gate_overrides(path)` accessor |
+| T11 | A-73 (1/2) | **S0** silent ⭐ | Backfill refuses to overwrite a populated stage dir |
+| T12 | A-73 (2/2) | **S0** silent | Idempotent adoption closes the write-then-row crash window |
+| T13 | A-61 | S2 silent | Backfilled `depends_on` computed from the scripting artifact on disk; participates in staleness cascade |
+| T14 | A-74 | S2 silent ⭐ | A skipped project's backfill is findable via an `events` row, not stderr-only |
+| T15 | A-80 | S1 silent ⭐ | `pointer.yaml` records `sha256`/`size`/`written_at`; `verify_pointer()` detects an edited brief |
+| T16 | A-81 | S2 silent ⭐ | `classify_brief_change()` by set difference, explicit N-brief reason, recursive snapshot |
+| T17 | A-82 | S4 loud | `read_pointer` validates shape and refuses any path outside `rgs-briefs/` |
+| T18 | F-18 | S1 coverage-gap | `TestDurabilityContract` — parametrized crash-injection class over all four writers |
 
-**T13 already created the FastAPI lifespan.** T14 adds `_release_reconcile_lease` and
-`app.state.instance_token` into it — T13 deliberately omitted both, so do not treat their absence
-as a defect.
+⭐ = the plan itself flags these as needing extra care (Three-Test Rule or S0 severity).
 
-**T16 changes the behaviour of the running app.** The operator is now using it for real, so a CSRF
-middleware that rejects legitimate local requests is a live outage, not a test failure. Verify the
-app still works end-to-end after it, and say so explicitly in the report.
+### Verified non-issues in this package — do not "fix" these
 
-## THE PAUSE / COMMIT / PR POINT: end of P1, after T18
+- Version comparison is **integer**, so `v10` correctly outranks `v9`. `_versions_in` returns `int`
+  keys and `max` is numeric. Leave it.
+- `parse_frontmatter` returning `({}, text)` for a file that simply does **not** open with `---` is
+  correct and must keep working (a legitimately plain markdown artifact). Only the *other* three
+  collapsed cases (A-68, A-69, and the truncation case) change.
+
+### Design constraints forced by file ownership — read before touching anything cross-package
+
+Three findings in this package's own audit entries propose fixes that reach outside its file list.
+Each is closed by an equivalent that stays inside it — **do not "fix it properly" by editing P1's
+or another package's files**, that is exactly the file-exclusivity violation the whole 16-package
+split exists to prevent:
+
+- **A-66** proposes a `stage_artifacts` table. `schema.sql` and `db.py` belong to **P1**. Closed
+  instead with a filesystem high-water mark inside `artifacts.py` (T6).
+- **A-73** proposes ordering the DB row insert before the disk write. `db_mod.create_stage_row`
+  calls `conn.commit()` internally, so a deferred-commit transaction is impossible without editing
+  P1's file. Closed instead by **idempotent adoption** (T12) — same property, no P1 edit.
+- **A-74** proposes new `app.state` keys rendered on `/doctor`. `main.py` and `routes/doctor.py`
+  belong to **P1**. Closed instead by an `events` row (T14), which the orchestration plan already
+  names as a valid human-reachable surfacing signal, and which `/doctor` can query with **no
+  signature change** (T17's `recent_events`/`unacknowledged_error_total` machinery, already landed
+  in P1, is exactly the query surface this relies on).
+
+## THE PAUSE / COMMIT / PR POINT: end of P2, before P10
 
 **Stop when T18's review is clean.** Then: run both suites, confirm green, push, and open a PR
-titled for P1's completion. Do **not** start package P2.
+titled for P2's completion. Do **not** start package P10 in this session, even though it lands
+immediately after in the same wave.
 
-**Why this exact point, and not later.** The next wave opens a deliberate red window:
-
-> P2 changes `artifacts.py` in breaking ways (`parse_frontmatter` now raises instead of returning
-> `{}`; `record_gate_override` gains a required `at=`; `write_pointer` gains `repo_root`;
-> `identify_new_brief` → `classify_brief_change`; `next_version_number`+`write_artifact` →
-> `reserve_version`/`write_reserved_artifact`/`release_version`). **P3 and P4 are red until they
-> adopt. P2 lands before P3 and P4.**
-
-So between P2 and P4 the suite is **intentionally red** and the app is not in a syncable state. End
-of P1 is the last green, fully-usable boundary before that. P1 is additive hardening; P2 onward is
-not.
+**Why this exact point, and not P10 too.** Wave B1 is "P2, then P10" — sequential, not parallel,
+specifically so the three artifact-durability S0s land before P10's own S0 (the corpus-destroying
+roster rebuild), which *increases write traffic* against the same `runs/` tree P2 just made crash-safe.
+Landing them in one session risks the same "amendment introduces the defect it was written to
+catch" failure mode this programme has hit repeatedly — better to close, verify, and pause than to
+carry momentum into a second package's very different risk profile.
 
 At the pause, the PR body should state plainly: findings closed, suite numbers, what the operator
-will notice on next boot, and what is knowingly still open.
+will notice on next boot, and what is knowingly still open — same shape as PR #26's body.
 
 ## The bar, restated because it is what everything else serves
 
 **"Any representation shared by 'nothing here' and 'something is wrong' is a defect by default."**
-169 of the 328 findings are classed silent. If you find a new instance, treat it as in scope, file
-it in the relevant plan, and fix it.
+169 of the 328 findings are classed silent — **11 of P2's 15** are. If you find a new instance,
+treat it as in scope, file it in the relevant plan, and fix it.
 
-The count so far is **~31 confirmed instances, fourteen of them written by the remediation
-itself.** That ratio is the entire reason for the pre-review discipline.
+The count so far across the programme is **~37+ confirmed instances**, most of them written by the
+remediation itself. That ratio is the entire reason for the pre-review discipline. Every single
+task in P1's T14–T18 window had at least one plan defect caught before or after dispatch — expect
+the same rate here, if not higher: P2 is denser (S0×3 in 18 tasks vs. P1's S3×1 in 18) and touches
+raw filesystem durability, a domain this programme has not exercised yet.
 
 For every `silent` finding, the **Three-Test Rule** is mandatory: fault, distinguishability,
 surfacing. Surfacing means an events row, a non-zero exit code, or a rendered UI element —
@@ -119,43 +174,50 @@ that passes on first write is a failed task. A red tripwire is success, not regr
 ## Process that is now mandatory — all of it
 
 1. **Adversarially pre-review the plan's own code before dispatching any implementer.** Not the
-   implementer's output — the *plan's*. It has been wrong in **every task since T5**: four ways in
-   T6, six in T7, four in T8, five in T9, six in T10, five in T11, four in T12, five in T13, five
-   in T13b. **Probe SQLite, the filesystem and the parser empirically rather than reasoning about
-   them** — beliefs about pragmas, transactions, `executescript`, WAL lifecycle and `ALTER TABLE`
-   have repeatedly turned out false.
+   implementer's output — the *plan's*. P1's plan was wrong in every task from T5 onward; expect
+   the same here. **Probe SQLite, the filesystem and the parser empirically rather than reasoning
+   about them.** P2 is filesystem-heavy — probe `os.replace`'s actual Windows semantics (it IS
+   atomic and DOES overwrite an existing target on Windows since Python 3.3, unlike `os.rename`,
+   but confirm this holds for the specific temp-file-naming scheme T1 uses, on THIS host, before
+   trusting it), and probe `O_CREAT|O_EXCL`'s actual raised-exception type on Windows (T5) rather
+   than assuming POSIX behavior transfers unchanged.
 2. **Run `compile_plan.py` on the plan before every dispatch.** It compiles every fenced `python`
    block. It once caught a raw newline in a string literal that would have broken *collection* of
-   the entire `test_db.py` module — silently taking ~60 passing tests with it while the suite still
-   reported success. It lives in the session scratchpad; if gone, rewrite it (30 lines, and it
-   should `textwrap.dedent` each block). **Known-good baselines: `P1-observability.md` 52 blocks /
-   2 fail; `P12-gate-d-tools.md` 44 / 5; `P13-skills-contracts.md` 12 / 0.** All of those failures
-   are pre-existing fragments. Anything else is yours.
+   an entire test module — silently taking ~60 passing tests with it while the suite still reported
+   success. It lives in the session scratchpad; if gone, rewrite it (~30 lines, `textwrap.dedent`
+   each block, compare failing block COUNT and line numbers against a fresh baseline run rather than
+   assuming zero). **P2 has not been baselined yet — the first pre-review pass's `compile_plan.py`
+   run establishes the baseline for this package; note it in the ledger.**
 3. **Amend the plan FIRST, then execute the amended step.** Never improvise around a plan defect
    silently. Every amendment gets its own commit explaining what was wrong and why.
 4. **Your own corrections will contain the defect they were written to catch.** This happened
-   **four times**: T9's C1 fixed a fresh-database crash and left the legacy one in place; T13's C2
-   told the implementer to verify a precondition while naming a check that holds trivially and
-   always; T13b's C4 named one drain site when there were two; T12's C4 prescribed a scaffold that
-   could not reach the dimension it was meant to test. **Every time, the implementer caught it.**
-   Tell implementers explicitly to report reality rather than match the brief.
+   repeatedly in P1 (T9's C1, T13's C2, T13b's C4, T12's C4, and independently in P1 T14's
+   POST-REVIEW AMENDMENT process this pause window). Tell implementers explicitly to report reality
+   rather than match the brief.
 5. **When a fix round produces a NEW instance of the defect class, the signal is about the design,
-   not the implementer.** T5's root error was trying to report *what survived*; the fix was to stop
-   rendering a verdict, not to write a sixth classifier.
-6. **`schema.sql` runs before migrations.** This has bitten the package five times. Whenever a task
-   adds a constraint or index to `schema.sql`, ask what happens when *existing data or an old table
-   shape violates it at `executescript` time* — not only what happens inside the migration.
-7. **When a task adds N kinds of constraint, apply the fresh/migrated twin discipline N times** —
-   per behaviour, not per table. T7 applied it per-table and all four of its `ON DELETE CASCADE`
-   clauses could be deleted with 80 tests still passing.
-8. **Check every `silent` finding's surfacing test for the same-connection read before dispatch.**
-   Reading an `events` row back on the connection that wrote it passes whether or not the row was
-   committed. This is **the single most repeated defect in the programme (4 instances)**.
-   `tests/test_db.py` carries the correct second-connection idiom at `:339-364` and `:663-676`.
+   not the implementer.**
+6. **`schema.sql` runs before migrations.** Not directly P2's concern (P2 doesn't touch
+   `schema.sql`), but `migrations.py` IS P2's file — if any task interacts with migration-adjacent
+   state, re-derive this rule's applicability rather than assuming it doesn't apply because the
+   package boundary looks clean on paper.
+7. **When a task adds N kinds of guarantee, apply the twin/parametrized discipline N times** — per
+   behaviour, not per call site. T18's own `TestDurabilityContract` is explicitly a parametrized
+   class over "all four writers" — verify during pre-review that all four are actually parametrized
+   in the shown code, not three with the fourth asserted only in prose.
+8. **Check every `silent` finding's surfacing test for the same-connection read before dispatch** —
+   this was the single most repeated defect in P1 (4 instances). P2 is mostly filesystem, not
+   sqlite, but T14 (A-74) and T18 (F-18) both touch `events` rows — apply the second-connection idiom
+   there. `tests/test_db.py` carries the correct idiom at `:339-364` and `:663-676` if you need a
+   reference (P1's file, read-only reference is fine, do not edit it).
 9. **Adding a second mechanism that produces the same end state can silently over-determine an
-   existing guard.** T13's lifespan made P0's contract test unable to fail for its own reason.
-   Whenever a task makes something true by a **new route**, ask which existing test was the only
+   existing guard.** Whenever a task makes something true by a **new route** (e.g. T12's idempotent
+   adoption creating a second path to "backfill completed"), ask which existing test was the only
    thing proving the **old route** still works.
+10. **A crash-injection test (T1, T18's whole point) must actually inject the crash at the moment
+    that matters**, not merely call the function and check the end state. Verify each injected
+    fault (a monkeypatched `os.fsync`/`os.replace`/`open` that raises) fires *between* the two
+    states the atomicity claim is about — before vs. after the point of no return — not before the
+    function is even entered or after it has already fully succeeded.
 
 ## Traps, verbatim
 
@@ -167,7 +229,8 @@ that passes on first write is a failed task. A red tripwire is success, not regr
   to the worktree. A bare `pytest` in `pipeline-app/` tests the WRONG CHECKOUT (a guard aborts it).
 - **The live database is `C:\Projects\ContentStudio\pipeline-app\pipeline.db`** — main checkout,
   git-ignored. A backup is at `pipeline.db.backup-pre-migration`. Never write to either; open
-  read-only and copy to scratch for experiments.
+  read-only and copy to scratch for experiments. **P2 also touches real files under `runs/`** in
+  the same spirit — never let a test write into the operator's actual `runs/` tree; always `tmp_path`.
 - `subprocess` with `text=True` decodes as cp1252 on this host. Always
   `encoding="utf-8", errors="replace"`.
 - `os.kill(pid, 0)` **terminates** the process on Windows. Use `OpenProcess` for liveness.
@@ -177,8 +240,7 @@ that passes on first write is a failed task. A red tripwire is success, not regr
   environment. Bright Data bills per record. Never let a test reach a live vendor API.**
 - Writing a commit message through `bash -c "..."` will **eat anything in backticks** as command
   substitution. Use a quoted heredoc (`git commit -F - <<'MSG'`).
-- **An apostrophe inside a single-quoted shell block terminates it.** This broke `brief-T.sh` when
-  a comment containing "T13's" was added to its awk program.
+- **An apostrophe inside a single-quoted shell block terminates it.** This broke `brief-T.sh` once.
 - **`grep -c` exits 1 when the count is zero**, which silently truncates a `&&` chain. Use `;` when
   chaining checks whose expected answer is zero.
 - Opening a WAL database **read-only still creates 0-byte `-wal`/`-shm` sidecars.** Harmless, but
@@ -187,29 +249,61 @@ that passes on first write is a failed task. A red tripwire is success, not regr
 - The linters in the root `scripts/` are stdlib-only and loaded by file path. They must not import
   app code, so they cannot use `obs.py`.
 - **Anything non-trivial embedded in YAML is untestable by construction.** Extract it to a module
-  with tests. P0 shipped three CI checks that could not fail before this rule was adopted.
+  with tests.
+- **NEW, discovered across every P1 T14–T18 task this pause window: `tests/test_main.py`'s leak
+  allowlist entry was deleted (shrink-only rule) and every one of five consecutive briefs still
+  used the pre-deletion "bare `create_app()`, no close" idiom.** Not directly P2's file, but the
+  general lesson applies: **when a plan was drafted before a later-landing package's constraint
+  tightened, the plan's examples silently violate the NEW constraint even though they were correct
+  when written.** Check every new test this package adds against the CURRENT state of
+  `tests/conftest.py`'s `_CONNECTION_LEAKS_BY_PACKAGE` and any other cross-cutting guard, not the
+  state the plan's author saw when the plan was drafted (2026-08-08).
+- **NEW: `os.replace(src, dst)` on Windows is atomic and silently overwrites an existing `dst`**
+  (unlike `os.rename`, which raises `FileExistsError` on Windows if `dst` exists). T1's
+  `_atomic_write_text` relies on this. Verify it empirically on this host before trusting the
+  plan's claim, per the probe-don't-reason rule — this is exactly the kind of platform-behavior
+  belief that has repeatedly turned out false elsewhere in this programme.
 
 ## Frozen cross-package interfaces — do not redesign
+
+From P0/P1 (already shipped, consumed by everyone):
 
 - `obs.log(event, *, level, **fields)`
 - `obs.record_event(conn, *, kind, severity, source, message, detail, run_id) -> int`. **Must never
   raise** — falls back to `log()` and returns `-1`.
-- `gates.resolve_upstream_by_stage(...)`
-- `| safe` means sanitized by `browse_service.sanitize_html()`
-- P3→P15: a blocked approve is a 409 re-rendering `stage.html`
-- P1→P15: `recent_events[]` (T17 builds it), and `orphaned_count: int | None` where `None` **must
-  render differently from `0`**. P0 found `doctor.py`'s `getattr(..., 0)` collapses three states
-  into two — confirm that is actually fixed before closing the contract.
-- **The `_MIGRATIONS` contract**, in that list's own comment block in `db.py`: a migration body must
-  not call `conn.commit()`, `conn.rollback()`, `conn.executescript()`, open a `db.transaction()`,
-  or touch a pragma. `apply_migrations` owns the `BEGIN IMMEDIATE` boundary and all foreign-key
-  handling, and **FK enforcement is OFF during a migration**, so `ON DELETE CASCADE` does not fire
-  inside one.
-- **Migration 1 stays version 1 until it ships.** T6–T13b built it up. A new rebuild adds statements
-  to a `_MIGRATION_<n>_..._STEPS` tuple and nothing else.
-- **An index a legacy table shape cannot support does not belong in `schema.sql`.** Both
-  `ux_turns_single_running` and `idx_handles_creator` are issued in `init_db` after
-  `apply_migrations`, guarded `if not pre_existing:`. Do not move them back.
+- `gates.resolve_upstream_by_stage(...)` (not yet implemented — P3/P4's contract, listed here so P2
+  does not accidentally collide with the name).
+- `| safe` means sanitized by `browse_service.sanitize_html()`.
+- P3→P15: a blocked approve is a 409 re-rendering `stage.html`.
+- P1→P15: `recent_events[]` = `{id, occurred_at, kind, severity, source, message, detail, run_id,
+  acknowledged}`, unacked error/critical, 7-day window, newest first, cap 50, PLUS
+  `unacknowledged_error_total: int` (all-time, unbounded — added during P1's own review this pause
+  window to close a silent-window blind spot; not in the original orchestration doc, but real and
+  landed). `orphaned_count: int | None` — `None` **must render differently from `0`** (confirmed
+  closed: `routes/doctor.py` now reads the attribute directly, no `getattr` default).
+
+**New from P2, which THIS session produces — get these exactly right, P3 and P4 adopt them
+verbatim and go red until they do:**
+
+- `parse_frontmatter` — **now raises `MalformedArtifactError`** for an unterminated frontmatter
+  block or non-mapping YAML, instead of returning `({}, text)`. The genuinely-no-frontmatter case
+  (file doesn't open with `---` at all) is unchanged and must keep returning `({}, text)` — do not
+  widen the raise to cover it.
+- `record_gate_override(..., at=...)` — gains a **required** keyword-only `at` parameter (T10).
+- `write_pointer(..., repo_root=...)` — gains a **required** `repo_root` parameter (T4).
+- `identify_new_brief` → renamed **`classify_brief_change`** (T16) — different name, not a
+  drop-in-compatible rename; grep for the old name across the whole repo before considering this
+  task done, since a caller still using the old name will get a bare `AttributeError`, not a
+  helpful one.
+- `next_version_number` + `write_artifact` → **`reserve_version()` / `write_reserved_artifact()` /
+  `release_version()`** (T5) — a three-function protocol replacing a single call, not a
+  same-signature swap. `write_artifact` itself gains clobber-refusal (T2) but is not removed.
+- `compute_depends_on`, `read_artifact` — consumed by P3/P4, must exist with stable signatures by
+  the end of this package (T13 and earlier tasks build these).
+
+The `_MIGRATIONS` contract, migration-1-stays-version-1 rule, and the `ux_turns_single_running` /
+`idx_handles_creator` schema.sql-vs-migration split are all **P1's**, not P2's — carried here only
+so you recognize them and don't touch `schema.sql` or `db.py` if a task's reasoning tempts you to.
 
 ## Open findings — filed, NOT fixed, awaiting validation
 
@@ -220,36 +314,36 @@ Recorded in the plans and routed to the packages owning the files. Do not fix in
    A-71. **P6–P9.** Not triggered by the operator's current database.
 2. **An unknown platform posted by hand returns 500** where the route convention is 400. **P8.**
 3. **`discovery_handles.html`'s `<select>` is a fourth unpinned copy of the platform vocabulary.**
-   **P8/P15.** P1 pinned the other three to each other.
+   **P8/P15.**
 4. **`list_handles_for_creator` returns `[]`** for both "creator owns no handles" and "no such
    creator". Deferred to the final review.
 5. **Migration tests that do not pin `obs.LOG_DIR` write into the real `pipeline-app/logs/`.**
-   Git-ignored, so nothing fails — which is why it went unnoticed. Fix is an autouse fixture in
-   `conftest.py`, which **P0** owns.
-6. **B-82 is NOT closed.** P1 shipped the storage half (`record_handle_failure`,
-   `clear_handle_failures`, the column, the `'failing'` status). **Nothing in production calls
-   them.** P8 must wire the discovery engine's error and success branches; P15 must render the
-   counter. **The definition of done must check the call site exists, not merely that the helper
-   does.**
+   Git-ignored, so nothing fails. Fix is an autouse fixture in `conftest.py`, which **P0** owns.
+6. **B-82 is NOT closed.** P1 shipped the storage half. **Nothing in production calls it.** P8 must
+   wire the discovery engine's error and success branches; P15 must render the counter. **The
+   definition of done must check the call site exists, not merely that the helper does.**
 7. **C-88b (S1, silent) → P12 T1b**, filed 2026-08-10 from a real field failure. `_beat_name`
    returns `None` for both "prose, correctly ignored" and "beat line in a shape I do not
-   recognise", so a refused sub-beat line is deleted from the lint surface along with its own word
-   budget. Root cause and design: `GATE-D-PARSE-rootcause.md` / `-design.md` in the SDD workspace.
-   Verified that P12 T1/T2/T3 do not catch it and none touches `_beat_name` or `SUBRANGE_RE`.
-   **Gate C needed nothing new** — P11's C-70 and C-71 already cover its identical twin defects,
-   and the root cause independently reproduced both.
-8. **The script format is authoritatively defined nowhere → P13.** Four partial definitions
-   disagree; the sub-beat grammar exists only in `SUBRANGE_RE` plus six fixture lines; and **the
-   `shorts-scripting` skill's own worked example produces 1 VO line and 5 `PARSE` findings under
-   its own gate.** Filed adjacent to P13 T7.
+   recognise". Root cause and design: `GATE-D-PARSE-rootcause.md` / `-design.md` in the SDD
+   workspace.
+8. **The script format is authoritatively defined nowhere → P13.** The `shorts-scripting` skill's
+   own worked example produces 1 VO line and 5 `PARSE` findings under its own gate.
+9. **NEW, filed 2026-08-12 from P1 T18's task review:** `create_app` (`pipeline_app/main.py`) has
+   **five statements after the topology-load `try/except`** — the styleboard backfill, the
+   reconcile-lease claim, the CLI probe construction, router mounting — that are completely
+   unguarded. If any of them raises, `app.state.conn` leaks exactly the way the topology-load path
+   used to, with no caller able to close it. Confirmed pre-existing (predates the whole P1 T14–T18
+   window; A-85 never covered exceptions raised *inside* `create_app` before it returns, only the
+   normal-exit shutdown path), and not any single task's responsibility — **flagged for the final
+   whole-branch review**, worth checking before P2's own `migrations.backfill_styleboard_rows`
+   (called from this exact unguarded stretch) grows a new way to raise.
 
 ## The decisions that are NOT yours
 
 **Stop and ask the operator:**
 
-- **Should label-first sub-beats (`mechanism: (11–18s | 19 words)`) become legal?** A ~4-line parser
-  change with zero measured collateral, but a **format** decision to be made once and written down —
-  not a parser fix, and not P12's to take. Filed in P13. **Currently pending.**
+- **Should label-first sub-beats (`mechanism: (11–18s | 19 words)`) become legal?** Filed in P13.
+  **Currently pending.**
 - **P10 T4/T6** sets `@bigthink` and `adamgrant.bsky.social` to `included: false` — a change to what
   gets tracked, not a defect fix.
 - **P7 §6 C1** adds a per-platform `BRIGHTDATA_MAX_ITEMS_<PLATFORM>` override — the only change in
@@ -260,18 +354,16 @@ Recorded in the plans and routed to the packages owning the files. Do not fix in
 - **T13b's design: option 4, accept and detect** (2026-08-09).
 - **CI required checks: deferred to the end of the programme** (2026-08-10).
 - **A plan-mandated finding that is an instance of the recurring defect class does not get
-  escalated** — the governing brief already rules on that category standing. Escalate plan-mandated
-  findings that are genuine product or policy choices.
+  escalated** — fix it. Escalate plan-mandated findings only when they are genuine product or
+  policy choices, not technical-correctness gaps with an obvious right answer (e.g. P1 T14's
+  heartbeat-refresh gap was plan-mandated and NOT escalated, because there was no real tradeoff to
+  ask about — only "should this be fixed", which the standing rule already answers).
 
 ## Context discipline — a hard rule
 
 Never give a subagent the audit, another package's plan, or this whole brief. Generate a task brief
 with `.superpowers/sdd/2026-08-08-audit-remediation/brief-T.sh <plan> <N> <out>` and pass the path.
 Subagent replies must be 8 lines or fewer; their full reports go to files in the SDD workspace.
-
-`brief-T.sh` was fixed on 2026-08-10 — its heading match previously let `T13` also match `T13b`, so
-a brief silently absorbed the following task. If a brief ever contains two task headings, that
-regression is back.
 
 Review packages come from the skill's `scripts/review-package <plan> <BASE> <HEAD>`. BASE is the
 commit recorded *before* dispatching the implementer — never `HEAD~1`, which silently drops all but
