@@ -3,8 +3,14 @@ from pathlib import Path
 
 import pytest
 
+from pipeline_app import artifacts
 from pipeline_app import db as db_mod
-from pipeline_app.migrations import _backfill_one_project, backfill_styleboard_rows
+from pipeline_app import migrations
+from pipeline_app.migrations import (
+    BackfillWouldOverwriteError,
+    _backfill_one_project,
+    backfill_styleboard_rows,
+)
 from pipeline_app.pipeline_config import StageDef
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1] / "pipeline_app"
@@ -157,3 +163,55 @@ def test_backfill_skips_a_broken_legacy_project_without_blocking_others(conn, tm
     # cleanly rather than skipping it forever or leaving orphaned state.
     touched_again = backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
     assert touched_again == []
+
+
+def test_backfill_refuses_to_overwrite_a_real_styleboard_artifact(conn, tmp_path):
+    """A-73, the S0. runs/ and pipeline.db are independently git-ignored and
+    independently disposable. Resetting the DB while runs/ is intact used to
+    rewrite every project's real 02b-styleboard/artifact.v1.md with the
+    synthetic "not recoverable" body -- no backup, no warning."""
+    pid = _legacy_project(conn, tmp_path, "legacy-real", "approved")
+    styleboard_dir = tmp_path / "runs" / "legacy-real" / "02b-styleboard"
+    styleboard_dir.mkdir(parents=True)
+    real = styleboard_dir / "artifact.v1.md"
+    real.write_text(
+        "---\nschema_version: 1\nversion: 1\nstatus: final\n---\n\n"
+        "WORLD LOCK\n  register_a_sport: the real hand-authored world\n",
+        encoding="utf-8",
+    )
+    before = real.read_text(encoding="utf-8")
+
+    touched = backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    assert real.read_text(encoding="utf-8") == before
+    assert "the real hand-authored world" in real.read_text(encoding="utf-8")
+    assert pid not in touched
+
+
+def test_refusing_to_overwrite_records_an_error_event(conn, tmp_path, monkeypatch):
+    """SURFACING. Destroying a styleboard must never be the quiet outcome, and
+    declining to destroy it must not be quiet either."""
+    recorded = []
+    monkeypatch.setattr(migrations.obs, "record_event",
+                        lambda c, **kw: recorded.append(kw) or 1)
+    _legacy_project(conn, tmp_path, "legacy-real2", "approved")
+    d = tmp_path / "runs" / "legacy-real2" / "02b-styleboard"
+    d.mkdir(parents=True)
+    (d / "artifact.v1.md").write_text(
+        "---\nversion: 1\nstatus: final\n---\n\nreal\n", encoding="utf-8")
+
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    assert any(e["severity"] == "error" and "overwrite" in e["message"].lower()
+               for e in recorded)
+
+
+def test_backfill_allocates_its_version_rather_than_hardcoding_one(conn, tmp_path):
+    """_write_synthetic_artifact passed a literal 1 to write_artifact rather
+    than allocating."""
+    _legacy_project(conn, tmp_path, "legacy-v", "approved", sheet=LEGACY_SHEET)
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+    written = tmp_path / "runs" / "legacy-v" / "02b-styleboard" / "artifact.v1.md"
+    meta, _ = artifacts.read_artifact(written)
+    assert meta["version"] == 1     # first version in an empty dir, but ALLOCATED
+    assert (tmp_path / "runs" / "legacy-v" / "02b-styleboard" / ".artifact-version-hwm").exists()
