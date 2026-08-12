@@ -1,3 +1,4 @@
+import asyncio
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from pipeline_app.routes import browse, discovery, doctor, inspector, projects, 
 PACKAGE_DIR = Path(__file__).resolve().parent
 
 RECONCILE_LEASE_SECONDS = 120
+HEARTBEAT_INTERVAL_SECONDS = 30  # several ticks inside the 120s lease window
 
 
 def _claim_reconcile_lease(conn, token: str, now: datetime,
@@ -56,10 +58,38 @@ def _release_reconcile_lease(conn, token: str) -> None:
                 error=f"{type(exc).__name__}: {exc}")
 
 
+async def _heartbeat_reconcile_lease(conn, token: str) -> None:
+    """Keeps this instance's `app_instances` row fresh for as long as the
+    process is alive, independent of request traffic -- a single long-running
+    turn stream can hold one HTTP request open for minutes without touching
+    any other route, and `heartbeat_at` must not go stale during that time."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            conn.execute(
+                "UPDATE app_instances SET heartbeat_at = ? WHERE id = 1 AND owner_token = ?",
+                (now_iso, token),
+            )
+            db_mod.commit_unless_in_transaction(conn)
+        except Exception as exc:  # noqa: BLE001 -- a missed heartbeat must not kill the app
+            obs.log("app.heartbeat_failed", level="warning", error=f"{type(exc).__name__}: {exc}")
+
+
 def create_app(repo_root: Path, db_path: Path) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        heartbeat_task = (
+            asyncio.create_task(_heartbeat_reconcile_lease(app.state.conn, app.state.instance_token))
+            if app.state.orphaned_count is not None else None
+        )
         yield
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
         _release_reconcile_lease(app.state.conn, app.state.instance_token)
         # `init_db` already opens and closes its own short-lived connection;
         # the shared one had no shutdown hook at all, so the WAL was never

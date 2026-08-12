@@ -214,3 +214,28 @@ def test_a_clean_shutdown_releases_the_lease_so_a_restart_sweeps_immediately(rep
         assert second.state.orphaned_count == 0  # swept immediately, not after a 120s wait
     finally:
         second.state.conn.close()
+
+
+def test_a_long_running_instance_keeps_its_heartbeat_fresh(repo_root: Path, monkeypatch):
+    """A-76 REOPENED past the startup window, caught in review: without a
+    periodic refresh, ANY instance older than RECONCILE_LEASE_SECONDS looks
+    stale to a later instance regardless of whether it is still alive.
+    Compared against a fixed 2020 timestamp rather than a freshly-read one,
+    so the assertion cannot pass on second-level rounding coincidence."""
+    import time
+    from fastapi.testclient import TestClient
+    from pipeline_app import main as main_mod
+
+    monkeypatch.setattr(main_mod, "HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    db_path = repo_root / "pipeline.db"
+    app = create_app(repo_root=repo_root, db_path=db_path)
+    app.state.conn.execute(
+        "UPDATE app_instances SET heartbeat_at = '2020-01-01T00:00:00+00:00' WHERE id = 1"
+    )
+    app.state.conn.commit()
+    with TestClient(app):
+        time.sleep(0.3)
+        refreshed = app.state.conn.execute(
+            "SELECT heartbeat_at FROM app_instances WHERE id = 1"
+        ).fetchone()["heartbeat_at"]
+    assert refreshed != "2020-01-01T00:00:00+00:00"
