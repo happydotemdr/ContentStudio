@@ -3,6 +3,8 @@ from pathlib import Path
 
 import yaml
 
+from pipeline_app.artifacts import _atomic_write_text
+
 
 def _hash_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -21,12 +23,12 @@ def identify_new_brief(before: dict[str, str], after: dict[str, str]) -> str | N
     return changed[0]
 
 
-def write_pointer(stage_dir: Path, rgs_brief_relpath: str) -> Path:
+def write_pointer(stage_dir: Path, rgs_brief_relpath: str, repo_root: Path) -> Path:
     stage_dir.mkdir(parents=True, exist_ok=True)
     pointer_path = stage_dir / "pointer.yaml"
-    pointer_path.write_text(
+    _atomic_write_text(
+        pointer_path,
         yaml.safe_dump({"rgs_brief_path": rgs_brief_relpath}, sort_keys=False),
-        encoding="utf-8",
     )
     return pointer_path
 

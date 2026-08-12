@@ -6,8 +6,6 @@ from pathlib import Path
 
 import yaml
 
-from pipeline_app import grounding_service
-
 _DELIM = "---"
 _VERSION_RE = re.compile(r"artifact\.v(\d+)\.md$")
 
@@ -114,6 +112,9 @@ def resolve_latest_artifact(repo_root: Path, stage_id: str, stage_dir: Path) -> 
     pointer.yaml file the turn route writes into stage_dir -- so this is
     the one place that split has to be reconciled back into a single Path."""
     if stage_id == "grounding":
+        # Deferred: grounding_service imports this module for _atomic_write_text,
+        # and this is the only place artifacts needs grounding_service back.
+        from pipeline_app import grounding_service
         pointer = grounding_service.read_pointer(stage_dir)
         if not pointer:
             return None

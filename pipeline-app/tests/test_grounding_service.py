@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+
+import pytest
 
 from pipeline_app.grounding_service import (
     identify_new_brief,
@@ -46,9 +49,28 @@ def test_identify_new_brief_detects_same_filename_changed_content():
 
 def test_write_and_read_pointer_roundtrip(tmp_path: Path):
     stage_dir = tmp_path / "00-grounding"
-    write_pointer(stage_dir, "rgs-briefs/2026-07-25-idea.md")
+    write_pointer(stage_dir, "rgs-briefs/2026-07-25-idea.md", tmp_path)
     assert read_pointer(stage_dir) == "rgs-briefs/2026-07-25-idea.md"
 
 
 def test_read_pointer_none_when_missing(tmp_path: Path):
     assert read_pointer(tmp_path / "00-grounding") is None
+
+
+def test_write_pointer_survives_a_crash_without_destroying_the_prior_pointer(tmp_path, monkeypatch):
+    repo_root = tmp_path
+    briefs = repo_root / "rgs-briefs"
+    briefs.mkdir()
+    (briefs / "a.md").write_text("brief a", encoding="utf-8")
+    (briefs / "b.md").write_text("brief b", encoding="utf-8")
+    stage_dir = repo_root / "runs" / "r1" / "00-grounding"
+
+    write_pointer(stage_dir, "rgs-briefs/a.md", repo_root)
+    before = (stage_dir / "pointer.yaml").read_text(encoding="utf-8")
+
+    monkeypatch.setattr(os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("crash")))
+    with pytest.raises(OSError):
+        write_pointer(stage_dir, "rgs-briefs/b.md", repo_root)
+
+    assert (stage_dir / "pointer.yaml").read_text(encoding="utf-8") == before
+    assert read_pointer(stage_dir) == "rgs-briefs/a.md"

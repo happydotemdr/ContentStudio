@@ -97,7 +97,7 @@ def test_resolve_latest_artifact_grounding_resolves_via_pointer(tmp_path: Path):
     brief = rgs_briefs / "2026-07-27-x.md"
     brief.write_text("---\nstatus: candidate\n---\n\nbody", encoding="utf-8")
     stage_dir = tmp_path / "runs" / "r1" / "00-grounding"
-    write_pointer(stage_dir, "rgs-briefs/2026-07-27-x.md")
+    write_pointer(stage_dir, "rgs-briefs/2026-07-27-x.md", tmp_path)
 
     assert resolve_latest_artifact(tmp_path, "grounding", stage_dir) == brief
 
@@ -114,7 +114,7 @@ def test_resolve_latest_artifact_grounding_pointer_target_missing_returns_none(t
     inline branches in approval_service.py and routes/stages.py got wrong in
     two of three copies (they skipped the .exists() check)."""
     stage_dir = tmp_path / "runs" / "r1" / "00-grounding"
-    write_pointer(stage_dir, "rgs-briefs/does-not-exist.md")
+    write_pointer(stage_dir, "rgs-briefs/does-not-exist.md", tmp_path)
     assert resolve_latest_artifact(tmp_path, "grounding", stage_dir) is None
 
 
