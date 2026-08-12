@@ -61,6 +61,24 @@ T17's path-containment logic (`PureWindowsPath`/`PurePosixPath` absolute-detecti
 plus the `rgs-briefs` root check) was probed against all 6 of its own test cases on this host and
 produces the exact `RAISE`/no-raise verdict the tests expect — no amendment needed there.
 
+**Open finding (filed, not fixed) — found by T11's task review, 2026-08-12:** `_adoptable_synthetic`'s
+read (checking whether an existing artifact is our own prior synthetic) and `reserve_version`'s
+reservation are not atomic with each other ACROSS PROCESSES. Two separate OS processes both running
+`backfill_styleboard_rows` concurrently against the same `stage_dir` (e.g. a multi-worker uvicorn
+deployment where both workers race app startup) could both pass the `_adoptable_synthetic` check
+before either has written anything, then both proceed to `reserve_version`/write — `reserve_version`'s
+`O_CREAT|O_EXCL` exclusivity means only one wins the SAME version number, but the loser does not
+retry `_adoptable_synthetic` against the winner's now-present output, so it could reserve and write a
+SECOND styleboard artifact at a higher version instead of erroring or adopting. **T12 (A-73, 2/2) does
+NOT close this** — T12's own scope (see its section below) is a same-process crash-then-retry test
+(`test_a_crash_between_the_artifact_write_and_the_db_row_does_not_churn_the_artifact`), not
+cross-process locking; its own text says "the adoption branch from T11 already does the work; this
+task adds the reasoning to `_backfill_one_project`'s docstring." Not fixed here: the current
+deployment is single-process (no multi-worker uvicorn configuration exists in this repo today), so
+this is a narrow, latent gap, not a live S0 — but it is real and currently owned by no task in this
+plan. Flag to the final whole-branch review for a decision (accept as a documented limitation of the
+lock-free sidecar design, or file a follow-up task).
+
 **Amendment 2 (found by T9's implementer, during T9, not pre-review):** T9 makes `parse_frontmatter`
 raise `MalformedArtifactError` for malformed YAML instead of letting `yaml.YAMLError` propagate.
 `migrations.py`'s `_PER_PROJECT_RECOVERABLE = (OSError, UnicodeDecodeError, yaml.YAMLError)` — this
