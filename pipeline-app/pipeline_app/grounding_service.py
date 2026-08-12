@@ -14,16 +14,48 @@ def _hash_file(path: Path) -> str:
 
 
 def snapshot_rgs_briefs(rgs_briefs_dir: Path) -> dict[str, str]:
+    """Relative posix path -> sha256 for every brief, RECURSIVELY (A-81)."""
     if not rgs_briefs_dir.exists():
         return {}
-    return {p.name: _hash_file(p) for p in rgs_briefs_dir.glob("*.md")}
+    return {
+        p.relative_to(rgs_briefs_dir).as_posix(): _hash_file(p)
+        for p in sorted(rgs_briefs_dir.rglob("*.md"))
+        if p.is_file()
+    }
 
 
-def identify_new_brief(before: dict[str, str], after: dict[str, str]) -> str | None:
-    changed = [name for name, sha in after.items() if before.get(name) != sha]
-    if len(changed) != 1:
-        return None
-    return changed[0]
+@dataclass(frozen=True)
+class BriefChange:
+    brief: str | None
+    added: list[str]
+    modified: list[str]
+    reason: str
+
+
+def classify_brief_change(before: dict[str, str], after: dict[str, str]) -> BriefChange:
+    """Which brief a grounding turn produced, and why the answer is what it is.
+
+    Replaces identify_new_brief, which returned a bare str | None and collapsed
+    every non-unit outcome into None (A-81). Renamed rather than re-typed so an
+    unmigrated caller fails loudly instead of formatting a dataclass repr into
+    a pointer path.
+    """
+    added = sorted(n for n in after if n not in before)
+    modified = sorted(n for n in after if n in before and before[n] != after[n])
+    if len(added) == 1:
+        extra = f"; {len(modified)} other file(s) also modified" if modified else ""
+        return BriefChange(added[0], added, modified, f"one brief added{extra}")
+    if not added and len(modified) == 1:
+        # A same-day rerun on the same topic overwrites the brief in place --
+        # same filename, new content.
+        return BriefChange(modified[0], added, modified, "one brief modified in place")
+    if not added and not modified:
+        return BriefChange(None, [], [], "no brief was written")
+    return BriefChange(
+        None, added, modified,
+        f"expected exactly 1 new brief, found {len(added)} added and "
+        f"{len(modified)} modified: " + ", ".join(added + modified),
+    )
 
 
 @dataclass(frozen=True)

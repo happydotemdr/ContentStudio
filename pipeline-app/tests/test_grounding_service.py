@@ -4,8 +4,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from pipeline_app import grounding_service
 from pipeline_app.grounding_service import (
-    identify_new_brief,
+    classify_brief_change,
     read_pointer,
     snapshot_rgs_briefs,
     verify_pointer,
@@ -24,29 +25,75 @@ def test_snapshot_returns_filename_to_content_hash(tmp_path: Path):
     assert snap == {"2026-07-25-a.md": expected_hash, "README.md": expected_hash}
 
 
-def test_identify_new_brief_when_exactly_one_new_file():
+def test_classify_brief_change_when_exactly_one_new_file():
     before = {"a.md": "h1", "b.md": "h2"}
     after = {"a.md": "h1", "b.md": "h2", "c.md": "h3"}
-    assert identify_new_brief(before, after) == "c.md"
+    result = classify_brief_change(before, after)
+    assert result.brief == "c.md"
+    assert result.added == ["c.md"]
 
 
-def test_identify_new_brief_returns_none_when_zero_new_files():
-    assert identify_new_brief({"a.md": "h1"}, {"a.md": "h1"}) is None
-
-
-def test_identify_new_brief_returns_none_when_ambiguous():
-    before = {"a.md": "h1"}
-    after = {"a.md": "h1", "b.md": "h2", "c.md": "h3"}
-    assert identify_new_brief(before, after) is None
-
-
-def test_identify_new_brief_detects_same_filename_changed_content():
+def test_classify_brief_change_detects_same_filename_changed_content():
     """A same-day rerun on the same topic overwrites the brief file in place
     -- same filename, new content. The old set-difference check missed this
     entirely (empty diff -> None -> stage wrongly marked no_artifact)."""
     before = {"2026-07-27-topic.md": "h1"}
     after = {"2026-07-27-topic.md": "h2"}
-    assert identify_new_brief(before, after) == "2026-07-27-topic.md"
+    result = classify_brief_change(before, after)
+    assert result.brief == "2026-07-27-topic.md"
+
+
+def test_a_new_brief_plus_an_unrelated_edit_still_identifies_the_brief():
+    """FAULT. A-81: detection was "exactly one file changed, else nothing
+    happened". A grounding turn that wrote its brief AND touched any other
+    rgs-briefs/*.md -- a typo fix, a superseded-marker edit, an index update --
+    returned None and the route recorded a perfectly good turn as no_artifact,
+    orphaning the brief and running every downstream RGS stage with
+    grounding_pointer=None."""
+    before = {"index.md": "h0", "old.md": "h1"}
+    after = {"index.md": "h0-edited", "old.md": "h1", "new-brief.md": "h2"}
+    result = classify_brief_change(before, after)
+    assert result.brief == "new-brief.md"
+    assert result.added == ["new-brief.md"]
+    assert result.modified == ["index.md"]
+
+
+def test_zero_briefs_and_two_briefs_are_distinguishable():
+    """DISTINGUISHABILITY. The zero-change case correctly reported nothing but
+    was indistinguishable from the ambiguous case."""
+    nothing = classify_brief_change({"a.md": "h1"}, {"a.md": "h1"})
+    ambiguous = classify_brief_change({"a.md": "h1"},
+                                      {"a.md": "h1", "b.md": "h2", "c.md": "h3"})
+    assert nothing.brief is None and ambiguous.brief is None
+    assert nothing.reason != ambiguous.reason
+    assert nothing.reason == "no brief was written"
+    assert "expected exactly 1" in ambiguous.reason
+
+
+def test_the_ambiguous_reason_names_every_file_it_saw():
+    """SURFACING. "produced N briefs, expected 1" explicitly, rather than
+    collapsing to no_artifact."""
+    result = classify_brief_change({}, {"b.md": "h2", "c.md": "h3"})
+    assert "b.md" in result.reason and "c.md" in result.reason
+    assert "2 added" in result.reason
+
+
+def test_a_brief_written_into_a_subdirectory_is_seen(tmp_path):
+    """snapshot_rgs_briefs globbed only the top level (glob, not rglob), so a
+    brief in a subdirectory was invisible and produced the same false
+    no_artifact."""
+    briefs = tmp_path / "rgs-briefs"
+    (briefs / "archive").mkdir(parents=True)
+    (briefs / "archive" / "nested.md").write_text("nested", encoding="utf-8")
+    (briefs / "top.md").write_text("top", encoding="utf-8")
+    snap = grounding_service.snapshot_rgs_briefs(briefs)
+    assert set(snap) == {"top.md", "archive/nested.md"}
+
+
+def test_identify_new_brief_is_gone():
+    """The old two-outcome API must not survive alongside the new one -- a
+    caller left on it would keep collapsing a real brief to no_artifact."""
+    assert not hasattr(grounding_service, "identify_new_brief")
 
 
 def test_write_and_read_pointer_roundtrip(tmp_path: Path):
