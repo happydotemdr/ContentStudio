@@ -43,14 +43,15 @@ brief text could not have known:
   would make the tuple assignment silently target the wrong slot, and this
   test would then fail in a way that looks unrelated to whatever changed.
 
-  Instead, this patches the name `doctor.py` itself binds via
-  `from pipeline_app.preflight import check_cli_available` --
-  `pipeline_app.routes.doctor.check_cli_available` -- to a plain callable
-  returning the stable `{available, path, error}` dict Doctor's template
-  renders. That depends only on that dict contract, not on
-  `check_cli_available`'s parameter shape, and reaches into no other
-  package's internals. The trade-off: it exercises only Doctor's own
-  rendering, not `check_cli_available`'s/`resolve_claude_binary`'s real
+  Instead, this patches `pipeline_app.preflight.check_cli_available` -- the
+  shared `_CliProbe` (main.py) is the only thing Doctor's route now calls
+  through, and it calls that module attribute, not a name bound into
+  doctor.py's own namespace (A-83 removed doctor.py's direct import of
+  `check_cli_available` entirely, so that binding no longer exists to
+  patch). That depends only on the stable `{available, path, error}` dict
+  contract, not on `check_cli_available`'s parameter shape, and reaches into
+  no other package's internals. The trade-off: it exercises only Doctor's
+  own rendering, not `check_cli_available`'s/`resolve_claude_binary`'s real
   branching logic -- correct scope for this finding, since that logic is
   `preflight.py`'s own behaviour to cover, not Doctor's.
 """
@@ -59,8 +60,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from pipeline_app import preflight
 from pipeline_app.main import create_app
-from pipeline_app.routes import doctor
 
 
 def _app_at(root: Path, monkeypatch, skills: tuple[str, ...] = ()):
@@ -118,8 +119,8 @@ def test_doctor_distinguishes_a_missing_cli_from_a_found_one(tmp_path, monkeypat
     """Distinguishability: 'CLI absent' and 'CLI present' must not render the
     same page. check_cli_available is the only place the app tells an
     operator the pipeline cannot run at all. See the module docstring for why
-    this patches the `check_cli_available` name bound into doctor.py's own
-    namespace rather than shutil.which or check_cli_available.__defaults__."""
+    this patches `pipeline_app.preflight.check_cli_available` rather than
+    shutil.which or check_cli_available.__defaults__."""
 
     a = tmp_path / "a"
     a.mkdir()
@@ -127,14 +128,14 @@ def test_doctor_distinguishes_a_missing_cli_from_a_found_one(tmp_path, monkeypat
     b.mkdir()
 
     monkeypatch.setattr(
-        doctor, "check_cli_available",
+        preflight, "check_cli_available",
         lambda: {"available": False, "path": None, "error": "claude CLI not found on PATH."},
     )
     with _doctor_client(a, monkeypatch) as client:
         absent = client.get("/doctor").text
 
     monkeypatch.setattr(
-        doctor, "check_cli_available",
+        preflight, "check_cli_available",
         lambda: {"available": True, "path": r"C:\fake\claude.cmd", "error": None},
     )
     with _doctor_client(b, monkeypatch) as client:

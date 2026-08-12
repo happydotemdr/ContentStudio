@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -20,6 +21,32 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 
 RECONCILE_LEASE_SECONDS = 120
 HEARTBEAT_INTERVAL_SECONDS = 30  # several ticks inside the 120s lease window
+
+
+class _CliProbe:
+    """One cached answer to "is the Claude CLI installed", shared by the banner
+    and the /doctor panel.
+
+    Before this, the banner was a startup snapshot and /doctor was a live probe,
+    so one response could carry two different answers to the same question and
+    restart was the only way to reconcile them (A-83). The TTL exists only so
+    `shutil.which` is not called on every request; correctness comes from both
+    readers sharing one snapshot per request."""
+
+    def __init__(self, ttl_seconds: float = 5.0) -> None:
+        self._ttl = ttl_seconds
+        self._at = 0.0
+        self._value: dict | None = None
+
+    def get(self) -> dict:
+        now = time.monotonic()
+        if self._value is None or now - self._at >= self._ttl:
+            self._value = preflight.check_cli_available()
+            self._at = now
+        return self._value
+
+    def invalidate(self) -> None:
+        self._value = None
 
 
 def _claim_reconcile_lease(conn, token: str, now: datetime,
@@ -138,7 +165,17 @@ def create_app(repo_root: Path, db_path: Path) -> FastAPI:
                     "skipped the startup orphan sweep",
             detail={"instance_token": app.state.instance_token},
         )
-    app.state.cli_available = preflight.check_cli_available()["available"]
+    app.state.cli_probe = _CliProbe()
+    app.state.cli_available = app.state.cli_probe.get()["available"]
+
+    @app.middleware("http")
+    async def _refresh_cli_banner(request, call_next):
+        # Ten route modules read request.app.state.cli_available as a plain
+        # bool and all ten belong to other packages, so the attribute stays a
+        # bool -- it is just refreshed from the same snapshot /doctor reads,
+        # once, at the top of the request.
+        request.app.state.cli_available = request.app.state.cli_probe.get()["available"]
+        return await call_next(request)
 
     app.state.templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")

@@ -1,7 +1,5 @@
 from fastapi import APIRouter, Request
 
-from pipeline_app.preflight import check_cli_available
-
 router = APIRouter()
 
 
@@ -15,7 +13,7 @@ def doctor_page(request: Request):
         {
             "repo_root": str(repo_root),
             "db_path": str(getattr(request.app.state, "db_path", "")),
-            "cli": check_cli_available(),
+            "cli": request.app.state.cli_probe.get(),
             "skill_names": skill_names,
             "orphaned_count": getattr(request.app.state, "orphaned_count", 0),
             "active_nav": "doctor",

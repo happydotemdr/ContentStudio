@@ -216,6 +216,53 @@ def test_a_clean_shutdown_releases_the_lease_so_a_restart_sweeps_immediately(rep
         second.state.conn.close()
 
 
+def test_the_banner_and_the_doctor_panel_never_disagree_in_one_response(
+        repo_root: Path, monkeypatch):
+    """A-83: two answers to the same question in one HTML response. The probe
+    flips on every call, so a snapshot and a live probe are guaranteed to
+    differ -- unless both read one snapshot per request."""
+    from fastapi.testclient import TestClient
+    from pipeline_app import preflight
+
+    (repo_root / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
+    flip = iter([True, False] * 20)
+    monkeypatch.setattr(
+        preflight, "check_cli_available",
+        lambda *a, **k: {"available": next(flip), "path": None, "error": None},
+    )
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    try:
+        client = TestClient(app)
+        resp = client.get("/doctor")
+        banner_online = "SYSTEM ONLINE" in resp.text
+        panel_found = "NOT FOUND" not in resp.text
+        assert banner_online == panel_found
+    finally:
+        app.state.conn.close()
+
+
+def test_the_banner_reflects_a_cli_that_appeared_after_startup(repo_root: Path, monkeypatch):
+    """Restart was the only way to reconcile the two, and nothing said so."""
+    from fastapi.testclient import TestClient
+    from pipeline_app import preflight
+
+    available = {"value": False}
+    monkeypatch.setattr(
+        preflight, "check_cli_available",
+        lambda *a, **k: {"available": available["value"], "path": None, "error": "not found"},
+    )
+    app = create_app(repo_root=repo_root, db_path=repo_root / "pipeline.db")
+    try:
+        client = TestClient(app)
+        assert "CLI UNAVAILABLE" in client.get("/").text
+
+        available["value"] = True
+        app.state.cli_probe.invalidate()  # stand in for the TTL elapsing
+        assert "SYSTEM ONLINE" in client.get("/").text
+    finally:
+        app.state.conn.close()
+
+
 def test_a_long_running_instance_keeps_its_heartbeat_fresh(repo_root: Path, monkeypatch):
     """A-76 REOPENED past the startup window, caught in review: without a
     periodic refresh, ANY instance older than RECONCILE_LEASE_SECONDS looks
