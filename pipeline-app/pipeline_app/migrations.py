@@ -129,6 +129,19 @@ def _write_synthetic_artifact(
         raise
 
 
+def _scripting_depends_on(run_dir: Path, stage_defs: list[StageDef]) -> list[dict]:
+    """Compute the synthetic styleboard's depends_on from the scripting
+    artifact that actually exists at backfill time, so the reconstructed
+    styleboard participates in the cascade like any other artifact (A-61)."""
+    scripting_def = next((s for s in stage_defs if s.id == "scripting"), None)
+    if scripting_def is None:
+        return []
+    latest = artifacts.latest_artifact_path(run_dir / stage_dir_name(scripting_def))
+    if latest is None:
+        return []
+    return artifacts.compute_depends_on(run_dir, [latest])
+
+
 def _backfill_one_project(
     conn: sqlite3.Connection,
     repo_root: Path,
@@ -136,6 +149,7 @@ def _backfill_one_project(
     visual_def: StageDef | None,
     project: sqlite3.Row,
     now: str,
+    stage_defs: list[StageDef],
 ) -> None:
     """Give one legacy project its styleboard row and, where recoverable, a
     synthetic styleboard artifact behind it.
@@ -178,7 +192,7 @@ def _backfill_one_project(
             "  WORLD LOCK block. Its shots carry literal --sref codes, not slots.\n\n"
             "DISCOVERY REQUESTS\n"
             "  none\n",
-            depends_on=[],
+            depends_on=_scripting_depends_on(run_dir, stage_defs),
         )
         status = StageStatus.APPROVED.value
     elif got_past_visual:
@@ -203,7 +217,7 @@ def _backfill_one_project(
             "  none — no source material existed to reconstruct from.\n\n"
             "DISCOVERY REQUESTS\n"
             "  none\n",
-            depends_on=[],
+            depends_on=_scripting_depends_on(run_dir, stage_defs),
         )
         status = StageStatus.APPROVED.value
     else:
@@ -258,7 +272,9 @@ def backfill_styleboard_rows(
             continue
 
         try:
-            _backfill_one_project(conn, repo_root, stage_def, visual_def, project, now)
+            _backfill_one_project(
+                conn, repo_root, stage_def, visual_def, project, now, stage_defs
+            )
         except _PER_PROJECT_RECOVERABLE as exc:
             message = (
                 f"skipping project {project_id} (run_id={project['run_id']!r}) -- "

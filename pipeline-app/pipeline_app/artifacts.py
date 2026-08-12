@@ -4,6 +4,7 @@ import re
 import tempfile
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -124,6 +125,26 @@ def render_frontmatter(meta: dict, body: str) -> str:
 
 def compute_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def relpath_in_run(path: Path, run_dir: Path) -> str:
+    """A run-relative, forward-slashed artifact path -- the exact key shape
+    state_machine.is_stale compares against."""
+    return str(path.relative_to(run_dir)).replace("\\", "/")
+
+
+def compute_depends_on(run_dir: Path, upstream_paths: Iterable[Path]) -> list[dict]:
+    """The `depends_on` list for a new artifact version, computed from the
+    upstream artifacts that exist RIGHT NOW.
+
+    The canonical implementation. Copying a prior artifact's depends_on forward
+    is what made staleness sticky (A-61): once a node records [], every later
+    version inherits it and the entire downstream cascade terminates there.
+    """
+    return [
+        {"path": relpath_in_run(p, run_dir), "sha256": compute_sha256(p)}
+        for p in upstream_paths
+    ]
 
 
 def _versions_in(stage_dir: Path) -> list[tuple[int, Path]]:

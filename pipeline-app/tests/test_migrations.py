@@ -136,7 +136,7 @@ def test_backfill_one_project_leaves_nothing_behind_when_it_fails_partway(conn, 
     monkeypatch.setattr(db_mod, "update_stage_status", raise_on_approved_at)
 
     with pytest.raises(RuntimeError):
-        _backfill_one_project(conn, tmp_path, stage_def, visual_def, project, now)
+        _backfill_one_project(conn, tmp_path, stage_def, visual_def, project, now, STAGE_DEFS)
 
     assert db_mod.get_stage(conn, pid, "styleboard") is None
 
@@ -257,3 +257,54 @@ def test_backfill_allocates_its_version_rather_than_hardcoding_one(conn, tmp_pat
     meta, _ = artifacts.read_artifact(written)
     assert meta["version"] == 1     # first version in an empty dir, but ALLOCATED
     assert (tmp_path / "runs" / "legacy-v" / "02b-styleboard" / ".artifact-version-hwm").exists()
+
+
+def test_backfilled_styleboard_records_the_scripting_artifact_it_was_built_against(
+    conn, tmp_path
+):
+    """A-61: _write_synthetic_artifact hardcoded depends_on: [] while the row
+    was set to approved. styleboard declares depends_on: [scripting], so on
+    every migrated project a scripting change could NEVER flip styleboard
+    stale -- and `visual` was then regenerated against an unflagged world lock."""
+    pid = _legacy_project(conn, tmp_path, "legacy-dep", "approved", sheet=LEGACY_SHEET)
+    scripting_dir = tmp_path / "runs" / "legacy-dep" / "02-scripting"
+    script = artifacts.write_artifact(
+        scripting_dir, 1, {"version": 1, "status": "final"}, "the script")
+
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    written = tmp_path / "runs" / "legacy-dep" / "02b-styleboard" / "artifact.v1.md"
+    meta, _ = artifacts.read_artifact(written)
+    assert meta["depends_on"] == [
+        {"path": "02-scripting/artifact.v1.md",
+         "sha256": artifacts.compute_sha256(script)},
+    ]
+
+
+def test_a_backfilled_styleboard_goes_stale_when_its_script_is_rewritten(conn, tmp_path):
+    """The cascade this was terminating. is_stale must now fire."""
+    from pipeline_app.state_machine import is_stale
+
+    _legacy_project(conn, tmp_path, "legacy-dep2", "approved", sheet=LEGACY_SHEET)
+    scripting_dir = tmp_path / "runs" / "legacy-dep2" / "02-scripting"
+    artifacts.write_artifact(scripting_dir, 1, {"version": 1}, "original script")
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    written = tmp_path / "runs" / "legacy-dep2" / "02b-styleboard" / "artifact.v1.md"
+    recorded = artifacts.read_artifact(written)[0]["depends_on"]
+
+    rewritten = artifacts.write_artifact(scripting_dir, 2, {"version": 2}, "REWRITTEN script")
+    current = {"02-scripting/artifact.v2.md": artifacts.compute_sha256(rewritten)}
+    assert is_stale(recorded, current) is True
+
+
+def test_backfilled_artifact_records_an_explicit_gates_key(conn, tmp_path):
+    """It was the one approved artifact in the app carrying no `gates` key at
+    all -- indistinguishable, to approval_service, from a clean run."""
+    _legacy_project(conn, tmp_path, "legacy-gates", "approved", sheet=LEGACY_SHEET)
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+    written = tmp_path / "runs" / "legacy-gates" / "02b-styleboard" / "artifact.v1.md"
+    meta, _ = artifacts.read_artifact(written)
+    assert "gates" in meta
+    assert meta["gates"] == []
+    assert meta["backfilled"] is True
