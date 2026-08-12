@@ -36,7 +36,7 @@ _PAST_VISUAL = {
 # everything: a bug in this module's own logic (AttributeError, KeyError, a bad
 # sqlite3 call) should still crash startup loudly rather than be silently skipped
 # per-project.
-_PER_PROJECT_RECOVERABLE = (OSError, UnicodeDecodeError, yaml.YAMLError)
+_PER_PROJECT_RECOVERABLE = (OSError, UnicodeDecodeError, yaml.YAMLError, artifacts.MalformedArtifactError)
 
 
 def extract_world_lock_block(text: str) -> str | None:
