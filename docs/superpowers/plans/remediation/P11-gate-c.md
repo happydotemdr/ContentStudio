@@ -25,6 +25,30 @@ are the package.
 
 ---
 
+## 0. Pre-review amendments
+
+**Amendment 1 (before T7 dispatch, during T2's task loop):** T2 introduces `SheetParse.findings`
+and `.declared_shot_count`; its own docstring for `SheetParse` asserts "`.findings` is the new
+fail-closed channel; `main()` consumes it today" (§T2). T3's checklist says "Wire it into `lint()`
+and let `main()` pass the declared count through" but shows only the `lint()` signature change,
+not the call site. **No task's shown implementation code anywhere in this plan actually rewires
+`main()`'s `shots, sheet_world = parse_sheet(sheet_text)` line to capture the new `SheetParse`
+object, prepend `parse.findings` to the findings list, or pass `parse.declared_shot_count` into
+`lint()`.** Confirmed by grepping the whole plan for `parse.findings`, `declared_shot_count`, and
+`shots, sheet_world` — the only call sites shown are inside test bodies and the P3 contract table
+(§6.2 P3-1/P3-2, which binds `pipeline_app/gates.py`, a different file this package does not
+touch). Without this wiring, the flagship fix's own CLI behavior never changes: `python
+scripts/lint_prompt_sheet.py <sheet-with-a-broken-heading>` still prints `PASS` and exits 0,
+because `main()` never looks at `parse.findings`. This blocks: Package verification §7 item 1 (all
+26 T6 mutation assertions — most of the 22 `MUTATIONS` cases assert `main([...])` returns nonzero
+and prints the expected check code) and item 3 (the em-dash/hyphen CLI repro). T7 is the correct
+place to land this fix — it is the task that already substantially rewrites `main()`'s read and
+exit-code logic — so T7's "Implement" section below is amended to add the missing step. T2 and T3
+are unaffected and were correctly scoped and implemented as written; the gap was in what no task
+said, not in what T2/T3 said to do.
+
+---
+
 ## 1. Scope
 
 **Files this package owns. No other package may touch these.**
@@ -793,6 +817,36 @@ def _read(path: Path, label: str) -> str | None:
 Route all three reads in `main()` through `_read`, returning `EXIT_UNREADABLE_INPUT` on `None`,
 and change the existing returns: no-shots → `EXIT_UNPARSEABLE`; Library missing/empty →
 `EXIT_MISSING_DEPENDENCY`. Add the table to the module docstring.
+
+- [ ] **[Amendment 1 — see §0] Wire `main()` to the `SheetParse` findings channel T2/T3 built.**
+      `main()` currently does `shots, sheet_world = parse_sheet(sheet_text)` — that line still
+      works today only because `SheetParse` unpacks as a 2-tuple (T2), but it silently discards
+      `.findings` and `.declared_shot_count`. Change it to:
+
+```python
+    parse = parse_sheet(sheet_text)
+    shots, sheet_world = parse.shots, parse.world
+```
+
+      and where `findings = [...]` is assembled near the end of `main()`, prepend `parse.findings`
+      and pass the declared count through to `lint()`:
+
+```python
+    findings = [
+        *parse.findings,
+        *check_cover_present(sheet_text),
+        *lint(shots, world, cover=cover, library=library,
+              declared_shot_count=parse.declared_shot_count),
+    ]
+```
+
+      This is what makes the flagship fix (T2) and the reconciliation invariant (T3) actually
+      change the CLI's observable behavior — before this step, `parse.findings` is computed and
+      immediately thrown away. Leave the existing `if not shots:` early-return (→
+      `EXIT_UNPARSEABLE`) positioned as it is today, checking `shots` only — no test in this
+      package exercises a sheet with zero real shots *and* a non-empty `parse.findings`
+      simultaneously (every `MUTATIONS` case in T6 mutates a shot inside an otherwise-intact
+      multi-shot sheet), so that combination is not this task's problem to design for.
 
 - [ ] **Run.** Green. `test_main_returns_two_when_no_shots_parse` fails — see §5.
 - [ ] Commit: `fix(gate-c): distinct exit codes for unreadable, unparseable and missing input`
