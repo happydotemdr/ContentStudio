@@ -65,3 +65,18 @@ coverage.xml
 # Structured application logs written by pipeline_app/obs.py (P1's error-
 # surfacing layer): one app-YYYY-MM-DD.log per day, local diagnostics only.
 pipeline-app/logs/
+
+# Freedom2BeU document-ingest app (converted output + own db -- real client
+# names and private coaching-session content, must never land in git history)
+Freedom2BeU/
+doc-ingest-app/doc_ingest.db
+doc-ingest-app/doc_ingest.db-wal
+doc-ingest-app/doc_ingest.db-shm
+doc-ingest-app/.venv/
+doc-ingest-app/doc_ingest/__pycache__/
+doc-ingest-app/doc_ingest/**/__pycache__/
+doc-ingest-app/tests/__pycache__/
+doc-ingest-app/doc_ingest_app.egg-info/
+doc-ingest-app/client_secret.json
+doc-ingest-app/token.json
+doc-ingest-app/.coverage
