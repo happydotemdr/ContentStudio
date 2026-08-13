@@ -1877,29 +1877,43 @@ to flip green as this package's own remaining tasks land; no action needed, not 
 Two findings do NOT fit that pattern and are filed here, unresolved, for review before the
 package is called done (package verification §7 item 1 requires all 26 to pass):
 
-- **T6R-01 (Important).** Two mutation anchors do not exist in the current
-  `tests/fixtures/worked_example_sheet.md` and fail at the test's own
-  `assert find in original` guard, before Gate C is ever invoked — these are not "not fixed yet"
-  reds, they structurally cannot pass no matter what later tasks land, because the text they are
-  supposed to mutate is not present to begin with:
+- **T6R-01 (Important).** Three mutation cases (not two — `world-second-block` confirmed during
+  T7's own dispatch and added here, see below) cannot pass no matter what later tasks land,
+  because of a fixture migration (commit `ebb8f82`, predates this package) that moved
+  `worked_example_sheet.md`'s `WORLD LOCK` block entirely into the separate styleboard fixture.
+  `heading-underscore-scale` is an unrelated fixture-content mismatch, filed alongside these two
+  because it fails the same way (the test's own `assert find in original` guard, before Gate C
+  is ever invoked):
   - `heading-underscore-scale`'s anchor `"· WORLD · MID-WIDE ·"` — the fixture has `WORLD`+`WIDE`
     and `WORLD`+`XWIDE` shots, and a separate `ACTION-ADJACENT`+`MID-WIDE` shot, but no shot
     pairs register `WORLD` with scale `MID-WIDE`.
   - `world-blank-line`'s anchor `"  register_b_thinker:"` — this line exists only in
-    `tests/fixtures/worked_example_styleboard.md:9`. Per commit `ebb8f82` (predates this package),
-    `worked_example_sheet.md` no longer carries its own `WORLD LOCK` block at all — world lock now
-    lives solely in the styleboard fixture, which the sheet references via `--styleboard`.
-    `world-blank-line`'s underlying intent (a blank line mid-block must not truncate the
-    `_read_world_block` walk, T5) is still valid and testable, just not against the sheet file
-    the mutation currently targets.
+    `tests/fixtures/worked_example_styleboard.md:9`. `worked_example_sheet.md` no longer carries
+    its own `WORLD LOCK` block at all — world lock now lives solely in the styleboard fixture,
+    which the sheet references via `--styleboard`. `world-blank-line`'s underlying intent (a
+    blank line mid-block must not truncate the `_read_world_block` walk, T5) is still valid and
+    testable, just not against the sheet file the mutation currently targets.
+  - **`world-second-block` (added after T7's own investigation, commit `fd467e9`'s task report).**
+    Not one of T6's original two flagged anchors — this one's `find`/`replace` strings DO match
+    the fixture (`assert find in original` passes), but the mutation's premise is still broken by
+    the same root cause: it inserts a `WORLD LOCK` block before `PER-SHOT PROMPTS` expecting to
+    create a *second* block that collides with an existing one, but since the sheet fixture no
+    longer carries a `WORLD LOCK` block of its own, the inserted block is the *first* (and only)
+    one — so `parse_sheet`'s duplicate-block detector (T5) correctly does not fire; confirmed by
+    T7's implementer via a direct `parse_sheet(mutated).findings == []` call. `main()`'s findings
+    wiring (this task, T7) is fully in place and did not change this outcome — ruling out a
+    `main()`-wiring cause and confirming this is the same fixture-migration category as the other
+    two.
   - **Not fixed here.** Per T6's own brief, the implementer did not edit the fixture or invent a
-    substitute string. A retargeting decision is needed: most likely `world-blank-line` should
-    mutate `worked_example_styleboard.md` (passed via `--styleboard`) instead of `WORKED`, since
-    that is where the text it is testing actually lives now; `heading-underscore-scale` needs
-    either a real `WORLD`+`MID-WIDE` shot added to the fixture or a different existing
-    scale/register pairing substituted as the anchor. Whichever the fix, it is a one-line change
-    to `MUTATIONS`' `find`/`replace` values, not a design change — but it is exactly the kind of
-    call this program's process reserves for review before landing.
+    substitute string; T7's implementer independently declined to fix `world-second-block` for
+    the same reason (fixture edits are outside both tasks' file lists). A retargeting decision is
+    needed: most likely `world-blank-line` and `world-second-block` should both mutate
+    `worked_example_styleboard.md` (passed via `--styleboard`) instead of `WORKED`, since that is
+    where a `WORLD LOCK` block actually exists now; `heading-underscore-scale` needs either a
+    real `WORLD`+`MID-WIDE` shot added to the fixture or a different existing scale/register
+    pairing substituted as the anchor. Whichever the fix, it is a small change to `MUTATIONS`'
+    `find`/`replace` values, not a design change — but it is exactly the kind of call this
+    program's process reserves for review before landing.
 - **T6R-02 (Minor-to-Important, unclear).** `fenced-heading` (`expected=""`, meaning "any finding,
   never a pass") has no task anywhere in this plan chartered to close it — confirmed by grep: no
   task's Implement section mentions rejecting or flagging an extra fenced example block inserted
