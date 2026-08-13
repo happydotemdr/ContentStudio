@@ -1960,9 +1960,28 @@ package is called done (package verification §7 item 1 requires all 26 to pass)
   mirror `section-renamed`'s own fix: anchor the split to unique trailing/leading context around
   the REAL `## Entries` heading rather than a bare substring search.
 
-Both T6R items and T11R-01 are carried forward to the final whole-branch review for this package,
-alongside any Minor findings deferred during the task loop. None block continuing to T12 and
-beyond.
+- **T18R-01 (Minor-to-Important, deviation from plan text, not fixed).** T18's mandated widened
+  `BANNED_REGISTER_A_STRINGS` tuple includes `"empty field"`. That literal substring already
+  exists in `tests/fixtures/passing_sheet.md` Shot 3's Register A body ("...one small figure
+  alone in the centre circle dwarfed by the empty field...") — a shot that fully names the sport
+  and both signature objects (goal net, corner flag) elsewhere in the same prompt; "empty" there
+  describes the absence of a crowd, not an unspecified venue, i.e. NOT the generic-venue defect
+  C9 exists to catch. Implementing the plan's list verbatim broke 4 previously-green tests plus
+  T18's own new fixture-cleanliness test. `tests/fixtures/*.md` is outside this package's edit
+  scope (stated in §1), so the fixture could not be reworded. T18's implementer traced
+  `"empty field"` back to its cited source
+  (`.claude/skills/shorts-styleboard/references/visual-registers.md:47`) and confirmed that
+  reference literally bans only `"empty gym"`/`"empty youth gym"` — `"empty field"` was this
+  plan's own synonym extrapolation, not itself corpus/reference text. **Not fixed here** — dropped
+  `"empty field"` from both the banned tuple and the corresponding parametrized test case (13 of
+  14 new widened terms landed; all other C9/C10 coverage, and both target mutation flips
+  (`venue-synonym`, `registerb-photographic`), confirmed unaffected). Routed for review: either
+  accept the narrower list, or find a more precise match (e.g. requiring `"empty field"` NOT be
+  preceded by descriptive context naming real objects) if the term is wanted back.
+
+Both T6R items, T11R-01, and T18R-01 are carried forward to the final whole-branch review for
+this package, alongside any Minor findings deferred during the task loop. None block continuing
+to T19 and beyond.
 
 ---
 
