@@ -15,6 +15,96 @@ artifact layer.
 
 ---
 
+## 0. Pre-review amendments (2026-08-12, before T1 dispatch)
+
+Adversarial pre-review against the actual current source (`migrate_handles_from_manifest.py`,
+`backfill_youtube_frontmatter.py`, both test files, `db.py`, `schema.sql`, `discovery_youtube_api.py`,
+`run_discovery_cron.build_adapters()`, `artifacts.py` post-P2) confirmed the platform registry (7 keys),
+all named `db.py` functions (`create_handle`, `get_handle`, `get_handle_by_platform_and_handle`,
+`list_platform_handles`, `list_handles`, `set_handle_status`, `set_handle_last_seen`), and
+`discovery_youtube_api`'s `api_key()`/`fetch_metadata()`/`MAX_IDS_PER_CALL`/`KEY_ENV_VAR`/`KEY_FILE` all
+exist exactly as the plan assumes. `MigrateResult(seeded=0) == 0` was probed empirically in a scratch
+interpreter (dataclass `__eq__` against a bare `int` returns `NotImplemented` → `False`) to settle point 2
+below rather than reasoning about Python's dataclass semantics.
+
+Four real defects found and fixed here, before any dispatch:
+
+1. **T3's `migrate()` forward-references T9's `find_drift` and T10's `upsert_creators`.** T3's own
+   `migrate()` body (as written) calls both by name; neither exists until seven/one tasks later in this
+   plan's strict numeric order, so T3 cannot be dispatched standalone — it would raise `NameError` the
+   moment its own test runs. **Fix:** T3's implement step now also adds two minimal stubs alongside
+   `MigrateResult` and `migrate()`:
+   ```python
+   def upsert_creators(conn, creators: dict) -> dict[str, int]:
+       """Stub -- T10 replaces this body with the real creators upsert. Returns
+       an empty map, which is safe because T3's own `_seed_entry` does not yet
+       consult `creator_ids` for anything (that check is T10's)."""
+       return {}
+
+
+   def find_drift(conn, data: dict) -> list[tuple[str, str]]:
+       """Stub -- T9 replaces this body with the real drift detection. Returns
+       no drift, which is safe because T3's own test never reads `result.drift`."""
+       return []
+   ```
+   T9 and T10 do not add a second definition of either function — their existing "Implement" sections
+   already show the real body; that body **replaces** the stub above, same name, same module. Confirmed
+   T3's own test never reads `result.drift` and never expects `creator_ids` to reject anything, so the
+   stubs do not mask any assertion T3 itself makes.
+2. **T2's `validate_keys()` (called first inside `migrate()`) breaks pre-existing tests the plan
+   promises will survive unchanged.** `validate_keys` raises unless *every* `PLATFORMS` key is present.
+   The pre-existing `_manifest()` test helper (`test_migrate_handles.py:58-61`) and two test bodies
+   (`test_migrate_seeds_all_16_handles_as_validated`, `test_migrate_is_idempotent`) all build
+   `{"youtube": [...], "bluesky": [], "rss": []}` — missing five platform keys. The instant T2 lands,
+   every test using that shape raises `ManifestError`, including the three collision tests §6 explicitly
+   says "must keep passing unchanged through T3's loop rewrite"
+   (`test_migrate_skips_a_handle_colliding_with_one_already_registered`,
+   `test_migrate_skips_a_collision_between_two_manifest_entries`,
+   `test_migrate_seeds_the_rest_despite_one_collision`) — not from any defect in their own logic.
+   Separately (and independently of validate_keys), T3 changes `migrate()`'s return type from `int` to
+   `MigrateResult`; the same three tests' `count = migrate(...); assert count == 0` (etc.) **cannot**
+   pass "unchanged" as §6 claims once T3 lands either, since `MigrateResult(seeded=0) == 0` is `False`
+   (verified empirically, see above). **Fix, split across two tasks:**
+   - **T2** now also updates the shared `_manifest()` helper to build a complete manifest:
+     ```python
+     def _manifest(tmp_path: Path, youtube: list[dict]) -> Path:
+         path = tmp_path / "brand_sources.json"
+         payload = {"youtube": youtube, **{p: [] for p in mig.PLATFORMS if p != "youtube"}, "rss": []}
+         path.write_text(json.dumps(payload), encoding="utf-8")
+         return path
+     ```
+     and **deletes** `test_migrate_seeds_all_16_handles_as_validated` (`:34-56`) and
+     `test_migrate_is_idempotent` (`:110-121`) as part of T2's own commit — moved up from T12, since T2's
+     stricter `validate_keys()` is the actual point both become permanently unable to pass (their
+     manifest literals are inline, not routed through `_manifest()`, so fixing the helper alone does not
+     save them), and their replacement coverage lands at T7/T8 regardless of which task deletes the
+     originals. `test_derive_cohort` does not call `migrate()` and is unaffected.
+   - **T3** additionally updates the three collision tests' final assertions from
+     `count = migrate(...); assert count == 0` to `result = migrate(...); assert result.seeded == 0`
+     (and the `== 1` variants correspondingly) — same behavior under test, updated only for the new
+     return type. Everything else in those three tests (the manifest payload via the now-fixed
+     `_manifest()`, the collision assertions, the stderr assertions) is unchanged.
+   - **T12** no longer deletes the two tests (already gone via T2's amendment) — it keeps only
+     `test_shipped_manifest_has_no_slug_collisions` and `test_shipped_manifest_seeds_every_declared_handle`.
+   - **§6** below is corrected to describe the assertion-syntax update instead of "unchanged".
+3. **`main()` needs an `argv` parameter.** T2 is the first task whose own test calls `mig.main([...])`
+   with an explicit list (and T7/T8/T9/T11 all do the same), but the pre-existing `main()` takes no
+   parameter and reads only `sys.argv`. T2 now also gives it the same shape
+   `backfill_youtube_frontmatter.main` already uses: `def main(argv: list[str] | None = None) -> int:`,
+   `args = ap.parse_args(argv)`.
+
+`compile_plan.py` baseline for this plan, run after all four fixes above were applied to the plan text
+itself: **40 python blocks, 32 compile, 8 fail.** All 8 failures were individually read and confirmed to
+be non-executable insertion fragments by design (mid-function splices with `...` placeholders, bare
+dict-literal field replacements, a partial `except` continuation) — the same pattern P2's own baseline
+described — at lines 452, 1249, 1314, 1399, 1409, 1493, 1590, 1625, none inside a standalone "Implement"
+block meant to be pasted whole. (The §3.3 worked manifest is JSON, not a `python` fence, and is not
+counted here; it was hand-validated with `json.loads` separately. Re-run
+`compile_plan.py docs/superpowers/plans/remediation/P10-roster.md` after any further plan edit — line
+numbers drift.)
+
+---
+
 ## 1. Scope
 
 ### Files this package owns (no other package may touch these)
@@ -375,6 +465,36 @@ Call `validate_keys(data)` as the first statement of `migrate()` after the `json
         return 2
 ```
 
+**§0 amendment (required, not optional).** This task's own tests call `mig.main([...])` with an explicit
+argv list (`test_main_exits_nonzero_and_records_an_event_for_an_unknown_key`); the pre-existing `main()`
+takes no `argv` parameter and calls `ap.parse_args()` with no arguments (reads `sys.argv` only). Give
+`main()` the same shape `backfill_youtube_frontmatter.main` already uses:
+`def main(argv: list[str] | None = None) -> int:` / `args = ap.parse_args(argv)`. Every later task in this
+plan (T7, T8, T9, T11) also calls `mig.main([...])` and depends on this.
+
+**§0 amendment 2 (required — see §0 point 2 above).** `validate_keys` now runs unconditionally at the top
+of `migrate()`, and the pre-existing `_manifest()` test helper (`test_migrate_handles.py:58-61`) builds a
+manifest missing five platform keys — every test using it would raise `ManifestError` the moment this
+task's commit lands. As part of this task's own commit:
+- Replace `_manifest()` with:
+  ```python
+  def _manifest(tmp_path: Path, youtube: list[dict]) -> Path:
+      path = tmp_path / "brand_sources.json"
+      payload = {"youtube": youtube, **{p: [] for p in mig.PLATFORMS if p != "youtube"}, "rss": []}
+      path.write_text(json.dumps(payload), encoding="utf-8")
+      return path
+  ```
+- Delete `test_migrate_seeds_all_16_handles_as_validated` (`:34-56`) and `test_migrate_is_idempotent`
+  (`:110-121`) — both build their manifest inline (not via `_manifest()`), missing the same five keys,
+  and both are permanently unable to pass from this point forward (see §0 and §6). Their replacement
+  coverage lands at T7 and T8 regardless of which task deletes the originals — do not write replacements
+  here, just delete.
+- Confirm `test_derive_cohort` (does not call `migrate()`) and the three collision tests
+  (`test_migrate_skips_a_handle_colliding_with_one_already_registered`,
+  `test_migrate_skips_a_collision_between_two_manifest_entries`,
+  `test_migrate_seeds_the_rest_despite_one_collision`, all routed through the now-fixed `_manifest()`)
+  still pass after this change — they should, since `_manifest()` now emits every required key.
+
 - [ ] **Run** → pass. **Commit:** `fix(roster): reject an unrecognized manifest platform key instead of dropping it`
 
 ---
@@ -428,6 +548,35 @@ def migrate(conn, manifest_path: Path, now: str) -> MigrateResult:
 
 `_seed_entry` keeps the existing `find_slug_collision` guard verbatim (it is correct and tested) and increments
 `result.skipped` plus `result.errors` instead of returning a bare bool.
+
+**§0 amendment (required, not optional).** `migrate()` above calls `upsert_creators` and `find_drift`,
+which are not defined until T10 and T9 respectively — dispatched exactly as written, this task's own test
+would raise `NameError`. Add these two minimal stubs to `migrate_handles_from_manifest.py` alongside
+`MigrateResult` and `migrate()`; T9 and T10 will later **replace** their bodies (same name, same module —
+not a second definition):
+
+```python
+def upsert_creators(conn, creators: dict) -> dict[str, int]:
+    """Stub -- T10 replaces this body with the real creators upsert. Returns
+    an empty map, which is safe because T3's own `_seed_entry` does not yet
+    consult `creator_ids` for anything (that check is T10's)."""
+    return {}
+
+
+def find_drift(conn, data: dict) -> list[tuple[str, str]]:
+    """Stub -- T9 replaces this body with the real drift detection. Returns
+    no drift, which is safe because T3's own test never reads `result.drift`."""
+    return []
+```
+
+**§0 amendment 2 (required, not optional).** Update the three pre-existing collision tests' final
+assertions for `migrate()`'s new return type — same behavior under test, different syntax:
+- `test_migrate_skips_a_handle_colliding_with_one_already_registered`: `count = migrate(...); assert count == 0` → `result = migrate(...); assert result.seeded == 0`
+- `test_migrate_skips_a_collision_between_two_manifest_entries`: `count = migrate(...); assert count == 1` → `result = migrate(...); assert result.seeded == 1`
+- `test_migrate_seeds_the_rest_despite_one_collision`: `count = migrate(...); assert count == 1` → `result = migrate(...); assert result.seeded == 1`
+
+Nothing else in those three tests changes (the manifest payloads, the collision assertions on
+`db.get_handle_by_platform_and_handle`, and the stderr assertions are all unaffected).
 
 - [ ] **Run** → pass. **Commit:** `feat(roster): seed every registry platform from the manifest`
 
@@ -1018,10 +1167,12 @@ def test_shipped_manifest_seeds_every_declared_handle(conn):
 - [ ] **Run** → the collision test should pass immediately; the seeding test fails until T4's file is in place
   (it is, so this task is mostly test-only — if `test_shipped_manifest_seeds_every_declared_handle` passes on the
   first run, note it and move on; its value is as a regression lock on the shipped file).
-- [ ] **Implement** — delete `test_migrate_seeds_all_16_handles_as_validated`
-  (`pipeline-app/tests/test_migrate_handles.py:34-56`) and `test_migrate_is_idempotent` (`:110-121`); their
-  replacements are T7's, T8's and this task's tests. See §6.
-- [ ] **Run** → pass. **Commit:** `test(roster): exercise the shipped manifest and drop the misnamed coverage test`
+- [ ] **Implement** — add the two tests above. **§0 amendment:** `test_migrate_seeds_all_16_handles_as_validated`
+  and `test_migrate_is_idempotent` are **already deleted** by T2's own amendment (see §0) — T2's stricter
+  `validate_keys()` made both permanently unable to pass from that point forward, so their deletion was moved
+  up to T2 rather than waiting seven tasks. Confirm they are gone (`grep` the test file); do not attempt to
+  delete them again here.
+- [ ] **Run** → pass. **Commit:** `test(roster): exercise the shipped manifest and add a slug-collision regression lock`
 
 ---
 
@@ -1569,16 +1720,19 @@ silently skipped.
 
 | File · line | Test | Action | Why | Replacement |
 |---|---|---|---|---|
-| `pipeline-app/tests/test_migrate_handles.py:34-56` | `test_migrate_seeds_all_16_handles_as_validated` | **deleted** (name + body both wrong) | Two defects in one test. Its name promises a 16-handle coverage guarantee over **three synthetic entries** asserting `count == 3` (B-81). Its body asserts `status == "validated"`, freezing B-75 — a test named for a coverage guarantee that instead affirms the defective status. | T12 `test_shipped_manifest_seeds_every_declared_handle` (real file, real count) + T7 `test_seeded_handles_are_pending_not_validated` (inverted status assertion) |
-| `pipeline-app/tests/test_migrate_handles.py:110-121` | `test_migrate_is_idempotent` | **inverted** | Asserts a row manually set to `invalid` survives a re-run *unchanged* — i.e. it pins `INSERT OR IGNORE` as correct and is the test that locked B-76 in. "Idempotent" was the wrong property; the right one is "manifest-owned columns converge, run-owned columns are preserved." | T8 `test_rerun_applies_a_changed_display_name_and_keyword_filter` + `test_rerun_preserves_run_owned_status_and_last_seen` (which keeps the *correct* half of the old assertion: `status` stays `invalid`) |
+| `pipeline-app/tests/test_migrate_handles.py:34-56` | `test_migrate_seeds_all_16_handles_as_validated` | **deleted at T2** (§0 amendment — moved up from T12; name + body both wrong) | Two defects in one test. Its name promises a 16-handle coverage guarantee over **three synthetic entries** asserting `count == 3` (B-81). Its body asserts `status == "validated"`, freezing B-75 — a test named for a coverage guarantee that instead affirms the defective status. Its manifest fixture is also missing five platform keys, so T2's `validate_keys()` would raise on it regardless. | T12 `test_shipped_manifest_seeds_every_declared_handle` (real file, real count) + T7 `test_seeded_handles_are_pending_not_validated` (inverted status assertion) |
+| `pipeline-app/tests/test_migrate_handles.py:110-121` | `test_migrate_is_idempotent` | **deleted at T2** (§0 amendment — moved up from T12; would otherwise be inverted) | Asserts a row manually set to `invalid` survives a re-run *unchanged* — i.e. it pins `INSERT OR IGNORE` as correct and is the test that locked B-76 in. "Idempotent" was the wrong property; the right one is "manifest-owned columns converge, run-owned columns are preserved." Its manifest fixture is also missing five platform keys, so T2's `validate_keys()` would raise on it regardless — deleted outright rather than inverted-then-broken-then-fixed. | T8 `test_rerun_applies_a_changed_display_name_and_keyword_filter` + `test_rerun_preserves_run_owned_status_and_last_seen` (which keeps the *correct* half of the old assertion: `status` stays `invalid`) |
 | `pipeline-app/tests/test_migrate_handles.py:20-31` | `test_derive_cohort` (8 params) | **kept, demoted** | Not defect-affirming — `derive_cohort` remains as the legacy fallback and these still describe it correctly. But it must stop reading as the primary contract. | Retitle the block comment to `# derive_cohort: legacy fallback only -- see test_explicit_cohort_beats_the_note_derived_one` and add T5's two tests above it |
 | `pipeline-app/tests/test_backfill_youtube_frontmatter.py:78-80` | `test_parse_existing_falls_back_to_filename_for_video_id` | **inverted** | Asserts D-05's silent reconstruction is the correct behavior: it takes a file with no metadata whatsoever and asserts the `video_id` was invented from the filename, with no assertion that anything recorded the inference. | T18 `test_a_file_whose_metadata_did_not_parse_is_flagged` — same input, but now asserts `meta_parsed is False` and `"video_id" in inferred_fields`. The fallback still happens; it is no longer silent. |
 | `pipeline-app/tests/test_backfill_youtube_frontmatter.py:112-117` | `test_build_meta_without_api_keeps_ytdlp_provenance` | **kept, extended** | Correct but incomplete: its fixture has no stored `metadata_source`, so it cannot catch D-04's downgrade of a file that already claims `youtube-data-api-v3`. Keeping it proves T16 did not regress the old-format path. | Add T16 `test_build_meta_never_downgrades_metadata_source` + `test_build_meta_never_nulls_an_existing_count` alongside it |
 
 No other test in either owned file encodes a defect. `test_migrate_skips_a_handle_colliding_with_one_already_registered`,
 `test_migrate_skips_a_collision_between_two_manifest_entries` and `test_migrate_seeds_the_rest_despite_one_collision`
-are all correct and must keep passing unchanged through T3's loop rewrite — treat them as the regression lock on
-`_seed_entry`.
+are all correct and must keep passing in *substance* through T2's and T3's changes — treat them as the regression
+lock on `_seed_entry`. Their *syntax* does change at each task per §0's amendments: at T2 their manifest fixture
+routes through the now-fixed `_manifest()` helper (no assertion change), and at T3 their final assertion moves from
+`count = migrate(...); assert count == N` to `result = migrate(...); assert result.seeded == N` (`migrate()`'s
+return type changes from `int` to `MigrateResult`, which does not compare equal to a bare int).
 
 ---
 
