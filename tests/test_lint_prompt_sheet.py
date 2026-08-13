@@ -28,6 +28,7 @@ from lint_prompt_sheet import (  # noqa: E402
     check_vocabulary,
     check_style_reference,
     check_style_mechanism,
+    sheet_declares_slots,
     check_slots,
     check_slot_labels,
     parse_style_library,
@@ -652,10 +653,29 @@ def test_c16_rejects_invented_sref_placeholder():
     assert "SREF-RGS-A-DL01" in findings[0].message
 
 
-def test_c16_accepts_numeric_url_and_random_sref():
+def test_c16_treats_a_numeric_sref_as_valid_syntax_but_c17_still_requires_a_slot():
+    """F-13/C-79. The old test asserted a fabricated `--sref 1122334455` produced no
+    findings -- an S1 defect as a green test. A number is valid *syntax*; what it is
+    not is a *recorded* lock, and only a {style:...} slot resolves against the
+    Library. C16 stays silent (it checks shape); C17 fires (it requires a lock)."""
     for value in ("1122334455", "https://cdn.midjourney.com/a1b2.png", "random"):
         shot = _shot(f"a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --sref {value}")
         assert check_style_reference([shot]) == []
+        assert [f.check for f in check_style_mechanism([shot])] == ["C17"]
+
+
+def test_c17_accepts_a_style_slot():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    assert check_style_mechanism([shot]) == []
+
+
+def test_an_invented_numeric_sref_can_no_longer_make_c20_vacuous():
+    """The compounding half of C-79: with no slot on the sheet,
+    sheet_declares_slots() returned False and the Library was never even read."""
+    shots, _ = parse_sheet(SHEET.replace("{style:register_a}", "--sref 11111111")
+                                .replace("{style:register_b}", "--sref 22222222"))
+    assert sheet_declares_slots(shots) is False
+    assert "C17" in codes(check_style_mechanism(shots))
 
 
 def test_c16_rejects_slot_used_as_an_sref_value():
@@ -706,14 +726,14 @@ def test_c16_rejects_a_dangling_sref_followed_by_another_flag():
     assert "no value" in findings[0].message
 
 
-def test_c17_now_agrees_with_c16_on_a_dangling_sref():
-    """C17 used to treat a bare '--sref' substring as 'a mechanism is present' even
-    with no value -- now it uses the same anchored regex as C16, so the two checks
-    can't silently disagree about whether an --sref is 'there'. C17 still passes
-    (a --sref token was written), while C16 rejects its missing value -- Gate C as
-    a whole still fails the sheet either way."""
+def test_c17_and_c16_both_fail_a_dangling_sref():
+    """C17 used to treat any --sref token, dangling value or not, as "a mechanism is
+    present" -- a literal --sref no longer satisfies C17 at all (C-79), so this shot
+    fails both checks now: C17 because there is no {style:...} slot, C16 because the
+    --sref it does carry has no valid value. Gate C fails the sheet either way, but
+    for two independent reasons instead of one masking the other."""
     shot = _shot("a strap pulled tight, No Text. --ar 9:16 --s 95 --sref --ar 9:16")
-    assert check_style_mechanism([shot]) == []
+    assert [f.check for f in check_style_mechanism([shot])] == ["C17"]
     assert check_style_reference([shot]) != []
 
 
@@ -762,10 +782,16 @@ def test_c17_fires_when_a_shot_has_no_style_mechanism():
     assert [f.check for f in findings] == ["C17"]
 
 
-def test_c17_accepts_literal_sref_moodboard_or_slot():
-    for flags in ("--sref 1122334455", "--p m72678", "{style:register_a}"):
+def test_c17_accepts_only_a_style_slot_not_literal_sref_or_moodboard():
+    """C-79/C-80: a literal --sref or --p used to satisfy C17 on its own -- neither
+    resolves against the Style Library, so only the {style:...} slot may satisfy C17
+    now. This is the same fixture set the old (now-inverted) test used, with the
+    assertion flipped for the two literal cases."""
+    for flags in ("--sref 1122334455", "--p m72678"):
         shot = _shot(f"a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {flags}")
-        assert check_style_mechanism([shot]) == []
+        assert [f.check for f in check_style_mechanism([shot])] == ["C17"]
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    assert check_style_mechanism([shot]) == []
 
 
 def test_c17_exempts_plate_shots():

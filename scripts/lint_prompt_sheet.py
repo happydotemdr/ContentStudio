@@ -944,41 +944,42 @@ MOODBOARD_FLAG_RE = re.compile(r"--p\b")
 
 
 def check_style_mechanism(shots: list[Shot]) -> list[Finding]:
-    """C17: every non-PLATE shot carries some style mechanism.
+    """C17: every non-PLATE shot carries a {style:...} slot.
 
-    C16 rejects a bad code but says nothing about a shot with no code at all, which is
-    the same defect one step removed: the shot renders in whatever default aesthetic
-    the model picks, and the Short stops reading as one look.
+    Only a {style:...} slot counts. A literal --sref (however plausible its digits)
+    and a --p profile are both unresolvable against the Library, so a sheet carrying
+    them declares no slots, C20 never runs, and Gate C passes a Short whose look is
+    unrecorded (findings C-79, C-80). The slot is the one mechanism that has a single
+    resolution path, and that path is C20.
+
+    C16 still exists alongside this: it validates the *shape* of any literal --sref
+    or --p an author writes next to the slot (or in place of it, before this check
+    catches that) — a fabricated code, a slot-string misused as a literal value, and
+    so on. C16 answers "is this literal well-formed"; C17 answers "is there a
+    recorded lock at all". A well-formed literal no longer satisfies C17 on its own.
 
     PLATE shots are exempt — they are subject-free background plates with no register
     look to lock (visual-registers.md §5).
-
-    Presence is checked with `SREF_FLAG_RE` — the same anchored, word-boundary regex
-    C16 uses to find --sref occurrences — rather than a raw `"--sref" in flags"`
-    substring test. The two checks answer different questions (C17: is some
-    mechanism written at all; C16: is its value real) but must agree on what counts
-    as "an --sref is here" so a bare, valueless `--sref` isn't invisible to one
-    check while silently satisfying the other.
     """
     findings: list[Finding] = []
     for shot in shots:
         if shot.register == "PLATE":
             continue
         flags = prompt_flags(shot)
-        has_mechanism = (
-            SREF_FLAG_RE.search(flags) is not None
-            or MOODBOARD_FLAG_RE.search(flags) is not None
-            or STYLE_SLOT_RE.search(flags) is not None
-        )
-        if not has_mechanism:
-            findings.append(
-                Finding(
-                    "C17",
-                    shot.index,
-                    "no style mechanism in the parameter block; every non-PLATE shot needs "
-                    "a literal --sref/--p or a {style:...} slot, or it renders off-look",
-                )
-            )
+        # Only a {style:...} slot counts. A literal --sref (however plausible its
+        # digits) and a --p profile are both unresolvable against the Library, so a
+        # sheet carrying them declares no slots, C20 never runs, and Gate C passes a
+        # Short whose look is unrecorded (findings C-79, C-80). The slot is the one
+        # mechanism that has a single resolution path, and that path is C20.
+        if STYLE_SLOT_RE.search(flags) is None:
+            findings.append(Finding(
+                "C17", shot.index,
+                "no {style:...} slot in the parameter block. A literal --sref or --p "
+                "is not a recorded style lock: it resolves against nothing, so C20 "
+                "cannot check it and the Short's look is not written down anywhere. "
+                "Bind the register to a Style Library entry in the styleboard and "
+                "write its slot here.",
+            ))
     return findings
 
 
