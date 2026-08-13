@@ -76,6 +76,36 @@ Nothing else. In particular this package **does not** edit `turn_service.py` (P4
 > P3 closes the app half and installs a bounded divergence ledger (Task 6/7) that fails the moment
 > the divergence set changes in either direction, so P11's landing is detected, not assumed.
 
+> **Handoff H1b (from P11, now landed — two things to check before trusting T6/T7 as written).**
+> P11 shipped (PR #29) with two changes discovered *after* this plan's own text was written, so
+> neither is reflected in T6/T7's shown code above:
+>
+> 1. **A fifth CLI/app divergence, `P3-6` in P11's own plan §6.2**, beyond the four this plan's
+>    §"Cross-package interfaces" already lists: the CLI's `main()` now emits a blocking `PARSE`
+>    finding when a sheet carries its own stray `WORLD LOCK` block *and* `--styleboard` is also
+>    supplied — previously (and still, in `gates.py` today) that block is silently discarded with
+>    no signal on the app side. `_cli_findings` (T7, above) will NOT reproduce this on its own:
+>    it manually re-derives `lint_prompt_sheet.main`'s pipeline rather than calling `main()`
+>    itself, and none of `DIFFERENTIAL_CASES`' four fixtures happen to carry a stray sheet-side
+>    world lock, so `test_the_only_gate_c_divergence_is_the_empty_world_lock_input_error`'s
+>    "bounded to one" assumption is now stale without T7's own test yet knowing it. Before
+>    executing T6/T7: either add a fifth `DIFFERENTIAL_CASES` fixture exercising a stray world
+>    lock, or update `_cli_findings` to call `linter.main`'s logic (not just its pieces) so this
+>    divergence is caught mechanically rather than needing to be separately remembered.
+> 2. **A confirmed regression in this package's own `pipeline-app/tests/test_gates.py`**, caused
+>    by an unrelated P11 change (C8 now requires 2 signature-object mentions per Register A shot,
+>    down to 1 only for `CLOSE`/`MACRO` scale): `test_visual_gate_without_a_styleboard_uses_a_
+>    legacy_sheets_own_world_lock` — which lints `legacy_do_less_sheet.md`, the same fixture
+>    T7's `"legacy"` case above uses — now fails, because that fixture's `MID-WIDE` Hook shot
+>    names only one of its three declared signature objects and the test's blanket
+>    `assert "C8" not in checks` was written for an unrelated concern (that C8's *sport* half
+>    doesn't fire without a styleboard) but also catches this new, unrelated finding. This was
+>    P11's own S0 policy trade-off (filed as `T21R-01` in P11's plan, not resolved there — P11
+>    does not own this fixture or test file). Resolve it as part of this package's own work, not
+>    by assuming it was someone else's problem: either narrow that test's assertion to the C8
+>    sub-check it actually cares about, or add a second signature-object mention to the fixture's
+>    Hook shot body.
+
 > **Handoff H2 (to P4) — REVISED after P4's counter-contract; P4 was right.** An earlier draft
 > asked P4 to adopt `gates.resolve_upstream_by_stage()` **verbatim** at
 > `turn_service.py:138-143`. P4 read the body first and found that doing so would reintroduce
