@@ -118,10 +118,21 @@ def parse_sheet(text: str) -> SheetParse:
     world: dict[str, str] = {}
     findings: list[Finding] = []
     declared: int | None = None
+    in_fence = False
 
     i = 0
     while i < len(lines):
         line = lines[i]
+
+        if OPEN_FENCE_RE.match(line):
+            in_fence = True
+            i += 1
+            continue
+        if in_fence:
+            if CLOSE_FENCE_RE.match(line):
+                in_fence = False
+            i += 1
+            continue
 
         count = SHOT_COUNT_RE.match(line)
         if count:

@@ -1164,6 +1164,32 @@ def test_c21_is_silent_on_every_green_fixture():
         assert check_shot_count(shots) == [], name
 
 
+FENCED_EXAMPLE = SHEET + """
+Format reminder for authors:
+
+```text
+### Shot 99 — Demo · Register A · DETAIL · MACRO · LOW
+```
+"""
+
+
+def test_a_heading_inside_a_fence_is_not_a_real_shot():
+    shots, _ = parse_sheet(FENCED_EXAMPLE)
+    assert [s.index for s in shots] == [1, 2]
+
+
+def test_a_fenced_heading_produces_no_parse_finding_either():
+    """Distinguishability: documented-example (ignore) must not be conflated with
+    malformed-heading (report). declares_cover_reuse was already fence-aware for
+    exactly this reason; the shot walk was not."""
+    assert parse_sheet(FENCED_EXAMPLE).findings == []
+
+
+def test_a_fenced_example_does_not_pollute_the_sequence_checks():
+    shots, world = parse_sheet(FENCED_EXAMPLE)
+    assert "C21" not in codes(lint(shots, world))
+
+
 def _typoed_styleboard(tmp_path):
     """The real passing styleboard with one character removed from a slot label."""
     text = (FIXTURES / "passing_styleboard.md").read_text(encoding="utf-8")
