@@ -401,3 +401,17 @@ def test_backfilled_artifact_records_an_explicit_gates_key(conn, tmp_path):
     assert "gates" in meta
     assert meta["gates"] == []
     assert meta["backfilled"] is True
+
+
+def test_durability_contract_backfill_refuses_a_populated_stage_dir(conn, tmp_path):
+    """F-18's third clause: test_migrations.py never placed a real artifact
+    where the backfill writes."""
+    _legacy_project(conn, tmp_path, "legacy-dur", "approved", sheet=LEGACY_SHEET)
+    d = tmp_path / "runs" / "legacy-dur" / "02b-styleboard"
+    d.mkdir(parents=True)
+    real = d / "artifact.v1.md"
+    real.write_text("---\nversion: 1\nstatus: final\n---\n\nreal\n", encoding="utf-8")
+    sha = artifacts.compute_sha256(real)
+
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+    assert artifacts.compute_sha256(real) == sha

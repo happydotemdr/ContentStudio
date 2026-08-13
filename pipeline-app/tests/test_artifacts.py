@@ -21,6 +21,7 @@ from pipeline_app.artifacts import (
     write_artifact,
     write_reserved_artifact,
 )
+from pipeline_app import grounding_service
 from pipeline_app.grounding_service import write_pointer
 
 
@@ -523,3 +524,83 @@ def test_v10_still_outranks_v9(tmp_path):
     (tmp_path / "artifact.v9.md").write_text("nine", encoding="utf-8")
     (tmp_path / "artifact.v10.md").write_text("ten", encoding="utf-8")
     assert artifacts.latest_artifact_path(tmp_path).name == "artifact.v10.md"
+
+
+class TestDurabilityContract:
+    """Every path that rewrites a file an operator can lose must satisfy all
+    four clauses. F-18: nothing asserted that a write is atomic, that version
+    allocation is exclusive, or that a migration cannot overwrite an existing
+    file -- and all three S0s live in that gap.
+
+    Crash injection is done by monkeypatching os.replace / os.fsync rather than
+    by killing a subprocess: the failure point is exact and the test is
+    deterministic, and the conftest guard (P0) blocks unmarked subprocess use
+    anyway. The property under test is "the target is old-bytes or new-bytes,
+    never in between", which does not need a real SIGKILL to exercise.
+    """
+
+    WRITERS = ["write_artifact", "stamp_final", "record_gate_override", "write_pointer"]
+
+    @staticmethod
+    def _prepare(tmp_path, writer):
+        """Returns (target_path, invoke_callable) for the named writer."""
+        if writer == "write_pointer":
+            briefs = tmp_path / "rgs-briefs"
+            briefs.mkdir()
+            (briefs / "a.md").write_text("a", encoding="utf-8")
+            (briefs / "b.md").write_text("b", encoding="utf-8")
+            sd = tmp_path / "runs" / "r1" / "00-grounding"
+            grounding_service.write_pointer(sd, "rgs-briefs/a.md", tmp_path)
+            return sd / "pointer.yaml", lambda: grounding_service.write_pointer(
+                sd, "rgs-briefs/b.md", tmp_path)
+        path = write_artifact(tmp_path, 1, {"status": "final", "version": 1}, "approved body")
+        if writer == "write_artifact":
+            return path, lambda: artifacts.write_artifact(
+                tmp_path, 2, {"status": "draft", "version": 2}, "v2 body")
+        if writer == "stamp_final":
+            return path, lambda: artifacts.stamp_final(path, "2026-08-08T00:00:00+00:00")
+        return path, lambda: artifacts.record_gate_override(
+            path, "accepted", at="2026-08-08T00:00:00+00:00")
+
+    @pytest.mark.parametrize("writer", WRITERS)
+    @pytest.mark.parametrize("break_at", ["fsync", "replace"])
+    def test_prior_bytes_survive_a_crash_at_any_point(self, tmp_path, monkeypatch,
+                                                      writer, break_at):
+        target, invoke = self._prepare(tmp_path, writer)
+        before = target.read_bytes()
+        monkeypatch.setattr(
+            os, break_at,
+            lambda *a, **k: (_ for _ in ()).throw(OSError(f"crash at {break_at}")),
+        )
+        with pytest.raises(OSError):
+            invoke()
+        assert target.read_bytes() == before
+
+    @pytest.mark.parametrize("writer", WRITERS)
+    def test_no_temp_file_is_left_behind_or_selectable(self, tmp_path, monkeypatch, writer):
+        target, invoke = self._prepare(tmp_path, writer)
+        monkeypatch.setattr(os, "replace",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("crash")))
+        with pytest.raises(OSError):
+            invoke()
+        assert not list(target.parent.glob("*.tmp"))
+        assert artifacts.latest_artifact_path(target.parent) in (None, target) or \
+            target.name == "pointer.yaml"
+
+    @pytest.mark.parametrize("writer", WRITERS)
+    def test_the_target_is_never_observed_zero_length(self, tmp_path, monkeypatch, writer):
+        """The specific shape truncation takes: a zero-byte or half-written
+        target that parse_frontmatter used to report as a legitimate
+        no-frontmatter artifact (A-63 -> A-68)."""
+        target, invoke = self._prepare(tmp_path, writer)
+        sizes = []
+        real_replace = os.replace
+
+        def observe(src, dst, *a, **k):
+            sizes.append(Path(dst).stat().st_size if Path(dst).exists() else -1)
+            return real_replace(src, dst, *a, **k)
+
+        monkeypatch.setattr(os, "replace", observe)
+        invoke()
+        assert all(s != 0 for s in sizes), "the target was truncated before the rename"
+        assert target.stat().st_size > 0
