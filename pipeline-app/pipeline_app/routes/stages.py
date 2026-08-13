@@ -245,11 +245,6 @@ def edit_stage_output_route(request: Request, project_id: int, stage_id: str, bo
     run_dir = repo_root / "runs" / project["run_id"]
     stage_dir = run_dir / stage_dir_name(stage_def)
 
-    latest = artifacts.latest_artifact_path(stage_dir)
-    prior_meta = {}
-    if latest is not None:
-        prior_meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
-
     version = artifacts.next_version_number(stage_dir)
 
     # Fail-closed extends to a hand edit, not just a turn: the edited content
@@ -277,7 +272,10 @@ def edit_stage_output_route(request: Request, project_id: int, stage_id: str, bo
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "finalized_at": None,
         "supersedes": f"artifact.v{version - 1}.md" if version > 1 else None,
-        "depends_on": prior_meta.get("depends_on", []),
+        # A list of PATHS in, [{path, sha256}] out. turn_service.run_stage_turn
+        # records the same shape from the same helper, so the two write paths
+        # cannot produce different provenance (A-60).
+        "depends_on": artifacts.compute_depends_on(run_dir, list(upstream_by_stage.values())),
         "gates": gate_results,
     }
     artifacts.write_artifact(stage_dir, version, meta, body)

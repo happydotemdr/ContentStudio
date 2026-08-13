@@ -22,6 +22,21 @@ def _install_real_script_linter(tmp_path: Path) -> None:
     )
 
 
+CLEAN_SCRIPT = (
+    'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+    "GATES\n  Gate E (fresh Opus critic): pass\n"
+)
+
+
+def _new_project(test_client, app, tmp_path: Path, slug="abc", brand="generic"):
+    resp = test_client.post("/projects", data={"slug": slug, "brand": brand})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    return project_id, tmp_path / "runs" / project["run_id"]
+
+
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -45,6 +60,69 @@ def two_stage_client(tmp_path: Path, monkeypatch):
     )
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     return TestClient(app, follow_redirects=False), tmp_path, app
+
+
+def test_first_ever_hand_edit_records_a_real_depends_on(two_stage_client):
+    """A-60 FAULT: with no prior artifact, prior_meta was {} and depends_on was
+    written as []. is_stale([], ...) is False unconditionally, so the staleness
+    cascade terminated at that node and every stage below stayed green on
+    superseded input."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    ideation_dir = run_dir / "01-ideation"
+    artifacts.write_artifact(ideation_dir, 1, {"stage": "shorts-ideation"}, "concept v1")
+    _install_real_script_linter(tmp_path)
+    assert test_client.post(f"/projects/{project_id}/stages/ideation/approve").status_code == 303
+
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT}
+    )
+    assert resp.status_code == 303
+    meta, _ = artifacts.parse_frontmatter(
+        (run_dir / "02-scripting" / "artifact.v1.md").read_text(encoding="utf-8")
+    )
+    assert meta["depends_on"] == [{
+        "path": "01-ideation/artifact.v1.md",
+        "sha256": artifacts.compute_sha256(ideation_dir / "artifact.v1.md"),
+    }]
+
+
+def test_a_hand_edited_stage_with_no_prior_artifact_still_goes_stale(two_stage_client):
+    """A-60 DISTINGUISHABILITY: the empty list and a correct list are not merely
+    different values -- they produce different cascade outcomes. A hand-edited
+    stage must be indistinguishable from a turn-produced one at the cascade."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    _install_real_script_linter(tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    test_client.post(f"/projects/{project_id}/stages/ideation/approve")
+    test_client.post(f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT})
+    test_client.post(f"/projects/{project_id}/stages/scripting/approve")
+
+    test_client.post(f"/projects/{project_id}/stages/ideation/edit", data={"body": "concept v2"})
+
+    assert db.get_stage(app.state.conn, project_id, "scripting")["status"] == "stale"
+
+
+def test_a_hand_edit_after_the_upstream_advanced_records_the_current_version(two_stage_client):
+    """A-60 SURFACING: the copied value named artifact.v1.md while v2 was current,
+    so the artifact asserted a provenance it was never derived from. The recorded
+    path is the human-reachable signal -- it must name the file actually read."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    _install_real_script_linter(tmp_path)
+    ideation_dir = run_dir / "01-ideation"
+    artifacts.write_artifact(ideation_dir, 1, {"stage": "shorts-ideation"}, "concept v1")
+    test_client.post(f"/projects/{project_id}/stages/ideation/approve")
+    test_client.post(f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT})
+    artifacts.write_artifact(ideation_dir, 2, {"stage": "shorts-ideation"}, "concept v2")
+
+    test_client.post(f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT})
+
+    meta, _ = artifacts.parse_frontmatter(
+        (run_dir / "02-scripting" / "artifact.v2.md").read_text(encoding="utf-8")
+    )
+    assert [d["path"] for d in meta["depends_on"]] == ["01-ideation/artifact.v2.md"]
 
 
 def test_hand_edit_flips_stage_to_awaiting_review_and_dependent_to_stale(two_stage_client):
