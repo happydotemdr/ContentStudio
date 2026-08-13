@@ -1466,6 +1466,11 @@ def main(argv: list[str] | None = None) -> int:
         world = sheet_world
 
     if not shots:
+        if parse.findings:
+            # These are the exact, already-computed reasons nothing parsed -- the
+            # operator gets which lines are wrong, not just that something is wrong.
+            for finding in parse.findings:
+                print(f"  [{finding.check}] {finding.beat}: {finding.message}")
         print(f"Gate C: no shots parsed from {args.sheet}. Check the sheet format.")
         return EXIT_UNPARSEABLE
 

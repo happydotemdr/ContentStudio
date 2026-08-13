@@ -799,6 +799,30 @@ def test_an_unparseable_sheet_no_longer_shares_a_code_with_argparse(tmp_path, ca
     assert main([str(empty)]) == EXIT_UNPARSEABLE
 
 
+def test_a_sheet_of_only_malformed_headings_shows_the_specific_parse_findings(tmp_path, capsys):
+    """The zero-shots exit path printed a generic "check the sheet format" line
+    and returned, discarding parse.findings even when it already held the exact
+    per-line PARSE findings naming what was wrong. A sheet whose every heading is
+    malformed (so parsing yields zero shots) must show those specific findings,
+    not just the generic message, while still exiting EXIT_UNPARSEABLE."""
+    text = (
+        "PER-SHOT PROMPTS\n\n"
+        "### Shot 1 - Hook (0-3s) - Register A - DETAIL - MACRO - LOW\n"
+        "```text\nx, No Text. --ar 9:16\n```\n\n"
+        "### Shot 2 - Setup (3-6s) - Register A - DETAIL - MACRO - LOW\n"
+        "```text\ny, No Text. --ar 9:16\n```\n"
+    )
+    sheet = tmp_path / "malformed.md"
+    sheet.write_text(text, encoding="utf-8")
+
+    code = main([str(sheet)])
+    out = capsys.readouterr().out
+
+    assert code == EXIT_UNPARSEABLE
+    assert "[PARSE] sheet:" in out
+    assert "Shot 1 - Hook" in out and "Shot 2 - Setup" in out
+
+
 def test_worked_example_sheet_passes_gate_c():
     shots, findings = lint_fixture("worked_example_sheet.md", "worked_example_styleboard.md")
     assert len(shots) >= 8, f"worked example has only {len(shots)} shots"
