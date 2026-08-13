@@ -1946,9 +1946,23 @@ package is called done (package verification §7 item 1 requires all 26 to pass)
   meant to be satisfied incidentally by some other task's side effect that doesn't actually apply
   here. Routed for review rather than guessing at a new check to add.
 
-Both are carried forward to the final whole-branch review for this package, alongside any
-Minor findings deferred during the task loop. Neither blocks continuing to T7 and beyond — T7-T22
-do not depend on either resolution.
+- **T11R-01 (Important, plan-mandated, not fixed).** T11's own `test_the_library_warns_at_the_
+  headings_the_parser_depends_on` (text mandated verbatim by this plan) is vacuous against the
+  exact regression T11 exists to prevent. It does `text.split("## Entries")[0]` /
+  `text.split("## Entries", 1)` — a first-occurrence split, same collision class as
+  `section-renamed`'s bug (§0 Amendment 2). T11's task reviewer verified empirically: deleting
+  either required blockquote placement individually still passes both of this test's assertions,
+  because the *other* surviving blockquote's own prose (which also contains the substring
+  `` `## Entries` ``) satisfies the split before ever reaching the real heading. The test only
+  fails if BOTH placements are missing simultaneously. Not fixed here — the test's exact text was
+  mandated by the plan, not left to implementer discretion, so per this programme's standing rule
+  a plan-mandated defect is filed for review rather than silently patched. A fix, if wanted, would
+  mirror `section-renamed`'s own fix: anchor the split to unique trailing/leading context around
+  the REAL `## Entries` heading rather than a bare substring search.
+
+Both T6R items and T11R-01 are carried forward to the final whole-branch review for this package,
+alongside any Minor findings deferred during the task loop. None block continuing to T12 and
+beyond.
 
 ---
 
