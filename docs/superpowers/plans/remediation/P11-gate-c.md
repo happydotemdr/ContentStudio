@@ -47,6 +47,27 @@ exit-code logic — so T7's "Implement" section below is amended to add the miss
 are unaffected and were correctly scoped and implemented as written; the gap was in what no task
 said, not in what T2/T3 said to do.
 
+**Amendment 2 (before T11 dispatch, discovered by a failed T11 attempt):** T11's mandated
+warning blockquote (placed, per its own instructions, "immediately above `## Entries`") contains
+the literal substring `` `## Entries` `` in its own prose ("It requires the section heading to be
+exactly `` `## Entries` ``, and every entry heading to be exactly..."). T6's `LIBRARY_MUTATIONS`
+case `section-renamed` — landed and passing since T6 — does
+`STYLE_LIBRARY_TEXT.replace("## Entries", "## Library entries", 1)`, a first-occurrence
+substring replace. Once T11's blockquote sits above the real heading, the blockquote's own
+mention of `` `## Entries` `` becomes the FIRST occurrence, so the mutation silently renames the
+blockquote's prose instead of the real section heading — the real heading is untouched, the
+Library still parses completely, and Gate C prints `PASS`. Confirmed empirically: a first T11
+attempt (reverted, commit `b4daf6d` undoes `f06a7ab`) turned this from a passing test into a
+failing one (291 passed / 11 failed instead of 292/10). **Fix, landed as part of T11's redo:**
+retarget `section-renamed`'s `find`/`replace` strings in `tests/test_lint_prompt_sheet.py`'s
+`MUTATIONS` tuple (a T6 asset, being touched here because T11's own change is what breaks it) from
+`("section-renamed", "## Entries", "## Library entries")` to include enough trailing context to
+be unambiguous — the real heading is immediately followed by a blank line then
+`### rgs-sourceera-painterly-b` (the first real entry), which the blockquote's prose never is:
+`("section-renamed", "## Entries\n\n### rgs-sourceera-painterly-b", "## Library entries\n\n### rgs-sourceera-painterly-b")`.
+This is a mechanical anchor fix with no behavior-under-test change — `section-renamed` still
+renames the real section heading and nothing else.
+
 ---
 
 ## 1. Scope
