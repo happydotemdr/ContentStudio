@@ -263,7 +263,10 @@ def edit_stage_output_route(request: Request, project_id: int, stage_id: str, bo
     stage_dir.mkdir(parents=True, exist_ok=True)
     raw_output_path = stage_dir / "raw_output.md"
     raw_output_path.write_text(body, encoding="utf-8")
-    gate_results = gates.run_gates_for_stage(repo_root, stage_id, raw_output_path)
+    upstream_by_stage = gates.resolve_upstream_by_stage(run_dir, stage_defs, stage_def)
+    gate_results = gates.run_gates_for_stage(
+        repo_root, stage_id, raw_output_path, upstream_by_stage
+    )
 
     meta = {
         "schema_version": 1,

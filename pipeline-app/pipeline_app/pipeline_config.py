@@ -10,6 +10,7 @@ class StageDef:
     skill: str
     dir_prefix: str
     depends_on: list[str] = field(default_factory=list)
+    optional_depends_on: list[str] = field(default_factory=list)
     brand_scope: str | None = None
     specialist: str | None = None
     specialist_mode: str | None = None
