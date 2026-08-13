@@ -396,11 +396,35 @@ def resolve_upstream_by_stage(
     return upstream
 ```
 
-  **`_approved_artifact_path` is lifted verbatim from P4's T6** and deleted from
-  `turn_service.py` in the same commit — do **not** re-derive it here. That is the whole point
-  of the widening: one resolver, one approved-artifact lookup, no second copy. P4's T5/T6/T10
-  tests are the acceptance criteria for the three keywords; the tests below cover only P3's
-  own defaults.
+  > **Amendment (pre-review, this session): "lifted verbatim from P4's T6" is not executable
+  > as written.** This session executes P3 alone, before P4 (per the landing order and this
+  > session's own resume prompt); `turn_service.py` has no `_approved_artifact_path` today —
+  > confirmed empirically, `grep` returns nothing. There is nothing to lift. **Write it fresh in
+  > `gates.py`** (P3's own file) instead, to the semantic the resolver's docstring already
+  > commits to — "resolve the latest artifact whose frontmatter status is `final`, not merely the
+  > highest version":
+  >
+  > ```python
+  > def _approved_artifact_path(repo_root: Path | None, stage_id: str, stage_dir: Path) -> Path | None:
+  >     """The latest artifact version whose frontmatter status is "final" -- the
+  >     approved_only=True half of resolve_upstream_by_stage (A-32). Walks
+  >     versions newest-first over the *raw* directory listing (not
+  >     resolve_latest_artifact, which resolves grounding through its
+  >     pointer.yaml and has no notion of "final" at all) and returns the first
+  >     whose frontmatter status is "final"; None if none is.
+  >     """
+  > ```
+  >
+  > Base it on `artifacts._versions_in(stage_dir)` (returns `list[tuple[int, Path]]`, already
+  > sorted) and `artifacts.parse_frontmatter`, walking newest-first (`reversed(...)` or
+  > `sorted(..., reverse=True)`) and returning the first path whose parsed `meta.get("status")
+  > == "final"`. When P4 lands later, it decides for itself whether to import this from `gates.py`
+  > or keep its own — that is P4's call to make with the code actually in front of it, not
+  > something P3 can pre-resolve today. P4's T5/T6/T10 tests (when P4 runs) are the acceptance
+  > criteria for the three keywords generally; the tests below cover P3's own defaults, plus a new
+  > one asserting `approved_only=True` actually skips a non-final draft in favour of an older final
+  > version (not just returning `{}` when nothing is final at all, which
+  > `test_every_keyword_defaults_to_the_pre_widening_behaviour` already covers).
 
 - [ ] **Implement, `routes/stages.py`** — replace line 266:
 
