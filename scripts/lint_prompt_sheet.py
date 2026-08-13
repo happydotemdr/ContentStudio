@@ -1202,7 +1202,8 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=DEFAULT_STYLE_LIBRARY,
         help="path to the Style Library C20 resolves slot labels against "
-             f"(default: {DEFAULT_STYLE_LIBRARY}). Only read when the sheet has slots.",
+             f"(default: {DEFAULT_STYLE_LIBRARY}). Only read when the sheet has slots. "
+             "A non-default path is recorded in the output as [NON-DEFAULT].",
     )
     args = parser.parse_args(argv)
 
@@ -1256,6 +1257,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"this sheet's slot labels against an empty Library."
             )
             return EXIT_MISSING_DEPENDENCY
+
+    if library is not None:
+        marker = "" if args.style_library == DEFAULT_STYLE_LIBRARY else " [NON-DEFAULT]"
+        print(f"Gate C: Style Library{marker}: {args.style_library} "
+              f"({len(library)} entries)")
 
     findings = [
         *parse.findings,

@@ -35,6 +35,7 @@ from lint_prompt_sheet import (  # noqa: E402
     lint_cover,
     lint,
     main,
+    DEFAULT_STYLE_LIBRARY,
     EXIT_PASS,
     EXIT_FINDINGS,
     EXIT_USAGE,
@@ -1410,3 +1411,28 @@ def test_a_reformatted_style_library_fails_loudly_naming_the_library(case, tmp_p
     out = capsys.readouterr().out
     assert code != 0, f"{_id}: {out}"
     assert "style-library" in out, f"{_id}: the Library must be named as the file at fault\n{out}"
+
+
+def test_the_resolved_style_library_path_is_printed_on_a_pass(capsys):
+    """C-75: a run against the default Library must name it in the transcript,
+    on a pass and not only on a failure."""
+    main([str(WORKED), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")])
+    assert str(STYLE_LIBRARY) in capsys.readouterr().out
+
+
+def test_a_non_default_style_library_is_named_in_the_output(tmp_path, capsys):
+    """Distinguishability: a run against a hand-written stub must be visibly
+    different in the transcript from a run against the repo Library."""
+    stub = tmp_path / "stub.md"
+    stub.write_text("# x\n\n## Entries\n\n### anything-goes\n", encoding="utf-8")
+    main([str(WORKED), "--styleboard", str(FIXTURES / "worked_example_styleboard.md"),
+          "--style-library", str(stub)])
+    out = capsys.readouterr().out
+    assert "NON-DEFAULT" in out
+    assert str(stub) in out
+
+
+def test_the_cli_default_library_is_the_exact_path_the_app_path_hard_codes():
+    """Surfacing/parity: gates.py computes repo_root/'docs'/'style-library.md'.
+    Two gates wearing one name is worse than one gate."""
+    assert DEFAULT_STYLE_LIBRARY == Path(__file__).resolve().parents[1] / "docs" / "style-library.md"
