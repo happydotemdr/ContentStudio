@@ -1363,6 +1363,29 @@ def test_c19_accepts_a_reuse_declaration_backed_by_a_real_hook_shot():
     assert check_cover_present(WORKED.read_text(encoding="utf-8")) == []
 
 
+def test_c19_resolves_an_explicit_index_reuse_to_a_shot_not_named_hook():
+    """COVER_REUSE_RE's trailing '#?(\\d+)?' never actually captured -- a lazy
+    '.*?' before it always let the match succeed at zero width first, so
+    group(1) was always None and _hook_shot_for_reuse's explicit-index branch
+    was unreachable. On a sheet where no shot's beat starts with 'Hook',
+    'Cover = Hook still #2' naming a real shot 2 ('Payoff') fell through to the
+    beat-only fallback, found nothing, and produced a false-positive C19 even
+    though the reference named a real shot."""
+    text = (
+        "PER-SHOT PROMPTS\n\n"
+        "### Shot 1 — Setup (0–3s) · Register A · DETAIL · MACRO · LOW\n"
+        "```text\nsetup body, No Text. --ar 9:16\n```\n\n"
+        "### Shot 2 — Payoff (3–6s) · Register A · DETAIL · MACRO · LOW\n"
+        "```text\npayoff body, No Text. --ar 9:16\n```\n\n"
+        "Cover = Hook still #2\n"
+    )
+    shots, _world = parse_sheet(text)
+    assert all(not s.beat.startswith("Hook") for s in shots), (
+        "fixture must not let the beat-fallback path mask the index-capture bug"
+    )
+    assert "C19" not in codes(check_cover_present(text))
+
+
 def test_a_mistyped_shot_fence_cannot_swallow_the_cover_prompt():
     """_read_fenced_prompt broke on SHOT_HEADING_RE but not COVER_HEADING_RE."""
     text = SHEET.replace("```text\nluminous", "```txt\nluminous") + \

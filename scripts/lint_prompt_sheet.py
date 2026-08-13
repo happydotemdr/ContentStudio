@@ -287,7 +287,7 @@ COVER_HEADING_RE = re.compile(
 # Extended to optionally capture an explicit shot number ("...beat still #1") so
 # the reuse declaration can be resolved to a real shot (finding C-86) rather than
 # merely detected as present.
-COVER_REUSE_RE = re.compile(r"^\s*Cover\s*=\s*Hook\b.*?#?(\d+)?", re.IGNORECASE)
+COVER_REUSE_RE = re.compile(r"^\s*Cover\s*=\s*Hook\b[^#\n]*(?:#\s*(\d+))?", re.IGNORECASE)
 
 
 def cover_heading_present(text: str) -> bool:
