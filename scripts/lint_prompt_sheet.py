@@ -106,6 +106,47 @@ class SheetParse(tuple):
         return self[1]
 
 
+def _read_world_block(
+    lines: list[str], start: int
+) -> tuple[dict[str, str], list[Finding], int]:
+    """Consume a WORLD LOCK block to the next unindented non-blank line.
+
+    The old walk broke at the first line that failed WORLD_ENTRY_RE, so a blank
+    line mid-block silently truncated it and an unindented body yielded {} --
+    which then surfaced downstream as a wall of C8/C18 findings blaming the sheet
+    for a styleboard formatting problem (finding C-73).
+    """
+    entries: dict[str, str] = {}
+    findings: list[Finding] = []
+    i = start
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        if not line[:1].isspace():
+            break
+        entry = WORLD_ENTRY_RE.match(line)
+        if entry:
+            entries[entry.group(1)] = entry.group(2)
+        else:
+            findings.append(Finding(
+                "PARSE", None,
+                f"line {i + 1} sits inside the WORLD LOCK block but is not a "
+                f"'<key>: <value>' entry, so it would be dropped: {line.strip()!r}",
+                kind="parse",
+            ))
+        i += 1
+    if not entries:
+        findings.append(Finding(
+            "PARSE", None,
+            "a WORLD LOCK heading is present but no indented '<key>: <value>' "
+            "entries followed it; the world lock resolves to nothing.",
+            kind="parse",
+        ))
+    return entries, findings, i
+
+
 def parse_sheet(text: str) -> SheetParse:
     """Return (shots in sheet order, world-lock key/value pairs).
 
@@ -119,6 +160,7 @@ def parse_sheet(text: str) -> SheetParse:
     findings: list[Finding] = []
     declared: int | None = None
     in_fence = False
+    seen_world_block = False
 
     i = 0
     while i < len(lines):
@@ -140,14 +182,18 @@ def parse_sheet(text: str) -> SheetParse:
             i += 1
             continue
 
-        if WORLD_HEADING_RE.match(lines[i]):
-            i += 1
-            while i < len(lines):
-                entry = WORLD_ENTRY_RE.match(lines[i])
-                if not entry:
-                    break
-                world[entry.group(1)] = entry.group(2)
-                i += 1
+        if WORLD_HEADING_RE.match(line):
+            if seen_world_block:
+                findings.append(Finding(
+                    "PARSE", None,
+                    f"line {i + 1} opens a second 'WORLD LOCK' block; the later one "
+                    "silently overwrote the earlier. Delete the superseded block.",
+                    kind="parse",
+                ))
+            seen_world_block = True
+            entries, block_findings, i = _read_world_block(lines, i + 1)
+            world.update(entries)
+            findings.extend(block_findings)
             continue
 
         heading = SHOT_HEADING_RE.match(lines[i])

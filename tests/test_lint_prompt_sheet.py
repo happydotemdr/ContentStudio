@@ -1246,3 +1246,39 @@ def test_main_fails_closed_when_the_library_has_no_entries(tmp_path, capsys):
     ])
     assert exit_code == 2
     assert "no entries parsed" in capsys.readouterr().out
+
+
+SPLIT_WORLD = """\
+WORLD LOCK
+  register_a_sport: club soccer
+  register_a_signature_objects: goal net, corner flag
+
+  slot_register_a: rgs-present-soccer-a
+"""
+
+
+def test_a_blank_line_does_not_truncate_the_world_lock_block():
+    parse = parse_sheet(SPLIT_WORLD)
+    assert parse.world["slot_register_a"] == "rgs-present-soccer-a"
+
+
+def test_a_malformed_world_lock_entry_is_reported_not_skipped():
+    parse = parse_sheet("WORLD LOCK\n  register_a_sport: club soccer\n  not an entry\n")
+    assert [f.check for f in parse.findings] == ["PARSE"]
+    assert "not an entry" in parse.findings[0].message
+
+
+def test_a_second_world_lock_block_is_rejected_rather_than_last_win():
+    """A superseded block left above the live one silently overwrote it."""
+    text = SPLIT_WORLD + "\nWORLD LOCK\n  register_a_sport: hockey\n"
+    parse = parse_sheet(text)
+    assert any("second 'WORLD LOCK'" in f.message for f in parse.findings)
+
+
+def test_an_unindented_world_lock_body_is_reported_not_silently_empty():
+    """Distinguishability: 'the styleboard has no world lock' and 'the styleboard's
+    world lock is unindented' must not both render as {}."""
+    flat = parse_sheet("WORLD LOCK\nregister_a_sport: club soccer\n")
+    absent = parse_sheet("nothing here\n")
+    assert flat.world == {} and absent.world == {}
+    assert flat.findings != absent.findings
