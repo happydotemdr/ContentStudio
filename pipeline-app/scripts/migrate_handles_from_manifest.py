@@ -139,7 +139,7 @@ def _seed_entry(conn: sqlite3.Connection, platform: str, entry: dict, creators: 
         return
     db.upsert_handle_from_migration(
         conn, platform, handle, display_name, cohort, keyword_filter,
-        status="validated", included=included, added_at=now,
+        status="pending", included=included, added_at=now,
     )
     result.seeded += 1
 
@@ -186,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     conn.close()
     print(f"migrated {result.seeded} handles from {manifest_path} into {db_path}")
+    if result.seeded > 0:
+        print(f"  {result.seeded} handle(s) pending validation -- run a discovery validate pass to confirm each is live")
     return 0
 
 

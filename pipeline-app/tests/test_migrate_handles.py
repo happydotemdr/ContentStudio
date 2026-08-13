@@ -223,3 +223,39 @@ def test_shipped_general_interest_entries_are_not_pulled_by_daily_runs(conn):
     assert ("youtube", "@bigthink") not in included
     assert ("bluesky", "adamgrant.bsky.social") not in included
     assert ("youtube", "@JennyHoyos") in included      # not a blanket exclusion
+
+
+def test_seeded_handles_are_pending_not_validated(conn, tmp_path):
+    """FAULT: 'validated' must be earned by a real fetch (discovery_engine.py:
+    245-249). A JSON file is not evidence a channel still exists (B-75)."""
+    payload = {"creators": {"c": {"display_name": "C"}},
+               **{p: [] for p in mig.PLATFORMS}, "rss": []}
+    payload["youtube"] = [{"handle": "@c", "creator": "c", "cohort": "guru", "included": True}]
+    mig.migrate(conn, _write(tmp_path, payload), now="2026-08-08T00:00:00+00:00")
+    row = db.get_handle_by_platform_and_handle(conn, "youtube", "@c")
+    assert row["status"] == "pending"
+    assert row["validated_at"] is None
+
+
+def test_a_seeded_handle_is_distinguishable_from_a_fetch_validated_one(conn, tmp_path):
+    """DISTINGUISHABILITY: before the fix both read `validated`, so the status
+    column told the operator nothing."""
+    payload = {"creators": {"c": {"display_name": "C"}},
+               **{p: [] for p in mig.PLATFORMS}, "rss": []}
+    payload["youtube"] = [{"handle": "@seeded", "creator": "c", "cohort": "guru", "included": True}]
+    mig.migrate(conn, _write(tmp_path, payload), now="2026-08-08T00:00:00+00:00")
+    seeded = db.get_handle_by_platform_and_handle(conn, "youtube", "@seeded")
+
+    real_id = db.create_handle(conn, "youtube", "@fetched", "F", "guru", None,
+                               "2026-08-08T00:00:00+00:00")
+    db.set_handle_status(conn, real_id, "validated", validated_at="2026-08-08T00:01:00+00:00")
+    fetched = db.get_handle(conn, real_id)
+
+    assert seeded["status"] != fetched["status"]
+
+
+def test_main_reports_seeded_handles_need_validation(conn, tmp_path, capsys):
+    """SURFACING: the operator is told the roster is unverified."""
+    rc = mig.main(["--manifest", str(SHIPPED_MANIFEST), "--db-path", str(tmp_path / "p.db")])
+    assert rc == 0
+    assert "pending validation" in capsys.readouterr().out
