@@ -1883,12 +1883,35 @@ def test_a_blank_line_inside_the_styleboards_world_lock_block_is_tolerated(tmp_p
 
 def test_the_library_warns_at_the_headings_the_parser_depends_on():
     """C-77: the coupling was documented only in Open questions §2. An editor
-    reformatting the file reads Entry format and ## Entries, not the appendix."""
+    reformatting the file reads Entry format and ## Entries, not the appendix.
+
+    The file carries TWO MACHINE-READ blockquotes -- one just after '## Entry
+    format', one just before the real '## Entries' heading -- and both
+    blockquotes' own prose contains the literal substring "## Entries" (in a
+    sentence explaining what the parser requires). A bare `text.split("##
+    Entries")[0]` collided with whichever blockquote a first-occurrence split
+    happened to hit first, so deleting either blockquote individually still
+    left both assertions passing (the identical collision class already found
+    and fixed for the "section-renamed" MUTATIONS case). Anchor on the real
+    heading specifically -- the one immediately followed by the first real
+    entry, `### rgs-sourceera-painterly-b` -- and check each blockquote's own
+    location independently so either one going missing is caught."""
     text = STYLE_LIBRARY.read_text(encoding="utf-8")
-    before_entries = text.split("## Entries")[0]
-    assert "lint_prompt_sheet.py" in before_entries.split("## Entry format")[1]
-    heading_at, _rest = text.split("## Entries", 1)
-    assert "MACHINE-READ" in heading_at[-400:]
+    real_entries_anchor = "## Entries\n\n### rgs-sourceera-painterly-b"
+    assert text.count(real_entries_anchor) == 1, (
+        "the real ## Entries heading must be uniquely identifiable by what "
+        "immediately follows it"
+    )
+    before_entries, _rest = text.split(real_entries_anchor, 1)
+
+    entry_format_section, harvest_section = before_entries.split("## How to harvest", 1)
+    assert "lint_prompt_sheet.py" in entry_format_section.split("## Entry format", 1)[1]
+    assert "MACHINE-READ" in entry_format_section, (
+        "the blockquote just after '## Entry format' is missing"
+    )
+    assert "MACHINE-READ" in harvest_section, (
+        "the blockquote just before the real '## Entries' heading is missing"
+    )
 
 
 def test_the_libraryS_own_entries_still_parse_after_the_warning_edits():
