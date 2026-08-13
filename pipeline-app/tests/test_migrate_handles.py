@@ -181,3 +181,24 @@ def test_shipped_manifest_declares_every_platform_and_resolves_every_creator():
             assert isinstance(entry["included"], bool)
     assert len(data["youtube"]) == 15
     assert len(data["bluesky"]) == 1
+
+
+def test_explicit_cohort_beats_the_note_derived_one(conn, tmp_path):
+    """The note says 'guru channel' -- a prose rewrite must never be able to
+    reclassify an entry that states its cohort (B-77)."""
+    payload = {"creators": {"c": {"display_name": "C"}},
+               **{p: [] for p in mig.PLATFORMS}, "rss": []}
+    payload["youtube"] = [{"handle": "@c", "creator": "c", "cohort": "shorts-specialist",
+                           "included": True, "note": "guru channel (manual-seed)"}]
+    mig.migrate(conn, _write(tmp_path, payload), now="2026-08-08T00:00:00+00:00")
+    assert db.get_handle_by_platform_and_handle(
+        conn, "youtube", "@c")["cohort"] == "shorts-specialist"
+
+
+def test_shipped_manifest_never_needs_the_derive_cohort_fallback():
+    """derive_cohort defaults to 'general-interest', this repo's label for
+    'out of scope'. Prove no shipped entry can fall into it by accident."""
+    data = json.loads(SHIPPED_MANIFEST.read_text(encoding="utf-8"))
+    for platform in mig.PLATFORMS:
+        for entry in data[platform]:
+            assert "cohort" in entry, f"{platform}/{entry['handle']} would be inferred"

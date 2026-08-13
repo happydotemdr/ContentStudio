@@ -70,6 +70,9 @@ def validate_keys(data: dict) -> None:
 
 
 def derive_cohort(note: str, handle: str) -> str:
+    """Legacy fallback only. Every shipped manifest entry carries an explicit
+    `cohort`; this exists so a hand-written third-party manifest without one
+    still imports (B-77)."""
     note_lower = (note or "").lower()
     if "shorts specialist" in note_lower:
         return "shorts-specialist"
@@ -118,9 +121,7 @@ def _seed_entry(conn: sqlite3.Connection, platform: str, entry: dict, creators: 
         creator_key = entry.get("creator")
         if creator_key is not None:
             display_name = (creators.get(creator_key) or {}).get("display_name")
-    cohort = entry.get("cohort")
-    if cohort is None:
-        cohort = derive_cohort(entry.get("note", ""), handle)
+    cohort = entry.get("cohort") or derive_cohort(entry.get("note", ""), handle)
     keyword_filter = entry.get("keyword_filter")
 
     clash = find_slug_collision(
