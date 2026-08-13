@@ -456,3 +456,26 @@ def test_shipped_manifest_seeds_every_declared_handle(conn):
     assert result.seeded == expected
     assert result.skipped == 0 and result.errors == []
     assert len(db.list_handles(conn)) == expected
+
+
+def test_manifest_comments_do_not_misdescribe_the_discovery_path():
+    """B-79: the rss comment told the operator that adding a feed URL would
+    include it. True for download_brandintel.py, false for the app.
+    B-85: the top comment claimed 'six skills'; the repo ships eight."""
+    data = json.loads(SHIPPED_MANIFEST.read_text(encoding="utf-8"))
+    top = data["_comment"]
+    assert "six skills" not in top
+    assert "CLAUDE.md" in top                      # points at the live skill table instead
+    assert "migrate_handles_from_manifest.py" in top
+
+    rss_comment = data["rss"][0]["_comment"]
+    assert "download_brandintel.py" in rss_comment
+    assert "daily discovery run" in rss_comment
+
+
+def test_rss_is_not_a_coverage_report_platform():
+    assert "rss" not in mig.PLATFORMS
+    assert "rss" in mig.DOWNLOADER_ONLY_KEYS
+    report = mig.build_coverage_report(
+        json.loads(SHIPPED_MANIFEST.read_text(encoding="utf-8")))
+    assert "rss" not in report.platforms
