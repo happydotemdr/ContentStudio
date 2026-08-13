@@ -222,10 +222,98 @@ def migrate(conn: sqlite3.Connection, manifest_path: Path, now: str) -> MigrateR
     return result
 
 
+@dataclass(frozen=True)
+class Cell:
+    state: str                     # tracked | declared-excluded | not tracked | UNANSWERABLE
+    handle: str | None = None
+
+
+@dataclass
+class CoverageReport:
+    creators: dict[str, str]                    # slug -> display_name
+    platforms: tuple[str, ...]
+    cells: dict[tuple[str, str], Cell]
+
+    def cell(self, creator: str, platform: str) -> Cell:
+        return self.cells[(creator, platform)]
+
+    def count(self, state: str) -> int:
+        return sum(1 for c in self.cells.values() if c.state == state)
+
+
+def build_coverage_report(data: dict) -> CoverageReport:
+    """The creator x platform matrix, computed from the manifest ALONE.
+
+    Deliberately does not read the database: the operator's question has to be
+    answerable from a fresh checkout, in a diff, on another machine. A cell is
+    UNANSWERABLE only when the manifest carries no key for that platform at
+    all -- which is exactly the B-70 state this package eliminates.
+    """
+    creators = {slug: (spec or {}).get("display_name") or slug
+                for slug, spec in (data.get("creators") or {}).items()}
+    declared: dict[tuple[str, str], dict] = {}
+    for platform in PLATFORMS:
+        for entry in data.get(platform) or []:
+            if entry.get("creator") and entry.get("handle"):
+                declared[(entry["creator"], platform)] = entry
+
+    cells: dict[tuple[str, str], Cell] = {}
+    for slug in creators:
+        for platform in PLATFORMS:
+            if platform not in data:
+                cells[(slug, platform)] = Cell("UNANSWERABLE")
+                continue
+            entry = declared.get((slug, platform))
+            if entry is None:
+                cells[(slug, platform)] = Cell("not tracked")
+            elif entry.get("included", True):
+                cells[(slug, platform)] = Cell("tracked", entry["handle"])
+            else:
+                cells[(slug, platform)] = Cell("declared-excluded", entry["handle"])
+    return CoverageReport(creators, PLATFORMS, cells)
+
+
+_GLYPH = {"tracked": "YES", "declared-excluded": "off", "not tracked": "-",
+          "UNANSWERABLE": "??"}
+
+
+def print_coverage_report(report: CoverageReport) -> None:
+    width = max((len(s) for s in report.creators), default=7) + 2
+    print("creator x platform coverage (from the manifest alone)\n")
+    print(" " * width + "  ".join(f"{p:<17}" for p in report.platforms))
+    for slug in sorted(report.creators):
+        row = "  ".join(f"{_GLYPH[report.cell(slug, p).state]:<17}" for p in report.platforms)
+        print(f"{slug:<{width}}{row}")
+    print("\n  YES tracked          :", report.count("tracked"))
+    print("  off declared-excluded:", report.count("declared-excluded"))
+    print("  -   not tracked      :", report.count("not tracked"))
+    print("  ??  UNANSWERABLE :", report.count("UNANSWERABLE"))
+    print("\n  `rss` is intentionally not a column: it has a manifest key and a")
+    print("  download_brandintel.py branch, but no adapter, so it is not part of")
+    print("  the daily discovery path.")
+
+
+def _fail_manifest_error(conn: sqlite3.Connection, manifest_path: Path, exc: ManifestError) -> int:
+    """Shared handler for a ManifestError raised from either the normal write
+    path (migrate()) or --report's read-only path: same logging, same
+    non-zero exit, regardless of which path found the bad manifest first."""
+    obs.log("roster.manifest_invalid", level="error", manifest=str(manifest_path),
+            error=str(exc))
+    obs.record_event(conn, kind="roster.manifest_invalid", severity="error",
+                     source="migrate_handles_from_manifest",
+                     message=str(exc), detail={"manifest": str(manifest_path)})
+    print(f"! {exc}", file=sys.stderr)
+    conn.close()
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--manifest", default=None, help="path to brand_sources.json (default: repo-root manifests/)")
     ap.add_argument("--db-path", default=None, help="path to pipeline.db (default: pipeline-app/pipeline.db)")
+    ap.add_argument("--report", action="store_true",
+                     help="print the creator x platform coverage matrix computed from the "
+                          "manifest alone, then exit without opening any write path")
     args = ap.parse_args(argv)
 
     pipeline_app_root = Path(__file__).resolve().parents[1]
@@ -236,19 +324,23 @@ def main(argv: list[str] | None = None) -> int:
     schema_path = pipeline_app_root / "pipeline_app" / "schema.sql"
     db.init_db(db_path, schema_path)
     conn = db.get_connection(db_path)
+
+    if args.report:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        try:
+            validate_keys(data)
+        except ManifestError as exc:
+            return _fail_manifest_error(conn, manifest_path, exc)
+        conn.close()
+        print_coverage_report(build_coverage_report(data))
+        return 0
+
     import datetime
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     try:
         result = migrate(conn, manifest_path, now)
     except ManifestError as exc:
-        obs.log("roster.manifest_invalid", level="error", manifest=str(manifest_path),
-                error=str(exc))
-        obs.record_event(conn, kind="roster.manifest_invalid", severity="error",
-                         source="migrate_handles_from_manifest",
-                         message=str(exc), detail={"manifest": str(manifest_path)})
-        print(f"! {exc}", file=sys.stderr)
-        conn.close()
-        return 2
+        return _fail_manifest_error(conn, manifest_path, exc)
     if result.drift:
         for platform, handle in result.drift:
             print(f"  ?? drift: {platform}/{handle} is in the DB but not declared in the manifest")

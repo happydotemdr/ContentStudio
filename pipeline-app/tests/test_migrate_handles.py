@@ -375,3 +375,62 @@ def test_an_entry_naming_an_undeclared_creator_is_a_manifest_error(conn, tmp_pat
     with pytest.raises(mig.ManifestError) as excinfo:
         mig.migrate(conn, _write(tmp_path, payload), now="2026-08-08T00:00:00+00:00")
     assert "nobody" in str(excinfo.value)
+
+
+def test_coverage_report_cell_states_are_exhaustive(tmp_path):
+    """A cell is one of exactly three states. UNANSWERABLE means 'the manifest
+    has no key for this platform, so we cannot say' -- 74 of 90 cells were in
+    that state before this package (B-70)."""
+    payload = {"creators": {"c": {"display_name": "C"}},
+               **{p: [] for p in mig.PLATFORMS}, "rss": []}
+    payload["youtube"] = [{"handle": "@c", "creator": "c", "cohort": "guru", "included": True}]
+    payload["x"] = [{"handle": "@c_x", "creator": "c", "cohort": "guru", "included": False}]
+    del payload["facebook"]                                   # simulate the old manifest
+
+    report = mig.build_coverage_report(
+        json.loads(_write(tmp_path, payload).read_text(encoding="utf-8")))
+
+    assert report.cell("c", "youtube").state == "tracked"
+    assert report.cell("c", "x").state == "declared-excluded"
+    assert report.cell("c", "instagram").state == "not tracked"
+    assert report.cell("c", "facebook").state == "UNANSWERABLE"
+
+
+def test_shipped_manifest_has_zero_unanswerable_cells():
+    """THE coverage test. 'Are we tracking all social platforms for our key
+    creators?' is answerable from the repo for every creator and every
+    platform, or this fails (B-70, B-81)."""
+    data = json.loads(SHIPPED_MANIFEST.read_text(encoding="utf-8"))
+    report = mig.build_coverage_report(data)
+
+    # Anti-tautology: a report over zero creators or zero platforms would also
+    # have zero UNANSWERABLE cells. Pin the shape first.
+    assert sorted(report.platforms) == sorted(mig.PLATFORMS)
+    assert len(report.creators) == 15
+    assert len(report.cells) == 15 * len(mig.PLATFORMS) == 105
+
+    unanswerable = [(c, p) for (c, p), cell in report.cells.items()
+                    if cell.state == "UNANSWERABLE"]
+    assert unanswerable == [], (
+        f"{len(unanswerable)} creator x platform cells cannot be answered from "
+        f"the repo: {unanswerable[:10]}")
+
+
+def test_report_mode_prints_the_matrix_and_exits_zero(tmp_path, capsys):
+    rc = mig.main(["--manifest", str(SHIPPED_MANIFEST),
+                   "--db-path", str(tmp_path / "p.db"), "--report"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "UNANSWERABLE : 0" in out
+    assert "adam-grant" in out
+    assert "linkedin-profile" in out
+
+
+def test_report_mode_writes_nothing_to_the_database(tmp_path):
+    """--report is read-only: an operator answering a coverage question must
+    not accidentally re-seed the roster."""
+    db_path = tmp_path / "p.db"
+    mig.main(["--manifest", str(SHIPPED_MANIFEST), "--db-path", str(db_path), "--report"])
+    conn = db.get_connection(db_path)
+    assert db.list_handles(conn) == []
+    conn.close()
