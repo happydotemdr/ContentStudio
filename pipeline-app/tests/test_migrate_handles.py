@@ -318,3 +318,32 @@ def test_main_prints_updated_separately_from_seeded(conn, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "inserted : 0" in out
     assert "updated  : 0" in out
+
+
+def test_a_db_handle_missing_from_the_manifest_is_reported_as_drift(conn, tmp_path, capsys):
+    db.create_handle(conn, "instagram", "@ghost", "Ghost", "guru", None,
+                     "2026-08-01T00:00:00+00:00")
+    payload = {"creators": {}, **{p: [] for p in mig.PLATFORMS}, "rss": []}
+    result = mig.migrate(conn, _write(tmp_path, payload), now="2026-08-08T00:00:00+00:00")
+
+    assert ("instagram", "@ghost") in result.drift
+    assert db.get_handle_by_platform_and_handle(conn, "instagram", "@ghost") is not None, \
+        "drift is reported, never auto-deleted -- deletion is the operator's call"
+
+
+def test_drift_records_a_warning_event(tmp_path):
+    db_path = tmp_path / "p.db"
+    db.init_db(db_path, Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql")
+    conn = db.get_connection(db_path)
+    db.create_handle(conn, "instagram", "@ghost", "Ghost", "guru", None,
+                     "2026-08-01T00:00:00+00:00")
+    conn.close()
+
+    rc = mig.main(["--manifest", str(SHIPPED_MANIFEST), "--db-path", str(db_path)])
+    assert rc == 0                                  # drift is a warning, not a failure
+
+    conn = db.get_connection(db_path)
+    rows = conn.execute("SELECT * FROM events WHERE kind = 'roster.drift'").fetchall()
+    conn.close()
+    assert len(rows) == 1 and rows[0]["severity"] == "warning"
+    assert "@ghost" in rows[0]["message"]

@@ -49,7 +49,7 @@ class MigrateResult:
     seeded: int = 0
     updated: int = 0
     skipped: int = 0
-    drift: list[dict] = field(default_factory=list)
+    drift: list[tuple[str, str]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
 
@@ -132,9 +132,17 @@ def upsert_handle(conn: sqlite3.Connection, platform: str, handle: str, *, displ
 
 
 def find_drift(conn: sqlite3.Connection, data: dict) -> list[tuple[str, str]]:
-    """Stub -- T9 replaces this body with the real drift detection. Returns
-    no drift, which is safe because T3's own test never reads `result.drift`."""
-    return []
+    """(platform, handle) rows in the DB that the manifest does not declare.
+
+    Reported, never deleted: a hand-added handle is a legitimate way to work,
+    and the point is that the divergence stops being invisible (B-76).
+    """
+    declared = {(p, e["handle"]) for p in PLATFORMS for e in data[p] if e.get("handle")}
+    return sorted(
+        (row["platform"], row["handle"])
+        for row in db.list_handles(conn)
+        if (row["platform"], row["handle"]) not in declared
+    )
 
 
 def _seed_entry(conn: sqlite3.Connection, platform: str, entry: dict, creators: dict,
@@ -224,6 +232,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"! {exc}", file=sys.stderr)
         conn.close()
         return 2
+    if result.drift:
+        for platform, handle in result.drift:
+            print(f"  ?? drift: {platform}/{handle} is in the DB but not declared in the manifest")
+        message = ("DB handles not declared in the manifest: "
+                   + ", ".join(f"{platform}/{handle}" for platform, handle in result.drift))
+        obs.log("roster.drift", level="warning", manifest=str(manifest_path),
+                drift=result.drift)
+        obs.record_event(conn, kind="roster.drift", severity="warning",
+                         source="migrate_handles_from_manifest",
+                         message=message, detail={"drift": result.drift})
     conn.close()
     print(f"roster sync: {manifest_path}  ->  {db_path}")
     print(f"  inserted : {result.seeded}")
