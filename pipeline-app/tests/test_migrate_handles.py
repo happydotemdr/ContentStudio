@@ -202,3 +202,24 @@ def test_shipped_manifest_never_needs_the_derive_cohort_fallback():
     for platform in mig.PLATFORMS:
         for entry in data[platform]:
             assert "cohort" in entry, f"{platform}/{entry['handle']} would be inferred"
+
+
+def test_included_false_entry_is_seeded_but_excluded(conn, tmp_path):
+    payload = {"creators": {"c": {"display_name": "C"}},
+               **{p: [] for p in mig.PLATFORMS}, "rss": []}
+    payload["youtube"] = [{"handle": "@out", "creator": "c",
+                           "cohort": "general-interest", "included": False}]
+    mig.migrate(conn, _write(tmp_path, payload), now="2026-08-08T00:00:00+00:00")
+    row = db.get_handle_by_platform_and_handle(conn, "youtube", "@out")
+    assert row is not None, "an excluded creator is still declared, still visible"
+    assert row["included"] == 0
+
+
+def test_shipped_general_interest_entries_are_not_pulled_by_daily_runs(conn):
+    """B-78: the manifest's own comment calls these out of scope, and the app
+    used to pull them every day anyway."""
+    mig.migrate(conn, SHIPPED_MANIFEST, now="2026-08-08T00:00:00+00:00")
+    included = {(r["platform"], r["handle"]) for r in db.list_handles(conn, included_only=True)}
+    assert ("youtube", "@bigthink") not in included
+    assert ("bluesky", "adamgrant.bsky.social") not in included
+    assert ("youtube", "@JennyHoyos") in included      # not a blanket exclusion

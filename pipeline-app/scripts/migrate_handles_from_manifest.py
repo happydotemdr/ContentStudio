@@ -123,6 +123,7 @@ def _seed_entry(conn: sqlite3.Connection, platform: str, entry: dict, creators: 
             display_name = (creators.get(creator_key) or {}).get("display_name")
     cohort = entry.get("cohort") or derive_cohort(entry.get("note", ""), handle)
     keyword_filter = entry.get("keyword_filter")
+    included = bool(entry.get("included", True))
 
     clash = find_slug_collision(
         handle, [row["handle"] for row in db.list_platform_handles(conn, platform)]
@@ -138,7 +139,7 @@ def _seed_entry(conn: sqlite3.Connection, platform: str, entry: dict, creators: 
         return
     db.upsert_handle_from_migration(
         conn, platform, handle, display_name, cohort, keyword_filter,
-        status="validated", included=True, added_at=now,
+        status="validated", included=included, added_at=now,
     )
     result.seeded += 1
 
