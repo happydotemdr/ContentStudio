@@ -93,6 +93,21 @@ Four real defects found and fixed here, before any dispatch:
    `backfill_youtube_frontmatter.main` already uses: `def main(argv: list[str] | None = None) -> int:`,
    `args = ap.parse_args(argv)`.
 
+**Amendment 5 (found during T2's own implementation, not pre-review, 2026-08-12):** T2's second test
+(`test_unknown_key_is_distinguishable_from_an_empty_manifest`) does
+`good = mig.migrate(...); assert good.seeded == 0 and good.errors == []` — it already needs `migrate()` to
+return an object with `.seeded`/`.errors`, one task before T3 was nominally the task that introduces that
+shape (T3's own `@dataclass class MigrateResult` block). Missed in pre-review because the pre-review
+focused on cross-task forward *references by name* (T3→T9/T10) and did not re-derive every new assertion
+in T2's own tests against the *pre-T3* return type. The implementer's first attempt worked around it with
+`class MigrateResult(int)` (an int subclass exposing `.seeded`/`.errors`) — accepted as DONE by the
+implementer but never dispatched to review; caught by the controller reading the diff before generating
+the review package, specifically because `main()`'s `print(f"migrated {result} handles...")` line relies
+on `MigrateResult` stringifying as a plain int, and T3's plan text redefines `MigrateResult` as a plain
+`@dataclass` (no int behavior) — the moment T3 landed as originally written, that print line would have
+silently started printing a dataclass repr instead of a number, with no test catching it. Fixed by moving
+the real 5-field dataclass to T2 (§0 amendment 3 there) and having T3 reuse it rather than redefine it.
+
 `compile_plan.py` baseline for this plan, run after all four fixes above were applied to the plan text
 itself: **40 python blocks, 32 compile, 8 fail.** All 8 failures were individually read and confirmed to
 be non-executable insertion fragments by design (mid-function splices with `...` placeholders, bare
@@ -495,6 +510,37 @@ task's commit lands. As part of this task's own commit:
   `test_migrate_seeds_the_rest_despite_one_collision`, all routed through the now-fixed `_manifest()`)
   still pass after this change — they should, since `_manifest()` now emits every required key.
 
+**§0 amendment 3 (required, not optional — found during T2's own implementation, not pre-review; folded
+back here per programme convention: amend the plan first, then execute).** This task's own second test
+(`test_unknown_key_is_distinguishable_from_an_empty_manifest`) does
+`good = mig.migrate(...); assert good.seeded == 0 and good.errors == []` — it already requires `migrate()`
+to return an object with `.seeded`/`.errors`, one task before T3 is nominally the one that introduces that
+shape. Introduce the **real** `MigrateResult` dataclass here (not a placeholder, not an int subclass, not
+any other stand-in) — the exact same definition T3's own text below shows, moved up because it is needed a
+task earlier than originally planned:
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class MigrateResult:
+    seeded: int = 0
+    updated: int = 0
+    skipped: int = 0
+    drift: list[tuple[str, str]] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+```
+
+`migrate()`'s return type becomes `MigrateResult` (not `int`): keep its existing body (still only reading
+`youtube`/`bluesky` — T3 rewrites that loop) but change the final `return count` to
+`return MigrateResult(seeded=count)`. Update `main()`'s summary line from
+`print(f"migrated {count} handles from {manifest_path} into {db_path}")` to read
+`print(f"migrated {result.seeded} handles from {manifest_path} into {db_path}")` — do not rely on
+`MigrateResult` behaving like an int in an f-string; it does not, and should not (an `int` subclass here
+would silently print a dataclass repr instead of a number the moment T3 replaces this class, since nothing
+re-checks that call site). T3's own section below no longer defines `MigrateResult` from scratch — it
+reuses this one and only changes `migrate()`'s body and the two new stub functions.
+
 - [ ] **Run** → pass. **Commit:** `fix(roster): reject an unrecognized manifest platform key instead of dropping it`
 
 ---
@@ -521,18 +567,13 @@ def test_every_platform_key_is_seeded_not_just_youtube_and_bluesky(conn, tmp_pat
 ```
 
 - [ ] **Run** → fails: 2 seeded, 7 expected.
-- [ ] **Implement** — replace the two hardcoded loops with one, and give `migrate()` a real return type:
+- [ ] **Implement** — replace the two hardcoded loops with one. **§0 amendment 3 (see T2 above): do NOT
+  redefine `MigrateResult` here — T2 already introduced the real dataclass shown below, one task earlier
+  than originally planned, because T2's own second test already needed `.seeded`/`.errors`. This task only
+  rewrites `migrate()`'s body** to actually populate all five fields (T2's version only ever sets
+  `seeded`):
 
 ```python
-@dataclass
-class MigrateResult:
-    seeded: int = 0
-    updated: int = 0
-    skipped: int = 0
-    drift: list[tuple[str, str]] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
-
-
 def migrate(conn, manifest_path: Path, now: str) -> MigrateResult:
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     validate_keys(data)
