@@ -1433,6 +1433,24 @@ def test_c20_rejects_a_label_that_is_not_in_the_library():
     assert "docs/style-library.md" in findings[0].message
 
 
+def test_c20_names_the_styleboard_as_the_file_to_edit():
+    """A-34: the label comes from the styleboard's WORLD LOCK, but the finding was
+    reported against the sheet's shot index, so the operator edited the sheet."""
+    shot = _shot("x, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    findings = check_slot_labels([shot], {"slot_register_a": "typo-label"},
+                                 {"rgs-present-soccer-a": "832507909"})
+    assert [f.check for f in findings] == ["C20"]
+    assert "styleboard" in findings[0].message
+    assert "slot_register_a" in findings[0].message
+
+
+def test_c20_still_reports_the_shot_so_the_operator_knows_which_binding_bit():
+    shot = _shot("x, No Text. --ar 9:16 --raw --s 95 {style:register_a}", index=7)
+    findings = check_slot_labels([shot], {"slot_register_a": "typo-label"}, {"a": ""})
+    assert findings[0].shot_index == 7
+    assert findings[0].beat == "shot 7"
+
+
 def test_c20_accepts_a_label_that_is_in_the_library():
     shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
     world = {**SLOT_WORLD, "slot_register_a": "rgs-present-soccer-a"}

@@ -1356,10 +1356,10 @@ def check_slot_labels(
                     Finding(
                         "C20",
                         shot.index,
-                        f"{key!r} = {value!r} is not an entry in docs/style-library.md, so the "
-                        f"slot resolves to nothing and the shot renders with no style lock. "
-                        f"Known entries: {known}. Fix the label, or harvest the world and add "
-                        f"an entry.",
+                        f"the styleboard's WORLD LOCK binds {key} to {value!r}, which is not "
+                        f"an entry in docs/style-library.md — fix the label in the STYLEBOARD, "
+                        f"not in this sheet. Known entries: {known}. Fix the label, or harvest "
+                        f"the world and add an entry.",
                     )
                 )
     return findings
