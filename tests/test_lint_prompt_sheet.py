@@ -35,6 +35,12 @@ from lint_prompt_sheet import (  # noqa: E402
     lint_cover,
     lint,
     main,
+    EXIT_PASS,
+    EXIT_FINDINGS,
+    EXIT_USAGE,
+    EXIT_UNREADABLE_INPUT,
+    EXIT_UNPARSEABLE,
+    EXIT_MISSING_DEPENDENCY,
 )
 
 from dataclasses import asdict
@@ -563,10 +569,31 @@ def test_main_returns_one_for_a_failing_sheet():
     assert main([str(FIXTURES / "failing_sheet.md")]) == 1
 
 
-def test_main_returns_two_when_no_shots_parse(tmp_path):
+def test_a_missing_sheet_exits_with_its_own_code_not_the_failing_gate_code(tmp_path, capsys):
+    code = main([str(tmp_path / "nope.md")])
+    out = capsys.readouterr().out
+    assert code == EXIT_UNREADABLE_INPUT
+    assert code != EXIT_FINDINGS
+    assert "nope.md" in out
+
+
+def test_a_missing_styleboard_names_the_styleboard_not_the_sheet(tmp_path, capsys):
+    code = main([str(FIXTURES / "passing_sheet.md"), "--styleboard", str(tmp_path / "no.md")])
+    assert code == EXIT_UNREADABLE_INPUT
+    assert "no.md" in capsys.readouterr().out
+
+
+def test_the_exit_codes_are_all_distinct():
+    """Surfacing: an automated caller branches on these. Four operator actions
+    collapsing into `2` is what C-95 records."""
+    assert len({EXIT_PASS, EXIT_FINDINGS, EXIT_USAGE, EXIT_UNREADABLE_INPUT,
+                EXIT_UNPARSEABLE, EXIT_MISSING_DEPENDENCY}) == 6
+
+
+def test_an_unparseable_sheet_no_longer_shares_a_code_with_argparse(tmp_path, capsys):
     empty = tmp_path / "empty.md"
     empty.write_text("nothing here", encoding="utf-8")
-    assert main([str(empty)]) == 2
+    assert main([str(empty)]) == EXIT_UNPARSEABLE
 
 
 def test_worked_example_sheet_passes_gate_c():
@@ -1232,7 +1259,7 @@ def test_main_fails_closed_when_the_library_is_missing(tmp_path, capsys):
         "--styleboard", str(FIXTURES / "passing_styleboard.md"),
         "--style-library", str(tmp_path / "absent.md"),
     ])
-    assert exit_code == 2
+    assert exit_code == EXIT_MISSING_DEPENDENCY
     assert "Style Library not found" in capsys.readouterr().out
 
 
@@ -1244,7 +1271,7 @@ def test_main_fails_closed_when_the_library_has_no_entries(tmp_path, capsys):
         "--styleboard", str(FIXTURES / "passing_styleboard.md"),
         "--style-library", str(empty),
     ])
-    assert exit_code == 2
+    assert exit_code == EXIT_MISSING_DEPENDENCY
     assert "no entries parsed" in capsys.readouterr().out
 
 

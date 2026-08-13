@@ -4,6 +4,14 @@ Parses the copy-paste sheet format emitted by the `visual-prompts` skill and enf
 the dual-register visual system's variety, world-lock, density and format rules.
 
 Stdlib only. See docs/superpowers/specs/2026-07-28-dual-register-visual-system-design.md
+
+Exit codes:
+    0  EXIT_PASS               no findings
+    1  EXIT_FINDINGS            the gate found findings -- the sheet is the problem
+    2  EXIT_USAGE                argparse only (bad CLI invocation)
+    3  EXIT_UNREADABLE_INPUT     a named path (sheet/styleboard/Library) could not be read
+    4  EXIT_UNPARSEABLE          the sheet was read but yielded no shots
+    5  EXIT_MISSING_DEPENDENCY   a required companion artifact is absent or empty
 """
 
 from __future__ import annotations
@@ -32,6 +40,28 @@ LOOSE_COVER_HEADING_RE = re.compile(r"^\s*#{2,4}\s*Cover\b", re.IGNORECASE)
 SHOT_COUNT_RE = re.compile(r"^\s*SHOT COUNT:\s*(\d+)\s*$", re.IGNORECASE)
 
 NO_TEXT_MARKER = "No Text."
+
+# Exit codes. argparse owns 2 unconditionally, so nothing else may use it.
+EXIT_PASS = 0                 # no findings
+EXIT_FINDINGS = 1             # the gate found findings -- the sheet is the problem
+EXIT_USAGE = 2                # argparse only
+EXIT_UNREADABLE_INPUT = 3     # a named path could not be read
+EXIT_UNPARSEABLE = 4          # the artifact was read but yielded no shots
+EXIT_MISSING_DEPENDENCY = 5   # a required companion artifact is absent or empty
+
+
+def _read(path: Path, label: str) -> str | None:
+    """Read a path, or print which one failed and why. Returns None on failure.
+
+    read_text was called before any error handling, so a mistyped path exited 1
+    with a traceback -- the same code as a failing gate, sending the author to fix
+    a sheet that was never read (finding C-94).
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"Gate C: cannot read {label} at {path}: {exc.strerror or exc}")
+        return None
 
 
 @dataclass(frozen=True)
@@ -1176,16 +1206,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    sheet_text = args.sheet.read_text(encoding="utf-8")
-    shots, sheet_world = parse_sheet(sheet_text)
+    sheet_text = _read(args.sheet, "sheet")
+    if sheet_text is None:
+        return EXIT_UNREADABLE_INPUT
+    parse = parse_sheet(sheet_text)
+    shots, sheet_world = parse.shots, parse.world
+
     if args.styleboard is not None:
-        world = parse_world_lock(args.styleboard.read_text(encoding="utf-8"))
+        styleboard_text = _read(args.styleboard, "styleboard")
+        if styleboard_text is None:
+            return EXIT_UNREADABLE_INPUT
+        world = parse_world_lock(styleboard_text)
     else:
         world = sheet_world
 
     if not shots:
         print(f"Gate C: no shots parsed from {args.sheet}. Check the sheet format.")
-        return 2
+        return EXIT_UNPARSEABLE
 
     cover = parse_cover(sheet_text)
 
@@ -1199,27 +1236,32 @@ def main(argv: list[str] | None = None) -> int:
                 f"Gate C: Style Library not found at {args.style_library}. C20 cannot "
                 f"resolve this sheet's slot labels. Pass --style-library."
             )
-            return 2
-        library = parse_style_library(args.style_library.read_text(encoding="utf-8"))
+            return EXIT_MISSING_DEPENDENCY
+        library_text = _read(args.style_library, "Style Library")
+        if library_text is None:
+            return EXIT_UNREADABLE_INPUT
+        library = parse_style_library(library_text)
         if not library:
             print(
                 f"Gate C: no entries parsed from {args.style_library}. C20 cannot check "
                 f"this sheet's slot labels against an empty Library."
             )
-            return 2
+            return EXIT_MISSING_DEPENDENCY
 
     findings = [
+        *parse.findings,
         *check_cover_present(sheet_text),
-        *lint(shots, world, cover=cover, library=library),
+        *lint(shots, world, cover=cover, library=library,
+              declared_shot_count=parse.declared_shot_count),
     ]
     if not findings:
         print(f"Gate C: PASS — {len(shots)} shots, 0 findings.")
-        return 0
+        return EXIT_PASS
 
     print(f"Gate C: FAIL — {len(shots)} shots, {len(findings)} finding(s).")
     for finding in findings:
         print(f"  [{finding.check}] {finding.beat}: {finding.message}")
-    return 1
+    return EXIT_FINDINGS
 
 
 if __name__ == "__main__":
