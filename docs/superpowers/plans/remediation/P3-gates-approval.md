@@ -531,6 +531,21 @@ def test_include_optional_is_off_by_default(tmp_path):
 
 *Closes the hazard raised in Open decision D1.* Runs immediately after T2, before T4/T5.
 
+> **Amendment (pre-review, this session): T2B has an undeclared forward dependency on T6 — run
+> T6 before T2B.** Confirmed by `grep`: `UpstreamExcludedError(GateInputError)` below references
+> a class that does not exist until T6 defines it (`class GateInputError(ValueError): ... check =
+> "C0"`), and T2B's own `test_an_unapproved_styleboard_makes_gate_c_error_rather_than_use_the_sheets_own_lock`
+> asserts `finding["check"] == "C0"`, which requires `run_gates_for_stage`'s exception handler to
+> already read `getattr(exc, "check", "GATE")` instead of the hardcoded `"GATE"` string — also a
+> T6 change. Executing T2B before T6 as textually ordered would leave the implementer stuck on a
+> `NameError` for a class the plan hasn't introduced yet. T6 has no dependency on T2B, T3, T4 or
+> T5 (it only touches `run_prompt_sheet_gate`'s two existing raise sites and
+> `run_gates_for_stage`'s handler, both already in place after T1/T2) so reordering is safe in
+> both directions. **Corrected execution order for the remainder of this package: T6, T2B, T3,
+> T4, T5, T7, T7B, T8, T9, ..., T24** — i.e. pull T6 forward to run immediately after T2, before
+> T2B, leaving every other task's relative order unchanged. Do not renumber the tasks themselves;
+> only their dispatch order changes.
+
 The audit's single most common defect class is "nothing found" and "something went wrong"
 sharing one representation — Bluesky returned `[]` for both, the cron exited `0` for both, the
 digest rendered the same email for both. `approved_only=True` would have added the gate
