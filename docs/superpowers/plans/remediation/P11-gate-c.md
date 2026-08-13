@@ -2007,9 +2007,58 @@ package is called done (package verification §7 item 1 requires all 26 to pass)
   are independently verified correct by its own five direct unit tests. No package-verification
   impact (the case was and remains green either way). Filed for documentation accuracy only.
 
-Both T6R items, T11R-01, T18R-01, T19R-01, and T20R-01 are carried forward to the final
-whole-branch review for this package, alongside any Minor findings deferred during the task loop.
-None block continuing to T21 and beyond.
+- **T21R-01 (Important — OPERATOR DECISION, not merely filed-for-review like the items above; not
+  fixed).** T21's brief specified a flat `MIN_SIGNATURE_OBJECTS = 2` requirement for C8, with a
+  fallback (if a green fixture tripped it) of conditioning the floor on how many objects the world
+  lock *declares*. Implementing the brief's literal code breaks both real `MIGRATED_PAIRS`
+  fixtures — 4 real register-A shots (across `passing_sheet.md` and `worked_example_sheet.md`,
+  all at `CLOSE`/`MACRO` scale) name only 1 signature object each — and the brief's own suggested
+  fallback is a mathematical no-op here, since both fixtures' styleboards declare exactly 3
+  objects (a declared-count conditional can't relax anything when the count is already ≥3).
+  T21's implementer applied two fixes instead, verified correct and empirically justified by the
+  controller and an independent task reviewer, both re-checking the actual fixture text rather
+  than trusting the report:
+  1. **Plural-tolerant object matching** (`\b{obj}s?\b`) — uncontroversial, fixes a real
+     singular/plural mismatch (`"corner flag"` declared, `"corner flags"` written).
+  2. **A new `TIGHT_SCALES_ONE_OBJECT_FLOOR = frozenset({"CLOSE", "MACRO"})` exemption** — a
+     1-object floor instead of 2, for shots at those two scales only. This is **new Gate C
+     policy invented by this task, not sourced from finding C-87 or any other part of this
+     plan** — it is empirically justified (every real register-A shot at those two scales across
+     both fixtures names exactly 1 object; every wider shot names ≥2) and narrowly scoped (the
+     sport-naming sub-check stays fully unconditional across all scales, so the literal C-87
+     compound-word evasion this task fixes is not reopened), but it is a genuine policy choice,
+     not a mechanical bug fix.
+
+  **The reviewer identified a real, currently-unmitigated consequence of that policy choice**: no
+  other Gate C check cross-validates a shot's declared `scale` field against what its prompt body
+  actually depicts (C2 only forbids *consecutive* scale repeats). Nothing stops an author from
+  writing `MACRO` or `CLOSE` on any shot specifically to drop its object-count requirement from 2
+  to 1 — an adjacent evasion of the object-count floor C-87's own fix was meant to strengthen,
+  narrower than but structurally similar in spirit to the original finding.
+
+  **Confirmed cross-package regression** (independently reproduced by the controller, not just
+  the implementer's claim): `pipeline-app/tests/test_gates.py::
+  test_visual_gate_without_a_styleboard_uses_a_legacy_sheets_own_world_lock` now fails —
+  `tests/fixtures/legacy_do_less_sheet.md`'s Hook shot (`MID-WIDE`, not scale-exempt) names only
+  `"soccer ball"` of its three declared objects (`goal net, corner flag, soccer ball`), and the
+  test's blanket `assert "C8" not in checks` (written to verify an unrelated concern — that C8's
+  *sport* half doesn't fire when using a legacy sheet's own world lock) now also catches the new,
+  unrelated object-count finding. Both the fixture and the test file are outside this package's
+  edit scope (`pipeline-app/` belongs to package P3, not running this session). App suite:
+  32 failed/1094 passed (pre-existing baseline, unrelated to Gate C) → 33 failed/1093 passed (this
+  one new failure, confirmed the sole delta via a stash-and-diff).
+
+  **Not fixed here, and not just routed to the standard filed-for-review list**: this is a
+  genuine product/policy decision — whether Gate C should relax its object-count floor for tight
+  shots at all, and if so whether the scale-mislabeling gaming vector needs its own mitigation
+  (e.g. a scale-consistency check) before that policy ships — that this program's own process
+  reserves for the operator, not for an implementer or the controller to settle unilaterally.
+  Both fixes are otherwise sound and task-reviewed clean; the C8 finding this task closes (a
+  compound word satisfying the sport check) is genuinely fixed either way.
+
+Both T6R items, T11R-01, T18R-01, T19R-01, T20R-01, and **T21R-01 (operator decision required)**
+are carried forward to the final whole-branch review for this package, alongside any Minor
+findings deferred during the task loop. None block continuing to T22.
 
 ---
 
