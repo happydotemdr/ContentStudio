@@ -1683,7 +1683,7 @@ MUTATIONS = [
     ("sref-invented-number",    "{style:register_a}",        "--sref 11111111",           "C17"),
     ("sref-bare-p",             "{style:register_a}",        "--p",                       "C17"),
     ("ar-landscape",            "--ar 9:16",                 "--ar 16:9",                 "C13"),
-    ("plate-relabel",           "· Register B · WORLD ·",    "· Register PLATE · PLATE ·","C15"),
+    ("plate-relabel",           "· Register B · WORLD ·",    "· Register PLATE · PLATE ·","C14"),
     ("venue-synonym",           "a municipal club soccer",   "a vacant gym, a municipal club soccer", "C9"),
     ("registerb-photographic",  "luminous oil painting",     "photorealistic bokeh render", "C10"),
     ("fenced-heading",          "PER-SHOT PROMPTS",          "PER-SHOT PROMPTS\n\n```text\n### Shot 99 — X · Register A · DETAIL · MACRO · LOW\n```", ""),
