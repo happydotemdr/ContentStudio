@@ -30,6 +30,7 @@ from lint_prompt_sheet import (  # noqa: E402
     check_slots,
     check_slot_labels,
     parse_style_library,
+    parse_style_library_checked,
     check_cover_present,
     check_shot_count,
     lint_cover,
@@ -1103,6 +1104,37 @@ def test_parse_style_library_reads_the_real_file():
     library = parse_style_library(STYLE_LIBRARY.read_text(encoding="utf-8"))
     assert "rgs-present-soccer-a" in library
     assert "rgs-sourceera-painterly-b" in library
+
+
+def test_an_annotated_entry_heading_is_reported_not_dropped():
+    library, findings = parse_style_library_checked(
+        LIBRARY_DOC.replace("### rgs-present-soccer-a", "### rgs-present-soccer-a (channel)")
+    )
+    assert "rgs-present-soccer-a" not in library
+    assert [f.check for f in findings] == ["PARSE"]
+    assert "(channel)" in findings[0].message
+
+
+def test_an_unterminated_fence_in_the_library_is_reported():
+    doc = LIBRARY_DOC.replace("code:         832507909\n```", "code:         832507909\n")
+    _library, findings = parse_style_library_checked(doc)
+    assert any("unterminated" in f.message for f in findings)
+
+
+def test_a_partially_parsed_library_is_distinguishable_from_a_complete_one():
+    """The whole defect: a partial parse presented exactly like a complete one, and
+    C20 then failed the sheet with an incomplete 'Known entries' list."""
+    good, good_findings = parse_style_library_checked(LIBRARY_DOC)
+    bad, bad_findings = parse_style_library_checked(
+        LIBRARY_DOC.replace("### rgs-present-soccer-a", "### RGS-Present-Soccer-A")
+    )
+    assert good_findings == [] and bad_findings != []
+    assert set(good) != set(bad)
+
+
+def test_parse_style_library_keeps_its_original_signature():
+    """P3's gates.py:111 calls linter.parse_style_library(text) and expects a dict."""
+    assert isinstance(parse_style_library(LIBRARY_DOC), dict)
 
 
 def test_c20_rejects_a_label_that_is_not_in_the_library():

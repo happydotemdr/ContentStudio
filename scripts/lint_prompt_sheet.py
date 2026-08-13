@@ -1059,8 +1059,9 @@ ENTRY_HEADING_RE = re.compile(r"^###\s+(\S+)\s*$")
 LIBRARY_CODE_RE = re.compile(r"^\s*code:\s*(.+?)\s*$")
 
 
-def parse_style_library(text: str) -> dict[str, str]:
-    """Every entry label in docs/style-library.md, mapped to its harvested code.
+def parse_style_library_checked(text: str) -> tuple[dict[str, str], list[Finding]]:
+    """Every entry label in docs/style-library.md, mapped to its harvested code, plus
+    the parse layer's own rejects.
 
     The code is carried for reporting only -- C20 asks whether a label *exists*, not
     whether it has been harvested yet. An entry with `code: UNHARVESTED`, or a
@@ -1068,8 +1069,15 @@ def parse_style_library(text: str) -> dict[str, str]:
     maps to a falsy code and still counts as present: Gate C runs on the sheet, before
     any render, so binding to a recorded-but-unharvested world is a legitimate
     intermediate state. What C20 catches is a label naming no entry at all.
+
+    An entry heading that fails VALID_SLOT_VALUE_RE (an annotation, capitalization, a
+    stray character) used to be silently dropped -- the parse looked complete and C20
+    failed every sheet binding the missing label, blaming the sheet for a Library typo
+    (finding C-76). An unterminated fence silently dropped every entry after it, the
+    same way.
     """
     library: dict[str, str] = {}
+    findings: list[Finding] = []
     in_entries = False
     in_fence = False
     label: str | None = None
@@ -1093,9 +1101,38 @@ def parse_style_library(text: str) -> dict[str, str]:
         if not in_entries:
             continue
         heading = ENTRY_HEADING_RE.match(stripped)
-        if heading and VALID_SLOT_VALUE_RE.match(heading.group(1)):
-            label = heading.group(1)
-            library[label] = ""
+        if stripped.startswith("### "):
+            if heading and VALID_SLOT_VALUE_RE.match(heading.group(1)):
+                label = heading.group(1)
+                library[label] = ""
+            else:
+                findings.append(Finding(
+                    "PARSE", None,
+                    f"'{stripped}' sits under '## Entries' but is not a bare kebab-case "
+                    "label, so the entry is invisible to C20 and every sheet binding it "
+                    "fails against a Library that looks complete. Required: "
+                    "'### <lowercase-kebab-label>' and nothing else on the line.",
+                    kind="parse",
+                ))
+            continue
+    if in_fence:
+        findings.append(Finding(
+            "PARSE", None,
+            "unterminated ``` fence in the Style Library; every entry after it was "
+            "dropped.",
+            kind="parse",
+        ))
+    return library, findings
+
+
+def parse_style_library(text: str) -> dict[str, str]:
+    """Every entry label in docs/style-library.md, mapped to its harvested code.
+
+    Dict-only wrapper kept for pipeline_app.gates.py:111's existing call site (package
+    P3, frozen interface per this plan's §6.1). Use parse_style_library_checked for the
+    fail-closed variant that also reports what it had to drop.
+    """
+    library, _findings = parse_style_library_checked(text)
     return library
 
 
@@ -1250,7 +1287,14 @@ def main(argv: list[str] | None = None) -> int:
         library_text = _read(args.style_library, "Style Library")
         if library_text is None:
             return EXIT_UNREADABLE_INPUT
-        library = parse_style_library(library_text)
+        library, library_findings = parse_style_library_checked(library_text)
+        if library_findings:
+            print(
+                f"Gate C: Style Library at {args.style_library} could not be fully parsed:"
+            )
+            for finding in library_findings:
+                print(f"  [{finding.check}] {finding.message}")
+            return EXIT_MISSING_DEPENDENCY
         if not library:
             print(
                 f"Gate C: no entries parsed from {args.style_library}. C20 cannot check "
