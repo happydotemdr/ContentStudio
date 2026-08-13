@@ -5,7 +5,15 @@ import markdown
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 
-from pipeline_app import approval_service, artifacts, db as db_mod, gates, grounding_service, turn_service
+from pipeline_app import (
+    approval_service,
+    artifacts,
+    db as db_mod,
+    gates,
+    grounding_service,
+    obs,
+    turn_service,
+)
 from pipeline_app.pipeline_config import build_stage_nav, stage_dir_name
 from pipeline_app.state_machine import is_locked_or_running
 
@@ -245,40 +253,60 @@ def edit_stage_output_route(request: Request, project_id: int, stage_id: str, bo
     run_dir = repo_root / "runs" / project["run_id"]
     stage_dir = run_dir / stage_dir_name(stage_def)
 
-    version = artifacts.next_version_number(stage_dir)
-
-    # Fail-closed extends to a hand edit, not just a turn: the edited content
-    # must be re-gated exactly as turn_service.run_stage_turn re-gates
-    # raw_output.md after a turn, or a hand edit that introduces a Gate D/C
-    # failure would carry forward a stale (or entirely absent) `gates` result
-    # and approval_service would see nothing to block on -- a silent pass of
-    # an unknown gate result. raw_output.md is overwritten with the saved
-    # body FIRST so the gate reads the content the user just saved, not a
-    # previous turn's leftover output.
     stage_dir.mkdir(parents=True, exist_ok=True)
-    raw_output_path = stage_dir / "raw_output.md"
-    raw_output_path.write_text(body, encoding="utf-8")
-    upstream_by_stage = gates.resolve_upstream_by_stage(run_dir, stage_defs, stage_def)
-    gate_results = gates.run_gates_for_stage(
-        repo_root, stage_id, raw_output_path, upstream_by_stage
-    )
+    # The edit path gets its OWN scratch file, never the turn path's shared
+    # raw_output.md (A-64): that file is turn_service's before_mtime baseline,
+    # and truncating it here made a hand edit look like a turn's output. The
+    # extension is deliberately not `.md` so browse_service's stage listing
+    # (which shows every *.md except raw_output.md) never surfaces it.
+    scratch = stage_dir / ".edit_scratch.tmp"
+    try:
+        scratch.write_text(body, encoding="utf-8")
+        upstream_by_stage = gates.resolve_upstream_by_stage(run_dir, stage_defs, stage_def)
+        gate_results = gates.run_gates_for_stage(repo_root, stage_id, scratch, upstream_by_stage)
+    except Exception as exc:  # noqa: BLE001 -- an escaped gate is a conflict, not a 500
+        obs.log("gate.escaped", level="error", stage=stage_id, project_id=project_id,
+                error=str(exc))
+        obs.record_event(
+            conn, kind="gate.escaped", severity="error", source="routes.stages",
+            message=f"hand edit of '{stage_id}' aborted: {exc}",
+            detail={"project_id": project_id, "stage_id": stage_id},
+        )
+        return PlainTextResponse(str(exc), status_code=409)
+    finally:
+        scratch.unlink(missing_ok=True)
 
-    meta = {
-        "schema_version": 1,
-        "run_id": project["run_id"],
-        "stage": stage_def.skill,
-        "version": version,
-        "status": "draft",
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "finalized_at": None,
-        "supersedes": f"artifact.v{version - 1}.md" if version > 1 else None,
-        # A list of PATHS in, [{path, sha256}] out. turn_service.run_stage_turn
-        # records the same shape from the same helper, so the two write paths
-        # cannot produce different provenance (A-60).
-        "depends_on": artifacts.compute_depends_on(run_dir, list(upstream_by_stage.values())),
-        "gates": gate_results,
-    }
-    artifacts.write_artifact(stage_dir, version, meta, body)
+    # Version allocation is EXCLUSIVE and taken after the gate, not before it:
+    # next_version_number is advisory only now, and a read-then-write spanning
+    # a full linter load and run is exactly the window two concurrent edit
+    # POSTs collide in. Reserve, write, or release.
+    reservation = artifacts.reserve_version(stage_dir)
+    try:
+        meta = {
+            "schema_version": 1,
+            "run_id": project["run_id"],
+            "stage": stage_def.skill,
+            "version": reservation.version,
+            "status": "draft",
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(
+                timespec="seconds"
+            ),
+            "finalized_at": None,
+            "supersedes": (
+                f"artifact.v{reservation.version - 1}.md" if reservation.version > 1 else None
+            ),
+            # A list of PATHS in, [{path, sha256}] out. turn_service.run_stage_turn
+            # records the same shape from the same helper, so the two write paths
+            # cannot produce different provenance (A-60).
+            "depends_on": artifacts.compute_depends_on(
+                run_dir, list(upstream_by_stage.values())
+            ),
+            "gates": gate_results,
+        }
+        artifacts.write_reserved_artifact(reservation, meta, body)
+    except BaseException:
+        artifacts.release_version(reservation)
+        raise
 
     # Design spec §2: a hand edit mints artifact.v{N+1}.md exactly like a
     # regenerate does, so it gets the same downstream treatment — approved

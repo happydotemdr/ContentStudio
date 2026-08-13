@@ -370,6 +370,102 @@ def test_edit_route_blocks_locked_stage(two_stage_client):
     assert "locked" in resp.text
 
 
+def test_a_hand_edit_does_not_touch_the_turn_paths_raw_output(two_stage_client):
+    """A-64 FAULT: the edit route truncated the SHARED raw_output.md before
+    gating. A crash in that window left the new body in raw_output.md with no
+    artifact version recording it, and poisoned the turn path's before_mtime
+    baseline."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    _install_real_script_linter(tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    test_client.post(f"/projects/{project_id}/stages/ideation/approve")
+    scripting_dir = run_dir / "02-scripting"
+    scripting_dir.mkdir(parents=True, exist_ok=True)
+    (scripting_dir / "raw_output.md").write_text("previous turn output", encoding="utf-8")
+
+    test_client.post(f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT})
+
+    assert (scripting_dir / "raw_output.md").read_text(encoding="utf-8") == "previous turn output"
+
+
+def test_a_failed_gate_run_leaves_no_scratch_file_behind(two_stage_client, monkeypatch):
+    """A-41 DISTINGUISHABILITY: an escape from the gate must be observably
+    different from a clean edit -- no half-written artifact, no orphan scratch,
+    and a 409 rather than a 500."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    test_client.post(f"/projects/{project_id}/stages/ideation/approve")
+
+    def boom(_repo_root, _stage_id, _path, _upstream):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("pipeline_app.routes.stages.gates.run_gates_for_stage", boom)
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT}
+    )
+    assert resp.status_code == 409
+    assert "disk gone" in resp.text
+    scripting_dir = run_dir / "02-scripting"
+    assert not list(scripting_dir.glob(".edit_scratch*"))
+    assert not list(scripting_dir.glob("artifact.v*.md"))
+
+
+def test_an_edit_whose_gate_escapes_is_recorded_as_an_event(two_stage_client, monkeypatch):
+    """A-41 SURFACING: an escaped gate must leave a human-findable record, not
+    just a 409 the operator might dismiss."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    test_client.post(f"/projects/{project_id}/stages/ideation/approve")
+
+    def boom(_repo_root, _stage_id, _path, _upstream):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("pipeline_app.routes.stages.gates.run_gates_for_stage", boom)
+    test_client.post(f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT})
+
+    rows = app.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'gate.escaped'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "disk gone" in rows[0]["message"]
+
+
+def test_two_overlapping_hand_edits_produce_two_versions_not_one(two_stage_client):
+    """reserve_version is exclusive, so two edits of the same stage in
+    sequence must produce artifact.v1.md and artifact.v2.md -- never both
+    landing on v1 (a lost write)."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    _install_real_script_linter(tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    test_client.post(f"/projects/{project_id}/stages/ideation/approve")
+    scripting_dir = run_dir / "02-scripting"
+
+    first_resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT}
+    )
+    second_body = CLEAN_SCRIPT + "\nSecond edit line.\n"
+    second_resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/edit", data={"body": second_body}
+    )
+
+    assert first_resp.status_code == 303
+    assert second_resp.status_code == 303
+    assert (scripting_dir / "artifact.v1.md").exists()
+    assert (scripting_dir / "artifact.v2.md").exists()
+    _, body_v1 = artifacts.parse_frontmatter(
+        (scripting_dir / "artifact.v1.md").read_text(encoding="utf-8")
+    )
+    _, body_v2 = artifacts.parse_frontmatter(
+        (scripting_dir / "artifact.v2.md").read_text(encoding="utf-8")
+    )
+    assert body_v1 != body_v2
+
+
 def test_edit_route_blocks_grounding(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "pipeline.yaml").write_text(
