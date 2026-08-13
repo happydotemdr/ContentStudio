@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pipeline_app import db  # noqa: E402
+from pipeline_app import db, obs  # noqa: E402
 from pipeline_app.discovery_paths import find_slug_collision, handle_slug  # noqa: E402
 
 
@@ -33,6 +33,47 @@ PLATFORMS: tuple[str, ...] = (
 DOWNLOADER_ONLY_KEYS: frozenset[str] = frozenset({"rss"})
 NON_ROSTER_KEYS: frozenset[str] = frozenset({"_comment", "creators"})
 KNOWN_KEYS: frozenset[str] = frozenset(PLATFORMS) | DOWNLOADER_ONLY_KEYS | NON_ROSTER_KEYS
+
+
+class ManifestError(Exception):
+    """The manifest is structurally wrong. Always fatal: a roster we cannot
+    fully read is worse than no roster, because the operator believes it."""
+
+
+class MigrateResult(int):
+    """The seeded-handle count, for existing callers that compare it to an
+    int, plus ``seeded``/``errors`` so a caller can tell "ran clean and
+    seeded nothing" apart from "something went wrong" without depending on
+    whether an exception happened to be raised. ``errors`` is always empty
+    today -- validate_keys() raises rather than partially succeeding -- the
+    field exists so a future partial-failure mode does not have to change
+    this shape again.
+    """
+
+    def __new__(cls, seeded: int, errors: list[str] | None = None) -> "MigrateResult":
+        obj = super().__new__(cls, seeded)
+        obj.seeded = seeded
+        obj.errors = list(errors) if errors else []
+        return obj
+
+
+def validate_keys(data: dict) -> None:
+    unknown = sorted(set(data) - KNOWN_KEYS)
+    if unknown:
+        raise ManifestError(
+            f"unrecognized top-level key(s) {unknown} in the manifest. "
+            f"Recognized platform keys are {list(PLATFORMS)}; `rss` is "
+            f"downloader-only; `creators` and `_comment` are metadata. "
+            f"A platform key that is not in the adapter registry has no "
+            f"adapter and would be tracked by nothing."
+        )
+    missing = [p for p in PLATFORMS if p not in data]
+    if missing:
+        raise ManifestError(
+            f"missing platform key(s) {missing}. Every adapter-registry "
+            f"platform must have a key -- use [] to declare 'we track nobody "
+            f"here', so a gap is stated rather than absent."
+        )
 
 
 def derive_cohort(note: str, handle: str) -> str:
@@ -77,8 +118,9 @@ def _seed(conn: sqlite3.Connection, platform: str, handle: str, display_name: st
     return True
 
 
-def migrate(conn: sqlite3.Connection, manifest_path: Path, now: str) -> int:
+def migrate(conn: sqlite3.Connection, manifest_path: Path, now: str) -> MigrateResult:
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    validate_keys(data)
     count = 0
     for entry in data.get("youtube", []):
         handle = entry.get("handle")
@@ -96,14 +138,14 @@ def migrate(conn: sqlite3.Connection, manifest_path: Path, now: str) -> int:
         if _seed(conn, "bluesky", handle, entry.get("display_name"),
                  derive_cohort(note, handle), None, now):
             count += 1
-    return count
+    return MigrateResult(count)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--manifest", default=None, help="path to brand_sources.json (default: repo-root manifests/)")
     ap.add_argument("--db-path", default=None, help="path to pipeline.db (default: pipeline-app/pipeline.db)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     pipeline_app_root = Path(__file__).resolve().parents[1]
     repo_root = pipeline_app_root.parent
@@ -115,9 +157,19 @@ def main() -> int:
     conn = db.get_connection(db_path)
     import datetime
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    count = migrate(conn, manifest_path, now)
+    try:
+        result = migrate(conn, manifest_path, now)
+    except ManifestError as exc:
+        obs.log("roster.manifest_invalid", level="error", manifest=str(manifest_path),
+                error=str(exc))
+        obs.record_event(conn, kind="roster.manifest_invalid", severity="error",
+                         source="migrate_handles_from_manifest",
+                         message=str(exc), detail={"manifest": str(manifest_path)})
+        print(f"! {exc}", file=sys.stderr)
+        conn.close()
+        return 2
     conn.close()
-    print(f"migrated {count} handles from {manifest_path} into {db_path}")
+    print(f"migrated {result} handles from {manifest_path} into {db_path}")
     return 0
 
 

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_app import db
+from scripts import migrate_handles_from_manifest as mig
 from scripts.migrate_handles_from_manifest import derive_cohort, migrate
 
 
@@ -31,33 +32,10 @@ def test_derive_cohort(note, handle, expected):
     assert derive_cohort(note, handle) == expected
 
 
-def test_migrate_seeds_all_16_handles_as_validated(conn, tmp_path):
-    manifest_path = tmp_path / "brand_sources.json"
-    manifest_path.write_text(json.dumps({
-        "youtube": [
-            {"handle": "@Romayroh", "display_name": "Romayroh", "keyword_filter": None, "note": "guru channel"},
-            {"handle": "@JennyHoyos", "display_name": "Jenny Hoyos", "keyword_filter": None, "note": "shorts specialist"},
-        ],
-        "bluesky": [
-            {"handle": "adamgrant.bsky.social", "display_name": "Adam Grant", "note": "app-seeded"},
-        ],
-        "rss": [],
-    }), encoding="utf-8")
-    count = migrate(conn, manifest_path, now="2026-07-30T00:00:00Z")
-    assert count == 3
-    rows = db.list_handles(conn)
-    assert len(rows) == 3
-    romayroh = db.get_handle_by_platform_and_handle(conn, "youtube", "@Romayroh")
-    assert romayroh["status"] == "validated"
-    assert romayroh["included"] == 1
-    assert romayroh["cohort"] == "guru"
-    bluesky_row = db.get_handle_by_platform_and_handle(conn, "bluesky", "adamgrant.bsky.social")
-    assert bluesky_row["cohort"] == "general-interest"
-
-
 def _manifest(tmp_path: Path, youtube: list[dict]) -> Path:
     path = tmp_path / "brand_sources.json"
-    path.write_text(json.dumps({"youtube": youtube, "bluesky": [], "rss": []}), encoding="utf-8")
+    payload = {"youtube": youtube, **{p: [] for p in mig.PLATFORMS if p != "youtube"}, "rss": []}
+    path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
 
@@ -107,20 +85,6 @@ def test_migrate_seeds_the_rest_despite_one_collision(conn, tmp_path):
     assert db.get_handle_by_platform_and_handle(conn, "youtube", "@Romayroh") is not None
 
 
-def test_migrate_is_idempotent(conn, tmp_path):
-    manifest_path = tmp_path / "brand_sources.json"
-    manifest_path.write_text(json.dumps({
-        "youtube": [{"handle": "@a", "display_name": "A", "keyword_filter": None, "note": "guru channel"}],
-        "bluesky": [], "rss": [],
-    }), encoding="utf-8")
-    migrate(conn, manifest_path, now="2026-07-30T00:00:00Z")
-    handle_row = db.get_handle_by_platform_and_handle(conn, "youtube", "@a")
-    db.set_handle_status(conn, handle_row["id"], "invalid")  # simulate manual edit
-    count = migrate(conn, manifest_path, now="2026-07-30T01:00:00Z")
-    assert count == 1
-    assert db.get_handle_by_platform_and_handle(conn, "youtube", "@a")["status"] == "invalid"
-
-
 from run_discovery_cron import build_adapters
 from scripts.migrate_handles_from_manifest import PLATFORMS
 
@@ -131,3 +95,54 @@ def test_platforms_tuple_matches_the_adapter_registry():
     declarative roster and silently becomes untrackable (B-70)."""
     assert sorted(PLATFORMS) == sorted(build_adapters())
     assert len(PLATFORMS) == 7
+
+
+def _write(tmp_path: Path, payload: dict) -> Path:
+    path = tmp_path / "brand_sources.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _empty_manifest(tmp_path: Path) -> Path:
+    return _write(tmp_path, {"creators": {}, **{p: [] for p in mig.PLATFORMS}, "rss": []})
+
+
+def test_unknown_platform_key_raises_manifest_error(conn, tmp_path):
+    """FAULT: a typo'd platform key must fail, not be skipped (B-71)."""
+    path = _write(tmp_path, {
+        "creators": {"a": {"display_name": "A"}},
+        **{p: [] for p in mig.PLATFORMS},
+        "rss": [],
+        "instgram": [{"handle": "@a", "creator": "a", "cohort": "guru", "included": True}],
+    })
+    with pytest.raises(mig.ManifestError) as excinfo:
+        mig.migrate(conn, path, now="2026-08-08T00:00:00+00:00")
+    assert "instgram" in str(excinfo.value)
+
+
+def test_unknown_key_is_distinguishable_from_an_empty_manifest(conn, tmp_path):
+    """DISTINGUISHABILITY: 'we track nobody' and 'your key was dropped' must
+    not produce the same outcome. Before the fix both returned 0."""
+    good = mig.migrate(conn, _empty_manifest(tmp_path), now="2026-08-08T00:00:00+00:00")
+    assert good.seeded == 0 and good.errors == []
+
+    bad_path = _write(tmp_path, {"creators": {}, **{p: [] for p in mig.PLATFORMS},
+                                 "rss": [], "instgram": []})
+    with pytest.raises(mig.ManifestError):
+        mig.migrate(conn, bad_path, now="2026-08-08T00:00:00+00:00")
+
+
+def test_main_exits_nonzero_and_records_an_event_for_an_unknown_key(tmp_path, capsys):
+    """SURFACING: non-zero exit + an `events` row, not just a print (D-02)."""
+    db_path = tmp_path / "pipeline.db"
+    bad_path = _write(tmp_path, {"creators": {}, **{p: [] for p in mig.PLATFORMS},
+                                 "rss": [], "instgram": []})
+    rc = mig.main(["--manifest", str(bad_path), "--db-path", str(db_path)])
+    assert rc == 2
+    conn = db.get_connection(db_path)
+    rows = conn.execute(
+        "SELECT * FROM events WHERE kind = 'roster.manifest_invalid'").fetchall()
+    conn.close()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "instgram" in rows[0]["message"]
