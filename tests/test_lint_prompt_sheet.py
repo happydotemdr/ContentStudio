@@ -387,6 +387,37 @@ def test_plate_shots_are_exempt_from_world_lock():
     assert check_world_lock([shot], WORLD) == []
 
 
+@pytest.mark.parametrize("venue", ["vacant gym", "deserted gym", "empty pitch",
+                                   "empty stadium", "abandoned pitch"])
+def test_c9_flags_generic_venue_synonyms(venue):
+    # "empty field" excluded: it collides with legitimate, fully-named-venue prose
+    # in tests/fixtures/passing_sheet.md Shot 3 -- see the BANNED_REGISTER_A_STRINGS
+    # comment in scripts/lint_prompt_sheet.py.
+    shot = make_shot(1, "A", prompt=f"{venue}, club soccer, goal net, No Text. --ar 9:16")
+    assert "C9" in codes(check_world_lock([shot], WORLD))
+
+
+@pytest.mark.parametrize("term", ["photorealistic", "photographic", "bokeh",
+                                  "shallow depth of field", "leica", "kodachrome",
+                                  "cinematic still"])
+def test_c10_flags_photographic_vocabulary_synonyms(term):
+    shot = make_shot(1, "B", prompt=f"a colonnade, {term}, No Text. --ar 9:16 --s 520")
+    assert "C10" in codes(check_world_lock([shot], WORLD))
+
+
+def test_c9_and_c10_scan_the_flag_block_too():
+    """Both were scoped to prompt_body, so the same vocabulary written after the
+    first flag was unreachable."""
+    shot = make_shot(1, "B", prompt="a colonnade, No Text. --ar 9:16 --s 520 --style dslr")
+    assert "C10" in codes(check_world_lock([shot], WORLD))
+
+
+def test_both_green_fixtures_stay_clean_under_the_widened_lists():
+    for sheet, board in MIGRATED_PAIRS:
+        _shots, findings = lint_fixture(sheet, board)
+        assert not [f for f in findings if f.check in ("C9", "C10")], sheet
+
+
 def build_prompt(unique_head, shared_count=12, filler_word="alpha"):
     """Build a body with `shared_count` shared clauses plus a unique head clause."""
     shared = [f"shared clause {n} {filler_word} beta gamma delta epsilon" for n in range(shared_count)]

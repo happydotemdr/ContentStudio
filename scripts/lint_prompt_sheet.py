@@ -648,8 +648,29 @@ def check_vocabulary(shots: list[Shot]) -> list[Finding]:
     return findings
 
 
-BANNED_REGISTER_A_STRINGS = ("empty gym", "empty youth gym")
-BANNED_REGISTER_B_STRINGS = ("dslr", "shot on 35mm film", "documentary")
+# Widened from the two/three literals the audit found (finding C-84). Source: the
+# same [I]-marked contract these were drawn from --
+# .claude/skills/shorts-styleboard/references/visual-registers.md:47 (Register A
+# world lock) and :64 (Register B banned vocabulary). The terms below are synonyms
+# of those same two rules, not new craft claims. P13 mirrors this list back into
+# that reference; see this plan's cross-package note.
+# "empty field" deliberately omitted: tests/fixtures/passing_sheet.md Shot 3 uses
+# that exact phrase in a fully-named, fully-detailed Register A venue ("...dwarfed
+# by the empty field..." after naming the pitch, goal net, and corner flag) --
+# a legitimate atmospheric detail, not the generic/unnamed-venue failure C9 exists
+# to catch. The fixture is outside this task's edit scope, so the term is dropped
+# rather than the false positive shipped.
+BANNED_REGISTER_A_STRINGS = (
+    "empty gym", "empty youth gym", "empty pitch", "empty stadium",
+    "empty court", "vacant gym", "vacant pitch", "deserted gym", "deserted pitch",
+    "abandoned gym", "abandoned pitch", "generic gym", "generic field",
+)
+BANNED_REGISTER_B_STRINGS = (
+    "dslr", "shot on 35mm film", "documentary", "photorealistic", "photographic",
+    "photograph", "bokeh", "shallow depth of field", "depth of field", "leica",
+    "kodachrome", "cinematic still", "film still", "lens flare", "telephoto",
+    "wide-angle lens", "macro lens", "iso ",
+)
 BANNED_REGISTER_B_PATTERNS = (
     re.compile(r"\d+\s*mm"),
     re.compile(r"\bf/\d"),
@@ -664,6 +685,7 @@ def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
 
     for shot in shots:
         body = prompt_body(shot).lower()
+        full_prompt = shot.prompt.lower()
 
         if shot.register == "A":
             if not sport:
@@ -684,7 +706,7 @@ def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
                     )
                 )
             for banned in BANNED_REGISTER_A_STRINGS:
-                if banned in body:
+                if banned in full_prompt:
                     findings.append(
                         Finding(
                             "C9",
@@ -696,7 +718,7 @@ def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
 
         if shot.register == "B":
             for banned in BANNED_REGISTER_B_STRINGS:
-                if banned in body:
+                if banned in full_prompt:
                     findings.append(
                         Finding(
                             "C10",
@@ -706,7 +728,7 @@ def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
                         )
                     )
             for pattern in BANNED_REGISTER_B_PATTERNS:
-                match = pattern.search(body)
+                match = pattern.search(full_prompt)
                 if match:
                     findings.append(
                         Finding(
