@@ -168,6 +168,23 @@ def test_visual_gate_errors_when_the_styleboard_has_no_recoverable_world_lock(tm
     assert "WORLD LOCK" in result["findings"][0]["message"]
 
 
+def test_the_empty_world_error_names_the_styleboard_and_carries_a_check_id(tmp_path):
+    """A-31: the app raises and records status "error" naming the styleboard;
+    the CLI prints a wall of per-shot C8/C18 naming the sheet. Both block, so
+    nothing bad ships -- but an operator reproducing an app failure on the CLI
+    gets a different report. The app's finding must carry a real check id and
+    say, in words, what the CLI will print instead."""
+    styleboard = tmp_path / "artifact.v1.md"
+    styleboard.write_text("WORLD LOCK\n  not recoverable\n", encoding="utf-8")
+    result = _visual_gate(FIXTURES / "passing_sheet.md", {"styleboard": styleboard})
+    assert result["status"] == "error"
+    finding = result["findings"][0]
+    assert finding["check"] == "C0"
+    assert finding["kind"] == "error"
+    assert "WORLD LOCK" in finding["message"]
+    assert "lint_prompt_sheet" in finding["message"]
+
+
 def test_visual_gate_enforces_the_cover_lint():
     """C19 and the cover checks are part of the CLI's Gate C. An app-side gate
     that called lint() without them was a materially weaker gate wearing the

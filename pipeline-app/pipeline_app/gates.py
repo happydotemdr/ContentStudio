@@ -28,6 +28,14 @@ from pipeline_app.pipeline_config import StageDef, stage_dir_name
 GateRunner = Callable[[Path, Path, Mapping[str, Path]], list[dict]]
 
 
+class GateInputError(ValueError):
+    """A gate's INPUT is unusable (empty world lock, missing Library), as
+    opposed to the artifact under test being wrong. Recorded with check "C0"
+    so the operator can tell 'your styleboard is broken' from 'your sheet is'."""
+
+    check = "C0"
+
+
 def _load_linter(repo_root: Path, module_name: str):
     path = repo_root / "scripts" / f"{module_name}.py"
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -93,9 +101,12 @@ def run_prompt_sheet_gate(
             # existed. Linting against an empty world would emit a wall of
             # C8/C18 findings naming the wrong problem. Fail closed instead, and
             # say which artifact is empty.
-            raise ValueError(
+            raise GateInputError(
                 f"styleboard {styleboard_path.name} has no parseable WORLD LOCK block -- "
-                f"Gate C cannot check {artifact_path.name} against an empty world"
+                f"Gate C cannot check {artifact_path.name} against an empty world. "
+                f"`python scripts/lint_prompt_sheet.py {artifact_path.name} "
+                f"--styleboard {styleboard_path.name}` reports the same defect as a "
+                f"per-shot C8/C18 wall naming the sheet; the defect is in the styleboard."
             )
 
     cover = linter.parse_cover(sheet_text)
@@ -107,7 +118,7 @@ def run_prompt_sheet_gate(
     if linter.sheet_declares_slots(shots, cover):
         library_path = repo_root / "docs" / "style-library.md"
         if not library_path.is_file():
-            raise ValueError(
+            raise GateInputError(
                 f"Style Library not found at {library_path} -- Gate C cannot resolve "
                 f"{artifact_path.name}'s slot labels"
             )
@@ -116,7 +127,7 @@ def run_prompt_sheet_gate(
             # Same reasoning as the empty-styleboard branch above: linting against an
             # empty Library would report every slot as unknown, naming the wrong
             # problem. Fail closed and say which file is empty.
-            raise ValueError(
+            raise GateInputError(
                 f"no entries parsed from {library_path} -- Gate C cannot check "
                 f"{artifact_path.name}'s slot labels against an empty Library"
             )
@@ -166,7 +177,12 @@ def run_gates_for_stage(
             results.append({
                 "name": name,
                 "status": "error",
-                "findings": [{"check": "GATE", "beat": None, "message": str(exc), "kind": "error"}],
+                "findings": [{
+                    "check": getattr(exc, "check", "GATE"),
+                    "beat": None,
+                    "message": str(exc),
+                    "kind": "error",
+                }],
             })
             continue
         blocking = [f for f in findings if f.get("kind") != "skipped"]
