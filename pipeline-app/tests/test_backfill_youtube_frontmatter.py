@@ -286,3 +286,42 @@ def test_partial_enrichment_is_not_treated_as_a_total_miss(tmp_path, monkeypatch
     assert rc == 3                                   # partial: written, but not clean
     meta, _ = artifacts.parse_frontmatter(good.read_text(encoding="utf-8"))
     assert meta["view_count"] == 7
+
+
+def test_a_file_that_fails_to_write_does_not_abort_the_rest_and_sets_the_exit_code(
+        tmp_path, monkeypatch, capsys):
+    """SURFACING: a crash at file 300 of 420 left the corpus half-converted
+    with nothing indicating where it stopped, and the script returned 0."""
+    good = _corpus(tmp_path, "0l2g3Bujy1Y__x.md", OLD_FORMAT)
+    _corpus(tmp_path, "blocked1__y.md", OLD_FORMAT_NO_TRANSCRIPT)
+
+    real_render = backfill.render
+
+    def exploding_render(existing, meta):
+        if existing["video_id"] == "blocked1":
+            raise OSError("disk full")
+        return real_render(existing, meta)
+
+    monkeypatch.setattr(backfill, "render", exploding_render)
+    rc = backfill.main(["--corpus-root", str(tmp_path), "--no-api", "--apply"])
+
+    assert rc == 3
+    out, err = capsys.readouterr().out, capsys.readouterr().err
+    assert "failed" in out
+    meta, _ = artifacts.parse_frontmatter(good.read_text(encoding="utf-8"))
+    assert meta["transcript_status"] == "present", "the healthy file still converted"
+
+
+def test_a_clean_apply_run_exits_zero(tmp_path):
+    _corpus(tmp_path, "0l2g3Bujy1Y__x.md", OLD_FORMAT)
+    assert backfill.main(["--corpus-root", str(tmp_path), "--no-api", "--apply"]) == 0
+
+
+def test_dry_run_remains_the_default_with_no_flags(tmp_path, capsys):
+    """The safety property D-04 depends on. Locked so no future flag reorder
+    can make --apply implicit."""
+    path = _corpus(tmp_path, "0l2g3Bujy1Y__x.md", OLD_FORMAT)
+    before = path.read_text(encoding="utf-8")
+    assert backfill.main(["--corpus-root", str(tmp_path), "--no-api"]) == 0
+    assert path.read_text(encoding="utf-8") == before
+    assert "Dry run" in capsys.readouterr().out

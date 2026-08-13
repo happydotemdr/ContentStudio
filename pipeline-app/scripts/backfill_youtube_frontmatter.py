@@ -207,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     missing = enriched = 0
+    failed: list[tuple[Path, str]] = []
     for existing in files:
         record = api_records.get(existing["video_id"])
         meta = build_meta(existing, record)
@@ -217,16 +218,33 @@ def main(argv: list[str] | None = None) -> int:
         if args.apply:
             path = existing["path"]
             tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(render(existing, meta), encoding="utf-8")
-            tmp.replace(path)
+            try:
+                tmp.write_text(render(existing, meta), encoding="utf-8")
+                tmp.replace(path)
+            except Exception as exc:  # noqa: BLE001 -- one bad file must not
+                # abandon the corpus half-converted; the counter and the exit
+                # code are what make the partial state visible (D-04).
+                failed.append((path, f"{type(exc).__name__}: {exc}"))
+                tmp.unlink(missing_ok=True)
+                obs.log("backfill.file_write_failed", level="error",
+                        path=str(path), error=str(exc))
+                print(f"  !! {path.name}: {exc}", file=sys.stderr)
 
     verb = "rewrote" if args.apply else "would rewrite"
     print(f"\n{verb} {len(files)} files")
     print(f"  enriched from Data API : {enriched}")
     print(f"  transcript missing     : {missing}")
     print(f"  transcript present     : {len(files) - missing}")
+    print(f"  failed to write        : {len(failed)}")
+    if failed:
+        for path, why in failed:
+            print(f"    - {path}: {why}")
     if not args.apply:
         print("\nDry run -- re-run with --apply to write.")
+    unparsed_skipped = 0  # T18 replaces this with a real per-file count
+    enrichment_incomplete = (not args.no_api) and enriched < len(files)
+    if failed or enrichment_incomplete or unparsed_skipped:      # unparsed: T18
+        return 3
     return 0
 
 
