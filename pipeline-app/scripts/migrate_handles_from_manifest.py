@@ -86,52 +86,73 @@ def derive_cohort(note: str, handle: str) -> str:
     return "general-interest"
 
 
-def _seed(conn: sqlite3.Connection, platform: str, handle: str, display_name: str | None,
-          cohort: str, keyword_filter: str | None, now: str) -> bool:
+def upsert_creators(conn: sqlite3.Connection, creators: dict) -> dict[str, int]:
+    """Stub -- T10 replaces this body with the real creators upsert. Returns
+    an empty map, which is safe because T3's own `_seed_entry` does not yet
+    consult `creator_ids` for anything (that check is T10's)."""
+    return {}
+
+
+def find_drift(conn: sqlite3.Connection, data: dict) -> list[tuple[str, str]]:
+    """Stub -- T9 replaces this body with the real drift detection. Returns
+    no drift, which is safe because T3's own test never reads `result.drift`."""
+    return []
+
+
+def _seed_entry(conn: sqlite3.Connection, platform: str, entry: dict, creators: dict,
+                 creator_ids: dict[str, int], now: str, result: MigrateResult) -> None:
     """Upsert one handle, unless it would share an output directory with one
-    already registered. Returns whether it was seeded.
+    already registered. Mutates `result` in place rather than returning a bare
+    bool, so the caller's loop can accumulate seeded/skipped/errors across
+    every platform.
 
     Skips rather than aborting: one bad manifest row must not stop the rest of
     the import. Queried fresh each call so a collision between two entries in
     the same manifest is caught too, not just against pre-existing rows.
     """
+    handle = entry.get("handle")
+    if not handle:
+        return
+    display_name = entry.get("display_name")
+    if display_name is None:
+        creator_key = entry.get("creator")
+        if creator_key is not None:
+            display_name = (creators.get(creator_key) or {}).get("display_name")
+    cohort = entry.get("cohort")
+    if cohort is None:
+        cohort = derive_cohort(entry.get("note", ""), handle)
+    keyword_filter = entry.get("keyword_filter")
+
     clash = find_slug_collision(
         handle, [row["handle"] for row in db.list_platform_handles(conn, platform)]
     )
     if clash is not None:
-        print(f"  !! skipping {platform}/{handle}: it shares the output directory "
-              f"output/brand-intel/{platform}/{handle_slug(handle)} with "
-              f"already-registered {platform}/{clash}, so both would be billed "
-              f"while writing to the same files", file=sys.stderr)
-        return False
+        message = (f"skipping {platform}/{handle}: it shares the output directory "
+                   f"output/brand-intel/{platform}/{handle_slug(handle)} with "
+                   f"already-registered {platform}/{clash}, so both would be billed "
+                   f"while writing to the same files")
+        print(f"  !! {message}", file=sys.stderr)
+        result.skipped += 1
+        result.errors.append(message)
+        return
     db.upsert_handle_from_migration(
         conn, platform, handle, display_name, cohort, keyword_filter,
         status="validated", included=True, added_at=now,
     )
-    return True
+    result.seeded += 1
 
 
 def migrate(conn: sqlite3.Connection, manifest_path: Path, now: str) -> MigrateResult:
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     validate_keys(data)
-    count = 0
-    for entry in data.get("youtube", []):
-        handle = entry.get("handle")
-        if not handle:
-            continue
-        note = entry.get("note", "")
-        if _seed(conn, "youtube", handle, entry.get("display_name"),
-                 derive_cohort(note, handle), entry.get("keyword_filter"), now):
-            count += 1
-    for entry in data.get("bluesky", []):
-        handle = entry.get("handle")
-        if not handle:
-            continue
-        note = entry.get("note", "")
-        if _seed(conn, "bluesky", handle, entry.get("display_name"),
-                 derive_cohort(note, handle), None, now):
-            count += 1
-    return MigrateResult(seeded=count)
+    creators = data.get("creators") or {}
+    creator_ids = upsert_creators(conn, creators)          # T10
+    result = MigrateResult()
+    for platform in PLATFORMS:
+        for entry in data[platform]:
+            _seed_entry(conn, platform, entry, creators, creator_ids, now, result)
+    result.drift = find_drift(conn, data)                  # T9
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -146,3 +146,19 @@ def test_main_exits_nonzero_and_records_an_event_for_an_unknown_key(tmp_path, ca
     assert len(rows) == 1
     assert rows[0]["severity"] == "error"
     assert "instgram" in rows[0]["message"]
+
+
+def test_every_platform_key_is_seeded_not_just_youtube_and_bluesky(conn, tmp_path):
+    """migrate() read only `youtube` and `bluesky` (:68, :76). A handle under
+    any other platform key was silently dropped (B-70/B-71)."""
+    payload = {"creators": {"c": {"display_name": "C"}},
+               **{p: [] for p in mig.PLATFORMS}, "rss": []}
+    for platform in mig.PLATFORMS:
+        payload[platform] = [{"handle": f"@on-{platform}", "creator": "c",
+                              "cohort": "guru", "included": True}]
+    result = mig.migrate(conn, _write(tmp_path, payload), now="2026-08-08T00:00:00+00:00")
+
+    assert result.seeded == len(mig.PLATFORMS)
+    for platform in mig.PLATFORMS:
+        assert db.get_handle_by_platform_and_handle(
+            conn, platform, f"@on-{platform}") is not None
