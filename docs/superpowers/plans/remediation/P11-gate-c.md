@@ -1996,9 +1996,20 @@ package is called done (package verification §7 item 1 requires all 26 to pass)
   if wanted, is a one-line change to `MUTATIONS`' `plate-relabel` entry (`"C15"` → `"C14"`), the
   same class of anchor-retargeting fix as T6R-01, filed for the same review process.
 
-Both T6R items, T11R-01, T18R-01, and T19R-01 are carried forward to the final whole-branch
-review for this package, alongside any Minor findings deferred during the task loop. None block
-continuing to T20 and beyond.
+- **T20R-01 (Minor, mutation-case name mismatch, not fixed).** T20's own checklist says "T6's
+  `cover-fence-markdown` goes green" as this task's landing signal. Confirmed by T20's implementer
+  and independently by the controller: `worked_example_sheet.md` has no `### Cover — ...` heading
+  at all (it uses the `Cover = Hook` reuse declaration instead), so the mutation's
+  `.replace("```text", "```markdown", 1)` (first occurrence) breaks **Shot 1's own fence**, not
+  any cover's. The case was already green before T20 landed — some other, unrelated check (not
+  traced further) already catches a shot with an unreadable fence. The `cover-fence-markdown`
+  case ID is a misnomer for this fixture, not a defect in T20's work; T20's actual C-78/C-86 fixes
+  are independently verified correct by its own five direct unit tests. No package-verification
+  impact (the case was and remains green either way). Filed for documentation accuracy only.
+
+Both T6R items, T11R-01, T18R-01, T19R-01, and T20R-01 are carried forward to the final
+whole-branch review for this package, alongside any Minor findings deferred during the task loop.
+None block continuing to T21 and beyond.
 
 ---
 
