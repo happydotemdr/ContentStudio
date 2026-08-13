@@ -1047,6 +1047,7 @@ def test_the_two_fixtures_cover_both_cover_branches():
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STYLE_LIBRARY = REPO_ROOT / "docs" / "style-library.md"
+LIBRARY_TEXT = STYLE_LIBRARY.read_text(encoding="utf-8")
 
 LIBRARY_DOC = """\
 # Style Library
@@ -1492,3 +1493,35 @@ def test_the_cli_default_library_is_the_exact_path_the_app_path_hard_codes():
     """Surfacing/parity: gates.py computes repo_root/'docs'/'style-library.md'.
     Two gates wearing one name is worse than one gate."""
     assert DEFAULT_STYLE_LIBRARY == Path(__file__).resolve().parents[1] / "docs" / "style-library.md"
+
+
+# --- C-49/C-50/C-51: the Library's own provenance is repaired -----------------
+
+
+def test_the_library_uses_no_invented_provenance_marker():
+    """C-49: `[run owner, 2026-08-08]` is a sixth marker CLAUDE.md does not define.
+    A grep for [P] to enumerate operator decisions missed both of this file's."""
+    assert "[run owner" not in LIBRARY_TEXT
+    assert LIBRARY_TEXT.count("[P]") >= 2
+
+
+def test_every_library_entry_carries_every_field_the_entry_format_declares():
+    """C-50: rgs-present-soccer-a omitted `seed:` -- the only record of how a
+    channel-wide durable code was produced, and unrecoverable by re-running the
+    session (this file's own [T] note says a re-entry stacks rather than replaces)."""
+    entries = LIBRARY_TEXT.split("## Entries", 1)[1].split("\n### ")[1:]
+    for entry in entries:
+        label = entry.splitlines()[0].strip()
+        for field in ("brand:", "register:", "scope:", "mechanism:", "world:",
+                      "seed:", "code:", "harvested_at:"):
+            assert field in entry, f"{label} omits {field}"
+
+
+def test_every_T_marker_in_the_library_carries_a_verification_date():
+    """C-51: two undated Midjourney platform claims, one of which is the reason the
+    file gives for never re-entering a locked session. The header's `**Markers:**`
+    legend paragraph (added by T12's Edit 1) also names `[T]` while defining what the
+    marker means -- that is vocabulary, not a claim, so it is excluded from this scan."""
+    for line_no, line in enumerate(LIBRARY_TEXT.splitlines(), 1):
+        if "[T]" in line and not line.startswith("**Markers:**"):
+            assert "verified 20" in line, f"style-library.md:{line_no} has an undated [T]"

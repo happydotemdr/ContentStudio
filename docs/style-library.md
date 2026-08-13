@@ -10,6 +10,11 @@ all; see "Why this file exists" below.
 artistic rather than photorealistic, which is a deliberate choice by the run owner and which
 puts Register A's `--raw` requirement in tension with its own style code.
 
+**Markers:** `[C]` corpus-cited · `[I]` industry practice · `[T]` web-verified tool/policy fact,
+dated · **`[P]` project/operator decision** — a call made by this project's owner and recorded
+here. `[P]` is a *fact of record*, not evidence: it says what was decided, never why it is
+correct. Never cite a `[P]` line as corpus or vendor support for anything.
+
 ---
 
 ## What this is
@@ -71,10 +76,10 @@ Short slug.
 Per `rgs-briefs/2026-07-28-rgs-debut-visual-system.md:87-99`, RGS harvests through a
 **Style Creator session** — web-only, seeded with the register's palette/mood description —
 not through a broad `--sref random` sample. Run previews in `--draft` to keep the session
-cheap `[T]`.
+cheap `[T]` (verified 2026-07-26).
 
 **Re-entering a session stacks a new code rather than replacing the old one, so once a code is
-locked, do not re-enter its session** `[T]`. That is why the two registers need two separate
+locked, do not re-enter its session** `[T]` (verified 2026-07-26). That is why the two registers need two separate
 sessions rather than one session extended.
 
 `midjourney-prompting/SKILL.md:139` describes the other harvest route — `--draft --sref random`,
@@ -147,6 +152,8 @@ world:        present-day youth sport — a municipal complex, clubhouse, sideli
               accent only, muted clay (#C1543A) reserved for claim-card framing and never on a
               child or parent. Anonymous human presence — no identifiable faces.
               NOT photorealistic — see "Medium" below.
+seed:         none -- code supplied directly by the run owner, 2026-08-08; no Style
+              Creator session was seeded.
 code:         832507909
 harvested_at: 2026-08-08
 ```
@@ -160,7 +167,7 @@ line. Two consequences, both good: the two registers now follow the same one-cod
 rule, and the label→code resolution ambiguity recorded here on 2026-08-07 disappears —
 `rgs-present-soccer-a` now maps to exactly one value regardless of Short.
 
-**Medium: artistic, not photographic** `[run owner, 2026-08-08]`. The code was chosen on its
+**Medium: artistic, not photographic** `[P]` (run owner, 2026-08-08). The code was chosen on its
 look and is more stylized than the photorealistic treatment the debut visual system assumed.
 That is a deliberate call, and it changes what carries the register split — see
 `Open questions` §1 before writing Register A prompts.
@@ -185,7 +192,7 @@ teal-ink ground and check the first renders for warm drift.
    came out photographic — so this will not be caught mechanically. It shows up as diluted
    renders that do not look like the code that was picked.
 
-   **DECIDED 2026-08-08 (run owner): keep the bands unchanged for now.** Run the first Short
+   **[P] DECIDED 2026-08-08 (run owner): keep the bands unchanged for now.** Run the first Short
    end to end on `--raw` + `--s 80-120` and judge the actual renders before touching a gate
    three skills depend on. The alternative — dropping `needs_raw` and raising the stylize band
    in `REGISTER_BANDS`, with `visual-prompts/references/visual-registers.md` §2 updated to
