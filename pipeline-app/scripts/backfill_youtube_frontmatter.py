@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline_app import artifacts  # noqa: E402
 from pipeline_app import discovery_youtube_api as youtube_api  # noqa: E402
+from pipeline_app import obs  # noqa: E402
 
 CORPUS_ROOT = Path(__file__).resolve().parents[2] / "output" / "brand-intel" / "youtube"
 
@@ -140,6 +141,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-api", action="store_true",
                     help="skip Data API enrichment; only reformat what is already on disk")
     args = ap.parse_args(argv)
+
+    if not args.no_api and youtube_api.api_key() is None:
+        obs.log("backfill.preflight_failed", level="error", reason="no_api_key")
+        print(
+            "! refusing to run: Data API enrichment was requested but no key is "
+            f"configured ({youtube_api.KEY_ENV_VAR} env var or "
+            f"{youtube_api.KEY_FILE.name}).\n"
+            "  Without a key every record would be rewritten with null view/like/"
+            "comment counts and a downgraded metadata_source, over a git-ignored "
+            "corpus with no recovery path.\n"
+            "  Set the key, or pass --no-api to reformat on-disk data only.",
+            file=sys.stderr,
+        )
+        return 2
 
     if not args.corpus_root.exists():
         print(f"! corpus root not found: {args.corpus_root}", file=sys.stderr)

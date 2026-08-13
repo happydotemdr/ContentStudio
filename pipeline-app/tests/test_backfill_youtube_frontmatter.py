@@ -174,3 +174,29 @@ def test_main_apply_rewrites_to_frontmatter(tmp_path, capsys):
 
 def test_main_reports_missing_corpus_root(tmp_path, capsys):
     assert backfill.main(["--corpus-root", str(tmp_path / "nope"), "--no-api"]) == 1
+
+
+def test_apply_without_an_api_key_refuses_to_run(tmp_path, monkeypatch, capsys):
+    """FAULT: D-04. fetch_metadata returns {} for a missing key, an exhausted
+    quota and a dead network alike; the script then wrote nulls over
+    everything and exited 0."""
+    monkeypatch.setattr(backfill.youtube_api, "api_key", lambda: None)
+    path = _corpus(tmp_path, "0l2g3Bujy1Y__x.md", OLD_FORMAT)
+    before = path.read_text(encoding="utf-8")
+
+    rc = backfill.main(["--corpus-root", str(tmp_path), "--apply"])
+
+    assert rc == 2
+    assert path.read_text(encoding="utf-8") == before, "not one byte may be written"
+    err = capsys.readouterr().err
+    assert "YOUTUBE_API_KEY" in err and "--no-api" in err
+
+
+def test_no_api_is_the_explicit_escape_hatch(tmp_path, monkeypatch):
+    """The refusal is not a wall: --no-api is the deliberate way through, and
+    it must never claim API provenance."""
+    monkeypatch.setattr(backfill.youtube_api, "api_key", lambda: None)
+    path = _corpus(tmp_path, "0l2g3Bujy1Y__x.md", OLD_FORMAT)
+    assert backfill.main(["--corpus-root", str(tmp_path), "--no-api", "--apply"]) == 0
+    meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert meta["metadata_source"] == "yt-dlp"
