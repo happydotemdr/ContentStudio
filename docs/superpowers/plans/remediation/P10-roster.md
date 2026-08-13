@@ -1396,7 +1396,17 @@ def test_partial_enrichment_is_not_treated_as_a_total_miss(tmp_path, monkeypatch
             return 2
 ```
 
-- [ ] **Run** → pass. **Commit:** `fix(backfill): abort before writing when enrichment returns nothing at all`
+**§0 amendment (found during T15's implementation, not pre-review) — deliberate T15↔T17 tripwire, matching
+P0's T1↔T2 precedent.** `test_partial_enrichment_is_not_treated_as_a_total_miss`'s `assert rc == 3` cannot
+pass at this task: the `enrichment_incomplete` check and the `if failed or enrichment_incomplete or
+unparsed_skipped: return 3` branch are T17's job, and `main()` has no `return 3` anywhere until T17 lands.
+This is expected and correct — do NOT implement T17's exit-code logic early to force this one assertion
+green; that would risk T17's own RED not materializing later (the same class of problem forward-implementing
+T5's cohort logic inside T3 caused). **Confirm at T17 dispatch that this specific test turns green as part
+of T17's own verification** — it is the tripwire that proves T17's `enrichment_incomplete` branch actually
+fires for this exact scenario, not just a coincidental pass.
+
+- [ ] **Run** → pass (except the one tripwire assertion above, expected red until T17). **Commit:** `fix(backfill): abort before writing when enrichment returns nothing at all`
 
 ---
 
