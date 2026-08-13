@@ -3,8 +3,14 @@ from pathlib import Path
 
 import pytest
 
+from pipeline_app import artifacts
 from pipeline_app import db as db_mod
-from pipeline_app.migrations import _backfill_one_project, backfill_styleboard_rows
+from pipeline_app import migrations
+from pipeline_app.migrations import (
+    BackfillWouldOverwriteError,
+    _backfill_one_project,
+    backfill_styleboard_rows,
+)
 from pipeline_app.pipeline_config import StageDef
 
 PACKAGE_DIR = Path(__file__).resolve().parents[1] / "pipeline_app"
@@ -130,15 +136,21 @@ def test_backfill_one_project_leaves_nothing_behind_when_it_fails_partway(conn, 
     monkeypatch.setattr(db_mod, "update_stage_status", raise_on_approved_at)
 
     with pytest.raises(RuntimeError):
-        _backfill_one_project(conn, tmp_path, stage_def, visual_def, project, now)
+        _backfill_one_project(conn, tmp_path, stage_def, visual_def, project, now, STAGE_DEFS)
 
     assert db_mod.get_stage(conn, pid, "styleboard") is None
 
 
-def test_backfill_skips_a_broken_legacy_project_without_blocking_others(conn, tmp_path):
+def test_backfill_skips_a_broken_legacy_project_without_blocking_others(
+    conn, tmp_path, monkeypatch
+):
     """One project with an unreadable/malformed legacy artifact must not crash the
     whole migration (and therefore app startup) -- it should be skipped, and every
     other project still gets backfilled."""
+    recorded = []
+    monkeypatch.setattr(migrations.obs, "record_event",
+                        lambda c, **kw: recorded.append(kw) or 1)
+
     pid_bad = _legacy_project(conn, tmp_path, "legacy-bad", "approved")
     bad_sheet = tmp_path / "runs" / "legacy-bad" / "03-visual" / "artifact.v1.md"
     bad_sheet.write_text(
@@ -153,7 +165,253 @@ def test_backfill_skips_a_broken_legacy_project_without_blocking_others(conn, tm
     assert db_mod.get_stage(conn, pid_bad, "styleboard") is None
     assert db_mod.get_stage(conn, pid_good, "styleboard") is not None
 
+    # A-74: the skip must be findable, not stderr-only.
+    skips = [e for e in recorded if e["kind"] == "migration.backfill_skipped"]
+    assert len(skips) == 1
+    assert skips[0]["severity"] == "error"
+    assert skips[0]["detail"]["project_id"] == pid_bad
+    assert skips[0]["detail"]["run_id"] == "legacy-bad"
+
     # Nothing was committed for the broken project, so a later startup retries it
     # cleanly rather than skipping it forever or leaving orphaned state.
     touched_again = backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
     assert touched_again == []
+
+
+def test_a_skipped_project_records_an_error_event(conn, tmp_path, monkeypatch):
+    """SURFACING. A-74: a per-project OSError/UnicodeDecodeError/YAMLError
+    printed one line to stderr and continued. backfilled_projects records only
+    successes, /doctor surfaces nothing about backfill, and an operator running
+    under a service manager or a detached uvicorn never sees the stderr line."""
+    recorded = []
+    monkeypatch.setattr(migrations.obs, "record_event",
+                        lambda c, **kw: recorded.append(kw) or 1)
+
+    pid_bad = _legacy_project(conn, tmp_path, "legacy-bad", "approved")
+    (tmp_path / "runs" / "legacy-bad" / "03-visual" / "artifact.v1.md").write_text(
+        "---\nschema_version: 1\nstatus: 'unterminated\n---\n\nWORLD LOCK\n  x: y\n",
+        encoding="utf-8",
+    )
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    skips = [e for e in recorded if e["kind"] == "migration.backfill_skipped"]
+    assert len(skips) == 1
+    assert skips[0]["severity"] == "error"
+    assert skips[0]["detail"]["project_id"] == pid_bad
+    assert skips[0]["detail"]["run_id"] == "legacy-bad"
+    assert "legacy-bad" in skips[0]["message"]
+
+
+def test_a_run_with_no_skips_records_no_skip_event(conn, tmp_path, monkeypatch):
+    """DISTINGUISHABILITY. A migration that skipped a project must be
+    observably different from one that had nothing to do."""
+    recorded = []
+    monkeypatch.setattr(migrations.obs, "record_event",
+                        lambda c, **kw: recorded.append(kw) or 1)
+    _legacy_project(conn, tmp_path, "legacy-fine", "locked")
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+    assert [e for e in recorded if e["kind"] == "migration.backfill_skipped"] == []
+
+
+def test_a_failure_to_record_the_event_does_not_mask_the_skip(conn, tmp_path, monkeypatch):
+    """FAULT. obs.record_event never raises by contract, but the migration must
+    not depend on that: the loop still continues and the other project is still
+    backfilled."""
+    monkeypatch.setattr(migrations.obs, "record_event",
+                        lambda c, **kw: (_ for _ in ()).throw(RuntimeError("db gone")))
+    _legacy_project(conn, tmp_path, "legacy-bad2", "approved")
+    (tmp_path / "runs" / "legacy-bad2" / "03-visual" / "artifact.v1.md").write_text(
+        "---\nstatus: 'unterminated\n---\n\nWORLD LOCK\n  x: y\n", encoding="utf-8")
+    pid_good = _legacy_project(conn, tmp_path, "legacy-good2", "locked")
+
+    assert backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS) == [pid_good]
+
+
+def test_a_skip_event_is_durably_committed_and_readable_on_a_second_connection(conn, tmp_path):
+    """SURFACING, end-to-end. The other three tests all mock obs.record_event, so none of
+    them proves the row survives using the CORRECT connection -- a wrong/stale conn object
+    would pass those tests undetected. This test uses no mock: it runs the real migration
+    against a real broken project, then reads the events table back on a SEPARATE
+    connection to the same file."""
+    import sqlite3
+
+    db_path = tmp_path / "test.db"
+    pid_bad = _legacy_project(conn, tmp_path, "legacy-bad3", "approved")
+    (tmp_path / "runs" / "legacy-bad3" / "03-visual" / "artifact.v1.md").write_text(
+        "---\nschema_version: 1\nstatus: 'unterminated\n---\n\nWORLD LOCK\n  x: y\n",
+        encoding="utf-8",
+    )
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    second_conn = sqlite3.connect(db_path)
+    second_conn.row_factory = sqlite3.Row
+    try:
+        rows = second_conn.execute(
+            "SELECT kind, severity, message, detail FROM events WHERE kind = ?",
+            ("migration.backfill_skipped",),
+        ).fetchall()
+    finally:
+        second_conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "legacy-bad3" in rows[0]["message"]
+
+
+def test_backfill_refuses_to_overwrite_a_real_styleboard_artifact(conn, tmp_path):
+    """A-73, the S0. runs/ and pipeline.db are independently git-ignored and
+    independently disposable. Resetting the DB while runs/ is intact used to
+    rewrite every project's real 02b-styleboard/artifact.v1.md with the
+    synthetic "not recoverable" body -- no backup, no warning."""
+    pid = _legacy_project(conn, tmp_path, "legacy-real", "approved")
+    styleboard_dir = tmp_path / "runs" / "legacy-real" / "02b-styleboard"
+    styleboard_dir.mkdir(parents=True)
+    real = styleboard_dir / "artifact.v1.md"
+    real.write_text(
+        "---\nschema_version: 1\nversion: 1\nstatus: final\n---\n\n"
+        "WORLD LOCK\n  register_a_sport: the real hand-authored world\n",
+        encoding="utf-8",
+    )
+    before = real.read_text(encoding="utf-8")
+
+    touched = backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    assert real.read_text(encoding="utf-8") == before
+    assert "the real hand-authored world" in real.read_text(encoding="utf-8")
+    assert pid not in touched
+
+
+def test_refusing_to_overwrite_records_an_error_event(conn, tmp_path, monkeypatch):
+    """SURFACING. Destroying a styleboard must never be the quiet outcome, and
+    declining to destroy it must not be quiet either."""
+    recorded = []
+    monkeypatch.setattr(migrations.obs, "record_event",
+                        lambda c, **kw: recorded.append(kw) or 1)
+    _legacy_project(conn, tmp_path, "legacy-real2", "approved")
+    d = tmp_path / "runs" / "legacy-real2" / "02b-styleboard"
+    d.mkdir(parents=True)
+    (d / "artifact.v1.md").write_text(
+        "---\nversion: 1\nstatus: final\n---\n\nreal\n", encoding="utf-8")
+
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    assert any(e["severity"] == "error" and "overwrite" in e["message"].lower()
+               for e in recorded)
+
+
+def test_a_crash_between_the_artifact_write_and_the_db_row_does_not_churn_the_artifact(
+    conn, tmp_path, monkeypatch
+):
+    """A-73's second hazard: the disk write precedes the DB write, so a failure
+    in between left an artifact with no row -- and the next boot rewrote it
+    with a fresh `now`, changing its sha256 and spuriously staling every
+    dependent.
+
+    create_stage_row raising OSError is caught by backfill_styleboard_rows'
+    own _PER_PROJECT_RECOVERABLE guard (OSError is in that tuple), so the
+    project is skipped for this run rather than the whole migration crashing
+    -- assert on that skip, not pytest.raises. The property under test is the
+    one that must hold either way: the artifact this crash left behind on disk
+    must come back byte-identical (same sha256) on the retry, not be rewritten
+    with a fresh timestamp.
+    """
+    pid = _legacy_project(conn, tmp_path, "legacy-crash", "approved", sheet=LEGACY_SHEET)
+
+    real_create = db_mod.create_stage_row
+
+    def crash_once(*a, **k):
+        raise OSError("killed between the disk write and the row insert")
+
+    monkeypatch.setattr(db_mod, "create_stage_row", crash_once)
+
+    touched = backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+    assert touched == []
+    assert db_mod.get_stage(conn, pid, "styleboard") is None
+
+    written = tmp_path / "runs" / "legacy-crash" / "02b-styleboard" / "artifact.v1.md"
+    assert written.exists()
+    sha_after_crash = artifacts.compute_sha256(written)
+
+    monkeypatch.setattr(db_mod, "create_stage_row", real_create)
+    touched_again = backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    assert touched_again == [pid]
+    assert artifacts.compute_sha256(written) == sha_after_crash, \
+        "the retry rewrote the artifact with a fresh timestamp and staled its dependents"
+    assert len(list((written.parent).glob("artifact.v*.md"))) == 1
+
+
+def test_backfill_allocates_its_version_rather_than_hardcoding_one(conn, tmp_path):
+    """_write_synthetic_artifact passed a literal 1 to write_artifact rather
+    than allocating."""
+    _legacy_project(conn, tmp_path, "legacy-v", "approved", sheet=LEGACY_SHEET)
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+    written = tmp_path / "runs" / "legacy-v" / "02b-styleboard" / "artifact.v1.md"
+    meta, _ = artifacts.read_artifact(written)
+    assert meta["version"] == 1     # first version in an empty dir, but ALLOCATED
+    assert (tmp_path / "runs" / "legacy-v" / "02b-styleboard" / ".artifact-version-hwm").exists()
+
+
+def test_backfilled_styleboard_records_the_scripting_artifact_it_was_built_against(
+    conn, tmp_path
+):
+    """A-61: _write_synthetic_artifact hardcoded depends_on: [] while the row
+    was set to approved. styleboard declares depends_on: [scripting], so on
+    every migrated project a scripting change could NEVER flip styleboard
+    stale -- and `visual` was then regenerated against an unflagged world lock."""
+    pid = _legacy_project(conn, tmp_path, "legacy-dep", "approved", sheet=LEGACY_SHEET)
+    scripting_dir = tmp_path / "runs" / "legacy-dep" / "02-scripting"
+    script = artifacts.write_artifact(
+        scripting_dir, 1, {"version": 1, "status": "final"}, "the script")
+
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    written = tmp_path / "runs" / "legacy-dep" / "02b-styleboard" / "artifact.v1.md"
+    meta, _ = artifacts.read_artifact(written)
+    assert meta["depends_on"] == [
+        {"path": "02-scripting/artifact.v1.md",
+         "sha256": artifacts.compute_sha256(script)},
+    ]
+
+
+def test_a_backfilled_styleboard_goes_stale_when_its_script_is_rewritten(conn, tmp_path):
+    """The cascade this was terminating. is_stale must now fire."""
+    from pipeline_app.state_machine import is_stale
+
+    _legacy_project(conn, tmp_path, "legacy-dep2", "approved", sheet=LEGACY_SHEET)
+    scripting_dir = tmp_path / "runs" / "legacy-dep2" / "02-scripting"
+    artifacts.write_artifact(scripting_dir, 1, {"version": 1}, "original script")
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    written = tmp_path / "runs" / "legacy-dep2" / "02b-styleboard" / "artifact.v1.md"
+    recorded = artifacts.read_artifact(written)[0]["depends_on"]
+
+    rewritten = artifacts.write_artifact(scripting_dir, 2, {"version": 2}, "REWRITTEN script")
+    current = {"02-scripting/artifact.v2.md": artifacts.compute_sha256(rewritten)}
+    assert is_stale(recorded, current) is True
+
+
+def test_backfilled_artifact_records_an_explicit_gates_key(conn, tmp_path):
+    """It was the one approved artifact in the app carrying no `gates` key at
+    all -- indistinguishable, to approval_service, from a clean run."""
+    _legacy_project(conn, tmp_path, "legacy-gates", "approved", sheet=LEGACY_SHEET)
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+    written = tmp_path / "runs" / "legacy-gates" / "02b-styleboard" / "artifact.v1.md"
+    meta, _ = artifacts.read_artifact(written)
+    assert "gates" in meta
+    assert meta["gates"] == []
+    assert meta["backfilled"] is True
+
+
+def test_durability_contract_backfill_refuses_a_populated_stage_dir(conn, tmp_path):
+    """F-18's third clause: test_migrations.py never placed a real artifact
+    where the backfill writes."""
+    _legacy_project(conn, tmp_path, "legacy-dur", "approved", sheet=LEGACY_SHEET)
+    d = tmp_path / "runs" / "legacy-dur" / "02b-styleboard"
+    d.mkdir(parents=True)
+    real = d / "artifact.v1.md"
+    real.write_text("---\nversion: 1\nstatus: final\n---\n\nreal\n", encoding="utf-8")
+    sha = artifacts.compute_sha256(real)
+
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+    assert artifacts.compute_sha256(real) == sha

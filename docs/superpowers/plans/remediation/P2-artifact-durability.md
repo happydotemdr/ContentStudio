@@ -8,6 +8,95 @@
 
 ---
 
+## 0. Pre-review amendments (2026-08-12, before T1 dispatch)
+
+Adversarial pre-review against the actual current source (`artifacts.py`, `grounding_service.py`,
+`migrations.py`, and their three test files) plus empirical probes of `os.replace` (with T1's exact
+`tempfile.mkstemp` naming scheme) and `O_CREAT|O_EXCL` on this host confirmed both platform claims in
+§T1/§T5 hold. `compile_plan.py` baseline for this plan: 42 python blocks, 36 compile, 6 fail — all six
+are non-executable fragments (T12's docstring-only snippet, T14's except-clause insert, and §6's
+signature-only contract blocks for P3/P4), none inside a standalone "Implement" block. All test/line
+citations against the pre-existing three files were verified byte-accurate (e.g. `artifacts.py:88`,
+`:105`; `test_grounding_service.py:22-50`).
+
+Five real defects found and fixed here, before any dispatch:
+
+1. **T5 ↔ T6 circular forward-reference.** T5's `reserve_version` reads `candidate = _high_water_mark(stage_dir) + 1`
+   and calls `_record_high_water_mark(...)` — both defined only in T6, which runs *after* T5 in this
+   plan's strict numeric order. Simultaneously, T6's own tests call `reserve_version(tmp_path)` (T5's
+   function). Neither task can be implemented standalone as written. **Fix:** T5's `reserve_version`
+   now seeds `candidate = next_version_number(stage_dir)` — the pre-existing helper, not the
+   not-yet-defined `_high_water_mark`. `next_version_number` currently does exactly
+   `max(existing versions on disk, default 0) + 1`, semantically equivalent for T5's own tests (none
+   of which exercise post-deletion HWM survival — that's T6's job). Because T5 calls
+   `next_version_number()` rather than reimplementing the max-scan inline, T6's later redefinition of
+   `next_version_number` (to route through `_high_water_mark`) upgrades `reserve_version`'s behaviour
+   automatically, with **no further edit to `reserve_version` needed** when T6 lands. The
+   `_record_high_water_mark(stage_dir, candidate)` call in T5 is satisfied by T2's stub (next point) —
+   it no-ops until T6 replaces the stub with the real sidecar-file writer.
+2. **T2's `_record_high_water_mark` stub is now REQUIRED, not conditional.** T2's text said "stub it
+   ... only if T6 is not executed in the same sitting". This programme executes strictly T1→T18, so T6
+   is never immediately after T2. T2 **must** add `def _record_high_water_mark(stage_dir: Path, version: int) -> None: pass`
+   (module-level, above or below `write_artifact`) so `write_artifact`'s call to it — and T5's, per
+   point 1 — no-ops safely until T6 replaces the stub body outright (same name, same module: T6
+   overwrites the stub, it does not add a second definition).
+3. **T8's `parse_frontmatter` forward-references T9's `_load_frontmatter_yaml`** via a bare `# T9`
+   comment on the line `meta = _load_frontmatter_yaml(yaml_text)`. T8's own acceptance test
+   `test_empty_frontmatter_block_is_still_an_empty_mapping` (`"---\n---\n\nbody"`) reaches that exact
+   line and would raise `NameError` if dispatched before T9 defines the helper. **Fix:** T8's
+   `parse_frontmatter` body uses `meta = yaml.safe_load(yaml_text) or {}` instead — byte-identical to
+   what the pre-existing code already does on that line, so T8 needs no new symbol. T9 then replaces
+   that one line with `meta = _load_frontmatter_yaml(yaml_text)` and defines the function, exactly as
+   T9's own section already shows. This keeps every task's dispatch self-contained and independently
+   testable, and removes the plan's own "land together in the body, commit separately" ambiguity.
+4. **T14 must add `from pipeline_app import obs` to `migrations.py`'s imports.** Verified against the
+   current file: `migrations.py` imports only `artifacts, db as db_mod` — no `obs`. T14's own
+   `obs.record_event(...)` call needs it. Not shown in the plan's T14 text; added here so the
+   implementer isn't left to discover it via `NameError`.
+5. **T15 must add `from pipeline_app import obs` to `grounding_service.py`'s imports.** Same gap:
+   current file imports only `hashlib`, `Path`, `yaml`. T15's `verify_pointer` calls
+   `obs.log("grounding.pointer_unpinned", ...)`.
+
+T17's path-containment logic (`PureWindowsPath`/`PurePosixPath` absolute-detection plus `".." in parts`
+plus the `rgs-briefs` root check) was probed against all 6 of its own test cases on this host and
+produces the exact `RAISE`/no-raise verdict the tests expect — no amendment needed there.
+
+**Open finding (filed, not fixed) — found by T11's task review, 2026-08-12:** `_adoptable_synthetic`'s
+read (checking whether an existing artifact is our own prior synthetic) and `reserve_version`'s
+reservation are not atomic with each other ACROSS PROCESSES. Two separate OS processes both running
+`backfill_styleboard_rows` concurrently against the same `stage_dir` (e.g. a multi-worker uvicorn
+deployment where both workers race app startup) could both pass the `_adoptable_synthetic` check
+before either has written anything, then both proceed to `reserve_version`/write — `reserve_version`'s
+`O_CREAT|O_EXCL` exclusivity means only one wins the SAME version number, but the loser does not
+retry `_adoptable_synthetic` against the winner's now-present output, so it could reserve and write a
+SECOND styleboard artifact at a higher version instead of erroring or adopting. **T12 (A-73, 2/2) does
+NOT close this** — T12's own scope (see its section below) is a same-process crash-then-retry test
+(`test_a_crash_between_the_artifact_write_and_the_db_row_does_not_churn_the_artifact`), not
+cross-process locking; its own text says "the adoption branch from T11 already does the work; this
+task adds the reasoning to `_backfill_one_project`'s docstring." Not fixed here: the current
+deployment is single-process (no multi-worker uvicorn configuration exists in this repo today), so
+this is a narrow, latent gap, not a live S0 — but it is real and currently owned by no task in this
+plan. Flag to the final whole-branch review for a decision (accept as a documented limitation of the
+lock-free sidecar design, or file a follow-up task).
+
+**Amendment 2 (found by T9's implementer, during T9, not pre-review):** T9 makes `parse_frontmatter`
+raise `MalformedArtifactError` for malformed YAML instead of letting `yaml.YAMLError` propagate.
+`migrations.py`'s `_PER_PROJECT_RECOVERABLE = (OSError, UnicodeDecodeError, yaml.YAMLError)` — this
+package's OWN file, unlike the expected cross-package breakage in `routes/stages.py` et al. — no
+longer catches the new exception type, so a malformed legacy artifact now CRASHES the whole backfill
+migration instead of being skipped per-project (worse than before this task, not better). This broke
+`tests/test_migrations.py::test_backfill_skips_a_broken_legacy_project_without_blocking_others`, a
+PRE-EXISTING test that was green before T9. T11's own text already plans to add
+`artifacts.MalformedArtifactError` to `_PER_PROJECT_RECOVERABLE` (alongside `BackfillWouldOverwriteError`,
+which doesn't exist until T11) — but leaving this package's own file broken for two more tasks
+violates the same standard applied everywhere else in this programme (an untracked broken test in a
+file this package owns is not acceptable, unlike genuinely cross-package fallout). **Pulled forward
+into T9's own task**, since T9 is what caused it: add `artifacts.MalformedArtifactError` to
+`_PER_PROJECT_RECOVERABLE` now. T11 still adds `BackfillWouldOverwriteError` to the same tuple when
+that class is defined — do not remove or duplicate the earlier addition.
+
+---
+
 ## 1. Scope
 
 ### Files this package owns (no other package may touch these)
@@ -248,7 +337,14 @@ def write_artifact(stage_dir: Path, version: int, meta: dict, body: str) -> Path
     return path
 ```
 
-  `_record_high_water_mark` lands in T6; until then, stub it as a one-line `pass` **only if** T6 is not executed in the same sitting — preferred order is T6 immediately after T2.
+  **§0 amendment (required, not conditional):** this programme executes strictly T1→T18, so T6 never
+  lands immediately after T2. Add this stub to `artifacts.py` in this task (T6 will replace its body,
+  not add a second definition):
+
+```python
+def _record_high_water_mark(stage_dir: Path, version: int) -> None:
+    pass  # T6 replaces this body with the real sidecar-file writer.
+```
 
 - [ ] **Run.** Pass.
 - [ ] **Commit:** `fix(artifacts): write_artifact is atomic and refuses to clobber (A-63, A-65)`
@@ -409,6 +505,13 @@ def test_write_reserved_artifact_lands_at_the_reserved_version(tmp_path):
     assert not res.reservation_path.exists()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="A-66, not A-65: needs T6's real _record_high_water_mark. T2's stub is a "
+           "no-op until T6 lands, so a released version's HWM entry is never durably "
+           "recorded and the next reserve_version() call reissues it. T6 removes this "
+           "marker as part of its own task.",
+)
 def test_released_version_is_burnt_not_reissued(tmp_path):
     """A released number must never be reissued: anything that observed it --
     a log line, a `supersedes` field, a half-written temp -- must not be able
@@ -417,6 +520,15 @@ def test_released_version_is_burnt_not_reissued(tmp_path):
     release_version(res)
     assert reserve_version(tmp_path).version == res.version + 1
 ```
+
+**§0-amendment correction, found by T5's implementer:** this test's own docstring cites A-66,
+not A-65 -- it was misplaced in T5's task list. It genuinely cannot pass until T6's real
+`_record_high_water_mark` lands (T2's stub is `pass`, so nothing survives a release across a
+fresh `reserve_version` call). Marked `xfail(strict=True)` here, per the same pattern the
+programme already uses for genuine cross-task tripwires (P1 T5) -- `strict=True` means the
+suite goes **red**, not silently green, if T6 forgets to actually fix it (an unexpected pass
+reports as a failure). **T6 must remove this xfail marker as part of its own task** and confirm
+the test then passes for the real reason (HWM persists past release), not vacuously.
 
 - [ ] **Run.** Every one fails with `ImportError`/`AttributeError` on `reserve_version`.
 - [ ] **Implement** in `artifacts.py`:
@@ -453,7 +565,12 @@ def reserve_version(stage_dir: Path, *, max_attempts: int = 256) -> VersionReser
     can never be selected as a stage's output.
     """
     stage_dir.mkdir(parents=True, exist_ok=True)
-    candidate = _high_water_mark(stage_dir) + 1
+    # §0 amendment: seed from next_version_number(), NOT _high_water_mark() directly --
+    # _high_water_mark is defined in T6, which has not run yet at T5. next_version_number
+    # is the pre-existing equivalent (max version on disk, default 0, + 1); T6 later
+    # redefines next_version_number to route through _high_water_mark, which upgrades
+    # this call's behaviour automatically with no further edit here.
+    candidate = next_version_number(stage_dir)
     for _ in range(max_attempts):
         marker = stage_dir / f".artifact.v{candidate}.reserved"
         try:
@@ -553,8 +670,14 @@ def test_corrupt_high_water_mark_is_warned_and_ignored_not_fatal(tmp_path, monke
     assert any(e == "artifacts.hwm_unreadable" for e, _ in events)
 ```
 
-- [ ] **Run.** All four fail.
-- [ ] **Implement** in `artifacts.py` (add `from pipeline_app import obs` to the imports):
+- [ ] **Run.** All four fail. **Also remove the `@pytest.mark.xfail(strict=True, ...)` marker T5 put
+  on `test_released_version_is_burnt_not_reissued`** (it cites A-66, was misplaced in T5's task list
+  per that task's own §0-amendment correction) — after this task's implementation lands, run it and
+  confirm it passes for the real reason (the HWM sidecar file persists past `release_version`), not
+  vacuously.
+- [ ] **Implement** in `artifacts.py` (add `from pipeline_app import obs` to the imports). §0
+  amendment: T2 already added a stub `_record_high_water_mark(stage_dir, version) -> None: pass`.
+  **Replace that stub's body** with the real implementation below — do not add a second definition:
 
 ```python
 _HWM_NAME = ".artifact-version-hwm"
@@ -788,7 +911,11 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             continue
         yaml_text = "\n".join(lines[1:i])
         body = "\n".join(lines[i + 1:])
-        meta = _load_frontmatter_yaml(yaml_text)   # T9
+        # §0 amendment: inline the pre-existing load here (byte-identical to what
+        # parse_frontmatter already did) rather than forward-referencing T9's
+        # _load_frontmatter_yaml, which does not exist yet. T9 replaces this one
+        # line with `meta = _load_frontmatter_yaml(yaml_text)` and defines the helper.
+        meta = yaml.safe_load(yaml_text) or {}
         return meta, body.lstrip("\n")
     raise MalformedArtifactError(
         "frontmatter block opened with '---' and was never closed -- the file is "
@@ -842,7 +969,9 @@ def test_a_body_starting_with_a_horizontal_rule_is_rejected_not_misparsed():
 ```
 
 - [ ] **Run.** All fail with `AttributeError`/`yaml.YAMLError` rather than `MalformedArtifactError`.
-- [ ] **Implement:**
+- [ ] **Implement.** T8 left `parse_frontmatter` calling `meta = yaml.safe_load(yaml_text) or {}` inline
+  (§0 amendment). Replace that one line with `meta = _load_frontmatter_yaml(yaml_text)` and add the
+  helper below:
 
 ```python
 def _load_frontmatter_yaml(yaml_text: str) -> dict:
@@ -1139,7 +1268,7 @@ def _write_synthetic_artifact(
         raise
 ```
 
-  Add `BackfillWouldOverwriteError` and `artifacts.MalformedArtifactError` to `_PER_PROJECT_RECOVERABLE`, and update both `_write_synthetic_artifact` call sites to pass `depends_on` (T13 computes it; pass `[]` for this task only if T13 has not run).
+  Add `BackfillWouldOverwriteError` to `_PER_PROJECT_RECOVERABLE` (§0 amendment 2: `artifacts.MalformedArtifactError` was already added there in T9, pulled forward because T9's own change broke this package's pre-existing test otherwise — do not duplicate it, just confirm it's present), and update both `_write_synthetic_artifact` call sites to pass `depends_on` (T13 computes it; pass `[]` for this task only if T13 has not run).
 
 - [ ] **Run.** Pass.
 - [ ] **Commit:** `fix(migrations): backfill refuses to overwrite a real styleboard (A-73)`
@@ -1363,8 +1492,52 @@ def test_a_failure_to_record_the_event_does_not_mask_the_skip(conn, tmp_path, mo
     assert backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS) == [pid_good]
 ```
 
-- [ ] **Run.** All three fail — there is no `obs.record_event` call.
-- [ ] **Implement** in `backfill_styleboard_rows`'s except clause. Keep the `print` (the orchestration plan's adoption rule):
+**§0 amendment 3 (pre-review, before dispatch):** all three tests above mock `obs.record_event`
+entirely (`monkeypatch.setattr(migrations.obs, "record_event", lambda c, **kw: ...)`), so NONE of
+them proves the event row is actually durably committed and readable using the CORRECT `conn` object
+— a bug where the migration passed a stale, wrong, or already-closed connection to `record_event`
+would go completely undetected, since the mock intercepts the call regardless of what `conn` argument
+was passed. This is exactly the "second-connection idiom" defect class the orchestration prompt
+flags as the single most repeated defect in P1 (4 instances). Add a FOURTH test that does NOT mock
+`record_event` — it must actually run and read back a real row on a second connection to the same
+database file:
+
+```python
+def test_a_skip_event_is_durably_committed_and_readable_on_a_second_connection(conn, tmp_path):
+    """SURFACING, end-to-end. The other three tests all mock obs.record_event, so none of them
+    proves the row survives using the CORRECT connection -- a wrong/stale conn object would pass
+    those tests undetected. This test uses no mock: it runs the real migration against a real
+    broken project, then reads the events table back on a SEPARATE connection to the same file."""
+    import sqlite3
+
+    db_path = tmp_path / "test.db"
+    pid_bad = _legacy_project(conn, tmp_path, "legacy-bad3", "approved")
+    (tmp_path / "runs" / "legacy-bad3" / "03-visual" / "artifact.v1.md").write_text(
+        "---\nschema_version: 1\nstatus: 'unterminated\n---\n\nWORLD LOCK\n  x: y\n",
+        encoding="utf-8",
+    )
+    backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
+
+    second_conn = sqlite3.connect(db_path)
+    second_conn.row_factory = sqlite3.Row
+    try:
+        rows = second_conn.execute(
+            "SELECT kind, severity, message, detail FROM events WHERE kind = ?",
+            ("migration.backfill_skipped",),
+        ).fetchall()
+    finally:
+        second_conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "legacy-bad3" in rows[0]["message"]
+```
+
+- [ ] **Run.** All four fail — there is no `obs.record_event` call.
+- [ ] **Implement.** §0 amendment: `migrations.py` does not import `obs` yet — add
+  `from pipeline_app import obs` to its imports (alongside the existing
+  `from pipeline_app import artifacts, db as db_mod`). Then, in `backfill_styleboard_rows`'s
+  except clause, keep the `print` (the orchestration plan's adoption rule):
 
 ```python
         except _PER_PROJECT_RECOVERABLE as exc:
@@ -1471,7 +1644,9 @@ def test_verify_pointer_names_each_broken_state_distinctly(tmp_path, state, setu
 ```
 
 - [ ] **Run.** All fail — no `verify_pointer`, no hash in the pointer.
-- [ ] **Implement** in `grounding_service.py`:
+- [ ] **Implement** in `grounding_service.py`. §0 amendment: this file does not import `obs` yet —
+  add `from pipeline_app import obs` (alongside the existing `hashlib`/`Path`/`yaml` imports).
+  `verify_pointer`'s `obs.log(...)` call needs it:
 
 ```python
 import datetime
@@ -2067,6 +2242,276 @@ else:
 `read_gate_overrides(latest)` is the accessor. `stage_page` must put it in the template context and `stage.html` must render each `{reason, at, actor}` next to the failing gate it excuses. Without that leg the override remains write-only in the UI, and A-37 is only half closed — this package closes the data half and provides the accessor; it cannot edit `stage.html`.
 
 ---
+
+## 7a. Post-PR-#27 adversarial review findings (2026-08-12) — filed, NOT fixed
+
+After PR #27 (this package's implementation) was opened, 18 independent Opus subagents each
+adversarially reviewed one task's shipped diff against its brief, hunting for plan deviations,
+hardcoded values, silent failures, and anything else suspicious. Several findings were spot-verified
+directly (empirical reproduction, live test runs, not just reasoning) before filing. **Per explicit
+instruction, none of these are fixed in this package — they are documented here for a future
+remediation task/package to pick up.** IDs below are new (`P2R-nn`), not part of the original 328
+`A`/`B`/`C`/`D`/`F`-prefixed audit findings, since they were discovered by a later review pass, not
+the original audit.
+
+### P2R-01 (Important) — A-65 is only partially closed: neither production caller uses `reserve_version`, and `ArtifactExistsError` has nowhere to land
+
+§6.2 above already flagged that leaving `routes/stages.py`/`turn_service.py` on `next_version_number`
+"turns the A-65 race from a silent lost write into a 500 -- better, but not closed" and deferred the
+migration to P3/P4. The review adds detail the plan didn't have: **verified** both call sites are
+still unmigrated (`routes/stages.py:253,280`; `turn_service.py:233,254`), `write_artifact`'s own
+anti-clobber check (`artifacts.py:214`, `if path.exists()`) is itself a check-then-act race — nothing
+stops two concurrent requests from both passing the check before either writes — and **when
+`ArtifactExistsError` does fire, nothing catches it in either caller.** In the sync edit route
+(`routes/stages.py`) it's a bare 500 after `raw_output.md` has already been overwritten with the
+submitted body, orphaned with no artifact version backing it. In the async turn route
+(`turn_service.py:254`) it is worse: the raise happens *after* `record_turn(..., "complete",
+cost_usd)` (turn billed, marked complete) and *before* `update_stage_status`/`propagate_staleness` —
+the SSE stream just silently closes with no error frame, the DB is left half-updated, and there is no
+operator-visible signal at all. P3/P4 should not treat "wire up `reserve_version`" as sufficient;
+both callers also need a landing place for the exception.
+
+### P2R-02 (Important) — the version regex is still not injective: Unicode decimal digits collide with ASCII ones
+
+`artifacts.py`'s `_VERSION_RE = re.compile(r"^artifact\.v(0|[1-9]\d*)\.md$")` (T7, A-67) claims
+"exactly one filename maps to any given version." **Verified empirically on this host:**
+`artifact.v1٧.md` (containing U+0667 ARABIC-INDIC DIGIT SEVEN, which `\d` matches in a `str` pattern
+and `int()` parses) matches the regex and parses to **17**, colliding with `artifact.v17.md`. Neither
+`_versions_in` nor `obs.log`/`list_unversioned_siblings` flags the shadow file. Fix should anchor the
+digit class to ASCII (`[0-9]` instead of `\d`) and anchor with `\Z` instead of `$` (a trailing
+newline in a caller-supplied filename currently still matches).
+
+### P2R-03 (Important) — `list_unversioned_siblings` (A-67) has zero production callers; its own docstring's claim is fiction
+
+`list_unversioned_siblings`'s docstring says it's "exposed so /doctor (P1) can show an operator" an
+unrecognized file. **Verified:** grep across the repo shows the only caller is its own test; `/doctor`
+never imports it. `obs.log(...)` (the warning path) writes to stderr and a log file only —
+`/doctor`'s events surface renders `events` table rows written by `obs.record_event`, which this path
+never calls. Neither channel currently reaches an operator. Not scheduled in any later plan task
+(grepped `docs/superpowers/plans/remediation/` and the SDD workspace). Needs a wiring task, or the
+docstring should stop claiming behavior that doesn't exist.
+
+### P2R-04 (Important) — `TestDurabilityContract`'s zero-length test (F-18, T18) is non-discriminating for ALL FOUR writers, not just `write_artifact`
+
+The already-known, already-accepted gap ("2 of `write_artifact`'s 3 durability cases don't
+discriminate for that writer") turns out to be a symptom of a broader test-design flaw, not a
+`write_artifact`-specific one. **Verified by mutation:** reverting `_atomic_write_text` in both
+`artifacts.py` and `grounding_service.py` to a naive truncating `write_text` makes 12 of the class's
+16 parametrized cases correctly fail — but `test_the_target_is_never_observed_zero_length[*]` passes
+for **all four writers**, every time. Root cause: the observer records
+`Path(dst).stat().st_size` *before* `os.replace` fires, i.e. the size of whatever the test fixture
+already put at that path — for a brand-new target this is `-1` (file doesn't exist yet, so `all(s !=
+0 ...)` is vacuously true), for an existing target it's the fixture's own pre-written size, never the
+value the primitive is supposed to guard against. The task's own §"Run" verification checklist item —
+confirm each writer's parametrization fails independently when its atomic write is removed — appears
+to not have actually been carried out against this specific method, since it clearly does not fail
+for any of the four. Needs the test rewritten to observe the destination's size *after* a genuine
+partial-write injection, not before a successful `os.replace`.
+
+### P2R-05 (Minor) — the migration-side "durability contract" test (T18, F-18) doesn't inject a crash at all
+
+`test_durability_contract_backfill_refuses_a_populated_stage_dir` has no `monkeypatch`, so it tests
+no atomicity property — it's a near-duplicate of two pre-existing T11 tests
+(`test_backfill_refuses_to_overwrite_a_real_styleboard_artifact`,
+`test_refusing_to_overwrite_records_an_error_event`), asserting *strictly less* than either (no
+`pid not in touched` check, no error-event check). Net new coverage is close to zero. Either give it
+a real crash injection inside `_write_synthetic_artifact`, or drop it as redundant.
+
+### P2R-06 (Important) — the migration's idempotent adoption (A-73, T11/T12) always adopts, never re-checks whether its prior output is still the best available reconstruction
+
+`_adoptable_synthetic` returns the migration's own prior synthetic unconditionally once it recognizes
+it (`backfilled=True` + matching `run_id`) — the freshly-recomputed `body`/`depends_on` arguments are
+discarded silently, no log, no event. Concrete scenario matching the S0's own crash-recovery premise:
+boot 1 finds no liftable `WORLD LOCK`, writes the "not recoverable" placeholder, crashes before the DB
+row lands; the operator later re-runs the visual stage so a real `WORLD LOCK` now exists; boot 2
+recomputes the real content — and adoption throws it away, permanently pinning the project to the
+stale placeholder with no signal anywhere. This also silently defeats T13's `depends_on` computation
+for exactly the population it exists to fix (any project already carrying a pre-T13 synthetic).
+Adoption should compare the recomputed body/depends_on against the existing artifact and only adopt
+when they genuinely match; otherwise reserve a new version.
+
+### P2R-07 (Important) — the per-project skip event (A-74, T14) re-fires unbounded on every app boot, capable of flooding /doctor
+
+A permanently-broken legacy project (or a permanently-refused overwrite, T11's S0 case) is retried —
+by design — on every `create_app`, and now writes a fresh `severity="error"` events row each time,
+with no dedup and no "already reported" check. One broken project across enough restarts (routine for
+a locally-run app) can fill `/doctor`'s entire 50-row unacknowledged-events window with identical
+rows, evicting every other genuinely different unacknowledged error. Needs a dedup key (e.g. suppress
+if an unacknowledged row with the same `kind` + `detail.project_id` already exists).
+
+### P2R-08 (Important) — `reserve_version`/`write_artifact` can leak a reservation marker or fail an already-durable write if the HWM sidecar write fails
+
+`reserve_version` (`artifacts.py`) calls `_record_high_water_mark` *outside* any try/except, after
+the `O_CREAT|O_EXCL` marker already exists on disk; if that call raises (retry exhaustion under
+sustained Windows contention, or `ENOSPC`), the marker is never unlinked — a permanent leak that
+permanently burns that version number with no operator recourse (no reaper exists anywhere in the
+repo). `write_artifact` has the same shape in the other direction: the artifact write succeeds
+durably, then `_record_high_water_mark` may raise — the caller sees an exception for a write that
+already fully landed, and cannot retry (the next attempt hits `ArtifactExistsError`). The HWM sidecar
+was designed as best-effort bookkeeping; it should not be able to fail an already-completed operation
+or leak a reservation.
+
+### P2R-09 (Minor) — `_high_water_mark`'s read-retry contradicts its own sibling fallback design
+
+The corrupt-HWM branch (unreadable/non-digit sidecar content) is explicitly "warned and ignored, not
+fatal." But if the sidecar is deleted between the `.exists()` check and the read (a real Windows
+concurrent-rename window this same function already retries for), the retry loop re-raises
+`FileNotFoundError` after 50 attempts instead of falling back the same way. Also: the retry counts
+(`range(50)`, `attempt == 49`) are duplicated magic numbers in two separate loops with no shared
+constant — changing one without the other could silently convert "always re-raise on exhaustion" into
+"silently exit without writing and without raising."
+
+### P2R-10 (Minor) — `write_reserved_artifact` never validates the written version matches the reservation
+
+`write_reserved_artifact` (T5) writes whatever `meta["version"]` the caller supplies without checking
+it equals `reservation.version`. `read_artifact` (T6) enforces exactly this invariant on read
+(frontmatter-vs-filename cross-check) — so a caller bug here would put the app into a state its own
+read path is designed to reject. No live caller trips this today (`migrations.py` always passes
+`reservation.version`), but the write path lacks the same-package guarantee its read path enforces.
+
+### P2R-11 (Important) — gate-override append (A-38, T10) has a real concurrent-write data-loss window
+
+`_append_override`'s read-modify-write (`read_artifact` → mutate list → `_atomic_write_text`) has no
+lock. Two concurrent approvals of the same artifact (no lock anywhere on the approval path either,
+and the DB transaction opens *after* the artifact write) both read the same override history, each
+appends, and the second `os.replace` wins — the first override is silently gone. This is the same
+last-write-wins class A-38 was filed to close, narrowed from "always" to "a race window," not
+eliminated. Separately: `meta.pop("gate_override_reason", None)` unconditionally deletes the legacy
+scalar field, but re-migration into the new list is gated on `isinstance(legacy, str) and
+legacy.strip()` — a whitespace-only or non-string legacy value is silently dropped with no log,
+contradicting the "migrate, never drop" intent the brief itself states.
+
+### P2R-12 (Minor) — the `actor` field on gate overrides carries no real information yet
+
+No production caller (`approval_service.py`) supplies `actor` — every override the app records today
+is attributed to the literal constant `"operator"`. The A-38 "no actor anywhere" gap is closed
+structurally but not informationally until a caller is wired up. The test asserting on it
+(`assert entry["actor"]`) only proves the constant is truthy, not that a real value reaches disk.
+
+### P2R-13 (Important) — `classify_brief_change` (A-81, T16) has new failure shapes distinct from the ones it fixed
+
+Three related issues, all in `grounding_service.py`:
+1. The "exactly one added" branch wins unconditionally over a same-day modification. If a grounding
+   turn writes its brief *and* incidentally creates any other new `.md` file, the wrong file is
+   silently picked as `brief`, and the `reason` string reads as ordinary success — worse than the
+   old bug in one respect, since it no longer even returns `None`.
+2. Deletions are never computed. A turn that removes every brief reports `"no brief was written"` —
+   literally true, actively misleading.
+3. `snapshot_rgs_briefs`'s switch to `rglob` (needed to see subdirectory briefs) has no dot-directory
+   filter, verified to recurse into hidden/archive subdirectories. Concrete: merely touching an
+   archived brief (`rgs-briefs/.superseded/old.md`) with no new brief written reads as
+   `"one brief modified in place"`, and `read_pointer`'s containment check (A-82, T17) accepts the
+   path (`.superseded` is a normal path component, not `..`) — so a stage can be pinned to a
+   superseded brief. And archiving a brief *during* a turn (old path removed, new path added under a
+   different top-level directory) now reads as two adds instead of one delete + one add, recreating
+   the exact A-81 ambiguity for the archive workflow specifically.
+
+### P2R-14 (Important) — a call site inside this package's own test suite still uses the deleted `identify_new_brief`, contradicting §7's own verification claim
+
+§7 below states the `identify_new_brief` grep "returns nothing outside P3's un-migrated call site" —
+**verified false**: `tests/integration/test_stubbed_cli_e2e.py:127` also calls it and fails with
+`AttributeError` when run. (It was already red from T15's `write_pointer` signature change, so T16
+didn't newly break the app suite — but the specific verification claim in §7 is inaccurate and should
+be corrected: there are two known call sites, not one, and one is inside this package's own test tree
+via the integration test.)
+
+### P2R-15 (Important) — the grounding pointer's containment check (A-82, T17) doesn't survive symlink/junction resolution, and `UnicodeDecodeError` escapes it
+
+Two related gaps in `grounding_service.py`/`artifacts.py`:
+1. **Verified with a live exploit on this host:** `read_pointer` validates the pointer *string* only.
+   `resolve_latest_artifact` (`artifacts.py`) then does `repo_root / pointer` and `.exists()` with no
+   `resolve()`/`is_relative_to()` re-check. A directory junction placed inside `rgs-briefs/`
+   (`mklink /J`, no admin rights needed) pointing outside the repo, referenced by a pointer value like
+   `rgs-briefs/esc/secret.md`, is accepted by containment and the target file's contents are returned
+   and rendered by `routes/stages.py`. `browse_service.py` already does the resolve-based version of
+   this check (`.resolve()` + `is_relative_to()`) for its own file-browsing path; the artifact-pointer
+   path does not. Given the brief's own threat model is "a hand-repaired pointer is a realistic
+   operator action," this is squarely inside scope, not a theoretical extension of it.
+2. `read_pointer`'s except clause catches only `yaml.YAMLError`; `UnicodeDecodeError` from
+   `pointer_path.read_text(encoding="utf-8")` escapes uncaught — a torn/truncated `pointer.yaml`
+   (exactly the A-63 crash scenario motivating this whole package) can still produce a bare,
+   unhandled exception instead of the intended `InvalidPointerError`.
+
+### P2R-16 (Minor) — `verify_pointer`/`write_pointer` (A-80, T15) each do a redundant double-read with a benign TOCTOU
+
+`verify_pointer` reads and parses `pointer.yaml` twice (once via `read_pointer`, once inline for the
+hash) — a pointer rewritten between the two reads produces a spurious mismatch against the wrong
+target. `write_pointer` reads the target brief twice (once to hash, once to `.stat()` for size) — a
+brief rewritten between those two reads records an internally-inconsistent `sha256`/`size` pair, and
+nothing downstream ever checks `size` against anything, so the inconsistency is currently undetectable
+either way.
+
+### P2R-17 (Important) — `parse_frontmatter`'s new raise (A-68/A-69, T8/T9) breaks graceful degradation in three files outside this package's tracked cross-package-breakage list
+
+**Verified as currently-failing tests, not speculation:** `discovery_digest.py:232` and
+`browse_service.py:270` both catch only `yaml.YAMLError` around `parse_frontmatter`; `MalformedArtifactError`
+now escapes uncaught. `routes/inspector.py:41` calls `parse_frontmatter` with **no exception handling
+at all**, contradicting that file's own header comment ("every expected failure mode … surfaced as an
+explicit UI error state … per the design spec's 'no generic 500s'"). Concrete regression, and a
+severity *upgrade* from what existed before P2: pre-T8, one malformed discovery item was silently
+skipped (`meta == {}` → `fetched_at` absent → filtered); post-T8, `discovery_digest.collect_new_items`
+raises and **aborts the entire daily digest email run** over one bad file — replacing "skip one item"
+with "lose the whole morning email," which is precisely the class of regression this whole audit
+programme exists to eliminate. These three files (plus `test_discovery_digest.py`,
+`test_browse_service.py`, `test_routes_browse.py`'s malformed-yaml tests) are **not** named anywhere
+in this package's tracked cross-package-breakage list (the tracked list only covers the
+`write_pointer`/`record_gate_override`/`identify_new_brief` signature changes) — they are a
+*separate*, currently-untracked breaking change from the `parse_frontmatter` behavior change itself,
+and should be added to whichever package's queue picks up P2's cross-package fallout.
+
+### P2R-18 (Minor) — a UTF-8 BOM defeats the A-68 truncation check it was designed to close
+
+`parse_frontmatter`'s opening check (`lines[0].strip() != _DELIM`) does not strip a UTF-8 BOM
+(`﻿`, category Cf, not whitespace), and every artifact reader in this package uses
+`encoding="utf-8"`, not `utf-8-sig`. **Verified:** `parse_frontmatter('﻿---\nx: 1\n')` returns
+`({}, text)` with no raise — a BOM'd, truncated artifact (realistic on this Windows-only app: Notepad,
+or PowerShell 5.1's `Out-File -Encoding utf8`, both emit a BOM) still masquerades as a legitimate
+plain-markdown file, reopening the exact hole A-68 was filed to close for any hand-rescued file
+written with a BOM-emitting tool.
+
+### P2R-19 (Minor) — `browse_service.py`'s independent artifact-version regex (already-filed open finding) is worse than previously described
+
+Extending the open finding already filed after T7's review: the divergent regex
+(`browse_service.py:198`) is not just looser (accepts zero-padding) but also `re.IGNORECASE`,
+widening the gap further, and it has a **visible UI consequence**, not just a classification
+mismatch: with both `artifact.v7.md` and `artifact.v07.md` present, `browse_service.py`'s sort key
+treats both as version 7 and tie-breaks alphabetically, so the OS-copy file can render *above* the
+real artifact in the browse UI as an equally legitimate version.
+
+### P2R-20 (Minor, batch) — tautological or non-discriminating test assertions found across multiple tasks
+
+None of these affect the underlying guarantee, which is separately covered by other tests in the same
+file — but each assertion, read on its own, proves less than its name claims:
+- `test_artifacts.py` (T3): `assert meta["status"] == "final"` on the crash-injection test for
+  `stamp_final` passes regardless of whether the crash actually destroyed the artifact, because the
+  test fixture already sets `status: "final"` before the crash. The genuinely discriminating
+  assertion is the preceding byte-equality check; this one adds nothing. (`assert "finalized_at" not
+  in meta` would actually prove the failed stamp didn't land.)
+- `test_artifacts.py` (T2): `test_write_artifact_uses_the_atomic_primitive` only proves
+  `_atomic_write_text` was *called*, not that it changed anything — a revert to a plain truncating
+  write would still pass it.
+- `test_artifacts.py` (T5): `assert not list(tmp_path.glob("artifact.v2.md"))` can never fail — the
+  reservation marker's actual name (`.artifact.v2.reserved`) can't match that glob by construction,
+  so the assertion is vacuous; the preceding `latest_artifact_path` assertion is the real one.
+- `test_migrations.py` (T11): `test_backfill_allocates_its_version_rather_than_hardcoding_one`
+  passes unchanged against the *pre-fix* hardcoded-`1` implementation, since an empty stage dir
+  allocates `1` either way — it needs a pre-seeded existing version to actually discriminate.
+- `test_migrations.py` (T12): the sha-stability assertion is real but not for the reason the test's
+  docstring claims — a non-adopting retry in the *current*, versioned implementation would still
+  leave `artifact.v1.md`'s sha unchanged (it publishes a new `v2` file instead); only the accompanying
+  glob-count assertion actually discriminates the property this task is about.
+
+### Cross-cutting notes
+
+- Several findings above (P2R-01, P2R-04, P2R-08, P2R-11) share the audit's own named root cause:
+  a partial fix that closes the common case while leaving a narrower, less-likely-but-real window of
+  the same failure class open. None of them are regressions *relative to pre-P2 behavior* — they are
+  all either explicitly-deferred-and-now-detailed (P2R-01) or genuinely new gaps introduced by making
+  a previously-inert code path live (P2R-04, P2R-08 through P2R-16 mostly fall in this bucket: the
+  mechanisms these findings critique did not exist, or were dead code, before this package).
+- P2R-17 and P2R-18 are the two findings closest to violating this package's own stated goal (closing
+  A-68) rather than merely leaving a narrow residual gap, and are worth prioritizing first in whatever
+  package picks this list up.
 
 ## 7. Verification
 
