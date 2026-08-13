@@ -780,6 +780,10 @@ STYLIZE_RE = re.compile(r"--(?:s|stylize)\s+(\d+)")
 REGISTER_BANDS = {"A": (80, 120, True), "B": (400, 700, False)}
 # A bare version number like "8.2" -- the only non-URL shape allowed to carry a period.
 URL_OR_VERSION_TOKEN_RE = re.compile(r"^\d+\.\d+$")
+# The format's aspect ratio, as a module constant so a future non-vertical format
+# overrides it in one place. C13 previously asserted only that --ar was *present*.
+REQUIRED_ASPECT_RATIO = "9:16"
+AR_FLAG_RE = re.compile(r"--ar\s+(\S+)")
 
 
 def check_format(shots: list[Shot]) -> list[Finding]:
@@ -808,8 +812,15 @@ def check_format(shots: list[Shot]) -> list[Finding]:
         if not flags:
             findings.append(Finding("C13", shot.index, "no parameter block"))
             continue
-        if "--ar" not in flags:
+        aspect = AR_FLAG_RE.search(flags)
+        if aspect is None:
             findings.append(Finding("C13", shot.index, "no --ar in the parameter block"))
+        elif aspect.group(1) != REQUIRED_ASPECT_RATIO:
+            findings.append(Finding(
+                "C13", shot.index,
+                f"--ar {aspect.group(1)} is not the required {REQUIRED_ASPECT_RATIO}; "
+                "a Short is vertical and every asset must be generated that way.",
+            ))
         for punctuation in (",", ";", "."):
             if punctuation not in flags:
                 continue

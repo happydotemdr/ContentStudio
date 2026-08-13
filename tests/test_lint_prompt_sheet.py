@@ -24,6 +24,7 @@ from lint_prompt_sheet import (  # noqa: E402
     check_prompt_clone,
     check_prompt_density,
     check_format,
+    REQUIRED_ASPECT_RATIO,
     check_vocabulary,
     check_style_reference,
     check_style_mechanism,
@@ -444,6 +445,20 @@ def test_c13_flags_missing_no_text():
 def test_c13_flags_missing_aspect_ratio():
     shot = make_shot(1, "A", prompt=DENSE_A + ", No Text. --raw --s 95")
     assert "C13" in codes(check_format([shot]))
+
+
+def test_c13_flags_a_landscape_aspect_ratio():
+    """F-13/C-81: the old test covered --ar absence only, never its value. A Short
+    is vertical; --ar 16:9 passed the whole gate."""
+    shot = make_shot(1, "A", prompt=DENSE_A + ", No Text. --ar 16:9 --raw --s 95")
+    findings = check_format([shot])
+    assert "C13" in codes(findings)
+    assert any("16:9" in f.message and REQUIRED_ASPECT_RATIO in f.message for f in findings)
+
+
+def test_c13_accepts_the_required_aspect_ratio():
+    shot = make_shot(1, "A", prompt=DENSE_A + ", No Text. --ar 9:16 --raw --s 95")
+    assert "C13" not in codes(check_format([shot]))
 
 
 def test_c13_flags_punctuation_in_flag_block():
