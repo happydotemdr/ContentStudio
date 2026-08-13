@@ -370,6 +370,47 @@ def signature_objects(world: dict[str, str]) -> list[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
+def check_shot_count(shots: list[Shot], declared: int | None = None) -> list[Finding]:
+    """C21: parsed shots reconcile against what the sheet says it contains.
+
+    This is the invariant that makes C-70 unrepeatable. Every other check iterates
+    `shots`, so a shot that never parsed is a shot no check can fail. Indices are
+    the sheet's own declaration of how many shots it has: if they do not form a
+    contiguous 1..N run, one was dropped, duplicated or misnumbered, and the gate
+    says so instead of reporting a clean pass over the survivors.
+    """
+    findings: list[Finding] = []
+    if not shots:
+        return findings
+
+    indices = [s.index for s in shots]
+    expected = list(range(1, len(shots) + 1))
+    if indices != expected:
+        missing = sorted(set(expected) - set(indices))
+        duplicated = sorted({i for i in indices if indices.count(i) > 1})
+        detail = []
+        if missing:
+            detail.append(f"missing {missing}")
+        if duplicated:
+            detail.append(f"duplicated {duplicated}")
+        findings.append(Finding(
+            "C21", None,
+            f"parsed {len(shots)} shot(s) with indices {indices}, which is not a "
+            f"contiguous 1..{len(shots)} run"
+            + (f" ({'; '.join(detail)})" if detail else "")
+            + ". A shot heading was dropped, duplicated or misnumbered -- every "
+            "check C1-C20 iterates the parsed shots, so a shot that did not parse "
+            "is a shot nothing linted.",
+        ))
+
+    if declared is not None and declared != len(shots):
+        findings.append(Finding(
+            "C21", None,
+            f"the sheet declares {declared} shot(s) but {len(shots)} parsed.",
+        ))
+    return findings
+
+
 def check_sequence(shots: list[Shot]) -> list[Finding]:
     """C1-C5: adjacency and whole-sheet spread."""
     findings: list[Finding] = []
@@ -1024,9 +1065,11 @@ def lint(
     *,
     cover: Shot | None = None,
     library: dict[str, str] | None = None,
+    declared_shot_count: int | None = None,
 ) -> list[Finding]:
     """Run every Gate C check, in check order."""
     findings = [
+        *check_shot_count(shots, declared_shot_count),
         *check_sequence(shots),
         *check_register_balance(shots),
         *check_world_lock(shots, world),

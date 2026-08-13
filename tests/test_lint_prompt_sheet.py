@@ -31,6 +31,7 @@ from lint_prompt_sheet import (  # noqa: E402
     check_slot_labels,
     parse_style_library,
     check_cover_present,
+    check_shot_count,
     lint_cover,
     lint,
     main,
@@ -1126,6 +1127,41 @@ def test_every_fixture_slot_value_exists_in_the_real_style_library(styleboard_na
     assert declared, "the fixture must still declare at least one slot"
     missing = {key: value for key, value in declared.items() if value not in library}
     assert missing == {}, f"{styleboard_name} binds labels absent from the Library: {missing}"
+
+
+def test_c21_flags_a_gap_in_the_shot_indices():
+    """A shot lost to a bad heading leaves indices 1,2,3,5,... The gate must say so
+    rather than report 'PASS - 10 shots'."""
+    shots = [make_shot(1), make_shot(2), make_shot(3), make_shot(5)]
+    findings = check_shot_count(shots)
+    assert [f.check for f in findings] == ["C21"]
+    assert "4" in findings[0].message
+
+
+def test_c21_flags_a_duplicated_shot_index():
+    assert "C21" in codes(check_shot_count([make_shot(1), make_shot(2), make_shot(2)]))
+
+
+def test_c21_flags_a_declared_count_that_disagrees_with_the_parse():
+    findings = check_shot_count([make_shot(1), make_shot(2)], declared=3)
+    assert "C21" in codes(findings)
+    assert "declares 3" in findings[0].message
+
+
+def test_c21_runs_inside_lint_so_both_gate_c_callers_get_it():
+    """gates.py calls lint() but not parse_sheet().findings. Putting the invariant
+    in lint() is what closes C-70 on the app path with no change to gates.py."""
+    shots = [make_shot(1, "A"), make_shot(2, "B", "WORLD", "XWIDE", "EYE"),
+             make_shot(4, "A", "ESTABLISHING", "WIDE", "HIGH")]
+    assert "C21" in codes(lint(shots, {}))
+
+
+def test_c21_is_silent_on_every_green_fixture():
+    """Distinguishability: the invariant must separate a dropped shot from a
+    legitimately short sheet, not fire on both."""
+    for name in ("passing_sheet.md", "failing_sheet.md", "worked_example_sheet.md"):
+        shots, _ = parse_sheet((FIXTURES / name).read_text(encoding="utf-8"))
+        assert check_shot_count(shots) == [], name
 
 
 def _typoed_styleboard(tmp_path):
