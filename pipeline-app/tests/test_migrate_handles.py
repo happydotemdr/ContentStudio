@@ -162,3 +162,21 @@ def test_every_platform_key_is_seeded_not_just_youtube_and_bluesky(conn, tmp_pat
     for platform in mig.PLATFORMS:
         assert db.get_handle_by_platform_and_handle(
             conn, platform, f"@on-{platform}") is not None
+
+
+def test_shipped_manifest_declares_every_platform_and_resolves_every_creator():
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    SHIPPED_MANIFEST = REPO_ROOT / "manifests" / "brand_sources.json"
+
+    data = json.loads(SHIPPED_MANIFEST.read_text(encoding="utf-8"))
+    mig.validate_keys(data)                       # raises if a key is unknown or missing
+    creators = data["creators"]
+    assert len(creators) == 15
+    for platform in mig.PLATFORMS:
+        for entry in data[platform]:
+            assert entry["creator"] in creators, f"{platform}/{entry['handle']}"
+            assert entry["cohort"] in {
+                "guru", "shorts-specialist", "midjourney-source", "general-interest"}
+            assert isinstance(entry["included"], bool)
+    assert len(data["youtube"]) == 15
+    assert len(data["bluesky"]) == 1
