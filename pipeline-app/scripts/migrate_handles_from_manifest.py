@@ -1,8 +1,11 @@
-"""One-off: seed pipeline-app's `handles` table from the repo-root
-manifests/brand_sources.json. Read-only against the JSON file and against
-output/brand-intel/ -- writes only new `handles` rows. Safe to re-run: uses
-INSERT OR IGNORE (see db.upsert_handle_from_migration), so a manual edit made
-in the UI after the first run is never overwritten.
+"""roster sync: seed and update pipeline-app's `handles` table from the
+repo-root manifests/brand_sources.json. Read-only against the JSON file and
+against output/brand-intel/. Safe to re-run: the manifest is authoritative for
+manifest-owned columns (display_name, cohort, keyword_filter, included,
+creator_id), which move to match the manifest on every sync; the DB is
+authoritative for run-owned columns (status, validated_at,
+last_seen_published_at), which only a real discovery run writes and this
+script never touches.
 
 Usage: python scripts/migrate_handles_from_manifest.py
 """
@@ -96,6 +99,38 @@ def upsert_creators(conn: sqlite3.Connection, creators: dict) -> dict[str, int]:
     return {}
 
 
+_MANIFEST_OWNED = ("display_name", "cohort", "keyword_filter", "included", "creator_id")
+
+
+def upsert_handle(conn: sqlite3.Connection, platform: str, handle: str, *, display_name,
+                   cohort: str, keyword_filter, included: bool, creator_id, added_at: str) -> str:
+    """Insert or update ONE handle. Returns 'inserted' | 'updated' | 'unchanged'.
+
+    Only manifest-owned columns are written. status / validated_at /
+    last_seen_published_at are owned by the discovery run and are never touched
+    here -- a re-seed must not un-learn what a real fetch discovered (B-75/B-76).
+    """
+    before = db.get_handle_by_platform_and_handle(conn, platform, handle)
+    conn.execute(
+        "INSERT INTO handles (platform, handle, display_name, cohort, keyword_filter, "
+        "                     included, status, added_at, creator_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?) "
+        "ON CONFLICT(platform, handle) DO UPDATE SET "
+        "  display_name = excluded.display_name, "
+        "  cohort       = excluded.cohort, "
+        "  keyword_filter = excluded.keyword_filter, "
+        "  included     = excluded.included, "
+        "  creator_id   = excluded.creator_id",
+        (platform, handle, display_name, cohort, keyword_filter,
+         1 if included else 0, added_at, creator_id),
+    )
+    conn.commit()
+    after = db.get_handle_by_platform_and_handle(conn, platform, handle)
+    if before is None:
+        return "inserted"
+    return "unchanged" if all(before[c] == after[c] for c in _MANIFEST_OWNED) else "updated"
+
+
 def find_drift(conn: sqlite3.Connection, data: dict) -> list[tuple[str, str]]:
     """Stub -- T9 replaces this body with the real drift detection. Returns
     no drift, which is safe because T3's own test never reads `result.drift`."""
@@ -137,11 +172,16 @@ def _seed_entry(conn: sqlite3.Connection, platform: str, entry: dict, creators: 
         result.skipped += 1
         result.errors.append(message)
         return
-    db.upsert_handle_from_migration(
-        conn, platform, handle, display_name, cohort, keyword_filter,
-        status="pending", included=included, added_at=now,
+    creator_id = creator_ids.get(entry.get("creator"))
+    outcome = upsert_handle(
+        conn, platform, handle, display_name=display_name, cohort=cohort,
+        keyword_filter=keyword_filter, included=included, creator_id=creator_id,
+        added_at=now,
     )
-    result.seeded += 1
+    if outcome == "inserted":
+        result.seeded += 1
+    elif outcome == "updated":
+        result.updated += 1
 
 
 def migrate(conn: sqlite3.Connection, manifest_path: Path, now: str) -> MigrateResult:
@@ -185,7 +225,11 @@ def main(argv: list[str] | None = None) -> int:
         conn.close()
         return 2
     conn.close()
-    print(f"migrated {result.seeded} handles from {manifest_path} into {db_path}")
+    print(f"roster sync: {manifest_path}  ->  {db_path}")
+    print(f"  inserted : {result.seeded}")
+    print(f"  updated  : {result.updated}")
+    print(f"  skipped  : {result.skipped}")
+    print(f"  drift    : {len(result.drift)}")
     if result.seeded > 0:
         print(f"  {result.seeded} handle(s) pending validation -- run a discovery validate pass to confirm each is live")
     return 0

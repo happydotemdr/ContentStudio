@@ -259,3 +259,62 @@ def test_main_reports_seeded_handles_need_validation(conn, tmp_path, capsys):
     rc = mig.main(["--manifest", str(SHIPPED_MANIFEST), "--db-path", str(tmp_path / "p.db")])
     assert rc == 0
     assert "pending validation" in capsys.readouterr().out
+
+
+def test_rerun_applies_a_changed_display_name_and_keyword_filter(conn, tmp_path):
+    """FAULT: INSERT OR IGNORE (db.py:186-189) meant the manifest stopped being
+    the source of truth after the first run (B-76)."""
+    base = {"creators": {"c": {"display_name": "C"}},
+            **{p: [] for p in mig.PLATFORMS}, "rss": []}
+    base["youtube"] = [{"handle": "@c", "creator": "c", "display_name": "Old",
+                        "cohort": "guru", "included": True, "keyword_filter": None}]
+    path = _write(tmp_path, base)
+    mig.migrate(conn, path, now="2026-08-08T00:00:00+00:00")
+
+    base["youtube"][0].update(display_name="New", keyword_filter="only this",
+                              cohort="shorts-specialist", included=False)
+    path.write_text(json.dumps(base), encoding="utf-8")
+    result = mig.migrate(conn, path, now="2026-08-08T01:00:00+00:00")
+
+    row = db.get_handle_by_platform_and_handle(conn, "youtube", "@c")
+    assert row["display_name"] == "New"
+    assert row["keyword_filter"] == "only this"
+    assert row["cohort"] == "shorts-specialist"
+    assert row["included"] == 0
+    assert result.updated == 1 and result.seeded == 0
+
+
+def test_rerun_preserves_run_owned_status_and_last_seen(conn, tmp_path):
+    """DISTINGUISHABILITY: manifest-owned columns move, run-owned columns do
+    not. A re-seed must not erase what a real fetch learned."""
+    base = {"creators": {"c": {"display_name": "C"}},
+            **{p: [] for p in mig.PLATFORMS}, "rss": []}
+    base["youtube"] = [{"handle": "@c", "creator": "c", "display_name": "C",
+                        "cohort": "guru", "included": True}]
+    path = _write(tmp_path, base)
+    mig.migrate(conn, path, now="2026-08-08T00:00:00+00:00")
+    row_id = db.get_handle_by_platform_and_handle(conn, "youtube", "@c")["id"]
+    db.set_handle_status(conn, row_id, "invalid", validated_at="2026-08-08T00:30:00+00:00")
+    db.set_handle_last_seen(conn, row_id, "2026-08-07T00:00:00+00:00")
+
+    base["youtube"][0]["display_name"] = "C2"
+    path.write_text(json.dumps(base), encoding="utf-8")
+    mig.migrate(conn, path, now="2026-08-08T01:00:00+00:00")
+
+    row = db.get_handle(conn, row_id)
+    assert row["display_name"] == "C2"                       # manifest-owned: moved
+    assert row["status"] == "invalid"                        # run-owned: untouched
+    assert row["validated_at"] == "2026-08-08T00:30:00+00:00"
+    assert row["last_seen_published_at"] == "2026-08-07T00:00:00+00:00"
+
+
+def test_main_prints_updated_separately_from_seeded(conn, tmp_path, capsys):
+    """SURFACING: `migrated N handles` counted rows it did not write. The
+    summary must distinguish inserted from updated from unchanged."""
+    db_path = tmp_path / "p.db"
+    mig.main(["--manifest", str(SHIPPED_MANIFEST), "--db-path", str(db_path)])
+    capsys.readouterr()
+    mig.main(["--manifest", str(SHIPPED_MANIFEST), "--db-path", str(db_path)])
+    out = capsys.readouterr().out
+    assert "inserted : 0" in out
+    assert "updated  : 0" in out
