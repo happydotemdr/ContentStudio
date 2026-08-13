@@ -466,7 +466,8 @@ def _read_fenced_prompt(lines: list[str], start: int) -> tuple[list[str], int]:
     i = start
     while i < len(lines) and not OPEN_FENCE_RE.match(lines[i]):
         if (SHOT_HEADING_RE.match(lines[i]) or COVER_HEADING_RE.match(lines[i])
-                or LOOSE_COVER_HEADING_RE.match(lines[i])):
+                or LOOSE_COVER_HEADING_RE.match(lines[i])
+                or LOOSE_SHOT_HEADING_RE.match(lines[i])):
             return [], i
         i += 1
     if i >= len(lines):

@@ -1371,6 +1371,29 @@ def test_a_mistyped_shot_fence_cannot_swallow_the_cover_prompt():
     assert cover is not None and cover.prompt.startswith("cover body")
 
 
+def test_a_mistyped_shot_fence_cannot_swallow_a_malformed_next_heading():
+    """_read_fenced_prompt's fence-search broke on SHOT_HEADING_RE, COVER_HEADING_RE
+    and LOOSE_COVER_HEADING_RE, but not LOOSE_SHOT_HEADING_RE. A shot whose own
+    fence-open marker is broken (```txt instead of ```text) scanned right past the
+    next shot's malformed heading while hunting for a fence, silently swallowing it
+    -- the shot vanished from the parse with zero PARSE findings, exactly the C-70
+    defect this package exists to close, surviving in this one corner."""
+    text = WORKED.read_text(encoding="utf-8")
+    text = text.replace(
+        "### Shot 1 — Hook (0–3s) · Register A · DETAIL · MACRO · LOW\n"
+        "Changes vs. previous: opening frame.\n\n```text",
+        "### Shot 1 — Hook (0–3s) · Register A · DETAIL · MACRO · LOW\n"
+        "Changes vs. previous: opening frame.\n\n```txt",
+        1,
+    )
+    text = text.replace("### Shot 2 — Setup (3–6s)", "### Shot 2 - Setup (3–6s)", 1)
+
+    parse = parse_sheet(text)
+    assert any(
+        f.check == "PARSE" and "Shot 2 - Setup" in f.message for f in parse.findings
+    ), [f.message for f in parse.findings]
+
+
 # --- C20: the slot label must exist in the Style Library ----------------------
 #
 # C18 checks that a slot_* value *looks* like a Library label. It cannot check
