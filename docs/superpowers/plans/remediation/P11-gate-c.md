@@ -1866,6 +1866,57 @@ safe direction, and it fails loudly rather than silently.
 
 ---
 
+## 7a. Findings filed during T6's empirical run (2026-08-13) — NOT fixed, routed for review
+
+T6 was dispatched and run empirically per its own instructions ("run it and record which cases
+are red"). 17 of the 26 mutation assertions are red. 15 of those are the expected, predicted kind
+— they track a specific later task (T7's `main()` wiring, T13's `--ar` value check, T14/T15's
+`{style:...}` slot requirement, T18's widened C9/C10 vocabulary, T19's PLATE cap) and are expected
+to flip green as this package's own remaining tasks land; no action needed, not filed here.
+
+Two findings do NOT fit that pattern and are filed here, unresolved, for review before the
+package is called done (package verification §7 item 1 requires all 26 to pass):
+
+- **T6R-01 (Important).** Two mutation anchors do not exist in the current
+  `tests/fixtures/worked_example_sheet.md` and fail at the test's own
+  `assert find in original` guard, before Gate C is ever invoked — these are not "not fixed yet"
+  reds, they structurally cannot pass no matter what later tasks land, because the text they are
+  supposed to mutate is not present to begin with:
+  - `heading-underscore-scale`'s anchor `"· WORLD · MID-WIDE ·"` — the fixture has `WORLD`+`WIDE`
+    and `WORLD`+`XWIDE` shots, and a separate `ACTION-ADJACENT`+`MID-WIDE` shot, but no shot
+    pairs register `WORLD` with scale `MID-WIDE`.
+  - `world-blank-line`'s anchor `"  register_b_thinker:"` — this line exists only in
+    `tests/fixtures/worked_example_styleboard.md:9`. Per commit `ebb8f82` (predates this package),
+    `worked_example_sheet.md` no longer carries its own `WORLD LOCK` block at all — world lock now
+    lives solely in the styleboard fixture, which the sheet references via `--styleboard`.
+    `world-blank-line`'s underlying intent (a blank line mid-block must not truncate the
+    `_read_world_block` walk, T5) is still valid and testable, just not against the sheet file
+    the mutation currently targets.
+  - **Not fixed here.** Per T6's own brief, the implementer did not edit the fixture or invent a
+    substitute string. A retargeting decision is needed: most likely `world-blank-line` should
+    mutate `worked_example_styleboard.md` (passed via `--styleboard`) instead of `WORKED`, since
+    that is where the text it is testing actually lives now; `heading-underscore-scale` needs
+    either a real `WORLD`+`MID-WIDE` shot added to the fixture or a different existing
+    scale/register pairing substituted as the anchor. Whichever the fix, it is a one-line change
+    to `MUTATIONS`' `find`/`replace` values, not a design change — but it is exactly the kind of
+    call this program's process reserves for review before landing.
+- **T6R-02 (Minor-to-Important, unclear).** `fenced-heading` (`expected=""`, meaning "any finding,
+  never a pass") has no task anywhere in this plan chartered to close it — confirmed by grep: no
+  task's Implement section mentions rejecting or flagging an extra fenced example block inserted
+  mid-`PER-SHOT PROMPTS`. T4 (fence-awareness) correctly makes such a block NOT parse as a real
+  shot — which is working as intended — but nothing currently treats the mere *presence* of an
+  unexpected extra fenced block, sitting between the section header and the real shots, as
+  suspicious enough to flag. It is unclear whether this was an intentional design goal that got
+  dropped between validation and this plan's final task list, or whether `expected=""` was always
+  meant to be satisfied incidentally by some other task's side effect that doesn't actually apply
+  here. Routed for review rather than guessing at a new check to add.
+
+Both are carried forward to the final whole-branch review for this package, alongside any
+Minor findings deferred during the task loop. Neither blocks continuing to T7 and beyond — T7-T22
+do not depend on either resolution.
+
+---
+
 ## 7. Package verification
 
 The package is done when all of these hold:
