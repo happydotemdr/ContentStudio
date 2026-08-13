@@ -20,6 +20,21 @@ from pipeline_app import db  # noqa: E402
 from pipeline_app.discovery_paths import find_slug_collision, handle_slug  # noqa: E402
 
 
+# The trackable platforms, in registry order. Pinned to
+# run_discovery_cron.build_adapters() by
+# test_platforms_tuple_matches_the_adapter_registry, and to P1's
+# handles.platform CHECK constraint. `rss` is deliberately NOT here: it has a
+# manifest key and a download_brandintel.py branch but no adapter (B-79).
+PLATFORMS: tuple[str, ...] = (
+    "youtube", "bluesky", "instagram",
+    "linkedin-profile", "linkedin-company", "facebook", "x",
+)
+
+DOWNLOADER_ONLY_KEYS: frozenset[str] = frozenset({"rss"})
+NON_ROSTER_KEYS: frozenset[str] = frozenset({"_comment", "creators"})
+KNOWN_KEYS: frozenset[str] = frozenset(PLATFORMS) | DOWNLOADER_ONLY_KEYS | NON_ROSTER_KEYS
+
+
 def derive_cohort(note: str, handle: str) -> str:
     note_lower = (note or "").lower()
     if "shorts specialist" in note_lower:

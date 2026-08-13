@@ -119,3 +119,15 @@ def test_migrate_is_idempotent(conn, tmp_path):
     count = migrate(conn, manifest_path, now="2026-07-30T01:00:00Z")
     assert count == 1
     assert db.get_handle_by_platform_and_handle(conn, "youtube", "@a")["status"] == "invalid"
+
+
+from run_discovery_cron import build_adapters
+from scripts.migrate_handles_from_manifest import PLATFORMS
+
+
+def test_platforms_tuple_matches_the_adapter_registry():
+    """The manifest's platform keys ARE the trackable platforms. If an adapter
+    is added or renamed and this tuple is not updated, that platform has no
+    declarative roster and silently becomes untrackable (B-70)."""
+    assert sorted(PLATFORMS) == sorted(build_adapters())
+    assert len(PLATFORMS) == 7
