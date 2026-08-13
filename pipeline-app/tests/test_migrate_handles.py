@@ -434,3 +434,25 @@ def test_report_mode_writes_nothing_to_the_database(tmp_path):
     conn = db.get_connection(db_path)
     assert db.list_handles(conn) == []
     conn.close()
+
+
+def test_shipped_manifest_has_no_slug_collisions():
+    """handle_slug is lossy (periods stripped, lowercased). Two colliding
+    handles on one platform get billed twice into one directory."""
+    from pipeline_app.discovery_paths import handle_slug
+    data = json.loads(SHIPPED_MANIFEST.read_text(encoding="utf-8"))
+    for platform in mig.PLATFORMS:
+        slugs = [handle_slug(e["handle"]) for e in data[platform]]
+        assert len(slugs) == len(set(slugs)), f"slug collision on {platform}: {slugs}"
+
+
+def test_shipped_manifest_seeds_every_declared_handle(conn):
+    """Replaces test_migrate_seeds_all_16_handles_as_validated, whose name
+    promised a coverage guarantee over three synthetic entries (B-81)."""
+    data = json.loads(SHIPPED_MANIFEST.read_text(encoding="utf-8"))
+    expected = sum(len(data[p]) for p in mig.PLATFORMS)
+    result = mig.migrate(conn, SHIPPED_MANIFEST, now="2026-08-08T00:00:00+00:00")
+    assert expected == 16
+    assert result.seeded == expected
+    assert result.skipped == 0 and result.errors == []
+    assert len(db.list_handles(conn)) == expected
