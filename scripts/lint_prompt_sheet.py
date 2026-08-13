@@ -1447,6 +1447,20 @@ def main(argv: list[str] | None = None) -> int:
                 f"block -- Gate C cannot check {args.sheet.name} against an empty world."
             )
             return EXIT_MISSING_DEPENDENCY
+        if sheet_world:
+            # A legacy sheet that still carries its own WORLD LOCK block used to have
+            # it silently discarded in favor of the styleboard's, with zero indication
+            # anything was overridden -- including when the sheet's block had gone
+            # stale and now contradicts the styleboard.
+            parse.findings.append(Finding(
+                "PARSE", None,
+                f"the sheet at {args.sheet.name} carries its own WORLD LOCK block, but a "
+                f"styleboard was also supplied at {args.styleboard.name}; the sheet's "
+                "block is being discarded -- remove it from the sheet if the styleboard "
+                "is now authoritative, or drop --styleboard if the sheet's own block "
+                "should still apply.",
+                kind="parse",
+            ))
     else:
         world = sheet_world
 

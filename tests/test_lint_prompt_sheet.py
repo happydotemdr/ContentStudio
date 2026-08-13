@@ -1242,6 +1242,56 @@ def test_main_reports_a_missing_world_lock_when_no_styleboard_is_given(tmp_path,
     assert "declares no register_a_sport" in capsys.readouterr().out
 
 
+def test_a_sheets_own_stray_world_lock_is_flagged_not_silently_discarded(tmp_path, capsys):
+    """Fault: a legacy sheet that still carries its own WORLD LOCK block, run
+    with --styleboard also supplied, used to print PASS -- silently discarding
+    the sheet's now-contradictory block in favor of the styleboard's, with zero
+    indication anything was overridden."""
+    sheet_text = (
+        WORKED.read_text(encoding="utf-8")
+        .replace("PER-SHOT PROMPTS", "WORLD LOCK\n  register_a_sport: hockey\n\nPER-SHOT PROMPTS", 1)
+    )
+    sheet = tmp_path / "mutated.md"
+    sheet.write_text(sheet_text, encoding="utf-8")
+
+    code = main([str(sheet), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")])
+    out = capsys.readouterr().out
+
+    assert code != 0, out
+    assert "WORLD LOCK" in out and "mutated.md" in out and "worked_example_styleboard.md" in out
+
+
+def test_a_sheet_with_no_stray_world_lock_is_not_flagged(tmp_path, capsys):
+    """Distinguishability: the same sheet/styleboard pair, minus the stray block,
+    must not produce the new finding -- the normal, correct case must stay clean."""
+    sheet = tmp_path / "clean.md"
+    sheet.write_text(WORKED.read_text(encoding="utf-8"), encoding="utf-8")
+
+    code = main([str(sheet), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")])
+    out = capsys.readouterr().out
+
+    assert code == 0, out
+    assert "carries its own WORLD LOCK" not in out
+
+
+def test_the_stray_world_lock_finding_surfaces_on_the_cli(tmp_path, capsys):
+    """Surfacing: a non-zero exit code plus the finding text actually reaching
+    stdout, not just a print() that nothing downstream reads."""
+    sheet_text = (
+        WORKED.read_text(encoding="utf-8")
+        .replace("PER-SHOT PROMPTS", "WORLD LOCK\n  register_a_sport: hockey\n\nPER-SHOT PROMPTS", 1)
+    )
+    sheet = tmp_path / "mutated.md"
+    sheet.write_text(sheet_text, encoding="utf-8")
+
+    code = main([str(sheet), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")])
+    out = capsys.readouterr().out
+
+    assert code != 0
+    assert "[PARSE] sheet:" in out
+    assert "discarded" in out
+
+
 def test_the_cli_fails_closed_on_an_empty_styleboard_naming_the_styleboard(tmp_path, capsys):
     """gates.py:87-96 raises here, with a comment saying linting against an empty
     world 'would emit a wall of C8/C18 findings naming the wrong problem'. main()
