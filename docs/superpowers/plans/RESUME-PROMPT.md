@@ -61,11 +61,14 @@ Two commits must never be altered: `1d39c9d` (the audit) and `6c61f14` (the reme
   the operator's explicit sign-off: the stray edits were discarded, the local-only commit was
   dropped (its content was fully superseded by P10's reviewed, merged version), and the checkout
   was fast-forwarded to `origin/main` (`776bd2a`). **The main checkout should be clean and in
-  sync as of this update — verify with `git -C C:\Projects\ContentStudio status --short` and
-  `git -C C:\Projects\ContentStudio rev-parse HEAD` before trusting it, do not assume it stayed
-  that way.** If a subagent's dispatch prompt tells it to verify its own working directory is the
-  *worktree*, that check is about avoiding a repeat of exactly this class of mistake — take it
-  seriously, it has now happened at least twice across this programme's sessions.
+  sync as of this update — do not assume it stayed that way. Run the full sync check in "THE
+  PAUSE / COMMIT / PR POINT" section below, now, before starting any task work** — that section
+  frames it as an end-of-session step, but it is exactly as valid (and arguably more important) to
+  run at the *start* of a session, since it's the operator's own activity between sessions, not
+  just a prior session's carelessness, that can leave the main checkout behind or dirty. If a
+  subagent's dispatch prompt tells it to verify its own working directory is the *worktree*, that
+  check is about avoiding a repeat of exactly this class of mistake — take it seriously, it has
+  now happened at least twice across this programme's sessions.
 
 Suites, verified on merged `main` (`776bd2a`):
 
@@ -233,6 +236,37 @@ closed, suite numbers, what the operator will notice on next boot, what is knowi
 **Do not start P12 in this session.** Update this file (`RESUME-PROMPT.md`) at that pause point,
 the way this update should have happened at the end of P11's own session and didn't — the gap was
 only caught because the operator asked directly.
+
+**Before declaring the pause point reached, run a full local/remote sync check — this is now a
+mandatory, repeatable step, not a one-off. It was skipped at the end of every session from P2
+through P11, and the drift it let accumulate (100 commits, one unpushed commit, two stray
+uncommitted edits, all in the *other* checkout) was only caught because the operator happened to
+ask.** Run, and paste the actual output into your own final report, don't just assert it's clean:
+
+```bash
+# 1. Worktree: no uncommitted changes, nothing unpushed.
+cd "C:/Projects/ContentStudio/.claude/worktrees/pipeline-audit-review-4dd767"
+git status --short                                    # expect empty (untracked scratch files aside)
+git push origin claude/pipeline-audit-review-4dd767    # expect "Everything up-to-date" after your last push
+git rev-parse HEAD origin/claude/pipeline-audit-review-4dd767   # expect identical
+
+# 2. Remote: your PR is actually open (or merged) against the commit you think it is.
+gh pr view <number> --json state,mergeable,headRefOid
+
+# 3. The MAIN checkout (separate from this worktree, where pipeline-app is actually installed) —
+#    this is the one that silently drifted for three sessions. Never assume it's fine.
+cd "C:/Projects/ContentStudio"
+git fetch origin
+git status --short                                     # expect clean, or only known operator artifacts
+git rev-parse HEAD origin/main                          # expect identical, or explain the gap
+```
+
+If the main checkout is behind or has local changes, do not silently pull/reset it — investigate
+what the changes are first (exactly as this session did: traced two "modified" files back to a
+stray, superseded implementer attempt before touching anything), then ask the operator before
+running anything that discards or rewrites history, the same way this session asked before
+dropping the unpushed roster commit and before discarding the stray edits. A clean `git fetch` +
+inspection costs nothing; a wrong guess about what's safe to discard does not undo.
 
 **A mandatory final whole-branch review, on the most capable available model, blind to every
 task's own review, is not optional** — P10's own proactive pass found 15 new findings including 2
