@@ -744,6 +744,12 @@ BANNED_REGISTER_A_STRINGS = (
     "empty court", "vacant gym", "vacant pitch", "deserted gym", "deserted pitch",
     "abandoned gym", "abandoned pitch", "generic gym", "generic field",
 )
+MIN_SIGNATURE_OBJECTS = 2
+# The two tightest entries in VALID_SCALES: an extreme close-up (framing a face
+# or a single detail) cannot credibly hold two named large props in frame. Every
+# wider scale in both real MIGRATED_PAIRS fixtures (including their covers)
+# names >= MIN_SIGNATURE_OBJECTS; only CLOSE/MACRO shots ever sit at 1. See T21.
+TIGHT_SCALES_ONE_OBJECT_FLOOR = frozenset({"CLOSE", "MACRO"})
 BANNED_REGISTER_B_STRINGS = (
     "dslr", "shot on 35mm film", "documentary", "photorealistic", "photographic",
     "photograph", "bokeh", "shallow depth of field", "depth of field", "leica",
@@ -757,7 +763,17 @@ BANNED_REGISTER_B_PATTERNS = (
 
 
 def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
-    """C8-C10: the world lock and the register vocabulary separation."""
+    """C8-C10: the world lock and the register vocabulary separation.
+
+    C8 is a mention check over the world-lock terms (word-boundary matched,
+    plural-tolerant), not a depiction check -- it confirms the sport and at
+    least MIN_SIGNATURE_OBJECTS signature objects are named in the prompt
+    text. The floor drops to 1 for TIGHT_SCALES_ONE_OBJECT_FLOOR shots
+    (CLOSE, MACRO): an extreme close-up can only credibly hold one named
+    prop in frame, so a 2-object floor there would demand incoherent prose
+    rather than close a real evasion (see the T21 report for the fixture
+    evidence behind this carve-out).
+    """
     findings: list[Finding] = []
     sport = world.get("register_a_sport", "").strip().lower()
     objects = [o.lower() for o in signature_objects(world)]
@@ -771,17 +787,22 @@ def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
                 findings.append(
                     Finding("C8", shot.index, "world lock declares no register_a_sport")
                 )
-            elif sport not in body:
+            elif not re.search(rf"\b{re.escape(sport)}\b", body):
                 findings.append(
                     Finding("C8", shot.index, f"Register A prompt does not name the sport {sport!r}")
                 )
-            if not any(obj in body for obj in objects):
+            matched_objects = [obj for obj in objects if re.search(rf"\b{re.escape(obj)}s?\b", body)]
+            required_objects = (
+                1 if shot.scale in TIGHT_SCALES_ONE_OBJECT_FLOOR else MIN_SIGNATURE_OBJECTS
+            )
+            if len(matched_objects) < required_objects:
                 findings.append(
                     Finding(
                         "C8",
                         shot.index,
-                        "Register A prompt contains none of the signature objects "
-                        f"{objects!r}; the sport will not read",
+                        f"Register A prompt mentions {len(matched_objects)} of the signature "
+                        f"objects {objects!r}; needs at least {required_objects}. C8 is a "
+                        "mention check over the world-lock terms, not a depiction check.",
                     )
                 )
             for banned in BANNED_REGISTER_A_STRINGS:

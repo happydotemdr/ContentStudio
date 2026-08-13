@@ -348,9 +348,72 @@ def test_c8_flags_register_a_without_a_signature_object():
 
 def test_c8_passes_with_sport_and_signature_object():
     shot = make_shot(
-        1, "A", prompt="a club soccer pitch, goal net behind, No Text. --ar 9:16"
+        1, "A",
+        prompt="a club soccer pitch, goal net behind, corner flag, No Text. --ar 9:16",
     )
     assert "C8" not in codes(check_world_lock([shot], WORLD))
+
+
+def test_c8_does_not_match_the_sport_inside_a_larger_word():
+    shot = make_shot(1, "A", prompt="a clubsoccerboot on turf, goal net, corner flag, "
+                                    "No Text. --ar 9:16 --raw --s 95")
+    assert "C8" in codes(check_world_lock([shot], WORLD))
+
+
+def test_c8_requires_two_signature_objects_not_one():
+    # Non-MACRO scale: the 2-object floor applies at full strength here (see
+    # test_c8_macro_shots_get_a_one_object_floor for the MACRO carve-out).
+    shot = make_shot(1, "A", scale="WIDE",
+                      prompt="club soccer, a goal net alone in fog, "
+                             "No Text. --ar 9:16 --raw --s 95")
+    findings = check_world_lock([shot], WORLD)
+    assert "C8" in codes(findings)
+    assert "at least 2" in [f.message for f in findings if f.check == "C8"][0]
+
+
+def test_c8_passes_a_prompt_that_actually_depicts_the_world():
+    shot = make_shot(1, "A", scale="WIDE",
+                      prompt="club soccer, a goal net, a corner flag, "
+                             "No Text. --ar 9:16 --raw --s 95")
+    assert "C8" not in codes(check_world_lock([shot], WORLD))
+
+
+def test_c8_macro_shots_get_a_one_object_floor():
+    """T21 deviation from the literal brief: both real MIGRATED_PAIRS fixtures'
+    MACRO 'Hook'/'Payoff' close-ups (and passing_sheet.md's CLOSE-scale cover)
+    name the sport plus exactly one signature object -- an extreme close-up
+    cannot credibly hold two named large props in frame -- and fixtures are
+    off-limits to this task. A flat floor of 2 broke both currently-green
+    fixtures with no per-shot signal available to tell a genuine single-prop
+    tight shot apart from the degenerate case C-87 describes. CLOSE/MACRO
+    shots keep the pre-T21 floor of 1; every other scale gets the full
+    MIN_SIGNATURE_OBJECTS. See the T21 report for the fixture evidence."""
+    for scale in ("MACRO", "CLOSE"):
+        one_object = make_shot(1, "A", scale=scale,
+                                prompt="club soccer, a goal net alone in fog, "
+                                       "No Text. --ar 9:16 --raw --s 95")
+        assert "C8" not in codes(check_world_lock([one_object], WORLD)), scale
+
+        zero_objects = make_shot(1, "A", scale=scale,
+                                  prompt="club soccer, No Text. --ar 9:16 --raw --s 95")
+        assert "C8" in codes(check_world_lock([zero_objects], WORLD)), scale
+
+
+def test_c8_object_matching_is_plural_tolerant():
+    """The other half of the T21 deviation: worked_example_sheet.md Shot 2 (WIDE,
+    not MACRO) writes 'corner flags' (plural) where the world lock declares the
+    singular 'corner flag'. A strictly singular \\b...\\b match would undercount
+    a real mention as zero, which is a matching bug, not a depiction question."""
+    shot = make_shot(1, "A", scale="WIDE",
+                      prompt="club soccer, a goal net and a row of corner flags, "
+                             "No Text. --ar 9:16 --raw --s 95")
+    assert "C8" not in codes(check_world_lock([shot], WORLD))
+
+
+def test_both_green_fixtures_still_satisfy_the_stricter_c8():
+    for sheet, board in MIGRATED_PAIRS:
+        _shots, findings = lint_fixture(sheet, board)
+        assert "C8" not in codes(findings), sheet
 
 
 def test_c9_flags_banned_generic_venue():
