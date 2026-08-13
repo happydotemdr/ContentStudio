@@ -35,6 +35,7 @@ from lint_prompt_sheet import (  # noqa: E402
     parse_style_library_checked,
     check_cover_present,
     check_shot_count,
+    check_plate_budget,
     lint_cover,
     lint,
     main,
@@ -592,6 +593,39 @@ def test_c14_passes_correct_bands():
     b = make_shot(2, "B", "WORLD", "XWIDE", "EYE",
                   DENSE_A + ", No Text. --ar 9:16 --s 520")
     assert check_format([a, b]) == []
+
+
+def test_c22_caps_the_share_of_plate_shots():
+    """Relabelling an awkward shot 'Register PLATE' removed its every register check.
+    Nothing bounded how many shots could take that exit."""
+    shots = [make_shot(i, "PLATE", "PLATE", "MACRO", "LOW") for i in range(1, 5)] + \
+            [make_shot(5, "A", "DETAIL", "CLOSE", "EYE")]
+    findings = check_plate_budget(shots)
+    assert [f.check for f in findings] == ["C22"]
+    assert "4 of 5" in findings[0].message
+
+
+def test_c22_allows_a_single_plate_in_a_normal_sheet():
+    shots = [make_shot(1, "PLATE", "PLATE", "MACRO", "LOW")] + \
+            [make_shot(i, "A", "DETAIL", "CLOSE", "EYE") for i in range(2, 7)]
+    assert check_plate_budget(shots) == []
+
+
+def test_a_plate_shot_must_still_carry_a_stylize_value():
+    """C14's bands were skipped entirely for PLATE because REGISTER_BANDS.get
+    returned None and the loop hit `continue`."""
+    shot = make_shot(1, "PLATE", "PLATE", prompt=DENSE_A + ", No Text. --ar 9:16")
+    assert "C14" in codes(check_format([shot]))
+
+
+def test_the_plate_exemptions_that_remain_are_the_register_specific_ones():
+    """Distinguishability: PLATE is still exempt from C8/C9/C10/C17 by design --
+    it is a subject-free background plate with no register look to lock. The audit
+    finding is that it was *also* exempt from everything else."""
+    shot = make_shot(1, "PLATE", "PLATE", prompt=DENSE_A + ", No Text. --ar 9:16 --s 200")
+    assert codes(check_world_lock([shot], WORLD)) == []
+    assert check_style_mechanism([shot]) == []
+    assert check_format([shot]) == []
 
 
 def test_c15_flags_register_a_shot_class_typo():

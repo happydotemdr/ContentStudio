@@ -498,6 +498,29 @@ def check_shot_count(shots: list[Shot], declared: int | None = None) -> list[Fin
     return findings
 
 
+MAX_PLATE_SHARE = 1 / 3
+
+
+def check_plate_budget(shots: list[Shot]) -> list[Finding]:
+    """C22: PLATE is an exemption, so it needs a ceiling.
+
+    A PLATE shot is exempt from C3's run computation, C6/C7's register counts, and
+    C8/C9/C10/C17 -- every rule that makes the dual-register system a system. Those
+    exemptions are correct for a subject-free background plate and catastrophic as
+    an unbounded escape hatch: relabelling a failing Register B shot as PLATE
+    cleared its every register check (finding C-85).
+    """
+    plates = [s for s in shots if s.register == "PLATE"]
+    if not plates or len(plates) <= max(1, int(len(shots) * MAX_PLATE_SHARE)):
+        return []
+    return [Finding(
+        "C22", None,
+        f"{len(plates)} of {len(shots)} shots are Register PLATE (max "
+        f"{MAX_PLATE_SHARE:.0%}). PLATE is exempt from C3/C6/C7/C8/C9/C10/C17, so a "
+        "sheet made mostly of plates is a sheet mostly unchecked.",
+    )]
+
+
 def check_sequence(shots: list[Shot]) -> list[Finding]:
     """C1-C5: adjacency and whole-sheet spread."""
     findings: list[Finding] = []
@@ -847,7 +870,10 @@ def _pairs(shots: list[Shot]):
 
 
 STYLIZE_RE = re.compile(r"--(?:s|stylize)\s+(\d+)")
-REGISTER_BANDS = {"A": (80, 120, True), "B": (400, 700, False)}
+# PLATE carries no register look, so it has no --raw requirement and no register
+# band -- but it is still a render, and a render with no --s is not a specified
+# render. The band is wide and low: a plate is a ground, not a stylised image.
+REGISTER_BANDS = {"A": (80, 120, True), "B": (400, 700, False), "PLATE": (0, 250, False)}
 # A bare version number like "8.2" -- the only non-URL shape allowed to carry a period.
 URL_OR_VERSION_TOKEN_RE = re.compile(r"^\d+\.\d+$")
 # The format's aspect ratio, as a module constant so a future non-vertical format
@@ -1273,6 +1299,7 @@ def lint(
     """Run every Gate C check, in check order."""
     findings = [
         *check_shot_count(shots, declared_shot_count),
+        *check_plate_budget(shots),
         *check_sequence(shots),
         *check_register_balance(shots),
         *check_world_lock(shots, world),
