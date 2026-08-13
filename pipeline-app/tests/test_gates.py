@@ -389,3 +389,69 @@ def test_include_optional_is_off_by_default(tmp_path):
     assert list(gates.resolve_upstream_by_stage(
         tmp_path, stages, stages[2], include_optional=True
     )) == ["voiceover", "music"]
+
+
+# --- T2B: three-state upstream resolution -- absent, resolved, excluded ------
+
+
+def test_the_three_upstream_states_are_three_distinguishable_outcomes(tmp_path):
+    """'No styleboard' and 'a styleboard nobody approved' must not share one
+    representation -- that conflation is the defect class this whole
+    programme is about, and here it would arrive inside the fix for A-32."""
+    stages = [
+        StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02"),
+        StageDef(id="styleboard", skill="shorts-styleboard", dir_prefix="02b",
+                 depends_on=["scripting"]),
+        StageDef(id="visual", skill="visual-prompts", dir_prefix="03",
+                 depends_on=["scripting", "styleboard"]),
+    ]
+    artifacts.write_artifact(tmp_path / "02-scripting", 1,
+                             {"stage": "shorts-scripting", "status": "final"}, "s")
+    artifacts.write_artifact(tmp_path / "02b-styleboard", 1,
+                             {"stage": "shorts-styleboard", "status": "draft"}, "sb")
+    resolved = gates.resolve_upstream_by_stage(
+        tmp_path, stages, stages[2], repo_root=tmp_path, approved_only=True
+    )
+
+    # (2) resolved -- an ordinary lookup
+    assert resolved.get("scripting") == tmp_path / "02-scripting" / "artifact.v1.md"
+    # (1) absent -- there is no `music` dependency at all
+    assert resolved.get("music") is None
+    # (3) excluded -- present on disk, filtered out, and NOT silently None
+    with pytest.raises(gates.UpstreamExcludedError) as excinfo:
+        resolved.get("styleboard")
+    assert "not approved" in str(excinfo.value)
+    assert "artifact.v1.md" in str(excinfo.value)
+    # ...and the three are distinguishable without catching anything
+    assert resolved.state_of("scripting") == "resolved"
+    assert resolved.state_of("music") == "absent"
+    assert resolved.state_of("styleboard") == "excluded"
+    # values() carries only what was actually read, so compute_depends_on
+    # records provenance for the artifacts the gate really saw
+    assert list(resolved.values()) == [tmp_path / "02-scripting" / "artifact.v1.md"]
+
+
+def test_an_unapproved_styleboard_makes_gate_c_error_rather_than_use_the_sheets_own_lock(tmp_path):
+    """Fail closed, exactly like the empty-WORLD-LOCK guard beside it. Falling
+    back to the sheet's own world lock because the styleboard was filtered is
+    A-30 wearing A-32's clothes: Gate C would record `pass` against a world the
+    operator never approved."""
+    styleboard = tmp_path / "02b-styleboard" / "artifact.v1.md"
+    styleboard.parent.mkdir(parents=True)
+    styleboard.write_text(
+        (FIXTURES / "passing_styleboard.md").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    upstream = gates.UpstreamMap(
+        {},
+        excluded={"styleboard": gates.ExcludedUpstream(
+            stage_id="styleboard", path=styleboard, reason="not approved"
+        )},
+    )
+    result = gates.run_gates_for_stage(REPO_ROOT, "visual", FIXTURES / "passing_sheet.md",
+                                       upstream)[0]
+    assert result["status"] == "error"
+    finding = result["findings"][0]
+    assert finding["check"] == "C0"
+    assert "styleboard" in finding["message"]
+    assert "not approved" in finding["message"]
+    assert "own world lock" in finding["message"]

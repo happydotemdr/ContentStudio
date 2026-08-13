@@ -15,7 +15,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from collections.abc import Mapping
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -34,6 +34,74 @@ class GateInputError(ValueError):
     so the operator can tell 'your styleboard is broken' from 'your sheet is'."""
 
     check = "C0"
+
+
+@dataclass(frozen=True)
+class ExcludedUpstream:
+    """An upstream artifact that EXISTS but was filtered out of the map."""
+    stage_id: str
+    path: Path
+    reason: str          # e.g. "not approved"
+
+
+class UpstreamExcludedError(GateInputError):
+    """Raised on any lookup of an excluded upstream. A GateInputError, so
+    run_gates_for_stage records it with check "C0" and status "error" -- the
+    gate's INPUT is unusable, which is a different fact from the artifact under
+    test being wrong."""
+
+    def __init__(self, excluded: ExcludedUpstream):
+        self.excluded = excluded
+        super().__init__(
+            f"{excluded.stage_id} {excluded.path.name} exists but is {excluded.reason} -- "
+            f"the gate will not fall back to the sheet's own world lock. Approve "
+            f"{excluded.stage_id}, or regenerate it."
+        )
+
+
+class UpstreamMap(dict):
+    """`dict[str, Path]` with a third state.
+
+    Absent means NO ARTIFACT EXISTS. Present means resolved. A stage whose
+    artifact exists but was filtered out (unapproved, under approved_only=True)
+    is neither: it is `excluded`, and every lookup of it RAISES.
+
+    Lookups raise on purpose. The alternative -- returning None and trusting
+    each runner to check a companion mapping first -- is precisely the shape
+    that made `upstream.get("styleboard") is None` take the laxer legacy branch
+    for a styleboard nobody approved. A runner cannot forget a check that is
+    enforced by the read itself. Iteration, values() and items() see only
+    resolved entries, so `list(map.values())` remains the ordered path list
+    compute_depends_on expects.
+    """
+
+    def __init__(self, resolved=None, *, excluded=None):
+        super().__init__(resolved or {})
+        self.excluded: dict[str, ExcludedUpstream] = dict(excluded or {})
+
+    def _guard(self, key):
+        found = self.excluded.get(key)
+        if found is not None:
+            raise UpstreamExcludedError(found)
+
+    def get(self, key, default=None):
+        self._guard(key)
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        self._guard(key)
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        self._guard(key)
+        return super().__contains__(key)
+
+    def state_of(self, key: str) -> str:
+        """'resolved' | 'excluded' | 'absent' -- the three states, nameable
+        without catching an exception."""
+        if key in self.excluded:
+            return "excluded"
+        return "resolved" if super().__contains__(key) else "absent"
 
 
 def _load_linter(repo_root: Path, module_name: str):
@@ -80,6 +148,13 @@ def run_prompt_sheet_gate(
     source, same cover checks. Two gates wearing one name -- a stricter CLI and
     a laxer app -- is worse than having no app gate at all, because the recorded
     `gates` block would understate what the sheet was actually held to.
+
+    `upstream.get("styleboard")` below deliberately has no explicit excluded-
+    upstream guard: `UpstreamMap.get` already raises `UpstreamExcludedError` for
+    a styleboard that exists but was filtered out (unapproved), and that error
+    is a `GateInputError` that `run_gates_for_stage` records as `status:
+    "error"`, check "C0" -- the same fail-closed path as the empty-WORLD-LOCK
+    branch just below. No added branch is a decision, not an omission.
     """
     linter = _load_linter(repo_root, "lint_prompt_sheet")
     sheet_text = artifact_path.read_text(encoding="utf-8")
@@ -217,7 +292,7 @@ def resolve_upstream_by_stage(
     repo_root: Path | None = None,
     approved_only: bool = False,
     include_optional: bool = False,
-) -> dict[str, Path]:
+) -> UpstreamMap:
     """The `upstream` argument every GateRunner takes, resolved once.
 
     Keyed by stage id, not a list: a gate may need one SPECIFIC upstream (Gate C
@@ -247,9 +322,15 @@ def resolve_upstream_by_stage(
                        unlocking.
 
     Every default reproduces the pre-existing behaviour exactly, so this
-    package's own call site is unchanged by their addition.
+    package's own call site is unchanged by their addition. The return type is
+    `UpstreamMap`, not a bare dict: a dependency that resolve_latest_artifact
+    or approved-filtering rejects, but that HAS an artifact on disk, must not
+    collapse into the same "absent" representation as a dependency with no
+    artifact at all -- that conflation is what let a filtered-out upstream take
+    the laxer no-upstream branch in a gate (A-32's own hazard).
     """
-    upstream: dict[str, Path] = {}
+    resolved: dict[str, Path] = {}
+    excluded: dict[str, ExcludedUpstream] = {}
     by_id = {s.id: s for s in all_stage_defs}
     dep_ids = list(stage_def.depends_on)
     if include_optional:
@@ -260,6 +341,7 @@ def resolve_upstream_by_stage(
         if up is None:
             continue
         stage_dir = run_dir / stage_dir_name(up)
+        latest = artifacts.latest_artifact_path(stage_dir)
         if approved_only:
             path = _approved_artifact_path(repo_root, up.id, stage_dir)
         elif repo_root is not None:
@@ -267,5 +349,9 @@ def resolve_upstream_by_stage(
         else:
             path = artifacts.latest_artifact_path(stage_dir)
         if path is not None:
-            upstream[dep_id] = path
-    return upstream
+            resolved[dep_id] = path
+        elif latest is not None:
+            # State (3): it exists, we filtered it. Say so -- do not let it read
+            # as state (1).
+            excluded[dep_id] = ExcludedUpstream(dep_id, latest, "not approved")
+    return UpstreamMap(resolved, excluded=excluded)
