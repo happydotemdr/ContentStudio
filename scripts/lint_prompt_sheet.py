@@ -1217,6 +1217,15 @@ def main(argv: list[str] | None = None) -> int:
         if styleboard_text is None:
             return EXIT_UNREADABLE_INPUT
         world = parse_world_lock(styleboard_text)
+        if not world:
+            # Parity with pipeline_app.gates.run_prompt_sheet_gate:86-96. Linting
+            # against an empty world emits a wall of C8/C18 findings naming the
+            # wrong artifact. Fail closed and say which file is empty.
+            print(
+                f"Gate C: styleboard {args.styleboard.name} has no parseable WORLD LOCK "
+                f"block -- Gate C cannot check {args.sheet.name} against an empty world."
+            )
+            return EXIT_MISSING_DEPENDENCY
     else:
         world = sheet_world
 

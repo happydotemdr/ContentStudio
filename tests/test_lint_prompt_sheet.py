@@ -991,6 +991,19 @@ def test_main_reports_a_missing_world_lock_when_no_styleboard_is_given(tmp_path,
     assert "declares no register_a_sport" in capsys.readouterr().out
 
 
+def test_the_cli_fails_closed_on_an_empty_styleboard_naming_the_styleboard(tmp_path, capsys):
+    """gates.py:87-96 raises here, with a comment saying linting against an empty
+    world 'would emit a wall of C8/C18 findings naming the wrong problem'. main()
+    had no such branch and emitted 14 findings, none naming the styleboard."""
+    empty = tmp_path / "styleboard.md"
+    empty.write_text("=== STYLEBOARD — backfilled, not recoverable ===\n", encoding="utf-8")
+    code = main([str(FIXTURES / "passing_sheet.md"), "--styleboard", str(empty)])
+    out = capsys.readouterr().out
+    assert code == EXIT_MISSING_DEPENDENCY
+    assert "styleboard.md" in out
+    assert "C8" not in out, "the wall of wrong-problem findings must not be emitted"
+
+
 MIGRATED_PAIRS = [
     ("passing_sheet.md", "passing_styleboard.md"),
     ("worked_example_sheet.md", "worked_example_styleboard.md"),
