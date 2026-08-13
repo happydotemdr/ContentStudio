@@ -1419,10 +1419,34 @@ def test_the_unmutated_fixture_is_the_control(capsys):
     assert code == 0, capsys.readouterr().out
 
 
+# --- C-77: the Library warns its own headings are load-bearing ---------------
+#
+# The coupling between docs/style-library.md's `## Entries` heading shape and
+# scripts/lint_prompt_sheet.py:parse_style_library was previously documented
+# only in `Open questions` §2 -- an editor tidying `## Entries` has no local
+# signal at the point they would break it.
+
+
+def test_the_library_warns_at_the_headings_the_parser_depends_on():
+    """C-77: the coupling was documented only in Open questions §2. An editor
+    reformatting the file reads Entry format and ## Entries, not the appendix."""
+    text = STYLE_LIBRARY.read_text(encoding="utf-8")
+    before_entries = text.split("## Entries")[0]
+    assert "lint_prompt_sheet.py" in before_entries.split("## Entry format")[1]
+    heading_at, _rest = text.split("## Entries", 1)
+    assert "MACHINE-READ" in heading_at[-400:]
+
+
+def test_the_libraryS_own_entries_still_parse_after_the_warning_edits():
+    library, findings = parse_style_library_checked(STYLE_LIBRARY.read_text(encoding="utf-8"))
+    assert findings == []
+    assert {"rgs-present-soccer-a", "rgs-sourceera-painterly-b"} <= set(library)
+
+
 LIBRARY_MUTATIONS = [
     ("entry-annotated",  "### rgs-present-soccer-a", "### rgs-present-soccer-a (channel)"),
     ("entry-capitalised","### rgs-present-soccer-a", "### RGS-Present-Soccer-A"),
-    ("section-renamed",  "## Entries",               "## Library entries"),
+    ("section-renamed",  "## Entries\n\n### rgs-sourceera-painterly-b", "## Library entries\n\n### rgs-sourceera-painterly-b"),
 ]
 
 
