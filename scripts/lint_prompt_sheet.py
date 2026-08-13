@@ -38,11 +38,40 @@ class Shot:
     prompt_line_count: int
 
 
+def location_label(shot_index: int | None) -> str:
+    """The human name for a finding's position — the single source of truth for
+    both the CLI's printed prefix and the `beat` field the app template renders."""
+    if shot_index is None:
+        return "sheet"
+    if shot_index == 0:
+        return "cover"
+    return f"shot {shot_index}"
+
+
 @dataclass(frozen=True)
 class Finding:
+    """One Gate C finding.
+
+    `kind` exists so `pipeline_app.gates.run_gates_for_stage`'s blocking rule
+    (`f.get("kind") != "skipped"`) is contractual rather than accidental. Gate C
+    emits only "fail" and "parse", both blocking; it has no known-unknown concept
+    and must not grow one without changing that rule first.
+
+    `beat` is derived from `shot_index` at construction, not passed in, so every
+    existing `Finding(check, index, message)` call site is unchanged. It exists
+    because templates/stage.html renders `finding.beat` and Gate D's record has
+    one — without it every Gate C finding rendered in the app with no location.
+    """
+
     check: str
     shot_index: int | None
     message: str
+    kind: str = "fail"
+    beat: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.beat is None:
+            object.__setattr__(self, "beat", location_label(self.shot_index))
 
 
 def parse_sheet(text: str) -> tuple[list[Shot], dict[str, str]]:
@@ -1026,13 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Gate C: FAIL — {len(shots)} shots, {len(findings)} finding(s).")
     for finding in findings:
-        if finding.shot_index is None:
-            where = "sheet"
-        elif finding.shot_index == 0:
-            where = "cover"
-        else:
-            where = f"shot {finding.shot_index}"
-        print(f"  [{finding.check}] {where}: {finding.message}")
+        print(f"  [{finding.check}] {finding.beat}: {finding.message}")
     return 1
 
 

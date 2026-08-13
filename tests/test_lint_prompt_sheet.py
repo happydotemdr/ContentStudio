@@ -36,6 +36,32 @@ from lint_prompt_sheet import (  # noqa: E402
     main,
 )
 
+from dataclasses import asdict
+
+
+def test_finding_defaults_to_a_blocking_kind():
+    """gates.py blocks on `kind != "skipped"`. Gate C must never emit "skipped":
+    the blocking rule has to be contractual, not an accident of a missing key."""
+    finding = Finding("C1", 3, "shot class repeats")
+    assert finding.kind == "fail"
+    assert asdict(finding)["kind"] == "fail"
+
+
+def test_finding_carries_a_beat_the_stage_template_can_render():
+    """stage.html renders finding.beat. A Gate C finding without one displays as
+    '[C18]: <message>' with no shot number, while the CLI prints 'shot 7:'."""
+    assert asdict(Finding("C1", 7, "m"))["beat"] == "shot 7"
+    assert asdict(Finding("C19", None, "m"))["beat"] == "sheet"
+    assert asdict(Finding("C16", 0, "m"))["beat"] == "cover"
+
+
+def test_no_gate_c_check_can_emit_a_skipped_kind():
+    """Distinguishability: Gate C has no known-unknown concept. If one is ever added,
+    gates.py's blocking rule silently stops blocking it — so assert it cannot exist."""
+    shots, world = parse_sheet(SHEET.replace("--s 95", "--s 9500"))
+    assert {f.kind for f in lint(shots, world)} <= {"fail", "parse"}
+
+
 SHEET = """\
 === VISUAL PROMPT SHEET — demo ===
 
