@@ -93,10 +93,19 @@ def derive_cohort(note: str, handle: str) -> str:
 
 
 def upsert_creators(conn: sqlite3.Connection, creators: dict) -> dict[str, int]:
-    """Stub -- T10 replaces this body with the real creators upsert. Returns
-    an empty map, which is safe because T3's own `_seed_entry` does not yet
-    consult `creator_ids` for anything (that check is T10's)."""
-    return {}
+    """slug -> creators.id, inserting or updating each declared creator."""
+    ids: dict[str, int] = {}
+    for slug, spec in creators.items():
+        display_name = (spec or {}).get("display_name") or slug
+        conn.execute(
+            "INSERT INTO creators (slug, display_name) VALUES (?, ?) "
+            "ON CONFLICT(slug) DO UPDATE SET display_name = excluded.display_name",
+            (slug, display_name),
+        )
+        ids[slug] = conn.execute(
+            "SELECT id FROM creators WHERE slug = ?", (slug,)).fetchone()["id"]
+    conn.commit()
+    return ids
 
 
 _MANIFEST_OWNED = ("display_name", "cohort", "keyword_filter", "included", "creator_id")
@@ -167,6 +176,14 @@ def _seed_entry(conn: sqlite3.Connection, platform: str, entry: dict, creators: 
     cohort = entry.get("cohort") or derive_cohort(entry.get("note", ""), handle)
     keyword_filter = entry.get("keyword_filter")
     included = bool(entry.get("included", True))
+
+    slug = entry.get("creator")
+    if slug is not None and slug not in creator_ids:
+        raise ManifestError(
+            f"{platform}/{entry.get('handle')} names creator {slug!r}, which is not "
+            f"in the manifest's `creators` block. Every handle must belong to a "
+            f"declared creator -- that slug is the only cross-platform identity."
+        )
 
     clash = find_slug_collision(
         handle, [row["handle"] for row in db.list_platform_handles(conn, platform)]

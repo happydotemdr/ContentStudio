@@ -347,3 +347,31 @@ def test_drift_records_a_warning_event(tmp_path):
     conn.close()
     assert len(rows) == 1 and rows[0]["severity"] == "warning"
     assert "@ghost" in rows[0]["message"]
+
+
+def test_handles_of_one_creator_share_a_creator_id(conn, tmp_path):
+    """The join key that makes 'does this creator have a platform we are not
+    tracking?' computable. Adam Grant is on two platforms, unlinked before."""
+    payload = {"creators": {"adam-grant": {"display_name": "Adam Grant"}},
+               **{p: [] for p in mig.PLATFORMS}, "rss": []}
+    payload["youtube"] = [{"handle": "@bigthink", "creator": "adam-grant",
+                           "cohort": "general-interest", "included": False}]
+    payload["bluesky"] = [{"handle": "adamgrant.bsky.social", "creator": "adam-grant",
+                           "cohort": "general-interest", "included": False}]
+    mig.migrate(conn, _write(tmp_path, payload), now="2026-08-08T00:00:00+00:00")
+
+    yt = db.get_handle_by_platform_and_handle(conn, "youtube", "@bigthink")
+    bs = db.get_handle_by_platform_and_handle(conn, "bluesky", "adamgrant.bsky.social")
+    assert yt["creator_id"] is not None
+    assert yt["creator_id"] == bs["creator_id"]
+    row = conn.execute("SELECT * FROM creators WHERE id = ?", (yt["creator_id"],)).fetchone()
+    assert row["slug"] == "adam-grant" and row["display_name"] == "Adam Grant"
+
+
+def test_an_entry_naming_an_undeclared_creator_is_a_manifest_error(conn, tmp_path):
+    payload = {"creators": {}, **{p: [] for p in mig.PLATFORMS}, "rss": []}
+    payload["youtube"] = [{"handle": "@x", "creator": "nobody",
+                           "cohort": "guru", "included": True}]
+    with pytest.raises(mig.ManifestError) as excinfo:
+        mig.migrate(conn, _write(tmp_path, payload), now="2026-08-08T00:00:00+00:00")
+    assert "nobody" in str(excinfo.value)
