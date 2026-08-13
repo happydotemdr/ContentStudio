@@ -62,6 +62,35 @@ def test_no_gate_c_check_can_emit_a_skipped_kind():
     assert {f.kind for f in lint(shots, world)} <= {"fail", "parse"}
 
 
+def test_a_broken_shot_heading_produces_a_blocking_parse_finding():
+    """C-70, the flagship. Breaking Shot 4's em-dash to a hyphen made the shot
+    invisible to all of C1-C20 and Gate C printed PASS."""
+    text = WORKED.read_text(encoding="utf-8").replace(
+        "### Shot 4 — Build", "### Shot 4 - Build", 1
+    )
+    parse = parse_sheet(text)
+    assert [f.check for f in parse.findings] == ["PARSE"]
+    assert "Shot 4" in parse.findings[0].message
+    assert parse.findings[0].kind == "parse"
+
+
+def test_a_broken_heading_is_distinguishable_from_a_sheet_that_has_that_shot():
+    """Distinguishability: the broken sheet must not present as the good sheet
+    minus one shot -- it must present as a sheet that failed to parse."""
+    good = WORKED.read_text(encoding="utf-8")
+    broken = good.replace("### Shot 4 — Build", "### Shot 4 - Build", 1)
+    assert parse_sheet(good).findings == []
+    assert parse_sheet(broken).findings != []
+
+
+def test_parse_sheet_still_unpacks_as_the_two_tuple_every_caller_expects():
+    """pipeline_app/gates.py does `shots, sheet_world = linter.parse_sheet(text)`.
+    That call site belongs to P3 and must keep working untouched."""
+    shots, world = parse_sheet(SHEET)
+    assert len(shots) == 2
+    assert world["register_a_sport"] == "club soccer"
+
+
 SHEET = """\
 === VISUAL PROMPT SHEET — demo ===
 
@@ -488,6 +517,7 @@ def test_c15_passes_valid_vocabulary():
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+WORKED = FIXTURES / "worked_example_sheet.md"
 
 
 def lint_fixture(name, styleboard_name=None):

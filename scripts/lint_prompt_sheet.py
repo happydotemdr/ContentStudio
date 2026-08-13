@@ -23,6 +23,14 @@ CLOSE_FENCE_RE = re.compile(r"^\s*```\s*$")
 WORLD_HEADING_RE = re.compile(r"^\s*WORLD LOCK\s*$")
 WORLD_ENTRY_RE = re.compile(r"^\s+([a-z][a-z0-9_]*)\s*:\s*(.+?)\s*$")
 
+# Deliberately loose: anything an author could plausibly have meant as a shot
+# heading. A line matching this but NOT SHOT_HEADING_RE is a hard finding, never
+# a skipped line -- skipping it removed the shot from all of C1-C20 and Gate C
+# printed PASS (finding C-70).
+LOOSE_SHOT_HEADING_RE = re.compile(r"^\s*#{2,4}\s*Shot\b", re.IGNORECASE)
+LOOSE_COVER_HEADING_RE = re.compile(r"^\s*#{2,4}\s*Cover\b", re.IGNORECASE)
+SHOT_COUNT_RE = re.compile(r"^\s*SHOT COUNT:\s*(\d+)\s*$", re.IGNORECASE)
+
 NO_TEXT_MARKER = "No Text."
 
 
@@ -74,14 +82,53 @@ class Finding:
             object.__setattr__(self, "beat", location_label(self.shot_index))
 
 
-def parse_sheet(text: str) -> tuple[list[Shot], dict[str, str]]:
-    """Return (shots in sheet order, world-lock key/value pairs)."""
+class SheetParse(tuple):
+    """(shots, world), plus the parse layer's own findings.
+
+    A tuple subclass rather than a dataclass so `shots, world = parse_sheet(text)`
+    keeps working verbatim in pipeline_app/gates.py (package P3) and in the 11
+    existing tests. `.findings` is the new fail-closed channel; `main()` consumes
+    it today and gates.py adopts it per this plan's P3 contract.
+    """
+
+    def __new__(cls, shots, world, findings, declared_shot_count):
+        obj = super().__new__(cls, (shots, world))
+        obj.findings = findings
+        obj.declared_shot_count = declared_shot_count
+        return obj
+
+    @property
+    def shots(self) -> list["Shot"]:
+        return self[0]
+
+    @property
+    def world(self) -> dict[str, str]:
+        return self[1]
+
+
+def parse_sheet(text: str) -> SheetParse:
+    """Return (shots in sheet order, world-lock key/value pairs).
+
+    Fail-closed: a line that looks like a shot or cover heading but does not fully
+    match its strict pattern is reported as a PARSE finding rather than skipped.
+    The old behaviour deleted the shot from every check C1-C20 (finding C-70).
+    """
     lines = text.splitlines()
     shots: list[Shot] = []
     world: dict[str, str] = {}
+    findings: list[Finding] = []
+    declared: int | None = None
 
     i = 0
     while i < len(lines):
+        line = lines[i]
+
+        count = SHOT_COUNT_RE.match(line)
+        if count:
+            declared = int(count.group(1))
+            i += 1
+            continue
+
         if WORLD_HEADING_RE.match(lines[i]):
             i += 1
             while i < len(lines):
@@ -110,9 +157,25 @@ def parse_sheet(text: str) -> tuple[list[Shot], dict[str, str]]:
             i = next_i
             continue
 
+        if LOOSE_SHOT_HEADING_RE.match(line) or (
+            LOOSE_COVER_HEADING_RE.match(line) and not COVER_HEADING_RE.match(line)
+        ):
+            findings.append(Finding(
+                "PARSE", None,
+                f"line {i + 1} looks like a shot/cover heading but does not match the "
+                f"required format, so it would be skipped and its shot linted by "
+                f"nothing: {line.strip()!r}. Required: "
+                f"'### Shot <n> — <beat> · Register <A|B|PLATE> · <CLASS> · <SCALE> "
+                f"· <HEIGHT>' with em-dash and middle-dot separators and uppercase "
+                f"vocabulary tokens.",
+                kind="parse",
+            ))
+            i += 1
+            continue
+
         i += 1
 
-    return shots, world
+    return SheetParse(shots, world, findings, declared)
 
 
 def parse_world_lock(text: str) -> dict[str, str]:
