@@ -1,26 +1,80 @@
 {
-  "_comment": "The headless YouTube / brand-intel roster. @bigthink + the Bluesky adamgrant.bsky.social entry are a general-interest psychology source unrelated to the headless-YouTube corpus (kept here only because this manifest tracks the whole brand-intel roster this toolkit can pull) — ContentStudio's six skills do NOT use it; see docs/README.md's 14-channel list for the actual corpus. The remaining YouTube entries are the 14 creator-education channels the audit/gameplan/playbook/MJ/ElevenLabs guides were synthesized from. Edit this file to add/remove sources. keyword_filter (when set) keeps only videos whose title contains that string.",
+  "_comment": "The headless YouTube / brand-intel roster, and the declarative source of truth for which creators we track on which platforms. EVERY adapter-registry platform has a key here; an empty array means 'we deliberately track nobody on this platform', which is a statement, not a gap. Each entry names a `creator` slug from the `creators` block -- that slug is the only cross-platform identity, so one creator's handles on different platforms are joinable. `cohort` and `included` are explicit fields; nothing is inferred from `note`. The @bigthink + adamgrant.bsky.social pair is a general-interest psychology source unrelated to the headless-YouTube corpus; it is kept here because this manifest tracks the whole brand-intel roster this toolkit can pull, and it ships `included: false` so the daily discovery run does not pull it. None of ContentStudio's pipeline skills use it -- see CLAUDE.md's skill table for the current skill set, and docs/README.md's 14-channel list for the actual corpus. Seeded into the app by `cd pipeline-app && python scripts/migrate_handles_from_manifest.py`; inspect coverage with `--report`.",
+
+  "creators": {
+    "adam-grant":          { "display_name": "Adam Grant",          "note": "general-interest psychology; not part of the 14-channel corpus" },
+    "romayroh":            { "display_name": "Romayroh" },
+    "dan-the-creator":     { "display_name": "Dan the Creator" },
+    "make-money-matt":     { "display_name": "Make Money Matt" },
+    "kallaway":            { "display_name": "Kallaway" },
+    "one-person-business": { "display_name": "One Person Business" },
+    "jenny-hoyos":         { "display_name": "Jenny Hoyos" },
+    "nate-black":          { "display_name": "Nate Black" },
+    "vidiq":               { "display_name": "vidIQ" },
+    "nick-nimmin":         { "display_name": "Nick Nimmin" },
+    "roberto-blake":       { "display_name": "Roberto Blake" },
+    "future-tech-pilot":   { "display_name": "Future Tech Pilot" },
+    "wade-mcmaster":       { "display_name": "Wade McMaster" },
+    "tao-prompts":         { "display_name": "Tao Prompts" },
+    "tokenized-ai":        { "display_name": "Tokenized AI" }
+  },
+
   "youtube": [
-    { "handle": "@bigthink", "display_name": "Adam Grant (via Big Think)", "keyword_filter": "Adam Grant", "note": "app-seeded; Big Think channel filtered to Adam Grant videos" },
-    { "handle": "@Romayroh", "display_name": "Romayroh", "keyword_filter": null, "note": "guru channel (manual-seed)" },
-    { "handle": "@danthecreatr", "display_name": "Dan the Creator", "keyword_filter": null, "note": "guru channel (manual-seed)" },
-    { "handle": "@makemoneymatt", "display_name": "Make Money Matt", "keyword_filter": null, "note": "guru channel (manual-seed)" },
-    { "handle": "@kallawaymarketing", "display_name": "Kallaway", "keyword_filter": null, "note": "guru channel (manual-seed)" },
-    { "handle": "@One-Person-Business", "display_name": "One Person Business", "keyword_filter": null, "note": "guru channel (manual-seed)" },
-    { "handle": "@JennyHoyos", "display_name": "Jenny Hoyos", "keyword_filter": null, "note": "shorts specialist (exemplar shorts); added 2026-07-23 for the shorts-launch corpus" },
-    { "handle": "@ThatNateBlack", "display_name": "Nate Black", "keyword_filter": null, "note": "shorts specialist (data-driven teaching); added 2026-07-23 for the shorts-launch corpus" },
-    { "handle": "@vidIQ", "display_name": "vidIQ", "keyword_filter": null, "note": "shorts/algorithm teaching; added 2026-07-23 for the shorts-launch corpus" },
-    { "handle": "@nicknimmin", "display_name": "Nick Nimmin", "keyword_filter": null, "note": "small-channel tactics + packaging teaching; added 2026-07-23 for the shorts-launch corpus" },
-    { "handle": "@robertoblake", "display_name": "Roberto Blake", "keyword_filter": null, "note": "monetization + packaging teaching; added 2026-07-23 for the shorts-launch corpus" },
-    { "handle": "@FutureTechPilot", "display_name": "Future Tech Pilot", "keyword_filter": null, "note": "Midjourney prompting/features/styles (image+video); added 2026-07-23 for the MJ asset-creation corpus" },
-    { "handle": "@WadeMcMaster", "display_name": "Wade McMaster", "keyword_filter": null, "note": "Midjourney art styles + tutorials; added 2026-07-23 for the MJ asset-creation corpus" },
-    { "handle": "@TaoPrompts", "display_name": "Tao Prompts", "keyword_filter": null, "note": "Midjourney prompting + AI film/video workflows; added 2026-07-23 for the MJ asset-creation corpus" },
-    { "handle": "@tokenizedai", "display_name": "Tokenized AI", "keyword_filter": null, "note": "Midjourney + AI video/creative (Runway/Luma); added 2026-07-23 for the MJ asset-creation corpus" }
+    { "handle": "@bigthink", "creator": "adam-grant", "display_name": "Adam Grant (via Big Think)",
+      "cohort": "general-interest", "included": false, "keyword_filter": "Adam Grant",
+      "note": "Big Think channel filtered to Adam Grant videos; out of corpus scope" },
+    { "handle": "@Romayroh", "creator": "romayroh", "display_name": "Romayroh",
+      "cohort": "guru", "included": true, "keyword_filter": null, "note": "manual-seed" },
+    { "handle": "@danthecreatr", "creator": "dan-the-creator", "display_name": "Dan the Creator",
+      "cohort": "guru", "included": true, "keyword_filter": null, "note": "manual-seed" },
+    { "handle": "@makemoneymatt", "creator": "make-money-matt", "display_name": "Make Money Matt",
+      "cohort": "guru", "included": true, "keyword_filter": null, "note": "manual-seed" },
+    { "handle": "@kallawaymarketing", "creator": "kallaway", "display_name": "Kallaway",
+      "cohort": "guru", "included": true, "keyword_filter": null, "note": "manual-seed" },
+    { "handle": "@One-Person-Business", "creator": "one-person-business", "display_name": "One Person Business",
+      "cohort": "guru", "included": true, "keyword_filter": null, "note": "manual-seed" },
+    { "handle": "@JennyHoyos", "creator": "jenny-hoyos", "display_name": "Jenny Hoyos",
+      "cohort": "shorts-specialist", "included": true, "keyword_filter": null,
+      "note": "exemplar shorts; added 2026-07-23 for the shorts-launch corpus" },
+    { "handle": "@ThatNateBlack", "creator": "nate-black", "display_name": "Nate Black",
+      "cohort": "shorts-specialist", "included": true, "keyword_filter": null,
+      "note": "data-driven teaching; added 2026-07-23 for the shorts-launch corpus" },
+    { "handle": "@vidIQ", "creator": "vidiq", "display_name": "vidIQ",
+      "cohort": "guru", "included": true, "keyword_filter": null,
+      "note": "shorts/algorithm teaching; added 2026-07-23 for the shorts-launch corpus" },
+    { "handle": "@nicknimmin", "creator": "nick-nimmin", "display_name": "Nick Nimmin",
+      "cohort": "guru", "included": true, "keyword_filter": null,
+      "note": "small-channel tactics + packaging teaching; added 2026-07-23" },
+    { "handle": "@robertoblake", "creator": "roberto-blake", "display_name": "Roberto Blake",
+      "cohort": "guru", "included": true, "keyword_filter": null,
+      "note": "monetization + packaging teaching; added 2026-07-23" },
+    { "handle": "@FutureTechPilot", "creator": "future-tech-pilot", "display_name": "Future Tech Pilot",
+      "cohort": "midjourney-source", "included": true, "keyword_filter": null,
+      "note": "Midjourney prompting/features/styles (image+video); added 2026-07-23" },
+    { "handle": "@WadeMcMaster", "creator": "wade-mcmaster", "display_name": "Wade McMaster",
+      "cohort": "midjourney-source", "included": true, "keyword_filter": null,
+      "note": "Midjourney art styles + tutorials; added 2026-07-23" },
+    { "handle": "@TaoPrompts", "creator": "tao-prompts", "display_name": "Tao Prompts",
+      "cohort": "midjourney-source", "included": true, "keyword_filter": null,
+      "note": "Midjourney prompting + AI film/video workflows; added 2026-07-23" },
+    { "handle": "@tokenizedai", "creator": "tokenized-ai", "display_name": "Tokenized AI",
+      "cohort": "midjourney-source", "included": true, "keyword_filter": null,
+      "note": "Midjourney + AI video/creative (Runway/Luma); added 2026-07-23" }
   ],
+
   "bluesky": [
-    { "handle": "adamgrant.bsky.social", "display_name": "Adam Grant", "note": "app-seeded" }
+    { "handle": "adamgrant.bsky.social", "creator": "adam-grant", "display_name": "Adam Grant",
+      "cohort": "general-interest", "included": false, "keyword_filter": null,
+      "note": "out of corpus scope; same creator as the @bigthink YouTube entry" }
   ],
+
+  "instagram":        [],
+  "linkedin-profile": [],
+  "linkedin-company": [],
+  "facebook":         [],
+  "x":                [],
+
   "rss": [
-    { "_comment": "No RSS/Atom feed sources are seeded in the app today. Add feed URLs here as {\"handle\": \"https://example.com/feed.xml\", \"display_name\": \"...\"} to include them; the RSS adapter treats the feed URL as the handle." }
+    { "_comment": "RSS is served ONLY by download_brandintel.py (`python download_brandintel.py --platforms rss`). There is no RSS adapter in run_discovery_cron.build_adapters(), so a feed added here does NOT reach the daily discovery run, the handles table, or the morning email. Add feeds as {\"handle\": \"https://example.com/feed.xml\", \"display_name\": \"...\"} for the downloader only." }
   ]
 }

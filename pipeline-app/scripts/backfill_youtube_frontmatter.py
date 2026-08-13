@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline_app import artifacts  # noqa: E402
 from pipeline_app import discovery_youtube_api as youtube_api  # noqa: E402
+from pipeline_app import obs  # noqa: E402
 
 CORPUS_ROOT = Path(__file__).resolve().parents[2] / "output" / "brand-intel" / "youtube"
 
@@ -63,12 +64,26 @@ def parse_existing(path: Path) -> dict:
     if not meta:
         # Old format: metadata lived in a '## metadata' section as a list.
         meta = {k: v.strip() for k, v in _OLD_META_RE.findall(sections.get("metadata", ""))}
+    meta_parsed = bool(meta)
+
+    inferred: list[str] = []
+    video_id = meta.get("video_id")
+    if not video_id:
+        video_id = path.name.split("__", 1)[0]
+        inferred.append("video_id")
+    handle = meta.get("handle")
+    if not handle:
+        handle = f"@{path.parent.name}"
+        inferred.append("handle")
+    for field_name in ("channel", "upload_date", "fetched_at"):
+        if not meta.get(field_name):
+            inferred.append(field_name)
 
     return {
         "path": path,
-        "video_id": meta.get("video_id") or path.name.split("__", 1)[0],
+        "video_id": video_id,
         "title": title,
-        "handle": meta.get("handle") or f"@{path.parent.name}",
+        "handle": handle,
         "channel": meta.get("channel") or "",
         "upload_date": meta.get("upload_date") or "",
         "duration_s": meta.get("duration_s") or None,
@@ -76,6 +91,13 @@ def parse_existing(path: Path) -> dict:
         "fetched_at": meta.get("fetched_at") or "",
         "description": description,
         "transcript": transcript,
+        "metadata_source": meta.get("metadata_source") or "",
+        "view_count": meta.get("view_count"),
+        "like_count": meta.get("like_count"),
+        "comment_count": meta.get("comment_count"),
+        "manual_captions": meta.get("manual_captions"),
+        "meta_parsed": meta_parsed,
+        "inferred_fields": inferred,
     }
 
 
@@ -88,6 +110,15 @@ def _coerce_int(value) -> int | None:
         return None
 
 
+_SOURCE_RANK = {"": 0, "none": 0, "yt-dlp": 1, "youtube-data-api-v3": 2}
+
+
+def _keep(api_value, existing_value):
+    """API wins when it says anything; otherwise keep what the file already
+    held. Never replace a real value with None (D-04)."""
+    return existing_value if api_value is None else api_value
+
+
 def build_meta(existing: dict, api_record: dict | None) -> dict:
     api_record = api_record or {}
     has_transcript = bool(existing["transcript"].strip())
@@ -97,25 +128,38 @@ def build_meta(existing: dict, api_record: dict | None) -> dict:
     if duration is None:
         duration = _coerce_int(existing["duration_s"])
 
-    return {
+    derived_source = "youtube-data-api-v3" if api_record else (
+        "yt-dlp" if existing["upload_date"] else "none")
+    existing_source = existing["metadata_source"]
+    metadata_source = max(
+        (derived_source, existing_source),
+        key=lambda s: _SOURCE_RANK.get(s, 0),
+    )
+
+    out = {
         "video_id": video_id,
         "url": f"https://www.youtube.com/watch?v={video_id}",
         "handle": existing["handle"],
         "channel": api_record.get("channel") or existing["channel"],
         "upload_date": api_record.get("upload_date") or existing["upload_date"] or None,
         "duration_s": duration,
-        "view_count": api_record.get("view_count"),
-        "like_count": api_record.get("like_count"),
-        "comment_count": api_record.get("comment_count"),
-        "manual_captions": api_record.get("manual_captions"),
+        "view_count": _keep(api_record.get("view_count"), existing["view_count"]),
+        "like_count": _keep(api_record.get("like_count"), existing["like_count"]),
+        "comment_count": _keep(api_record.get("comment_count"), existing["comment_count"]),
+        "manual_captions": _keep(api_record.get("manual_captions"), existing["manual_captions"]),
         "transcript_status": "present" if has_transcript else "missing",
         # A transcript we already hold keeps its original provenance; only a
         # genuinely absent one is downgraded to "none".
         "transcript_source": existing["transcript_source"] if has_transcript else "none",
-        "metadata_source": "youtube-data-api-v3" if api_record else (
-            "yt-dlp" if existing["upload_date"] else "none"),
+        "metadata_source": metadata_source,
         "fetched_at": existing["fetched_at"] or None,
     }
+    # A plain old-format file with an empty field is a read absence, not an
+    # inference -- only surface metadata_inferred when the block itself
+    # failed to parse (D-05).
+    if not existing["meta_parsed"] and existing["inferred_fields"]:
+        out["metadata_inferred"] = sorted(existing["inferred_fields"])
+    return out
 
 
 def render(existing: dict, meta: dict) -> str:
@@ -139,7 +183,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--corpus-root", type=Path, default=CORPUS_ROOT)
     ap.add_argument("--no-api", action="store_true",
                     help="skip Data API enrichment; only reformat what is already on disk")
+    ap.add_argument("--rewrite-unparsed", action="store_true",
+                    help="also rewrite files whose metadata block did not parse; "
+                         "their inferred fields are recorded in metadata_inferred")
     args = ap.parse_args(argv)
+
+    if not args.no_api and youtube_api.api_key() is None:
+        obs.log("backfill.preflight_failed", level="error", reason="no_api_key")
+        print(
+            "! refusing to run: Data API enrichment was requested but no key is "
+            f"configured ({youtube_api.KEY_ENV_VAR} env var or "
+            f"{youtube_api.KEY_FILE.name}).\n"
+            "  Without a key every record would be rewritten with null view/like/"
+            "comment counts and a downgraded metadata_source, over a git-ignored "
+            "corpus with no recovery path.\n"
+            "  Set the key, or pass --no-api to reformat on-disk data only.",
+            file=sys.stderr,
+        )
+        return 2
 
     if not args.corpus_root.exists():
         print(f"! corpus root not found: {args.corpus_root}", file=sys.stderr)
@@ -149,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     if not files:
         print(f"no corpus files under {args.corpus_root}")
         return 0
+    unparsed = [f for f in files if not f["meta_parsed"]]
 
     api_records: dict[str, dict] = {}
     if not args.no_api:
@@ -157,9 +219,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"querying Data API for {len(set(ids))} videos (~{calls} quota units)...")
         api_records = youtube_api.fetch_metadata(ids)
         print(f"  got metadata for {len(api_records)}/{len(set(ids))}")
+        unique = len(set(ids))
+        if unique and not api_records:
+            obs.log("backfill.enrichment_total_miss", level="error", requested=unique)
+            print(
+                f"! refusing to write: Data API enrichment returned 0 of {unique} "
+                "records. A key is configured, so this is an exhausted quota, a "
+                "revoked key, or a network failure -- not an empty result.\n"
+                "  Nothing has been written. Re-run when the API is reachable, or "
+                "pass --no-api to reformat on-disk data only.",
+                file=sys.stderr,
+            )
+            return 2
 
     missing = enriched = 0
+    failed: list[tuple[Path, str]] = []
     for existing in files:
+        if not existing["meta_parsed"] and not args.rewrite_unparsed:
+            continue                        # counted below, never written
         record = api_records.get(existing["video_id"])
         meta = build_meta(existing, record)
         if record:
@@ -169,16 +246,35 @@ def main(argv: list[str] | None = None) -> int:
         if args.apply:
             path = existing["path"]
             tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(render(existing, meta), encoding="utf-8")
-            tmp.replace(path)
+            try:
+                tmp.write_text(render(existing, meta), encoding="utf-8")
+                tmp.replace(path)
+            except Exception as exc:  # noqa: BLE001 -- one bad file must not
+                # abandon the corpus half-converted; the counter and the exit
+                # code are what make the partial state visible (D-04).
+                failed.append((path, f"{type(exc).__name__}: {exc}"))
+                tmp.unlink(missing_ok=True)
+                obs.log("backfill.file_write_failed", level="error",
+                        path=str(path), error=str(exc))
+                print(f"  !! {path.name}: {exc}", file=sys.stderr)
 
     verb = "rewrote" if args.apply else "would rewrite"
     print(f"\n{verb} {len(files)} files")
     print(f"  enriched from Data API : {enriched}")
     print(f"  transcript missing     : {missing}")
     print(f"  transcript present     : {len(files) - missing}")
+    print(f"  failed to write        : {len(failed)}")
+    print(f"  metadata did not parse : {len(unparsed)}"
+          + ("" if args.rewrite_unparsed else "  (skipped; pass --rewrite-unparsed to convert)"))
+    if failed:
+        for path, why in failed:
+            print(f"    - {path}: {why}")
     if not args.apply:
         print("\nDry run -- re-run with --apply to write.")
+    unparsed_skipped = 0 if args.rewrite_unparsed else len(unparsed)
+    enrichment_incomplete = (not args.no_api) and enriched < len(files)
+    if failed or enrichment_incomplete or unparsed_skipped:      # unparsed: T18
+        return 3
     return 0
 
 
