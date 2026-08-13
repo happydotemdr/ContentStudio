@@ -940,9 +940,6 @@ def check_style_reference(shots: list[Shot]) -> list[Finding]:
     ]
 
 
-MOODBOARD_FLAG_RE = re.compile(r"--p\b")
-
-
 def check_style_mechanism(shots: list[Shot]) -> list[Finding]:
     """C17: every non-PLATE shot carries a {style:...} slot.
 

@@ -794,6 +794,24 @@ def test_c17_accepts_only_a_style_slot_not_literal_sref_or_moodboard():
     assert check_style_mechanism([shot]) == []
 
 
+def test_c17_rejects_a_bare_p_as_a_style_lock():
+    """F-13/C-80. The old test enumerated C17's accepted mechanisms without
+    distinguishing a recorded lock from an unrecorded one -- exactly the
+    distinction the finding turns on. `--p` with no value is legitimate Midjourney
+    syntax ('apply my active personalization profile') and stays legal for C16, but
+    the look then depends on whichever operator's profile is active at paste time:
+    unrecorded, unreproducible, invisible to the Library. Two characters used to
+    defeat both style checks at once."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --p")
+    assert check_style_reference([shot]) == []          # C16: legal syntax
+    assert [f.check for f in check_style_mechanism([shot])] == ["C17"]
+
+
+def test_c17_rejects_a_valued_p_as_a_style_lock_too():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --p m72678")
+    assert [f.check for f in check_style_mechanism([shot])] == ["C17"]
+
+
 def test_c17_exempts_plate_shots():
     shot = _shot(
         "a flat teal gradient ground, no people, No Text. --ar 9:16 --s 200",
