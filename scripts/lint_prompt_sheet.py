@@ -284,7 +284,49 @@ COVER_HEADING_RE = re.compile(
 # document -- a document-wide search would also match this text sitting inside a
 # ```text prompt fence or in unrelated prose, silently satisfying C19 with no real
 # cover decision made.
-COVER_REUSE_RE = re.compile(r"^\s*Cover\s*=\s*Hook\b", re.IGNORECASE)
+# Extended to optionally capture an explicit shot number ("...beat still #1") so
+# the reuse declaration can be resolved to a real shot (finding C-86) rather than
+# merely detected as present.
+COVER_REUSE_RE = re.compile(r"^\s*Cover\s*=\s*Hook\b.*?#?(\d+)?", re.IGNORECASE)
+
+
+def cover_heading_present(text: str) -> bool:
+    """Whether a '### Cover — ...' heading exists anywhere, regardless of whether
+    its prompt fence could be read. Distinguishes 'no cover at all' from 'a cover
+    heading exists but ships unlinted' (finding C-78)."""
+    return any(COVER_HEADING_RE.match(line) for line in text.splitlines())
+
+
+def _cover_reuse_declaration(text: str) -> re.Match | None:
+    """The 'Cover = Hook ...' declaration line, matched outside any prompt fence, or
+    None. Same fence-aware scan as declares_cover_reuse, but returns the match
+    itself so the caller can resolve which shot is being reused (finding C-86)."""
+    in_fence = False
+    for line in text.splitlines():
+        if OPEN_FENCE_RE.match(line):
+            in_fence = True
+            continue
+        if CLOSE_FENCE_RE.match(line):
+            in_fence = False
+            continue
+        if in_fence:
+            continue
+        match = COVER_REUSE_RE.match(line)
+        if match:
+            return match
+    return None
+
+
+def _hook_shot_for_reuse(shots: list[Shot], match: "re.Match[str]") -> Shot | None:
+    """The shot a 'Cover = Hook ...' declaration reuses, or None if it names nothing
+    real. Tries the explicit shot number first (if the declaration carried one),
+    then falls back to any shot whose beat starts with 'Hook'."""
+    index_str = match.group(1)
+    if index_str is not None:
+        named = next((s for s in shots if s.index == int(index_str)), None)
+        if named is not None:
+            return named
+    return next((s for s in shots if s.beat.startswith("Hook")), None)
 
 
 def parse_cover(text: str) -> Shot | None:
@@ -327,37 +369,22 @@ def _count_cover_headings(text: str) -> int:
 def declares_cover_reuse(text: str) -> bool:
     """True if the sheet states, outside any prompt fence, that the cover reuses the Hook.
 
-    Scans line by line and skips anything between a ```text open fence and its
-    close, so a stray 'Cover = Hook...' sitting inside a pasted prompt body (i.e.
-    describing imagery, not declaring a decision) can't satisfy C19. Deliberately
-    NOT confined to a 'COVER / THUMBNAIL' section header: the line is a fixed,
-    specific declaration string ('Cover = Hook...') that nothing else in the sheet
-    format would produce by accident, and Task 6's fixture carries it at the top
-    level with no such section wrapping it.
+    Deliberately NOT confined to a 'COVER / THUMBNAIL' section header: the line is a
+    fixed, specific declaration string ('Cover = Hook...') that nothing else in the
+    sheet format would produce by accident.
     """
-    in_fence = False
-    for line in text.splitlines():
-        if OPEN_FENCE_RE.match(line):
-            in_fence = True
-            continue
-        if CLOSE_FENCE_RE.match(line):
-            in_fence = False
-            continue
-        if in_fence:
-            continue
-        if COVER_REUSE_RE.match(line):
-            return True
-    return False
+    return _cover_reuse_declaration(text) is not None
 
 
 def check_cover_present(text: str) -> list[Finding]:
     """C19: the cover decision is stated, never silently omitted -- and stated once.
 
-    prompt-sheet-format.md §7 already requires this of every emitted sheet `[I]`; until
-    now nothing enforced it. A sheet with two '### Cover — ...' headings (a stale draft
-    left behind plus the real one) has parse_cover silently linting only the first and
-    leaving the second invisible to Gate C, so that ambiguity is reported here rather
-    than resolved silently.
+    prompt-sheet-format.md §7 already requires this of every emitted sheet `[I]`. A
+    sheet with two '### Cover — ...' headings (a stale draft left behind plus the
+    real one) is reported rather than resolved silently. A cover heading whose
+    prompt fence cannot be read is reported as present-but-unlinted (C-78), not
+    conflated with no cover at all. A 'Cover = Hook ...' reuse declaration must name
+    a shot that actually exists (C-86), not just be present as text.
     """
     findings: list[Finding] = []
     heading_count = _count_cover_headings(text)
@@ -370,8 +397,36 @@ def check_cover_present(text: str) -> list[Finding]:
                 "exactly one cover decision. Remove the stale draft.",
             )
         )
-    if parse_cover(text) is not None or declares_cover_reuse(text):
+
+    if parse_cover(text) is not None:
         return findings
+
+    if cover_heading_present(text):
+        findings.append(
+            Finding(
+                "C19",
+                None,
+                "a '### Cover — ...' heading is present but its prompt fence is "
+                "unreadable (expected ```text); the cover would ship unlinted",
+            )
+        )
+        return findings
+
+    reuse_match = _cover_reuse_declaration(text)
+    if reuse_match is not None:
+        shots, _world = parse_sheet(text)
+        if _hook_shot_for_reuse(shots, reuse_match) is not None:
+            return findings
+        findings.append(
+            Finding(
+                "C19",
+                None,
+                "'Cover = Hook ...' is declared but no Hook shot exists to reuse; "
+                "name a real shot or emit a '### Cover — ...' block instead",
+            )
+        )
+        return findings
+
     findings.append(
         Finding(
             "C19",
@@ -410,7 +465,8 @@ def _read_fenced_prompt(lines: list[str], start: int) -> tuple[list[str], int]:
     """Read the next ```text fence after `start`. Returns (non-empty lines, index after it)."""
     i = start
     while i < len(lines) and not OPEN_FENCE_RE.match(lines[i]):
-        if SHOT_HEADING_RE.match(lines[i]):
+        if (SHOT_HEADING_RE.match(lines[i]) or COVER_HEADING_RE.match(lines[i])
+                or LOOSE_COVER_HEADING_RE.match(lines[i])):
             return [], i
         i += 1
     if i >= len(lines):

@@ -1063,8 +1063,13 @@ def test_c19_fires_when_no_cover_decision_is_stated():
 
 
 def test_c19_passes_for_either_cover_branch():
+    """C-86: the reuse branch only passes when the declaration resolves to a real
+    Hook shot -- SHEET's Shot 1 is 'Hook (0-3s)', so this is a backed declaration,
+    not the bare-text tautology the old version of this test asserted."""
     assert check_cover_present(COVER_BLOCK) == []
-    assert check_cover_present("Cover = Hook beat still #1, no separate generation.") == []
+    assert check_cover_present(
+        SHEET + "\nCover = Hook beat still #1, no separate generation.\n"
+    ) == []
 
 
 def test_lint_cover_applies_format_and_style_checks_but_not_sequence():
@@ -1216,6 +1221,41 @@ def test_the_two_fixtures_cover_both_cover_branches():
     worked = (FIXTURES / "worked_example_sheet.md").read_text(encoding="utf-8")
     assert parse_cover(worked) is None
     assert declares_cover_reuse(worked) is True
+
+
+def test_a_cover_heading_with_an_unreadable_fence_is_a_finding_not_silence():
+    """C-78: ```markdown instead of ```text made parse_cover return None, which is
+    the same value as 'this sheet has no cover'."""
+    text = SHEET + "\n### Cover — Hook · Register A · DETAIL · MACRO · LOW\n\n```markdown\nx\n```\n"
+    findings = check_cover_present(text)
+    assert [f.check for f in findings] == ["C19"]
+    assert "unreadable" in findings[0].message
+
+
+def test_an_unreadable_cover_is_distinguishable_from_no_cover_at_all():
+    unreadable = SHEET + "\n### Cover — Hook · Register A · DETAIL · MACRO · LOW\n\n```markdown\nx\n```\n"
+    absent = SHEET
+    assert check_cover_present(unreadable)[0].message != check_cover_present(absent)[0].message
+
+
+def test_c19_requires_the_reused_hook_shot_to_exist():
+    """C-86: the literal text 'cover = hook' on its own line satisfied C19 for any
+    sheet, with nothing checking that a hook shot existed."""
+    text = "PER-SHOT PROMPTS\n\nCover = Hook beat still #1\n"
+    assert "C19" in codes(check_cover_present(text))
+
+
+def test_c19_accepts_a_reuse_declaration_backed_by_a_real_hook_shot():
+    """Anti-tautology control."""
+    assert check_cover_present(WORKED.read_text(encoding="utf-8")) == []
+
+
+def test_a_mistyped_shot_fence_cannot_swallow_the_cover_prompt():
+    """_read_fenced_prompt broke on SHOT_HEADING_RE but not COVER_HEADING_RE."""
+    text = SHEET.replace("```text\nluminous", "```txt\nluminous") + \
+        "\n### Cover — Hook · Register A · DETAIL · MACRO · LOW\n\n```text\ncover body here\n```\n"
+    cover = parse_cover(text)
+    assert cover is not None and cover.prompt.startswith("cover body")
 
 
 # --- C20: the slot label must exist in the Style Library ----------------------
