@@ -8,6 +8,10 @@ from scripts import migrate_handles_from_manifest as mig
 from scripts.migrate_handles_from_manifest import derive_cohort, migrate
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SHIPPED_MANIFEST = REPO_ROOT / "manifests" / "brand_sources.json"
+
+
 @pytest.fixture
 def conn(tmp_path: Path):
     db_path = tmp_path / "pipeline.db"
@@ -165,9 +169,6 @@ def test_every_platform_key_is_seeded_not_just_youtube_and_bluesky(conn, tmp_pat
 
 
 def test_shipped_manifest_declares_every_platform_and_resolves_every_creator():
-    REPO_ROOT = Path(__file__).resolve().parents[2]
-    SHIPPED_MANIFEST = REPO_ROOT / "manifests" / "brand_sources.json"
-
     data = json.loads(SHIPPED_MANIFEST.read_text(encoding="utf-8"))
     mig.validate_keys(data)                       # raises if a key is unknown or missing
     creators = data["creators"]
