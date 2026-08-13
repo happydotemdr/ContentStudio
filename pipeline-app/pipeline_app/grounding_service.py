@@ -1,12 +1,18 @@
 import datetime
 import hashlib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import yaml
 
 from pipeline_app.artifacts import _atomic_write_text
 from pipeline_app import obs
+
+_POINTER_ROOT = "rgs-briefs"
+
+
+class InvalidPointerError(Exception):
+    """pointer.yaml exists but is not a usable pointer."""
 
 
 def _hash_file(path: Path) -> str:
@@ -98,11 +104,38 @@ def write_pointer(stage_dir: Path, rgs_brief_relpath: str, repo_root: Path) -> P
 
 
 def read_pointer(stage_dir: Path) -> str | None:
+    """The brief path a grounding stage points at, or None if there is no
+    pointer at all. A pointer that EXISTS but is unusable raises -- returning
+    None for both would put a hand-broken pointer and an un-run stage in the
+    same bucket (A-82)."""
     pointer_path = stage_dir / "pointer.yaml"
     if not pointer_path.exists():
         return None
-    data = yaml.safe_load(pointer_path.read_text(encoding="utf-8")) or {}
-    return data.get("rgs_brief_path")
+    try:
+        data = yaml.safe_load(pointer_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise InvalidPointerError(f"{pointer_path}: not valid YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise InvalidPointerError(
+            f"{pointer_path}: parsed to "
+            f"{'nothing' if data is None else type(data).__name__}, not a mapping"
+        )
+    value = data.get("rgs_brief_path")
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidPointerError(f"{pointer_path}: rgs_brief_path is missing or not a string")
+    normalised = value.replace("\\", "/")
+    parts = PureWindowsPath(normalised).parts
+    if (
+        PureWindowsPath(normalised).is_absolute()
+        or PurePosixPath(normalised).is_absolute()
+        or ".." in parts
+        or parts[:1] != (_POINTER_ROOT,)
+    ):
+        raise InvalidPointerError(
+            f"{pointer_path}: rgs_brief_path {value!r} must be a relative path under "
+            f"{_POINTER_ROOT}/ -- refusing to read outside the brief directory"
+        )
+    return value
 
 
 def verify_pointer(stage_dir: Path, repo_root: Path) -> PointerStatus:

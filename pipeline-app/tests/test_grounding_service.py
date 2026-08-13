@@ -6,6 +6,7 @@ import yaml
 
 from pipeline_app import grounding_service
 from pipeline_app.grounding_service import (
+    InvalidPointerError,
     classify_brief_change,
     read_pointer,
     snapshot_rgs_briefs,
@@ -188,3 +189,56 @@ def test_verify_pointer_names_each_broken_state_distinctly(tmp_path, state, setu
         stage_dir.mkdir(parents=True, exist_ok=True)
     setup(stage_dir, tmp_path)
     assert verify_pointer(stage_dir, tmp_path).state == state
+
+
+@pytest.mark.parametrize("content,fragment", [
+    ("just a scalar\n", "not a mapping"),
+    ("- a\n- b\n", "not a mapping"),
+    ("rgs_brief_path: 42\n", "not a string"),
+    ("rgs_brief_path: null\n", "not a string"),
+    ("other_key: x\n", "not a string"),
+    ("rgs_brief_path: 'unterminated\n", "not valid YAML"),
+])
+def test_a_malformed_pointer_raises_a_named_error_not_attributeerror(tmp_path, content, fragment):
+    """A-82: `yaml.safe_load(...) or {}` guarded only the empty case -- a bare
+    scalar or a list parsed to a non-mapping and the immediate .get() raised
+    AttributeError and a bare 500."""
+    stage_dir = tmp_path / "00-grounding"
+    stage_dir.mkdir()
+    (stage_dir / "pointer.yaml").write_text(content, encoding="utf-8")
+    with pytest.raises(InvalidPointerError) as exc:
+        read_pointer(stage_dir)
+    assert fragment in str(exc.value)
+
+
+@pytest.mark.parametrize("value", [
+    "C:/Windows/System32/drivers/etc/hosts",
+    "/etc/passwd",
+    "rgs-briefs/../../pipeline-app/pipeline.db",
+    "docs/style-library.md",
+    "../secrets.md",
+])
+def test_a_pointer_outside_rgs_briefs_is_refused(tmp_path, value):
+    """resolve_latest_artifact joins the stored value with repo_root / pointer,
+    and pathlib lets an ABSOLUTE value override the base entirely -- a
+    hand-repaired pointer could make the app read and render a file anywhere on
+    the machine. write_pointer was non-atomic (A-63), so a hand-repaired
+    pointer is a realistic operator action."""
+    stage_dir = tmp_path / "00-grounding"
+    stage_dir.mkdir()
+    (stage_dir / "pointer.yaml").write_text(
+        f"rgs_brief_path: {value!r}\n", encoding="utf-8")
+    with pytest.raises(InvalidPointerError) as exc:
+        read_pointer(stage_dir)
+    assert "rgs-briefs" in str(exc.value)
+
+
+def test_an_absent_pointer_is_distinguishable_from_a_broken_one(tmp_path):
+    """DISTINGUISHABILITY: None means "no pointer", never "the pointer is
+    garbage"."""
+    stage_dir = tmp_path / "00-grounding"
+    stage_dir.mkdir()
+    assert read_pointer(stage_dir) is None
+    (stage_dir / "pointer.yaml").write_text("[]\n", encoding="utf-8")
+    with pytest.raises(InvalidPointerError):
+        read_pointer(stage_dir)
