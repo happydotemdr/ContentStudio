@@ -1979,9 +1979,26 @@ package is called done (package verification §7 item 1 requires all 26 to pass)
   accept the narrower list, or find a more precise match (e.g. requiring `"empty field"` NOT be
   preceded by descriptive context naming real objects) if the term is wanted back.
 
-Both T6R items, T11R-01, and T18R-01 are carried forward to the final whole-branch review for
-this package, alongside any Minor findings deferred during the task loop. None block continuing
-to T19 and beyond.
+- **T19R-01 (Minor, plan comment inaccurate, not fixed).** T19's own checklist text claims T6's
+  `plate-relabel` mutation case "fails on C15 as expected (the relabelled shot keeps its non-PLATE
+  `shot_class`)". This is factually wrong and was confirmed wrong twice, independently: (1) reading
+  the mutation's own find/replace strings (`"· Register B · WORLD ·"` → `"· Register PLATE ·
+  PLATE ·"`) shows BOTH register and shot_class change together, so C15's `shot_class != "PLATE"`
+  guard structurally cannot fire; (2) T19's implementer ran the mutation both before and after this
+  task landed and confirmed empirically: pre-task, the mutated sheet fully PASSed (0 findings, not
+  a C15 finding — matching T6's own earlier report, not the plan's comment); post-task, the sheet
+  now correctly fails, but via `[C14] shot 3: --s 520 outside Register PLATE's band 0-250` — the
+  new PLATE stylize band this task adds, not C22 (only 1 of 11 shots is PLATE, well under the 1/3
+  cap) and not C15. `plate-relabel` therefore remains one of the tracked-red mutation-test case
+  IDs — the sheet is correctly rejected, but the test's own `expected="C15"` assertion doesn't
+  match the actual `[C14]` output, so the parametrized case stays red for an accidentally-correct
+  reason (the gate works; the test's expected check code is stale). **Not fixed here** — the fix,
+  if wanted, is a one-line change to `MUTATIONS`' `plate-relabel` entry (`"C15"` → `"C14"`), the
+  same class of anchor-retargeting fix as T6R-01, filed for the same review process.
+
+Both T6R items, T11R-01, T18R-01, and T19R-01 are carried forward to the final whole-branch
+review for this package, alongside any Minor findings deferred during the task loop. None block
+continuing to T20 and beyond.
 
 ---
 
