@@ -108,11 +108,24 @@ on `MigrateResult` stringifying as a plain int, and T3's plan text redefines `Mi
 silently started printing a dataclass repr instead of a number, with no test catching it. Fixed by moving
 the real 5-field dataclass to T2 (§0 amendment 3 there) and having T3 reuse it rather than redefine it.
 
-`compile_plan.py` baseline for this plan, run after all four fixes above were applied to the plan text
-itself: **40 python blocks, 32 compile, 8 fail.** All 8 failures were individually read and confirmed to
+**Amendment 6 (found during T2's fix round for amendment 5, not pre-review, 2026-08-12):** amendment 5
+moved `migrate()`'s `int → MigrateResult` return-type change from T3 to T2, but the plan's T3 section
+still carried the *consequence* of that type change — the instruction to update the three pre-existing
+collision tests' `count == N` assertions to `result.seeded == N` (originally its own "§0 amendment 2" at
+T3). The implementer applied amendment 5's dataclass fix, re-ran the suite, got exactly the 3 failures the
+old T3-scoped instruction would have fixed — and correctly stopped and reported BLOCKED instead of
+guessing whether to pull T3's scope into T2 or commit red tests, since the plan text as written assigned
+that fix to a different task than the one now producing the breakage. This is the same class of error
+amendment 5 itself was fixing, self-inflicted this time: **the corrections a controller writes under
+time pressure contain the same defect class they were written to catch** (an explicit, expected risk
+named in this programme's own governing brief). Fixed by moving the assertion-update instruction to T2 as
+its own "§0 amendment 4", and marking T3's original "§0 amendment 2" superseded with a pointer.
+
+`compile_plan.py` baseline for this plan, run after all six amendments above were applied to the plan text
+itself: **41 python blocks, 33 compile, 8 fail.** All 8 failures were individually read and confirmed to
 be non-executable insertion fragments by design (mid-function splices with `...` placeholders, bare
 dict-literal field replacements, a partial `except` continuation) — the same pattern P2's own baseline
-described — at lines 452, 1249, 1314, 1399, 1409, 1493, 1590, 1625, none inside a standalone "Implement"
+described — at lines 482, 1317, 1382, 1467, 1477, 1561, 1658, 1693, none inside a standalone "Implement"
 block meant to be pasted whole. (The §3.3 worked manifest is JSON, not a `python` fence, and is not
 counted here; it was hand-validated with `json.loads` separately. Re-run
 `compile_plan.py docs/superpowers/plans/remediation/P10-roster.md` after any further plan edit — line
@@ -541,6 +554,20 @@ would silently print a dataclass repr instead of a number the moment T3 replaces
 re-checks that call site). T3's own section below no longer defines `MigrateResult` from scratch — it
 reuses this one and only changes `migrate()`'s body and the two new stub functions.
 
+**§0 amendment 4 (required, not optional — the type change moved from T3 to this task by amendment 3
+above, and this consequence has to move with it).** `migrate()`'s return type is now `MigrateResult` as of
+*this* task, not T3, so the three pre-existing collision tests' `count = migrate(...); assert count == N`
+assertions break here, not at T3 — `MigrateResult(seeded=N) == N` is `False` (verified empirically, dataclass
+equality does not cross types). Update all three in this same commit:
+- `test_migrate_skips_a_handle_colliding_with_one_already_registered`: `count = migrate(...); assert count == 0` → `result = migrate(...); assert result.seeded == 0`
+- `test_migrate_skips_a_collision_between_two_manifest_entries`: `count = migrate(...); assert count == 1` → `result = migrate(...); assert result.seeded == 1`
+- `test_migrate_seeds_the_rest_despite_one_collision`: `count = migrate(...); assert count == 1` → `result = migrate(...); assert result.seeded == 1`
+
+Nothing else in those three tests changes (the manifest payloads, the collision assertions on
+`db.get_handle_by_platform_and_handle`, and the stderr assertions are all unaffected). T3's own section
+below no longer touches these three tests at all — its earlier "§0 amendment 2" instruction to do this at
+T3 is superseded; see the note there.
+
 - [ ] **Run** → pass. **Commit:** `fix(roster): reject an unrecognized manifest platform key instead of dropping it`
 
 ---
@@ -610,14 +637,12 @@ def find_drift(conn, data: dict) -> list[tuple[str, str]]:
     return []
 ```
 
-**§0 amendment 2 (required, not optional).** Update the three pre-existing collision tests' final
-assertions for `migrate()`'s new return type — same behavior under test, different syntax:
-- `test_migrate_skips_a_handle_colliding_with_one_already_registered`: `count = migrate(...); assert count == 0` → `result = migrate(...); assert result.seeded == 0`
-- `test_migrate_skips_a_collision_between_two_manifest_entries`: `count = migrate(...); assert count == 1` → `result = migrate(...); assert result.seeded == 1`
-- `test_migrate_seeds_the_rest_despite_one_collision`: `count = migrate(...); assert count == 1` → `result = migrate(...); assert result.seeded == 1`
-
-Nothing else in those three tests changes (the manifest payloads, the collision assertions on
-`db.get_handle_by_platform_and_handle`, and the stderr assertions are all unaffected).
+**§0 amendment 2 — SUPERSEDED by amendment 4 (see T2 above).** This used to be the task that updated the
+three collision tests' `count == N` assertions to `result.seeded == N`. It no longer is: amendment 3 moved
+`MigrateResult`'s type change itself to T2, so the assertion breakage happens there too, and T2's own
+amendment 4 already fixes it. By the time this task is dispatched, those three tests already read
+`result.seeded == N` and already pass — do not touch them here, and do not be surprised they are not `int`
+comparisons anymore.
 
 - [ ] **Run** → pass. **Commit:** `feat(roster): seed every registry platform from the manifest`
 
@@ -1769,11 +1794,13 @@ silently skipped.
 
 No other test in either owned file encodes a defect. `test_migrate_skips_a_handle_colliding_with_one_already_registered`,
 `test_migrate_skips_a_collision_between_two_manifest_entries` and `test_migrate_seeds_the_rest_despite_one_collision`
-are all correct and must keep passing in *substance* through T2's and T3's changes — treat them as the regression
-lock on `_seed_entry`. Their *syntax* does change at each task per §0's amendments: at T2 their manifest fixture
-routes through the now-fixed `_manifest()` helper (no assertion change), and at T3 their final assertion moves from
+are all correct and must keep passing in *substance* through T2's changes — treat them as the regression
+lock on `_seed_entry`. Their *syntax* does change at T2 (both parts, per §0 amendments 2 and 4): their
+manifest fixture routes through the now-fixed `_manifest()` helper, and their final assertion moves from
 `count = migrate(...); assert count == N` to `result = migrate(...); assert result.seeded == N` (`migrate()`'s
-return type changes from `int` to `MigrateResult`, which does not compare equal to a bare int).
+return type becomes `MigrateResult` at T2, not T3 — see amendment 3 — and it does not compare equal to a
+bare int). By the time T3 is dispatched, all three already read `result.seeded == N` and T3 does not touch
+them.
 
 ---
 
