@@ -56,22 +56,6 @@ C16 now catches that class of defect at the gate. This file is where the fix lan
   harvested_at: <YYYY-MM-DD> | —
 ```
 
-> **MACHINE-READ — do not reformat.** `scripts/lint_prompt_sheet.py:parse_style_library` walks
-> **MACHINE-READ — do not reformat.** `scripts/lint_prompt_sheet.py:parse_style_library` walks
-> this file to resolve Gate C's **C20**. It requires the section heading to be exactly
-> `## Entries`, and every entry heading to be exactly `### <lowercase-kebab-label>` with nothing
-> else on the line — no parenthetical, no capitals. Every ``` fence must be closed. Renaming the
-> section, annotating a heading or leaving a fence open drops entries and makes C20 fail every
-> sheet that binds them, naming the *sheet* as the problem.
-
-
-> this file to resolve Gate C's **C20**. It requires the section heading to be exactly
-> `## Entries`, and every entry heading to be exactly `### <lowercase-kebab-label>` with nothing
-> else on the line — no parenthetical, no capitals. Every ``` fence must be closed. Renaming the
-> section, annotating a heading or leaving a fence open drops entries and makes C20 fail every
-> sheet that binds them, naming the *sheet* as the problem.
-
-
 A `scope: per-short` entry carries a **codes table** instead of a single `code:`, one row per
 Short slug.
 
