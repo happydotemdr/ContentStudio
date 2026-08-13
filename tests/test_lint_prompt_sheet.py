@@ -24,17 +24,84 @@ from lint_prompt_sheet import (  # noqa: E402
     check_prompt_clone,
     check_prompt_density,
     check_format,
+    REQUIRED_ASPECT_RATIO,
     check_vocabulary,
     check_style_reference,
     check_style_mechanism,
+    sheet_declares_slots,
     check_slots,
     check_slot_labels,
     parse_style_library,
+    parse_style_library_checked,
     check_cover_present,
+    check_shot_count,
+    check_plate_budget,
     lint_cover,
     lint,
     main,
+    DEFAULT_STYLE_LIBRARY,
+    EXIT_PASS,
+    EXIT_FINDINGS,
+    EXIT_USAGE,
+    EXIT_UNREADABLE_INPUT,
+    EXIT_UNPARSEABLE,
+    EXIT_MISSING_DEPENDENCY,
 )
+
+from dataclasses import asdict
+
+
+def test_finding_defaults_to_a_blocking_kind():
+    """gates.py blocks on `kind != "skipped"`. Gate C must never emit "skipped":
+    the blocking rule has to be contractual, not an accident of a missing key."""
+    finding = Finding("C1", 3, "shot class repeats")
+    assert finding.kind == "fail"
+    assert asdict(finding)["kind"] == "fail"
+
+
+def test_finding_carries_a_beat_the_stage_template_can_render():
+    """stage.html renders finding.beat. A Gate C finding without one displays as
+    '[C18]: <message>' with no shot number, while the CLI prints 'shot 7:'."""
+    assert asdict(Finding("C1", 7, "m"))["beat"] == "shot 7"
+    assert asdict(Finding("C19", None, "m"))["beat"] == "sheet"
+    assert asdict(Finding("C16", 0, "m"))["beat"] == "cover"
+
+
+def test_no_gate_c_check_can_emit_a_skipped_kind():
+    """Distinguishability: Gate C has no known-unknown concept. If one is ever added,
+    gates.py's blocking rule silently stops blocking it — so assert it cannot exist."""
+    shots, world = parse_sheet(SHEET.replace("--s 95", "--s 9500"))
+    assert {f.kind for f in lint(shots, world)} <= {"fail", "parse"}
+
+
+def test_a_broken_shot_heading_produces_a_blocking_parse_finding():
+    """C-70, the flagship. Breaking Shot 4's em-dash to a hyphen made the shot
+    invisible to all of C1-C20 and Gate C printed PASS."""
+    text = WORKED.read_text(encoding="utf-8").replace(
+        "### Shot 4 — Build", "### Shot 4 - Build", 1
+    )
+    parse = parse_sheet(text)
+    assert [f.check for f in parse.findings] == ["PARSE"]
+    assert "Shot 4" in parse.findings[0].message
+    assert parse.findings[0].kind == "parse"
+
+
+def test_a_broken_heading_is_distinguishable_from_a_sheet_that_has_that_shot():
+    """Distinguishability: the broken sheet must not present as the good sheet
+    minus one shot -- it must present as a sheet that failed to parse."""
+    good = WORKED.read_text(encoding="utf-8")
+    broken = good.replace("### Shot 4 — Build", "### Shot 4 - Build", 1)
+    assert parse_sheet(good).findings == []
+    assert parse_sheet(broken).findings != []
+
+
+def test_parse_sheet_still_unpacks_as_the_two_tuple_every_caller_expects():
+    """pipeline_app/gates.py does `shots, sheet_world = linter.parse_sheet(text)`.
+    That call site belongs to P3 and must keep working untouched."""
+    shots, world = parse_sheet(SHEET)
+    assert len(shots) == 2
+    assert world["register_a_sport"] == "club soccer"
+
 
 SHEET = """\
 === VISUAL PROMPT SHEET — demo ===
@@ -281,9 +348,72 @@ def test_c8_flags_register_a_without_a_signature_object():
 
 def test_c8_passes_with_sport_and_signature_object():
     shot = make_shot(
-        1, "A", prompt="a club soccer pitch, goal net behind, No Text. --ar 9:16"
+        1, "A",
+        prompt="a club soccer pitch, goal net behind, corner flag, No Text. --ar 9:16",
     )
     assert "C8" not in codes(check_world_lock([shot], WORLD))
+
+
+def test_c8_does_not_match_the_sport_inside_a_larger_word():
+    shot = make_shot(1, "A", prompt="a clubsoccerboot on turf, goal net, corner flag, "
+                                    "No Text. --ar 9:16 --raw --s 95")
+    assert "C8" in codes(check_world_lock([shot], WORLD))
+
+
+def test_c8_requires_two_signature_objects_not_one():
+    # Non-MACRO scale: the 2-object floor applies at full strength here (see
+    # test_c8_macro_shots_get_a_one_object_floor for the MACRO carve-out).
+    shot = make_shot(1, "A", scale="WIDE",
+                      prompt="club soccer, a goal net alone in fog, "
+                             "No Text. --ar 9:16 --raw --s 95")
+    findings = check_world_lock([shot], WORLD)
+    assert "C8" in codes(findings)
+    assert "at least 2" in [f.message for f in findings if f.check == "C8"][0]
+
+
+def test_c8_passes_a_prompt_that_actually_depicts_the_world():
+    shot = make_shot(1, "A", scale="WIDE",
+                      prompt="club soccer, a goal net, a corner flag, "
+                             "No Text. --ar 9:16 --raw --s 95")
+    assert "C8" not in codes(check_world_lock([shot], WORLD))
+
+
+def test_c8_macro_shots_get_a_one_object_floor():
+    """T21 deviation from the literal brief: both real MIGRATED_PAIRS fixtures'
+    MACRO 'Hook'/'Payoff' close-ups (and passing_sheet.md's CLOSE-scale cover)
+    name the sport plus exactly one signature object -- an extreme close-up
+    cannot credibly hold two named large props in frame -- and fixtures are
+    off-limits to this task. A flat floor of 2 broke both currently-green
+    fixtures with no per-shot signal available to tell a genuine single-prop
+    tight shot apart from the degenerate case C-87 describes. CLOSE/MACRO
+    shots keep the pre-T21 floor of 1; every other scale gets the full
+    MIN_SIGNATURE_OBJECTS. See the T21 report for the fixture evidence."""
+    for scale in ("MACRO", "CLOSE"):
+        one_object = make_shot(1, "A", scale=scale,
+                                prompt="club soccer, a goal net alone in fog, "
+                                       "No Text. --ar 9:16 --raw --s 95")
+        assert "C8" not in codes(check_world_lock([one_object], WORLD)), scale
+
+        zero_objects = make_shot(1, "A", scale=scale,
+                                  prompt="club soccer, No Text. --ar 9:16 --raw --s 95")
+        assert "C8" in codes(check_world_lock([zero_objects], WORLD)), scale
+
+
+def test_c8_object_matching_is_plural_tolerant():
+    """The other half of the T21 deviation: worked_example_sheet.md Shot 2 (WIDE,
+    not MACRO) writes 'corner flags' (plural) where the world lock declares the
+    singular 'corner flag'. A strictly singular \\b...\\b match would undercount
+    a real mention as zero, which is a matching bug, not a depiction question."""
+    shot = make_shot(1, "A", scale="WIDE",
+                      prompt="club soccer, a goal net and a row of corner flags, "
+                             "No Text. --ar 9:16 --raw --s 95")
+    assert "C8" not in codes(check_world_lock([shot], WORLD))
+
+
+def test_both_green_fixtures_still_satisfy_the_stricter_c8():
+    for sheet, board in MIGRATED_PAIRS:
+        _shots, findings = lint_fixture(sheet, board)
+        assert "C8" not in codes(findings), sheet
 
 
 def test_c9_flags_banned_generic_venue():
@@ -321,6 +451,37 @@ def test_plate_shots_are_exempt_from_world_lock():
     assert check_world_lock([shot], WORLD) == []
 
 
+@pytest.mark.parametrize("venue", ["vacant gym", "deserted gym", "empty pitch",
+                                   "empty stadium", "abandoned pitch"])
+def test_c9_flags_generic_venue_synonyms(venue):
+    # "empty field" excluded: it collides with legitimate, fully-named-venue prose
+    # in tests/fixtures/passing_sheet.md Shot 3 -- see the BANNED_REGISTER_A_STRINGS
+    # comment in scripts/lint_prompt_sheet.py.
+    shot = make_shot(1, "A", prompt=f"{venue}, club soccer, goal net, No Text. --ar 9:16")
+    assert "C9" in codes(check_world_lock([shot], WORLD))
+
+
+@pytest.mark.parametrize("term", ["photorealistic", "photographic", "bokeh",
+                                  "shallow depth of field", "leica", "kodachrome",
+                                  "cinematic still"])
+def test_c10_flags_photographic_vocabulary_synonyms(term):
+    shot = make_shot(1, "B", prompt=f"a colonnade, {term}, No Text. --ar 9:16 --s 520")
+    assert "C10" in codes(check_world_lock([shot], WORLD))
+
+
+def test_c9_and_c10_scan_the_flag_block_too():
+    """Both were scoped to prompt_body, so the same vocabulary written after the
+    first flag was unreachable."""
+    shot = make_shot(1, "B", prompt="a colonnade, No Text. --ar 9:16 --s 520 --style dslr")
+    assert "C10" in codes(check_world_lock([shot], WORLD))
+
+
+def test_both_green_fixtures_stay_clean_under_the_widened_lists():
+    for sheet, board in MIGRATED_PAIRS:
+        _shots, findings = lint_fixture(sheet, board)
+        assert not [f for f in findings if f.check in ("C9", "C10")], sheet
+
+
 def build_prompt(unique_head, shared_count=12, filler_word="alpha"):
     """Build a body with `shared_count` shared clauses plus a unique head clause."""
     shared = [f"shared clause {n} {filler_word} beta gamma delta epsilon" for n in range(shared_count)]
@@ -345,6 +506,27 @@ def test_c11_passes_when_prompts_are_genuinely_different():
     assert "C11" not in codes(check_prompt_quality(shots))
 
 
+def test_c11_still_flags_an_exact_clone():
+    a = build_prompt("unique head one")
+    b = build_prompt("unique head two")
+    assert "C11" in codes(check_prompt_clone([make_shot(1, prompt=a), make_shot(3, prompt=a)]))
+
+
+def test_c11_flags_a_clone_disguised_by_one_appended_word_per_clause():
+    """C-82, confirmed by execution: one word per clause took 12 shared clauses to 0."""
+    original = build_prompt("unique head one")
+    disguised = ", ".join(f"{c} here" for c in original.split(", "))
+    findings = check_prompt_clone([make_shot(1, prompt=original), make_shot(3, prompt=disguised)])
+    assert "C11" in codes(findings)
+
+
+def test_c11_is_silent_on_genuinely_different_prompts():
+    """Distinguishability, and the anti-tautology guard: a similarity threshold that
+    fires on everything is not a check."""
+    _shots, findings = lint_fixture("worked_example_sheet.md", "worked_example_styleboard.md")
+    assert "C11" not in codes(findings)
+
+
 def test_c12_flags_too_few_clauses():
     body = ", ".join(f"clause {n} with several extra words here now" for n in range(4))
     shot = make_shot(1, "A", prompt=body + ", No Text. --ar 9:16")
@@ -358,9 +540,45 @@ def test_c12_flags_too_few_words():
 
 
 def test_c12_passes_a_dense_prompt():
-    body = ", ".join(f"clause {n} with several extra descriptive words here" for n in range(12))
+    # Genuinely varied clauses, not "clause N" repeated with an index swapped in --
+    # that shape is itself padding and (correctly, post-C-83) now trips the new
+    # repetition floor. This fixture clears clause/word/repetition floors alike.
+    clauses = [
+        "weathered oak bleachers under harsh midday sun",
+        "scuffed leather soccer ball resting on damp grass",
+        "chalk-lined penalty box catching low golden light",
+        "rust-streaked goalpost anchored in packed clay soil",
+        "torn corner flag snapping in a stiff breeze",
+        "muddy cleats abandoned beside a wooden bench",
+        "faded number seven jersey draped over a fence",
+        "cracked asphalt walkway leading toward the pitch",
+        "dented water bottle rolling near the sideline chalk",
+        "frayed net swaying gently from a missed shot",
+        "sun-bleached scoreboard frozen at a tied match",
+        "worn whistle dangling from a coach's weathered hand",
+    ]
+    body = ", ".join(clauses)
     shot = make_shot(1, "A", prompt=body + ", No Text. --ar 9:16")
     assert "C12" not in codes(check_prompt_quality([shot]))
+
+
+def test_c12_flags_a_body_padded_with_repeated_filler():
+    """C-83, confirmed by execution: the docstring promised a nine-layer content
+    check; the implementation was a length floor, and padding is exactly what a
+    model produces against a length target."""
+    body = ", ".join(f"w{n} filler token phrase alpha beta gamma" for n in range(10))
+    shot = make_shot(1, "A", prompt=body + ", club soccer goal net, No Text. --ar 9:16")
+    assert "C12" in codes(check_prompt_density([shot]))
+
+
+def test_c12_is_silent_on_a_real_dense_prompt():
+    """Anti-tautology: the repetition check must separate padding from density."""
+    shots, _ = parse_sheet(WORKED.read_text(encoding="utf-8"))
+    assert check_prompt_density(shots) == []
+
+
+def test_c12_docstring_does_not_claim_a_nine_layer_content_check():
+    assert "nine layers" not in check_prompt_density.__doc__
 
 
 DENSE_A = ", ".join(f"clause {n} with several extra descriptive words here" for n in range(12))
@@ -380,6 +598,20 @@ def test_c13_flags_missing_no_text():
 def test_c13_flags_missing_aspect_ratio():
     shot = make_shot(1, "A", prompt=DENSE_A + ", No Text. --raw --s 95")
     assert "C13" in codes(check_format([shot]))
+
+
+def test_c13_flags_a_landscape_aspect_ratio():
+    """F-13/C-81: the old test covered --ar absence only, never its value. A Short
+    is vertical; --ar 16:9 passed the whole gate."""
+    shot = make_shot(1, "A", prompt=DENSE_A + ", No Text. --ar 16:9 --raw --s 95")
+    findings = check_format([shot])
+    assert "C13" in codes(findings)
+    assert any("16:9" in f.message and REQUIRED_ASPECT_RATIO in f.message for f in findings)
+
+
+def test_c13_accepts_the_required_aspect_ratio():
+    shot = make_shot(1, "A", prompt=DENSE_A + ", No Text. --ar 9:16 --raw --s 95")
+    assert "C13" not in codes(check_format([shot]))
 
 
 def test_c13_flags_punctuation_in_flag_block():
@@ -426,6 +658,39 @@ def test_c14_passes_correct_bands():
     assert check_format([a, b]) == []
 
 
+def test_c22_caps_the_share_of_plate_shots():
+    """Relabelling an awkward shot 'Register PLATE' removed its every register check.
+    Nothing bounded how many shots could take that exit."""
+    shots = [make_shot(i, "PLATE", "PLATE", "MACRO", "LOW") for i in range(1, 5)] + \
+            [make_shot(5, "A", "DETAIL", "CLOSE", "EYE")]
+    findings = check_plate_budget(shots)
+    assert [f.check for f in findings] == ["C22"]
+    assert "4 of 5" in findings[0].message
+
+
+def test_c22_allows_a_single_plate_in_a_normal_sheet():
+    shots = [make_shot(1, "PLATE", "PLATE", "MACRO", "LOW")] + \
+            [make_shot(i, "A", "DETAIL", "CLOSE", "EYE") for i in range(2, 7)]
+    assert check_plate_budget(shots) == []
+
+
+def test_a_plate_shot_must_still_carry_a_stylize_value():
+    """C14's bands were skipped entirely for PLATE because REGISTER_BANDS.get
+    returned None and the loop hit `continue`."""
+    shot = make_shot(1, "PLATE", "PLATE", prompt=DENSE_A + ", No Text. --ar 9:16")
+    assert "C14" in codes(check_format([shot]))
+
+
+def test_the_plate_exemptions_that_remain_are_the_register_specific_ones():
+    """Distinguishability: PLATE is still exempt from C8/C9/C10/C17 by design --
+    it is a subject-free background plate with no register look to lock. The audit
+    finding is that it was *also* exempt from everything else."""
+    shot = make_shot(1, "PLATE", "PLATE", prompt=DENSE_A + ", No Text. --ar 9:16 --s 200")
+    assert codes(check_world_lock([shot], WORLD)) == []
+    assert check_style_mechanism([shot]) == []
+    assert check_format([shot]) == []
+
+
 def test_c15_flags_register_a_shot_class_typo():
     # "MIDWIDE" for "MID-WIDE" would otherwise dodge C2 and inflate C4's scale count.
     shot = make_shot(1, "A", "DETAIL", "MIDWIDE", "LOW")
@@ -462,6 +727,7 @@ def test_c15_passes_valid_vocabulary():
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+WORKED = FIXTURES / "worked_example_sheet.md"
 
 
 def lint_fixture(name, styleboard_name=None):
@@ -506,10 +772,55 @@ def test_main_returns_one_for_a_failing_sheet():
     assert main([str(FIXTURES / "failing_sheet.md")]) == 1
 
 
-def test_main_returns_two_when_no_shots_parse(tmp_path):
+def test_a_missing_sheet_exits_with_its_own_code_not_the_failing_gate_code(tmp_path, capsys):
+    code = main([str(tmp_path / "nope.md")])
+    out = capsys.readouterr().out
+    assert code == EXIT_UNREADABLE_INPUT
+    assert code != EXIT_FINDINGS
+    assert "nope.md" in out
+
+
+def test_a_missing_styleboard_names_the_styleboard_not_the_sheet(tmp_path, capsys):
+    code = main([str(FIXTURES / "passing_sheet.md"), "--styleboard", str(tmp_path / "no.md")])
+    assert code == EXIT_UNREADABLE_INPUT
+    assert "no.md" in capsys.readouterr().out
+
+
+def test_the_exit_codes_are_all_distinct():
+    """Surfacing: an automated caller branches on these. Four operator actions
+    collapsing into `2` is what C-95 records."""
+    assert len({EXIT_PASS, EXIT_FINDINGS, EXIT_USAGE, EXIT_UNREADABLE_INPUT,
+                EXIT_UNPARSEABLE, EXIT_MISSING_DEPENDENCY}) == 6
+
+
+def test_an_unparseable_sheet_no_longer_shares_a_code_with_argparse(tmp_path, capsys):
     empty = tmp_path / "empty.md"
     empty.write_text("nothing here", encoding="utf-8")
-    assert main([str(empty)]) == 2
+    assert main([str(empty)]) == EXIT_UNPARSEABLE
+
+
+def test_a_sheet_of_only_malformed_headings_shows_the_specific_parse_findings(tmp_path, capsys):
+    """The zero-shots exit path printed a generic "check the sheet format" line
+    and returned, discarding parse.findings even when it already held the exact
+    per-line PARSE findings naming what was wrong. A sheet whose every heading is
+    malformed (so parsing yields zero shots) must show those specific findings,
+    not just the generic message, while still exiting EXIT_UNPARSEABLE."""
+    text = (
+        "PER-SHOT PROMPTS\n\n"
+        "### Shot 1 - Hook (0-3s) - Register A - DETAIL - MACRO - LOW\n"
+        "```text\nx, No Text. --ar 9:16\n```\n\n"
+        "### Shot 2 - Setup (3-6s) - Register A - DETAIL - MACRO - LOW\n"
+        "```text\ny, No Text. --ar 9:16\n```\n"
+    )
+    sheet = tmp_path / "malformed.md"
+    sheet.write_text(text, encoding="utf-8")
+
+    code = main([str(sheet)])
+    out = capsys.readouterr().out
+
+    assert code == EXIT_UNPARSEABLE
+    assert "[PARSE] sheet:" in out
+    assert "Shot 1 - Hook" in out and "Shot 2 - Setup" in out
 
 
 def test_worked_example_sheet_passes_gate_c():
@@ -551,10 +862,29 @@ def test_c16_rejects_invented_sref_placeholder():
     assert "SREF-RGS-A-DL01" in findings[0].message
 
 
-def test_c16_accepts_numeric_url_and_random_sref():
+def test_c16_treats_a_numeric_sref_as_valid_syntax_but_c17_still_requires_a_slot():
+    """F-13/C-79. The old test asserted a fabricated `--sref 1122334455` produced no
+    findings -- an S1 defect as a green test. A number is valid *syntax*; what it is
+    not is a *recorded* lock, and only a {style:...} slot resolves against the
+    Library. C16 stays silent (it checks shape); C17 fires (it requires a lock)."""
     for value in ("1122334455", "https://cdn.midjourney.com/a1b2.png", "random"):
         shot = _shot(f"a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --sref {value}")
         assert check_style_reference([shot]) == []
+        assert [f.check for f in check_style_mechanism([shot])] == ["C17"]
+
+
+def test_c17_accepts_a_style_slot():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    assert check_style_mechanism([shot]) == []
+
+
+def test_an_invented_numeric_sref_can_no_longer_make_c20_vacuous():
+    """The compounding half of C-79: with no slot on the sheet,
+    sheet_declares_slots() returned False and the Library was never even read."""
+    shots, _ = parse_sheet(SHEET.replace("{style:register_a}", "--sref 11111111")
+                                .replace("{style:register_b}", "--sref 22222222"))
+    assert sheet_declares_slots(shots) is False
+    assert "C17" in codes(check_style_mechanism(shots))
 
 
 def test_c16_rejects_slot_used_as_an_sref_value():
@@ -605,14 +935,14 @@ def test_c16_rejects_a_dangling_sref_followed_by_another_flag():
     assert "no value" in findings[0].message
 
 
-def test_c17_now_agrees_with_c16_on_a_dangling_sref():
-    """C17 used to treat a bare '--sref' substring as 'a mechanism is present' even
-    with no value -- now it uses the same anchored regex as C16, so the two checks
-    can't silently disagree about whether an --sref is 'there'. C17 still passes
-    (a --sref token was written), while C16 rejects its missing value -- Gate C as
-    a whole still fails the sheet either way."""
+def test_c17_and_c16_both_fail_a_dangling_sref():
+    """C17 used to treat any --sref token, dangling value or not, as "a mechanism is
+    present" -- a literal --sref no longer satisfies C17 at all (C-79), so this shot
+    fails both checks now: C17 because there is no {style:...} slot, C16 because the
+    --sref it does carry has no valid value. Gate C fails the sheet either way, but
+    for two independent reasons instead of one masking the other."""
     shot = _shot("a strap pulled tight, No Text. --ar 9:16 --s 95 --sref --ar 9:16")
-    assert check_style_mechanism([shot]) == []
+    assert [f.check for f in check_style_mechanism([shot])] == ["C17"]
     assert check_style_reference([shot]) != []
 
 
@@ -661,10 +991,34 @@ def test_c17_fires_when_a_shot_has_no_style_mechanism():
     assert [f.check for f in findings] == ["C17"]
 
 
-def test_c17_accepts_literal_sref_moodboard_or_slot():
-    for flags in ("--sref 1122334455", "--p m72678", "{style:register_a}"):
+def test_c17_accepts_only_a_style_slot_not_literal_sref_or_moodboard():
+    """C-79/C-80: a literal --sref or --p used to satisfy C17 on its own -- neither
+    resolves against the Style Library, so only the {style:...} slot may satisfy C17
+    now. This is the same fixture set the old (now-inverted) test used, with the
+    assertion flipped for the two literal cases."""
+    for flags in ("--sref 1122334455", "--p m72678"):
         shot = _shot(f"a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {flags}")
-        assert check_style_mechanism([shot]) == []
+        assert [f.check for f in check_style_mechanism([shot])] == ["C17"]
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    assert check_style_mechanism([shot]) == []
+
+
+def test_c17_rejects_a_bare_p_as_a_style_lock():
+    """F-13/C-80. The old test enumerated C17's accepted mechanisms without
+    distinguishing a recorded lock from an unrecorded one -- exactly the
+    distinction the finding turns on. `--p` with no value is legitimate Midjourney
+    syntax ('apply my active personalization profile') and stays legal for C16, but
+    the look then depends on whichever operator's profile is active at paste time:
+    unrecorded, unreproducible, invisible to the Library. Two characters used to
+    defeat both style checks at once."""
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --p")
+    assert check_style_reference([shot]) == []          # C16: legal syntax
+    assert [f.check for f in check_style_mechanism([shot])] == ["C17"]
+
+
+def test_c17_rejects_a_valued_p_as_a_style_lock_too():
+    shot = _shot("a strap pulled tight, No Text. --ar 9:16 --raw --s 95 --p m72678")
+    assert [f.check for f in check_style_mechanism([shot])] == ["C17"]
 
 
 def test_c17_exempts_plate_shots():
@@ -796,8 +1150,13 @@ def test_c19_fires_when_no_cover_decision_is_stated():
 
 
 def test_c19_passes_for_either_cover_branch():
+    """C-86: the reuse branch only passes when the declaration resolves to a real
+    Hook shot -- SHEET's Shot 1 is 'Hook (0-3s)', so this is a backed declaration,
+    not the bare-text tautology the old version of this test asserted."""
     assert check_cover_present(COVER_BLOCK) == []
-    assert check_cover_present("Cover = Hook beat still #1, no separate generation.") == []
+    assert check_cover_present(
+        SHEET + "\nCover = Hook beat still #1, no separate generation.\n"
+    ) == []
 
 
 def test_lint_cover_applies_format_and_style_checks_but_not_sequence():
@@ -907,6 +1266,69 @@ def test_main_reports_a_missing_world_lock_when_no_styleboard_is_given(tmp_path,
     assert "declares no register_a_sport" in capsys.readouterr().out
 
 
+def test_a_sheets_own_stray_world_lock_is_flagged_not_silently_discarded(tmp_path, capsys):
+    """Fault: a legacy sheet that still carries its own WORLD LOCK block, run
+    with --styleboard also supplied, used to print PASS -- silently discarding
+    the sheet's now-contradictory block in favor of the styleboard's, with zero
+    indication anything was overridden."""
+    sheet_text = (
+        WORKED.read_text(encoding="utf-8")
+        .replace("PER-SHOT PROMPTS", "WORLD LOCK\n  register_a_sport: hockey\n\nPER-SHOT PROMPTS", 1)
+    )
+    sheet = tmp_path / "mutated.md"
+    sheet.write_text(sheet_text, encoding="utf-8")
+
+    code = main([str(sheet), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")])
+    out = capsys.readouterr().out
+
+    assert code != 0, out
+    assert "WORLD LOCK" in out and "mutated.md" in out and "worked_example_styleboard.md" in out
+
+
+def test_a_sheet_with_no_stray_world_lock_is_not_flagged(tmp_path, capsys):
+    """Distinguishability: the same sheet/styleboard pair, minus the stray block,
+    must not produce the new finding -- the normal, correct case must stay clean."""
+    sheet = tmp_path / "clean.md"
+    sheet.write_text(WORKED.read_text(encoding="utf-8"), encoding="utf-8")
+
+    code = main([str(sheet), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")])
+    out = capsys.readouterr().out
+
+    assert code == 0, out
+    assert "carries its own WORLD LOCK" not in out
+
+
+def test_the_stray_world_lock_finding_surfaces_on_the_cli(tmp_path, capsys):
+    """Surfacing: a non-zero exit code plus the finding text actually reaching
+    stdout, not just a print() that nothing downstream reads."""
+    sheet_text = (
+        WORKED.read_text(encoding="utf-8")
+        .replace("PER-SHOT PROMPTS", "WORLD LOCK\n  register_a_sport: hockey\n\nPER-SHOT PROMPTS", 1)
+    )
+    sheet = tmp_path / "mutated.md"
+    sheet.write_text(sheet_text, encoding="utf-8")
+
+    code = main([str(sheet), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")])
+    out = capsys.readouterr().out
+
+    assert code != 0
+    assert "[PARSE] sheet:" in out
+    assert "discarded" in out
+
+
+def test_the_cli_fails_closed_on_an_empty_styleboard_naming_the_styleboard(tmp_path, capsys):
+    """gates.py:87-96 raises here, with a comment saying linting against an empty
+    world 'would emit a wall of C8/C18 findings naming the wrong problem'. main()
+    had no such branch and emitted 14 findings, none naming the styleboard."""
+    empty = tmp_path / "styleboard.md"
+    empty.write_text("=== STYLEBOARD — backfilled, not recoverable ===\n", encoding="utf-8")
+    code = main([str(FIXTURES / "passing_sheet.md"), "--styleboard", str(empty)])
+    out = capsys.readouterr().out
+    assert code == EXIT_MISSING_DEPENDENCY
+    assert "styleboard.md" in out
+    assert "C8" not in out, "the wall of wrong-problem findings must not be emitted"
+
+
 MIGRATED_PAIRS = [
     ("passing_sheet.md", "passing_styleboard.md"),
     ("worked_example_sheet.md", "worked_example_styleboard.md"),
@@ -938,6 +1360,87 @@ def test_the_two_fixtures_cover_both_cover_branches():
     assert declares_cover_reuse(worked) is True
 
 
+def test_a_cover_heading_with_an_unreadable_fence_is_a_finding_not_silence():
+    """C-78: ```markdown instead of ```text made parse_cover return None, which is
+    the same value as 'this sheet has no cover'."""
+    text = SHEET + "\n### Cover — Hook · Register A · DETAIL · MACRO · LOW\n\n```markdown\nx\n```\n"
+    findings = check_cover_present(text)
+    assert [f.check for f in findings] == ["C19"]
+    assert "unreadable" in findings[0].message
+
+
+def test_an_unreadable_cover_is_distinguishable_from_no_cover_at_all():
+    unreadable = SHEET + "\n### Cover — Hook · Register A · DETAIL · MACRO · LOW\n\n```markdown\nx\n```\n"
+    absent = SHEET
+    assert check_cover_present(unreadable)[0].message != check_cover_present(absent)[0].message
+
+
+def test_c19_requires_the_reused_hook_shot_to_exist():
+    """C-86: the literal text 'cover = hook' on its own line satisfied C19 for any
+    sheet, with nothing checking that a hook shot existed."""
+    text = "PER-SHOT PROMPTS\n\nCover = Hook beat still #1\n"
+    assert "C19" in codes(check_cover_present(text))
+
+
+def test_c19_accepts_a_reuse_declaration_backed_by_a_real_hook_shot():
+    """Anti-tautology control."""
+    assert check_cover_present(WORKED.read_text(encoding="utf-8")) == []
+
+
+def test_c19_resolves_an_explicit_index_reuse_to_a_shot_not_named_hook():
+    """COVER_REUSE_RE's trailing '#?(\\d+)?' never actually captured -- a lazy
+    '.*?' before it always let the match succeed at zero width first, so
+    group(1) was always None and _hook_shot_for_reuse's explicit-index branch
+    was unreachable. On a sheet where no shot's beat starts with 'Hook',
+    'Cover = Hook still #2' naming a real shot 2 ('Payoff') fell through to the
+    beat-only fallback, found nothing, and produced a false-positive C19 even
+    though the reference named a real shot."""
+    text = (
+        "PER-SHOT PROMPTS\n\n"
+        "### Shot 1 — Setup (0–3s) · Register A · DETAIL · MACRO · LOW\n"
+        "```text\nsetup body, No Text. --ar 9:16\n```\n\n"
+        "### Shot 2 — Payoff (3–6s) · Register A · DETAIL · MACRO · LOW\n"
+        "```text\npayoff body, No Text. --ar 9:16\n```\n\n"
+        "Cover = Hook still #2\n"
+    )
+    shots, _world = parse_sheet(text)
+    assert all(not s.beat.startswith("Hook") for s in shots), (
+        "fixture must not let the beat-fallback path mask the index-capture bug"
+    )
+    assert "C19" not in codes(check_cover_present(text))
+
+
+def test_a_mistyped_shot_fence_cannot_swallow_the_cover_prompt():
+    """_read_fenced_prompt broke on SHOT_HEADING_RE but not COVER_HEADING_RE."""
+    text = SHEET.replace("```text\nluminous", "```txt\nluminous") + \
+        "\n### Cover — Hook · Register A · DETAIL · MACRO · LOW\n\n```text\ncover body here\n```\n"
+    cover = parse_cover(text)
+    assert cover is not None and cover.prompt.startswith("cover body")
+
+
+def test_a_mistyped_shot_fence_cannot_swallow_a_malformed_next_heading():
+    """_read_fenced_prompt's fence-search broke on SHOT_HEADING_RE, COVER_HEADING_RE
+    and LOOSE_COVER_HEADING_RE, but not LOOSE_SHOT_HEADING_RE. A shot whose own
+    fence-open marker is broken (```txt instead of ```text) scanned right past the
+    next shot's malformed heading while hunting for a fence, silently swallowing it
+    -- the shot vanished from the parse with zero PARSE findings, exactly the C-70
+    defect this package exists to close, surviving in this one corner."""
+    text = WORKED.read_text(encoding="utf-8")
+    text = text.replace(
+        "### Shot 1 — Hook (0–3s) · Register A · DETAIL · MACRO · LOW\n"
+        "Changes vs. previous: opening frame.\n\n```text",
+        "### Shot 1 — Hook (0–3s) · Register A · DETAIL · MACRO · LOW\n"
+        "Changes vs. previous: opening frame.\n\n```txt",
+        1,
+    )
+    text = text.replace("### Shot 2 — Setup (3–6s)", "### Shot 2 - Setup (3–6s)", 1)
+
+    parse = parse_sheet(text)
+    assert any(
+        f.check == "PARSE" and "Shot 2 - Setup" in f.message for f in parse.findings
+    ), [f.message for f in parse.findings]
+
+
 # --- C20: the slot label must exist in the Style Library ----------------------
 #
 # C18 checks that a slot_* value *looks* like a Library label. It cannot check
@@ -948,6 +1451,7 @@ def test_the_two_fixtures_cover_both_cover_branches():
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STYLE_LIBRARY = REPO_ROOT / "docs" / "style-library.md"
+LIBRARY_TEXT = STYLE_LIBRARY.read_text(encoding="utf-8")
 
 LIBRARY_DOC = """\
 # Style Library
@@ -1007,6 +1511,37 @@ def test_parse_style_library_reads_the_real_file():
     assert "rgs-sourceera-painterly-b" in library
 
 
+def test_an_annotated_entry_heading_is_reported_not_dropped():
+    library, findings = parse_style_library_checked(
+        LIBRARY_DOC.replace("### rgs-present-soccer-a", "### rgs-present-soccer-a (channel)")
+    )
+    assert "rgs-present-soccer-a" not in library
+    assert [f.check for f in findings] == ["PARSE"]
+    assert "(channel)" in findings[0].message
+
+
+def test_an_unterminated_fence_in_the_library_is_reported():
+    doc = LIBRARY_DOC.replace("code:         832507909\n```", "code:         832507909\n")
+    _library, findings = parse_style_library_checked(doc)
+    assert any("unterminated" in f.message for f in findings)
+
+
+def test_a_partially_parsed_library_is_distinguishable_from_a_complete_one():
+    """The whole defect: a partial parse presented exactly like a complete one, and
+    C20 then failed the sheet with an incomplete 'Known entries' list."""
+    good, good_findings = parse_style_library_checked(LIBRARY_DOC)
+    bad, bad_findings = parse_style_library_checked(
+        LIBRARY_DOC.replace("### rgs-present-soccer-a", "### RGS-Present-Soccer-A")
+    )
+    assert good_findings == [] and bad_findings != []
+    assert set(good) != set(bad)
+
+
+def test_parse_style_library_keeps_its_original_signature():
+    """P3's gates.py:111 calls linter.parse_style_library(text) and expects a dict."""
+    assert isinstance(parse_style_library(LIBRARY_DOC), dict)
+
+
 def test_c20_rejects_a_label_that_is_not_in_the_library():
     """The typo case: a value shaped like a label but naming no entry. This is what
     cleared Gate C and failed at paste time."""
@@ -1016,6 +1551,24 @@ def test_c20_rejects_a_label_that_is_not_in_the_library():
     assert [f.check for f in findings] == ["C20"]
     assert "rgs-present-socer-a" in findings[0].message
     assert "docs/style-library.md" in findings[0].message
+
+
+def test_c20_names_the_styleboard_as_the_file_to_edit():
+    """A-34: the label comes from the styleboard's WORLD LOCK, but the finding was
+    reported against the sheet's shot index, so the operator edited the sheet."""
+    shot = _shot("x, No Text. --ar 9:16 --raw --s 95 {style:register_a}")
+    findings = check_slot_labels([shot], {"slot_register_a": "typo-label"},
+                                 {"rgs-present-soccer-a": "832507909"})
+    assert [f.check for f in findings] == ["C20"]
+    assert "styleboard" in findings[0].message
+    assert "slot_register_a" in findings[0].message
+
+
+def test_c20_still_reports_the_shot_so_the_operator_knows_which_binding_bit():
+    shot = _shot("x, No Text. --ar 9:16 --raw --s 95 {style:register_a}", index=7)
+    findings = check_slot_labels([shot], {"slot_register_a": "typo-label"}, {"a": ""})
+    assert findings[0].shot_index == 7
+    assert findings[0].beat == "shot 7"
 
 
 def test_c20_accepts_a_label_that_is_in_the_library():
@@ -1072,6 +1625,67 @@ def test_every_fixture_slot_value_exists_in_the_real_style_library(styleboard_na
     assert missing == {}, f"{styleboard_name} binds labels absent from the Library: {missing}"
 
 
+def test_c21_flags_a_gap_in_the_shot_indices():
+    """A shot lost to a bad heading leaves indices 1,2,3,5,... The gate must say so
+    rather than report 'PASS - 10 shots'."""
+    shots = [make_shot(1), make_shot(2), make_shot(3), make_shot(5)]
+    findings = check_shot_count(shots)
+    assert [f.check for f in findings] == ["C21"]
+    assert "4" in findings[0].message
+
+
+def test_c21_flags_a_duplicated_shot_index():
+    assert "C21" in codes(check_shot_count([make_shot(1), make_shot(2), make_shot(2)]))
+
+
+def test_c21_flags_a_declared_count_that_disagrees_with_the_parse():
+    findings = check_shot_count([make_shot(1), make_shot(2)], declared=3)
+    assert "C21" in codes(findings)
+    assert "declares 3" in findings[0].message
+
+
+def test_c21_runs_inside_lint_so_both_gate_c_callers_get_it():
+    """gates.py calls lint() but not parse_sheet().findings. Putting the invariant
+    in lint() is what closes C-70 on the app path with no change to gates.py."""
+    shots = [make_shot(1, "A"), make_shot(2, "B", "WORLD", "XWIDE", "EYE"),
+             make_shot(4, "A", "ESTABLISHING", "WIDE", "HIGH")]
+    assert "C21" in codes(lint(shots, {}))
+
+
+def test_c21_is_silent_on_every_green_fixture():
+    """Distinguishability: the invariant must separate a dropped shot from a
+    legitimately short sheet, not fire on both."""
+    for name in ("passing_sheet.md", "failing_sheet.md", "worked_example_sheet.md"):
+        shots, _ = parse_sheet((FIXTURES / name).read_text(encoding="utf-8"))
+        assert check_shot_count(shots) == [], name
+
+
+FENCED_EXAMPLE = SHEET + """
+Format reminder for authors:
+
+```text
+### Shot 99 — Demo · Register A · DETAIL · MACRO · LOW
+```
+"""
+
+
+def test_a_heading_inside_a_fence_is_not_a_real_shot():
+    shots, _ = parse_sheet(FENCED_EXAMPLE)
+    assert [s.index for s in shots] == [1, 2]
+
+
+def test_a_fenced_heading_produces_no_parse_finding_either():
+    """Distinguishability: documented-example (ignore) must not be conflated with
+    malformed-heading (report). declares_cover_reuse was already fence-aware for
+    exactly this reason; the shot walk was not."""
+    assert parse_sheet(FENCED_EXAMPLE).findings == []
+
+
+def test_a_fenced_example_does_not_pollute_the_sequence_checks():
+    shots, world = parse_sheet(FENCED_EXAMPLE)
+    assert "C21" not in codes(lint(shots, world))
+
+
 def _typoed_styleboard(tmp_path):
     """The real passing styleboard with one character removed from a slot label."""
     text = (FIXTURES / "passing_styleboard.md").read_text(encoding="utf-8")
@@ -1114,7 +1728,7 @@ def test_main_fails_closed_when_the_library_is_missing(tmp_path, capsys):
         "--styleboard", str(FIXTURES / "passing_styleboard.md"),
         "--style-library", str(tmp_path / "absent.md"),
     ])
-    assert exit_code == 2
+    assert exit_code == EXIT_MISSING_DEPENDENCY
     assert "Style Library not found" in capsys.readouterr().out
 
 
@@ -1126,5 +1740,264 @@ def test_main_fails_closed_when_the_library_has_no_entries(tmp_path, capsys):
         "--styleboard", str(FIXTURES / "passing_styleboard.md"),
         "--style-library", str(empty),
     ])
-    assert exit_code == 2
+    assert exit_code == EXIT_MISSING_DEPENDENCY
     assert "no entries parsed" in capsys.readouterr().out
+
+
+SPLIT_WORLD = """\
+WORLD LOCK
+  register_a_sport: club soccer
+  register_a_signature_objects: goal net, corner flag
+
+  slot_register_a: rgs-present-soccer-a
+"""
+
+
+def test_a_blank_line_does_not_truncate_the_world_lock_block():
+    parse = parse_sheet(SPLIT_WORLD)
+    assert parse.world["slot_register_a"] == "rgs-present-soccer-a"
+
+
+def test_a_malformed_world_lock_entry_is_reported_not_skipped():
+    parse = parse_sheet("WORLD LOCK\n  register_a_sport: club soccer\n  not an entry\n")
+    assert [f.check for f in parse.findings] == ["PARSE"]
+    assert "not an entry" in parse.findings[0].message
+
+
+def test_a_second_world_lock_block_is_rejected_rather_than_last_win():
+    """A superseded block left above the live one silently overwrote it."""
+    text = SPLIT_WORLD + "\nWORLD LOCK\n  register_a_sport: hockey\n"
+    parse = parse_sheet(text)
+    assert any("second 'WORLD LOCK'" in f.message for f in parse.findings)
+
+
+def test_an_unindented_world_lock_body_is_reported_not_silently_empty():
+    """Distinguishability: 'the styleboard has no world lock' and 'the styleboard's
+    world lock is unindented' must not both render as {}."""
+    flat = parse_sheet("WORLD LOCK\nregister_a_sport: club soccer\n")
+    absent = parse_sheet("nothing here\n")
+    assert flat.world == {} and absent.world == {}
+    assert flat.findings != absent.findings
+
+
+# --- Mutation testing: take a green sheet, break one thing, assert Gate C fails --
+#
+# F-14: the suite bypassed the parser, so the largest hole in the gate was
+# structurally unreachable by any existing test. Each case below is an evasion the
+# audit confirmed by execution against these same fixtures. `expected` is the check
+# that must fire; `""` means "any finding at all, but never a pass".
+
+MUTATIONS = [
+    # id,                       find,                        replace,                     expected
+    ("heading-hyphen",          "### Shot 4 — Build",        "### Shot 4 - Build",        "PARSE"),
+    ("heading-endash",          "### Shot 4 — Build",        "### Shot 4 – Build",        "PARSE"),
+    ("heading-no-middot",       "· Register B · ARTIFACT",   "- Register B · ARTIFACT",   "PARSE"),
+    ("heading-lowercase-scale", "· ARTIFACT · CLOSE ·",      "· ARTIFACT · Close ·",      "PARSE"),
+    ("heading-underscore-scale","· ACTION-ADJACENT · MID-WIDE ·", "· ACTION-ADJACENT · MID_WIDE ·", "PARSE"),
+    ("heading-lowercase-reg",   "· Register B · WORLD",      "· register B · WORLD",      "PARSE"),
+    ("heading-two-hashes",      "### Shot 7 —",              "## Shot 7 —",               "PARSE"),
+    ("heading-deleted",         "### Shot 4 — Build",        "Shot 4 — Build",            "C21"),
+    ("index-duplicated",        "### Shot 5 —",              "### Shot 4 —",              "C21"),
+    ("index-renumbered",        "### Shot 11 —",             "### Shot 12 —",             "C21"),
+    ("declared-count-mismatch", "PER-SHOT PROMPTS",          "SHOT COUNT: 12\n\nPER-SHOT PROMPTS", "C21"),
+    ("sref-invented-number",    "{style:register_a}",        "--sref 11111111",           "C17"),
+    ("sref-bare-p",             "{style:register_a}",        "--p",                       "C17"),
+    ("ar-landscape",            "--ar 9:16",                 "--ar 16:9",                 "C13"),
+    ("plate-relabel",           "· Register B · WORLD ·",    "· Register PLATE · PLATE ·","C14"),
+    ("venue-synonym",           "a municipal club soccer",   "a vacant gym, a municipal club soccer", "C9"),
+    ("registerb-photographic",  "luminous oil painting",     "photorealistic bokeh render", "C10"),
+    ("fenced-heading",          "PER-SHOT PROMPTS",          "PER-SHOT PROMPTS\n\n```text\n### Shot 99 — X · Register A · DETAIL · MACRO · LOW\n```", ""),
+    # "world-blank-line" used to live here, but its anchor ("  register_b_thinker:")
+    # exists only in worked_example_styleboard.md, never in the sheet -- every other
+    # case in this table mutates the sheet. It is exercised on its own below, against
+    # the styleboard, because that mutation is no longer a corruption the gate should
+    # reject (see the test's docstring) and forcing it through this shared "always
+    # fails" harness would be the tautology the harness exists to avoid.
+    ("world-second-block",      "PER-SHOT PROMPTS",          "WORLD LOCK\n  register_a_sport: hockey\n\nPER-SHOT PROMPTS", "PARSE"),
+    ("cover-fence-markdown",    "```text",                   "```markdown",               ""),
+    ("sport-compound-only",     "club soccer boot",          "clubsoccerboot",            "C8"),
+]
+
+
+@pytest.mark.parametrize("case", MUTATIONS, ids=[m[0] for m in MUTATIONS])
+def test_a_single_mutation_of_a_green_sheet_always_fails_gate_c(case, tmp_path, capsys):
+    """The gate is fail-closed or it is not a gate. Each of these was confirmed by
+    execution to pass the pre-remediation gate."""
+    _id, find, replace, expected = case
+    original = WORKED.read_text(encoding="utf-8")
+    assert find in original, f"{_id}: mutation anchor no longer present in the fixture"
+    sheet = tmp_path / "mutated.md"
+    sheet.write_text(original.replace(find, replace, 1), encoding="utf-8")
+
+    code = main([str(sheet), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")])
+    out = capsys.readouterr().out
+
+    assert code != 0, f"{_id}: Gate C passed a mutated sheet\n{out}"
+    assert "PASS" not in out, f"{_id}: {out}"
+    if expected:
+        assert f"[{expected}]" in out, f"{_id}: expected {expected}, got:\n{out}"
+
+
+def test_the_unmutated_fixture_is_the_control(capsys):
+    """Without this, every mutation test above would pass on a gate that failed
+    everything -- the tautology the mutation class exists to avoid."""
+    code = main([
+        str(WORKED), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")
+    ])
+    assert code == 0, capsys.readouterr().out
+
+
+def test_a_blank_line_inside_the_styleboards_world_lock_block_is_tolerated(tmp_path, capsys):
+    """Retargeted from the old "world-blank-line" MUTATIONS row: its anchor
+    ("  register_b_thinker:") lives only in worked_example_styleboard.md, so the
+    mutation, applied to WORKED as the shared table did, could never even find its
+    anchor. Applied to the correct file, it is also not a corruption: T5 fixed
+    _read_world_block to skip blank lines inside the block rather than treat one as
+    the block's end (the old walk truncated on the first line that failed
+    WORLD_ENTRY_RE, silently dropping every entry after it). This guards that a
+    blank line here still parses every entry and still passes the gate."""
+    original = (FIXTURES / "worked_example_styleboard.md").read_text(encoding="utf-8")
+    anchor = "  register_b_thinker:"
+    assert anchor in original, "mutation anchor no longer present in the fixture"
+    mutated_text = original.replace(anchor, "\n" + anchor, 1)
+
+    world = parse_world_lock(mutated_text)
+    assert world.get("register_b_thinker") == "Plutarch"
+    assert world.get("slot_register_b") == "rgs-sourceera-painterly-b"
+
+    styleboard = tmp_path / "styleboard.md"
+    styleboard.write_text(mutated_text, encoding="utf-8")
+    code = main([str(WORKED), "--styleboard", str(styleboard)])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "PASS" in out
+
+
+# --- C-77: the Library warns its own headings are load-bearing ---------------
+#
+# The coupling between docs/style-library.md's `## Entries` heading shape and
+# scripts/lint_prompt_sheet.py:parse_style_library was previously documented
+# only in `Open questions` §2 -- an editor tidying `## Entries` has no local
+# signal at the point they would break it.
+
+
+def test_the_library_warns_at_the_headings_the_parser_depends_on():
+    """C-77: the coupling was documented only in Open questions §2. An editor
+    reformatting the file reads Entry format and ## Entries, not the appendix.
+
+    The file carries TWO MACHINE-READ blockquotes -- one just after '## Entry
+    format', one just before the real '## Entries' heading -- and both
+    blockquotes' own prose contains the literal substring "## Entries" (in a
+    sentence explaining what the parser requires). A bare `text.split("##
+    Entries")[0]` collided with whichever blockquote a first-occurrence split
+    happened to hit first, so deleting either blockquote individually still
+    left both assertions passing (the identical collision class already found
+    and fixed for the "section-renamed" MUTATIONS case). Anchor on the real
+    heading specifically -- the one immediately followed by the first real
+    entry, `### rgs-sourceera-painterly-b` -- and check each blockquote's own
+    location independently so either one going missing is caught."""
+    text = STYLE_LIBRARY.read_text(encoding="utf-8")
+    real_entries_anchor = "## Entries\n\n### rgs-sourceera-painterly-b"
+    assert text.count(real_entries_anchor) == 1, (
+        "the real ## Entries heading must be uniquely identifiable by what "
+        "immediately follows it"
+    )
+    before_entries, _rest = text.split(real_entries_anchor, 1)
+
+    entry_format_section, harvest_section = before_entries.split("## How to harvest", 1)
+    assert "lint_prompt_sheet.py" in entry_format_section.split("## Entry format", 1)[1]
+    assert "MACHINE-READ" in entry_format_section, (
+        "the blockquote just after '## Entry format' is missing"
+    )
+    assert "MACHINE-READ" in harvest_section, (
+        "the blockquote just before the real '## Entries' heading is missing"
+    )
+
+
+def test_the_libraryS_own_entries_still_parse_after_the_warning_edits():
+    library, findings = parse_style_library_checked(STYLE_LIBRARY.read_text(encoding="utf-8"))
+    assert findings == []
+    assert {"rgs-present-soccer-a", "rgs-sourceera-painterly-b"} <= set(library)
+
+
+LIBRARY_MUTATIONS = [
+    ("entry-annotated",  "### rgs-present-soccer-a", "### rgs-present-soccer-a (channel)"),
+    ("entry-capitalised","### rgs-present-soccer-a", "### RGS-Present-Soccer-A"),
+    ("section-renamed",  "## Entries\n\n### rgs-sourceera-painterly-b", "## Library entries\n\n### rgs-sourceera-painterly-b"),
+]
+
+
+@pytest.mark.parametrize("case", LIBRARY_MUTATIONS, ids=[m[0] for m in LIBRARY_MUTATIONS])
+def test_a_reformatted_style_library_fails_loudly_naming_the_library(case, tmp_path, capsys):
+    """C-76: a partially-parsed Library made C20 blame the sheet for a typo the
+    sheet does not have."""
+    _id, find, replace = case
+    library = tmp_path / "style-library.md"
+    library.write_text(
+        STYLE_LIBRARY.read_text(encoding="utf-8").replace(find, replace, 1), encoding="utf-8"
+    )
+    code = main([
+        str(WORKED),
+        "--styleboard", str(FIXTURES / "worked_example_styleboard.md"),
+        "--style-library", str(library),
+    ])
+    out = capsys.readouterr().out
+    assert code != 0, f"{_id}: {out}"
+    assert "style-library" in out, f"{_id}: the Library must be named as the file at fault\n{out}"
+
+
+def test_the_resolved_style_library_path_is_printed_on_a_pass(capsys):
+    """C-75: a run against the default Library must name it in the transcript,
+    on a pass and not only on a failure."""
+    main([str(WORKED), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")])
+    assert str(STYLE_LIBRARY) in capsys.readouterr().out
+
+
+def test_a_non_default_style_library_is_named_in_the_output(tmp_path, capsys):
+    """Distinguishability: a run against a hand-written stub must be visibly
+    different in the transcript from a run against the repo Library."""
+    stub = tmp_path / "stub.md"
+    stub.write_text("# x\n\n## Entries\n\n### anything-goes\n", encoding="utf-8")
+    main([str(WORKED), "--styleboard", str(FIXTURES / "worked_example_styleboard.md"),
+          "--style-library", str(stub)])
+    out = capsys.readouterr().out
+    assert "NON-DEFAULT" in out
+    assert str(stub) in out
+
+
+def test_the_cli_default_library_is_the_exact_path_the_app_path_hard_codes():
+    """Surfacing/parity: gates.py computes repo_root/'docs'/'style-library.md'.
+    Two gates wearing one name is worse than one gate."""
+    assert DEFAULT_STYLE_LIBRARY == Path(__file__).resolve().parents[1] / "docs" / "style-library.md"
+
+
+# --- C-49/C-50/C-51: the Library's own provenance is repaired -----------------
+
+
+def test_the_library_uses_no_invented_provenance_marker():
+    """C-49: `[run owner, 2026-08-08]` is a sixth marker CLAUDE.md does not define.
+    A grep for [P] to enumerate operator decisions missed both of this file's."""
+    assert "[run owner" not in LIBRARY_TEXT
+    assert LIBRARY_TEXT.count("[P]") >= 2
+
+
+def test_every_library_entry_carries_every_field_the_entry_format_declares():
+    """C-50: rgs-present-soccer-a omitted `seed:` -- the only record of how a
+    channel-wide durable code was produced, and unrecoverable by re-running the
+    session (this file's own [T] note says a re-entry stacks rather than replaces)."""
+    entries = LIBRARY_TEXT.split("## Entries", 1)[1].split("\n### ")[1:]
+    for entry in entries:
+        label = entry.splitlines()[0].strip()
+        for field in ("brand:", "register:", "scope:", "mechanism:", "world:",
+                      "seed:", "code:", "harvested_at:"):
+            assert field in entry, f"{label} omits {field}"
+
+
+def test_every_T_marker_in_the_library_carries_a_verification_date():
+    """C-51: two undated Midjourney platform claims, one of which is the reason the
+    file gives for never re-entering a locked session. The header's `**Markers:**`
+    legend paragraph (added by T12's Edit 1) also names `[T]` while defining what the
+    marker means -- that is vocabulary, not a claim, so it is excluded from this scan."""
+    for line_no, line in enumerate(LIBRARY_TEXT.splitlines(), 1):
+        if "[T]" in line and not line.startswith("**Markers:**"):
+            assert "verified 20" in line, f"style-library.md:{line_no} has an undated [T]"

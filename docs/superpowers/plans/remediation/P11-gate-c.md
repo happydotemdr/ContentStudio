@@ -25,6 +25,51 @@ are the package.
 
 ---
 
+## 0. Pre-review amendments
+
+**Amendment 1 (before T7 dispatch, during T2's task loop):** T2 introduces `SheetParse.findings`
+and `.declared_shot_count`; its own docstring for `SheetParse` asserts "`.findings` is the new
+fail-closed channel; `main()` consumes it today" (§T2). T3's checklist says "Wire it into `lint()`
+and let `main()` pass the declared count through" but shows only the `lint()` signature change,
+not the call site. **No task's shown implementation code anywhere in this plan actually rewires
+`main()`'s `shots, sheet_world = parse_sheet(sheet_text)` line to capture the new `SheetParse`
+object, prepend `parse.findings` to the findings list, or pass `parse.declared_shot_count` into
+`lint()`.** Confirmed by grepping the whole plan for `parse.findings`, `declared_shot_count`, and
+`shots, sheet_world` — the only call sites shown are inside test bodies and the P3 contract table
+(§6.2 P3-1/P3-2, which binds `pipeline_app/gates.py`, a different file this package does not
+touch). Without this wiring, the flagship fix's own CLI behavior never changes: `python
+scripts/lint_prompt_sheet.py <sheet-with-a-broken-heading>` still prints `PASS` and exits 0,
+because `main()` never looks at `parse.findings`. This blocks: Package verification §7 item 1 (all
+26 T6 mutation assertions — most of the 22 `MUTATIONS` cases assert `main([...])` returns nonzero
+and prints the expected check code) and item 3 (the em-dash/hyphen CLI repro). T7 is the correct
+place to land this fix — it is the task that already substantially rewrites `main()`'s read and
+exit-code logic — so T7's "Implement" section below is amended to add the missing step. T2 and T3
+are unaffected and were correctly scoped and implemented as written; the gap was in what no task
+said, not in what T2/T3 said to do.
+
+**Amendment 2 (before T11 dispatch, discovered by a failed T11 attempt):** T11's mandated
+warning blockquote (placed, per its own instructions, "immediately above `## Entries`") contains
+the literal substring `` `## Entries` `` in its own prose ("It requires the section heading to be
+exactly `` `## Entries` ``, and every entry heading to be exactly..."). T6's `LIBRARY_MUTATIONS`
+case `section-renamed` — landed and passing since T6 — does
+`STYLE_LIBRARY_TEXT.replace("## Entries", "## Library entries", 1)`, a first-occurrence
+substring replace. Once T11's blockquote sits above the real heading, the blockquote's own
+mention of `` `## Entries` `` becomes the FIRST occurrence, so the mutation silently renames the
+blockquote's prose instead of the real section heading — the real heading is untouched, the
+Library still parses completely, and Gate C prints `PASS`. Confirmed empirically: a first T11
+attempt (reverted, commit `b4daf6d` undoes `f06a7ab`) turned this from a passing test into a
+failing one (291 passed / 11 failed instead of 292/10). **Fix, landed as part of T11's redo:**
+retarget `section-renamed`'s `find`/`replace` strings in `tests/test_lint_prompt_sheet.py`'s
+`MUTATIONS` tuple (a T6 asset, being touched here because T11's own change is what breaks it) from
+`("section-renamed", "## Entries", "## Library entries")` to include enough trailing context to
+be unambiguous — the real heading is immediately followed by a blank line then
+`### rgs-sourceera-painterly-b` (the first real entry), which the blockquote's prose never is:
+`("section-renamed", "## Entries\n\n### rgs-sourceera-painterly-b", "## Library entries\n\n### rgs-sourceera-painterly-b")`.
+This is a mechanical anchor fix with no behavior-under-test change — `section-renamed` still
+renames the real section heading and nothing else.
+
+---
+
 ## 1. Scope
 
 **Files this package owns. No other package may touch these.**
@@ -793,6 +838,36 @@ def _read(path: Path, label: str) -> str | None:
 Route all three reads in `main()` through `_read`, returning `EXIT_UNREADABLE_INPUT` on `None`,
 and change the existing returns: no-shots → `EXIT_UNPARSEABLE`; Library missing/empty →
 `EXIT_MISSING_DEPENDENCY`. Add the table to the module docstring.
+
+- [ ] **[Amendment 1 — see §0] Wire `main()` to the `SheetParse` findings channel T2/T3 built.**
+      `main()` currently does `shots, sheet_world = parse_sheet(sheet_text)` — that line still
+      works today only because `SheetParse` unpacks as a 2-tuple (T2), but it silently discards
+      `.findings` and `.declared_shot_count`. Change it to:
+
+```python
+    parse = parse_sheet(sheet_text)
+    shots, sheet_world = parse.shots, parse.world
+```
+
+      and where `findings = [...]` is assembled near the end of `main()`, prepend `parse.findings`
+      and pass the declared count through to `lint()`:
+
+```python
+    findings = [
+        *parse.findings,
+        *check_cover_present(sheet_text),
+        *lint(shots, world, cover=cover, library=library,
+              declared_shot_count=parse.declared_shot_count),
+    ]
+```
+
+      This is what makes the flagship fix (T2) and the reconciliation invariant (T3) actually
+      change the CLI's observable behavior — before this step, `parse.findings` is computed and
+      immediately thrown away. Leave the existing `if not shots:` early-return (→
+      `EXIT_UNPARSEABLE`) positioned as it is today, checking `shots` only — no test in this
+      package exercises a sheet with zero real shots *and* a non-empty `parse.findings`
+      simultaneously (every `MUTATIONS` case in T6 mutates a shot inside an otherwise-intact
+      multi-shot sheet), so that combination is not this task's problem to design for.
 
 - [ ] **Run.** Green. `test_main_returns_two_when_no_shots_parse` fails — see §5.
 - [ ] Commit: `fix(gate-c): distinct exit codes for unreadable, unparseable and missing input`
@@ -1783,6 +1858,7 @@ implements.
 | **P3-3** | **Consume the Library's parse findings.** Change `gates.py:111` to `library, library_findings = linter.parse_style_library_checked(...)` and `raise ValueError` naming the Library file if `library_findings` is non-empty — matching the CLI's `EXIT_MISSING_DEPENDENCY`. | C-76 |
 | **P3-4** | **Keep the Library path hard-coded** at `repo_root/"docs"/"style-library.md"` (`gates.py:105`). The CLI's `--style-library` remains, but P11 prints the resolved path and marks a non-default one `[NON-DEFAULT]`. The app path must not grow an override. | C-75 |
 | **P3-5** | **Do not add a `skipped` kind to Gate C's blocking rule's exemption set** beyond what `gates.py:167` already has, and do not special-case `kind="parse"` — parse findings are blocking. | C-93 |
+| **P3-6** | **Flag a stray sheet-carried `WORLD LOCK` block when a styleboard is also supplied.** Added during P11's final-review fix wave (commit `75df69e`), after this contract's §6 was first written — `gates.py:75` (`sheet_world`) is currently silently discarded whenever a styleboard is present, with no equivalent to the CLI's new blocking `PARSE` finding naming both files. Confirmed as a genuine, not merely theoretical, CLI/app divergence by this package's own final-review re-reviewer (filed as an out-of-scope observation, not fixed by P11 — `gates.py` is not this package's file). `run_prompt_sheet_gate`'s own docstring already commits to parity; this is the fifth live divergence beyond the four the audit found. | new finding, no ID assigned — same root cause as C-73 one artifact over |
 
 ### 6.3 The exit-code ⇄ exception correspondence P3 must preserve
 
@@ -1809,6 +1885,181 @@ T18 widens `BANNED_REGISTER_A_STRINGS` and `BANNED_REGISTER_B_STRINGS` in the li
 owns**. P13 should mirror the widened lists into those two lines so the skill instruction and the
 gate agree on the vocabulary. Until it does, the gate is stricter than the instruction — the
 safe direction, and it fails loudly rather than silently.
+
+---
+
+## 7a. Findings filed during T6's empirical run (2026-08-13) — NOT fixed, routed for review
+
+T6 was dispatched and run empirically per its own instructions ("run it and record which cases
+are red"). 17 of the 26 mutation assertions are red. 15 of those are the expected, predicted kind
+— they track a specific later task (T7's `main()` wiring, T13's `--ar` value check, T14/T15's
+`{style:...}` slot requirement, T18's widened C9/C10 vocabulary, T19's PLATE cap) and are expected
+to flip green as this package's own remaining tasks land; no action needed, not filed here.
+
+Two findings do NOT fit that pattern and are filed here, unresolved, for review before the
+package is called done (package verification §7 item 1 requires all 26 to pass):
+
+- **T6R-01 (Important).** Three mutation cases (not two — `world-second-block` confirmed during
+  T7's own dispatch and added here, see below) cannot pass no matter what later tasks land,
+  because of a fixture migration (commit `ebb8f82`, predates this package) that moved
+  `worked_example_sheet.md`'s `WORLD LOCK` block entirely into the separate styleboard fixture.
+  `heading-underscore-scale` is an unrelated fixture-content mismatch, filed alongside these two
+  because it fails the same way (the test's own `assert find in original` guard, before Gate C
+  is ever invoked):
+  - `heading-underscore-scale`'s anchor `"· WORLD · MID-WIDE ·"` — the fixture has `WORLD`+`WIDE`
+    and `WORLD`+`XWIDE` shots, and a separate `ACTION-ADJACENT`+`MID-WIDE` shot, but no shot
+    pairs register `WORLD` with scale `MID-WIDE`.
+  - `world-blank-line`'s anchor `"  register_b_thinker:"` — this line exists only in
+    `tests/fixtures/worked_example_styleboard.md:9`. `worked_example_sheet.md` no longer carries
+    its own `WORLD LOCK` block at all — world lock now lives solely in the styleboard fixture,
+    which the sheet references via `--styleboard`. `world-blank-line`'s underlying intent (a
+    blank line mid-block must not truncate the `_read_world_block` walk, T5) is still valid and
+    testable, just not against the sheet file the mutation currently targets.
+  - **`world-second-block` (added after T7's own investigation, commit `fd467e9`'s task report).**
+    Not one of T6's original two flagged anchors — this one's `find`/`replace` strings DO match
+    the fixture (`assert find in original` passes), but the mutation's premise is still broken by
+    the same root cause: it inserts a `WORLD LOCK` block before `PER-SHOT PROMPTS` expecting to
+    create a *second* block that collides with an existing one, but since the sheet fixture no
+    longer carries a `WORLD LOCK` block of its own, the inserted block is the *first* (and only)
+    one — so `parse_sheet`'s duplicate-block detector (T5) correctly does not fire; confirmed by
+    T7's implementer via a direct `parse_sheet(mutated).findings == []` call. `main()`'s findings
+    wiring (this task, T7) is fully in place and did not change this outcome — ruling out a
+    `main()`-wiring cause and confirming this is the same fixture-migration category as the other
+    two.
+  - **Not fixed here.** Per T6's own brief, the implementer did not edit the fixture or invent a
+    substitute string; T7's implementer independently declined to fix `world-second-block` for
+    the same reason (fixture edits are outside both tasks' file lists). A retargeting decision is
+    needed: most likely `world-blank-line` and `world-second-block` should both mutate
+    `worked_example_styleboard.md` (passed via `--styleboard`) instead of `WORKED`, since that is
+    where a `WORLD LOCK` block actually exists now; `heading-underscore-scale` needs either a
+    real `WORLD`+`MID-WIDE` shot added to the fixture or a different existing scale/register
+    pairing substituted as the anchor. Whichever the fix, it is a small change to `MUTATIONS`'
+    `find`/`replace` values, not a design change — but it is exactly the kind of call this
+    program's process reserves for review before landing.
+- **T6R-02 (Minor-to-Important, unclear).** `fenced-heading` (`expected=""`, meaning "any finding,
+  never a pass") has no task anywhere in this plan chartered to close it — confirmed by grep: no
+  task's Implement section mentions rejecting or flagging an extra fenced example block inserted
+  mid-`PER-SHOT PROMPTS`. T4 (fence-awareness) correctly makes such a block NOT parse as a real
+  shot — which is working as intended — but nothing currently treats the mere *presence* of an
+  unexpected extra fenced block, sitting between the section header and the real shots, as
+  suspicious enough to flag. It is unclear whether this was an intentional design goal that got
+  dropped between validation and this plan's final task list, or whether `expected=""` was always
+  meant to be satisfied incidentally by some other task's side effect that doesn't actually apply
+  here. Routed for review rather than guessing at a new check to add.
+
+- **T11R-01 (Important, plan-mandated, not fixed).** T11's own `test_the_library_warns_at_the_
+  headings_the_parser_depends_on` (text mandated verbatim by this plan) is vacuous against the
+  exact regression T11 exists to prevent. It does `text.split("## Entries")[0]` /
+  `text.split("## Entries", 1)` — a first-occurrence split, same collision class as
+  `section-renamed`'s bug (§0 Amendment 2). T11's task reviewer verified empirically: deleting
+  either required blockquote placement individually still passes both of this test's assertions,
+  because the *other* surviving blockquote's own prose (which also contains the substring
+  `` `## Entries` ``) satisfies the split before ever reaching the real heading. The test only
+  fails if BOTH placements are missing simultaneously. Not fixed here — the test's exact text was
+  mandated by the plan, not left to implementer discretion, so per this programme's standing rule
+  a plan-mandated defect is filed for review rather than silently patched. A fix, if wanted, would
+  mirror `section-renamed`'s own fix: anchor the split to unique trailing/leading context around
+  the REAL `## Entries` heading rather than a bare substring search.
+
+- **T18R-01 (Minor-to-Important, deviation from plan text, not fixed).** T18's mandated widened
+  `BANNED_REGISTER_A_STRINGS` tuple includes `"empty field"`. That literal substring already
+  exists in `tests/fixtures/passing_sheet.md` Shot 3's Register A body ("...one small figure
+  alone in the centre circle dwarfed by the empty field...") — a shot that fully names the sport
+  and both signature objects (goal net, corner flag) elsewhere in the same prompt; "empty" there
+  describes the absence of a crowd, not an unspecified venue, i.e. NOT the generic-venue defect
+  C9 exists to catch. Implementing the plan's list verbatim broke 4 previously-green tests plus
+  T18's own new fixture-cleanliness test. `tests/fixtures/*.md` is outside this package's edit
+  scope (stated in §1), so the fixture could not be reworded. T18's implementer traced
+  `"empty field"` back to its cited source
+  (`.claude/skills/shorts-styleboard/references/visual-registers.md:47`) and confirmed that
+  reference literally bans only `"empty gym"`/`"empty youth gym"` — `"empty field"` was this
+  plan's own synonym extrapolation, not itself corpus/reference text. **Not fixed here** — dropped
+  `"empty field"` from both the banned tuple and the corresponding parametrized test case (13 of
+  14 new widened terms landed; all other C9/C10 coverage, and both target mutation flips
+  (`venue-synonym`, `registerb-photographic`), confirmed unaffected). Routed for review: either
+  accept the narrower list, or find a more precise match (e.g. requiring `"empty field"` NOT be
+  preceded by descriptive context naming real objects) if the term is wanted back.
+
+- **T19R-01 (Minor, plan comment inaccurate, not fixed).** T19's own checklist text claims T6's
+  `plate-relabel` mutation case "fails on C15 as expected (the relabelled shot keeps its non-PLATE
+  `shot_class`)". This is factually wrong and was confirmed wrong twice, independently: (1) reading
+  the mutation's own find/replace strings (`"· Register B · WORLD ·"` → `"· Register PLATE ·
+  PLATE ·"`) shows BOTH register and shot_class change together, so C15's `shot_class != "PLATE"`
+  guard structurally cannot fire; (2) T19's implementer ran the mutation both before and after this
+  task landed and confirmed empirically: pre-task, the mutated sheet fully PASSed (0 findings, not
+  a C15 finding — matching T6's own earlier report, not the plan's comment); post-task, the sheet
+  now correctly fails, but via `[C14] shot 3: --s 520 outside Register PLATE's band 0-250` — the
+  new PLATE stylize band this task adds, not C22 (only 1 of 11 shots is PLATE, well under the 1/3
+  cap) and not C15. `plate-relabel` therefore remains one of the tracked-red mutation-test case
+  IDs — the sheet is correctly rejected, but the test's own `expected="C15"` assertion doesn't
+  match the actual `[C14]` output, so the parametrized case stays red for an accidentally-correct
+  reason (the gate works; the test's expected check code is stale). **Not fixed here** — the fix,
+  if wanted, is a one-line change to `MUTATIONS`' `plate-relabel` entry (`"C15"` → `"C14"`), the
+  same class of anchor-retargeting fix as T6R-01, filed for the same review process.
+
+- **T20R-01 (Minor, mutation-case name mismatch, not fixed).** T20's own checklist says "T6's
+  `cover-fence-markdown` goes green" as this task's landing signal. Confirmed by T20's implementer
+  and independently by the controller: `worked_example_sheet.md` has no `### Cover — ...` heading
+  at all (it uses the `Cover = Hook` reuse declaration instead), so the mutation's
+  `.replace("```text", "```markdown", 1)` (first occurrence) breaks **Shot 1's own fence**, not
+  any cover's. The case was already green before T20 landed — some other, unrelated check (not
+  traced further) already catches a shot with an unreadable fence. The `cover-fence-markdown`
+  case ID is a misnomer for this fixture, not a defect in T20's work; T20's actual C-78/C-86 fixes
+  are independently verified correct by its own five direct unit tests. No package-verification
+  impact (the case was and remains green either way). Filed for documentation accuracy only.
+
+- **T21R-01 (Important — OPERATOR DECISION, not merely filed-for-review like the items above; not
+  fixed).** T21's brief specified a flat `MIN_SIGNATURE_OBJECTS = 2` requirement for C8, with a
+  fallback (if a green fixture tripped it) of conditioning the floor on how many objects the world
+  lock *declares*. Implementing the brief's literal code breaks both real `MIGRATED_PAIRS`
+  fixtures — 4 real register-A shots (across `passing_sheet.md` and `worked_example_sheet.md`,
+  all at `CLOSE`/`MACRO` scale) name only 1 signature object each — and the brief's own suggested
+  fallback is a mathematical no-op here, since both fixtures' styleboards declare exactly 3
+  objects (a declared-count conditional can't relax anything when the count is already ≥3).
+  T21's implementer applied two fixes instead, verified correct and empirically justified by the
+  controller and an independent task reviewer, both re-checking the actual fixture text rather
+  than trusting the report:
+  1. **Plural-tolerant object matching** (`\b{obj}s?\b`) — uncontroversial, fixes a real
+     singular/plural mismatch (`"corner flag"` declared, `"corner flags"` written).
+  2. **A new `TIGHT_SCALES_ONE_OBJECT_FLOOR = frozenset({"CLOSE", "MACRO"})` exemption** — a
+     1-object floor instead of 2, for shots at those two scales only. This is **new Gate C
+     policy invented by this task, not sourced from finding C-87 or any other part of this
+     plan** — it is empirically justified (every real register-A shot at those two scales across
+     both fixtures names exactly 1 object; every wider shot names ≥2) and narrowly scoped (the
+     sport-naming sub-check stays fully unconditional across all scales, so the literal C-87
+     compound-word evasion this task fixes is not reopened), but it is a genuine policy choice,
+     not a mechanical bug fix.
+
+  **The reviewer identified a real, currently-unmitigated consequence of that policy choice**: no
+  other Gate C check cross-validates a shot's declared `scale` field against what its prompt body
+  actually depicts (C2 only forbids *consecutive* scale repeats). Nothing stops an author from
+  writing `MACRO` or `CLOSE` on any shot specifically to drop its object-count requirement from 2
+  to 1 — an adjacent evasion of the object-count floor C-87's own fix was meant to strengthen,
+  narrower than but structurally similar in spirit to the original finding.
+
+  **Confirmed cross-package regression** (independently reproduced by the controller, not just
+  the implementer's claim): `pipeline-app/tests/test_gates.py::
+  test_visual_gate_without_a_styleboard_uses_a_legacy_sheets_own_world_lock` now fails —
+  `tests/fixtures/legacy_do_less_sheet.md`'s Hook shot (`MID-WIDE`, not scale-exempt) names only
+  `"soccer ball"` of its three declared objects (`goal net, corner flag, soccer ball`), and the
+  test's blanket `assert "C8" not in checks` (written to verify an unrelated concern — that C8's
+  *sport* half doesn't fire when using a legacy sheet's own world lock) now also catches the new,
+  unrelated object-count finding. Both the fixture and the test file are outside this package's
+  edit scope (`pipeline-app/` belongs to package P3, not running this session). App suite:
+  32 failed/1094 passed (pre-existing baseline, unrelated to Gate C) → 33 failed/1093 passed (this
+  one new failure, confirmed the sole delta via a stash-and-diff).
+
+  **Not fixed here, and not just routed to the standard filed-for-review list**: this is a
+  genuine product/policy decision — whether Gate C should relax its object-count floor for tight
+  shots at all, and if so whether the scale-mislabeling gaming vector needs its own mitigation
+  (e.g. a scale-consistency check) before that policy ships — that this program's own process
+  reserves for the operator, not for an implementer or the controller to settle unilaterally.
+  Both fixes are otherwise sound and task-reviewed clean; the C8 finding this task closes (a
+  compound word satisfying the sport check) is genuinely fixed either way.
+
+Both T6R items, T11R-01, T18R-01, T19R-01, T20R-01, and **T21R-01 (operator decision required)**
+are carried forward to the final whole-branch review for this package, alongside any Minor
+findings deferred during the task loop. None block continuing to T22.
 
 ---
 

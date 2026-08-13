@@ -4,6 +4,14 @@ Parses the copy-paste sheet format emitted by the `visual-prompts` skill and enf
 the dual-register visual system's variety, world-lock, density and format rules.
 
 Stdlib only. See docs/superpowers/specs/2026-07-28-dual-register-visual-system-design.md
+
+Exit codes:
+    0  EXIT_PASS               no findings
+    1  EXIT_FINDINGS            the gate found findings -- the sheet is the problem
+    2  EXIT_USAGE                argparse only (bad CLI invocation)
+    3  EXIT_UNREADABLE_INPUT     a named path (sheet/styleboard/Library) could not be read
+    4  EXIT_UNPARSEABLE          the sheet was read but yielded no shots
+    5  EXIT_MISSING_DEPENDENCY   a required companion artifact is absent or empty
 """
 
 from __future__ import annotations
@@ -23,7 +31,37 @@ CLOSE_FENCE_RE = re.compile(r"^\s*```\s*$")
 WORLD_HEADING_RE = re.compile(r"^\s*WORLD LOCK\s*$")
 WORLD_ENTRY_RE = re.compile(r"^\s+([a-z][a-z0-9_]*)\s*:\s*(.+?)\s*$")
 
+# Deliberately loose: anything an author could plausibly have meant as a shot
+# heading. A line matching this but NOT SHOT_HEADING_RE is a hard finding, never
+# a skipped line -- skipping it removed the shot from all of C1-C20 and Gate C
+# printed PASS (finding C-70).
+LOOSE_SHOT_HEADING_RE = re.compile(r"^\s*#{2,4}\s*Shot\b", re.IGNORECASE)
+LOOSE_COVER_HEADING_RE = re.compile(r"^\s*#{2,4}\s*Cover\b", re.IGNORECASE)
+SHOT_COUNT_RE = re.compile(r"^\s*SHOT COUNT:\s*(\d+)\s*$", re.IGNORECASE)
+
 NO_TEXT_MARKER = "No Text."
+
+# Exit codes. argparse owns 2 unconditionally, so nothing else may use it.
+EXIT_PASS = 0                 # no findings
+EXIT_FINDINGS = 1             # the gate found findings -- the sheet is the problem
+EXIT_USAGE = 2                # argparse only
+EXIT_UNREADABLE_INPUT = 3     # a named path could not be read
+EXIT_UNPARSEABLE = 4          # the artifact was read but yielded no shots
+EXIT_MISSING_DEPENDENCY = 5   # a required companion artifact is absent or empty
+
+
+def _read(path: Path, label: str) -> str | None:
+    """Read a path, or print which one failed and why. Returns None on failure.
+
+    read_text was called before any error handling, so a mistyped path exited 1
+    with a traceback -- the same code as a failing gate, sending the author to fix
+    a sheet that was never read (finding C-94).
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"Gate C: cannot read {label} at {path}: {exc.strerror or exc}")
+        return None
 
 
 @dataclass(frozen=True)
@@ -38,29 +76,154 @@ class Shot:
     prompt_line_count: int
 
 
+def location_label(shot_index: int | None) -> str:
+    """The human name for a finding's position — the single source of truth for
+    both the CLI's printed prefix and the `beat` field the app template renders."""
+    if shot_index is None:
+        return "sheet"
+    if shot_index == 0:
+        return "cover"
+    return f"shot {shot_index}"
+
+
 @dataclass(frozen=True)
 class Finding:
+    """One Gate C finding.
+
+    `kind` exists so `pipeline_app.gates.run_gates_for_stage`'s blocking rule
+    (`f.get("kind") != "skipped"`) is contractual rather than accidental. Gate C
+    emits only "fail" and "parse", both blocking; it has no known-unknown concept
+    and must not grow one without changing that rule first.
+
+    `beat` is derived from `shot_index` at construction, not passed in, so every
+    existing `Finding(check, index, message)` call site is unchanged. It exists
+    because templates/stage.html renders `finding.beat` and Gate D's record has
+    one — without it every Gate C finding rendered in the app with no location.
+    """
+
     check: str
     shot_index: int | None
     message: str
+    kind: str = "fail"
+    beat: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.beat is None:
+            object.__setattr__(self, "beat", location_label(self.shot_index))
 
 
-def parse_sheet(text: str) -> tuple[list[Shot], dict[str, str]]:
-    """Return (shots in sheet order, world-lock key/value pairs)."""
+class SheetParse(tuple):
+    """(shots, world), plus the parse layer's own findings.
+
+    A tuple subclass rather than a dataclass so `shots, world = parse_sheet(text)`
+    keeps working verbatim in pipeline_app/gates.py (package P3) and in the 11
+    existing tests. `.findings` is the new fail-closed channel; `main()` consumes
+    it today and gates.py adopts it per this plan's P3 contract.
+    """
+
+    def __new__(cls, shots, world, findings, declared_shot_count):
+        obj = super().__new__(cls, (shots, world))
+        obj.findings = findings
+        obj.declared_shot_count = declared_shot_count
+        return obj
+
+    @property
+    def shots(self) -> list["Shot"]:
+        return self[0]
+
+    @property
+    def world(self) -> dict[str, str]:
+        return self[1]
+
+
+def _read_world_block(
+    lines: list[str], start: int
+) -> tuple[dict[str, str], list[Finding], int]:
+    """Consume a WORLD LOCK block to the next unindented non-blank line.
+
+    The old walk broke at the first line that failed WORLD_ENTRY_RE, so a blank
+    line mid-block silently truncated it and an unindented body yielded {} --
+    which then surfaced downstream as a wall of C8/C18 findings blaming the sheet
+    for a styleboard formatting problem (finding C-73).
+    """
+    entries: dict[str, str] = {}
+    findings: list[Finding] = []
+    i = start
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        if not line[:1].isspace():
+            break
+        entry = WORLD_ENTRY_RE.match(line)
+        if entry:
+            entries[entry.group(1)] = entry.group(2)
+        else:
+            findings.append(Finding(
+                "PARSE", None,
+                f"line {i + 1} sits inside the WORLD LOCK block but is not a "
+                f"'<key>: <value>' entry, so it would be dropped: {line.strip()!r}",
+                kind="parse",
+            ))
+        i += 1
+    if not entries:
+        findings.append(Finding(
+            "PARSE", None,
+            "a WORLD LOCK heading is present but no indented '<key>: <value>' "
+            "entries followed it; the world lock resolves to nothing.",
+            kind="parse",
+        ))
+    return entries, findings, i
+
+
+def parse_sheet(text: str) -> SheetParse:
+    """Return (shots in sheet order, world-lock key/value pairs).
+
+    Fail-closed: a line that looks like a shot or cover heading but does not fully
+    match its strict pattern is reported as a PARSE finding rather than skipped.
+    The old behaviour deleted the shot from every check C1-C20 (finding C-70).
+    """
     lines = text.splitlines()
     shots: list[Shot] = []
     world: dict[str, str] = {}
+    findings: list[Finding] = []
+    declared: int | None = None
+    in_fence = False
+    seen_world_block = False
 
     i = 0
     while i < len(lines):
-        if WORLD_HEADING_RE.match(lines[i]):
+        line = lines[i]
+
+        if OPEN_FENCE_RE.match(line):
+            in_fence = True
             i += 1
-            while i < len(lines):
-                entry = WORLD_ENTRY_RE.match(lines[i])
-                if not entry:
-                    break
-                world[entry.group(1)] = entry.group(2)
-                i += 1
+            continue
+        if in_fence:
+            if CLOSE_FENCE_RE.match(line):
+                in_fence = False
+            i += 1
+            continue
+
+        count = SHOT_COUNT_RE.match(line)
+        if count:
+            declared = int(count.group(1))
+            i += 1
+            continue
+
+        if WORLD_HEADING_RE.match(line):
+            if seen_world_block:
+                findings.append(Finding(
+                    "PARSE", None,
+                    f"line {i + 1} opens a second 'WORLD LOCK' block; the later one "
+                    "silently overwrote the earlier. Delete the superseded block.",
+                    kind="parse",
+                ))
+            seen_world_block = True
+            entries, block_findings, i = _read_world_block(lines, i + 1)
+            world.update(entries)
+            findings.extend(block_findings)
             continue
 
         heading = SHOT_HEADING_RE.match(lines[i])
@@ -81,9 +244,25 @@ def parse_sheet(text: str) -> tuple[list[Shot], dict[str, str]]:
             i = next_i
             continue
 
+        if LOOSE_SHOT_HEADING_RE.match(line) or (
+            LOOSE_COVER_HEADING_RE.match(line) and not COVER_HEADING_RE.match(line)
+        ):
+            findings.append(Finding(
+                "PARSE", None,
+                f"line {i + 1} looks like a shot/cover heading but does not match the "
+                f"required format, so it would be skipped and its shot linted by "
+                f"nothing: {line.strip()!r}. Required: "
+                f"'### Shot <n> — <beat> · Register <A|B|PLATE> · <CLASS> · <SCALE> "
+                f"· <HEIGHT>' with em-dash and middle-dot separators and uppercase "
+                f"vocabulary tokens.",
+                kind="parse",
+            ))
+            i += 1
+            continue
+
         i += 1
 
-    return shots, world
+    return SheetParse(shots, world, findings, declared)
 
 
 def parse_world_lock(text: str) -> dict[str, str]:
@@ -105,7 +284,49 @@ COVER_HEADING_RE = re.compile(
 # document -- a document-wide search would also match this text sitting inside a
 # ```text prompt fence or in unrelated prose, silently satisfying C19 with no real
 # cover decision made.
-COVER_REUSE_RE = re.compile(r"^\s*Cover\s*=\s*Hook\b", re.IGNORECASE)
+# Extended to optionally capture an explicit shot number ("...beat still #1") so
+# the reuse declaration can be resolved to a real shot (finding C-86) rather than
+# merely detected as present.
+COVER_REUSE_RE = re.compile(r"^\s*Cover\s*=\s*Hook\b[^#\n]*(?:#\s*(\d+))?", re.IGNORECASE)
+
+
+def cover_heading_present(text: str) -> bool:
+    """Whether a '### Cover — ...' heading exists anywhere, regardless of whether
+    its prompt fence could be read. Distinguishes 'no cover at all' from 'a cover
+    heading exists but ships unlinted' (finding C-78)."""
+    return any(COVER_HEADING_RE.match(line) for line in text.splitlines())
+
+
+def _cover_reuse_declaration(text: str) -> re.Match | None:
+    """The 'Cover = Hook ...' declaration line, matched outside any prompt fence, or
+    None. Same fence-aware scan as declares_cover_reuse, but returns the match
+    itself so the caller can resolve which shot is being reused (finding C-86)."""
+    in_fence = False
+    for line in text.splitlines():
+        if OPEN_FENCE_RE.match(line):
+            in_fence = True
+            continue
+        if CLOSE_FENCE_RE.match(line):
+            in_fence = False
+            continue
+        if in_fence:
+            continue
+        match = COVER_REUSE_RE.match(line)
+        if match:
+            return match
+    return None
+
+
+def _hook_shot_for_reuse(shots: list[Shot], match: "re.Match[str]") -> Shot | None:
+    """The shot a 'Cover = Hook ...' declaration reuses, or None if it names nothing
+    real. Tries the explicit shot number first (if the declaration carried one),
+    then falls back to any shot whose beat starts with 'Hook'."""
+    index_str = match.group(1)
+    if index_str is not None:
+        named = next((s for s in shots if s.index == int(index_str)), None)
+        if named is not None:
+            return named
+    return next((s for s in shots if s.beat.startswith("Hook")), None)
 
 
 def parse_cover(text: str) -> Shot | None:
@@ -148,37 +369,22 @@ def _count_cover_headings(text: str) -> int:
 def declares_cover_reuse(text: str) -> bool:
     """True if the sheet states, outside any prompt fence, that the cover reuses the Hook.
 
-    Scans line by line and skips anything between a ```text open fence and its
-    close, so a stray 'Cover = Hook...' sitting inside a pasted prompt body (i.e.
-    describing imagery, not declaring a decision) can't satisfy C19. Deliberately
-    NOT confined to a 'COVER / THUMBNAIL' section header: the line is a fixed,
-    specific declaration string ('Cover = Hook...') that nothing else in the sheet
-    format would produce by accident, and Task 6's fixture carries it at the top
-    level with no such section wrapping it.
+    Deliberately NOT confined to a 'COVER / THUMBNAIL' section header: the line is a
+    fixed, specific declaration string ('Cover = Hook...') that nothing else in the
+    sheet format would produce by accident.
     """
-    in_fence = False
-    for line in text.splitlines():
-        if OPEN_FENCE_RE.match(line):
-            in_fence = True
-            continue
-        if CLOSE_FENCE_RE.match(line):
-            in_fence = False
-            continue
-        if in_fence:
-            continue
-        if COVER_REUSE_RE.match(line):
-            return True
-    return False
+    return _cover_reuse_declaration(text) is not None
 
 
 def check_cover_present(text: str) -> list[Finding]:
     """C19: the cover decision is stated, never silently omitted -- and stated once.
 
-    prompt-sheet-format.md §7 already requires this of every emitted sheet `[I]`; until
-    now nothing enforced it. A sheet with two '### Cover — ...' headings (a stale draft
-    left behind plus the real one) has parse_cover silently linting only the first and
-    leaving the second invisible to Gate C, so that ambiguity is reported here rather
-    than resolved silently.
+    prompt-sheet-format.md §7 already requires this of every emitted sheet `[I]`. A
+    sheet with two '### Cover — ...' headings (a stale draft left behind plus the
+    real one) is reported rather than resolved silently. A cover heading whose
+    prompt fence cannot be read is reported as present-but-unlinted (C-78), not
+    conflated with no cover at all. A 'Cover = Hook ...' reuse declaration must name
+    a shot that actually exists (C-86), not just be present as text.
     """
     findings: list[Finding] = []
     heading_count = _count_cover_headings(text)
@@ -191,8 +397,36 @@ def check_cover_present(text: str) -> list[Finding]:
                 "exactly one cover decision. Remove the stale draft.",
             )
         )
-    if parse_cover(text) is not None or declares_cover_reuse(text):
+
+    if parse_cover(text) is not None:
         return findings
+
+    if cover_heading_present(text):
+        findings.append(
+            Finding(
+                "C19",
+                None,
+                "a '### Cover — ...' heading is present but its prompt fence is "
+                "unreadable (expected ```text); the cover would ship unlinted",
+            )
+        )
+        return findings
+
+    reuse_match = _cover_reuse_declaration(text)
+    if reuse_match is not None:
+        shots, _world = parse_sheet(text)
+        if _hook_shot_for_reuse(shots, reuse_match) is not None:
+            return findings
+        findings.append(
+            Finding(
+                "C19",
+                None,
+                "'Cover = Hook ...' is declared but no Hook shot exists to reuse; "
+                "name a real shot or emit a '### Cover — ...' block instead",
+            )
+        )
+        return findings
+
     findings.append(
         Finding(
             "C19",
@@ -231,7 +465,9 @@ def _read_fenced_prompt(lines: list[str], start: int) -> tuple[list[str], int]:
     """Read the next ```text fence after `start`. Returns (non-empty lines, index after it)."""
     i = start
     while i < len(lines) and not OPEN_FENCE_RE.match(lines[i]):
-        if SHOT_HEADING_RE.match(lines[i]):
+        if (SHOT_HEADING_RE.match(lines[i]) or COVER_HEADING_RE.match(lines[i])
+                or LOOSE_COVER_HEADING_RE.match(lines[i])
+                or LOOSE_SHOT_HEADING_RE.match(lines[i])):
             return [], i
         i += 1
     if i >= len(lines):
@@ -276,6 +512,70 @@ def body_word_count(shot: Shot) -> int:
 def signature_objects(world: dict[str, str]) -> list[str]:
     raw = world.get("register_a_signature_objects", "")
     return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+def check_shot_count(shots: list[Shot], declared: int | None = None) -> list[Finding]:
+    """C21: parsed shots reconcile against what the sheet says it contains.
+
+    This is the invariant that makes C-70 unrepeatable. Every other check iterates
+    `shots`, so a shot that never parsed is a shot no check can fail. Indices are
+    the sheet's own declaration of how many shots it has: if they do not form a
+    contiguous 1..N run, one was dropped, duplicated or misnumbered, and the gate
+    says so instead of reporting a clean pass over the survivors.
+    """
+    findings: list[Finding] = []
+    if not shots:
+        return findings
+
+    indices = [s.index for s in shots]
+    expected = list(range(1, len(shots) + 1))
+    if indices != expected:
+        missing = sorted(set(expected) - set(indices))
+        duplicated = sorted({i for i in indices if indices.count(i) > 1})
+        detail = []
+        if missing:
+            detail.append(f"missing {missing}")
+        if duplicated:
+            detail.append(f"duplicated {duplicated}")
+        findings.append(Finding(
+            "C21", None,
+            f"parsed {len(shots)} shot(s) with indices {indices}, which is not a "
+            f"contiguous 1..{len(shots)} run"
+            + (f" ({'; '.join(detail)})" if detail else "")
+            + ". A shot heading was dropped, duplicated or misnumbered -- every "
+            "check C1-C20 iterates the parsed shots, so a shot that did not parse "
+            "is a shot nothing linted.",
+        ))
+
+    if declared is not None and declared != len(shots):
+        findings.append(Finding(
+            "C21", None,
+            f"the sheet declares {declared} shot(s) but {len(shots)} parsed.",
+        ))
+    return findings
+
+
+MAX_PLATE_SHARE = 1 / 3
+
+
+def check_plate_budget(shots: list[Shot]) -> list[Finding]:
+    """C22: PLATE is an exemption, so it needs a ceiling.
+
+    A PLATE shot is exempt from C3's run computation, C6/C7's register counts, and
+    C8/C9/C10/C17 -- every rule that makes the dual-register system a system. Those
+    exemptions are correct for a subject-free background plate and catastrophic as
+    an unbounded escape hatch: relabelling a failing Register B shot as PLATE
+    cleared its every register check (finding C-85).
+    """
+    plates = [s for s in shots if s.register == "PLATE"]
+    if not plates or len(plates) <= max(1, int(len(shots) * MAX_PLATE_SHARE)):
+        return []
+    return [Finding(
+        "C22", None,
+        f"{len(plates)} of {len(shots)} shots are Register PLATE (max "
+        f"{MAX_PLATE_SHARE:.0%}). PLATE is exempt from C3/C6/C7/C8/C9/C10/C17, so a "
+        "sheet made mostly of plates is a sheet mostly unchecked.",
+    )]
 
 
 def check_sequence(shots: list[Shot]) -> list[Finding]:
@@ -428,8 +728,35 @@ def check_vocabulary(shots: list[Shot]) -> list[Finding]:
     return findings
 
 
-BANNED_REGISTER_A_STRINGS = ("empty gym", "empty youth gym")
-BANNED_REGISTER_B_STRINGS = ("dslr", "shot on 35mm film", "documentary")
+# Widened from the two/three literals the audit found (finding C-84). Source: the
+# same [I]-marked contract these were drawn from --
+# .claude/skills/shorts-styleboard/references/visual-registers.md:47 (Register A
+# world lock) and :64 (Register B banned vocabulary). The terms below are synonyms
+# of those same two rules, not new craft claims. P13 mirrors this list back into
+# that reference; see this plan's cross-package note.
+# "empty field" deliberately omitted: tests/fixtures/passing_sheet.md Shot 3 uses
+# that exact phrase in a fully-named, fully-detailed Register A venue ("...dwarfed
+# by the empty field..." after naming the pitch, goal net, and corner flag) --
+# a legitimate atmospheric detail, not the generic/unnamed-venue failure C9 exists
+# to catch. The fixture is outside this task's edit scope, so the term is dropped
+# rather than the false positive shipped.
+BANNED_REGISTER_A_STRINGS = (
+    "empty gym", "empty youth gym", "empty pitch", "empty stadium",
+    "empty court", "vacant gym", "vacant pitch", "deserted gym", "deserted pitch",
+    "abandoned gym", "abandoned pitch", "generic gym", "generic field",
+)
+MIN_SIGNATURE_OBJECTS = 2
+# The two tightest entries in VALID_SCALES: an extreme close-up (framing a face
+# or a single detail) cannot credibly hold two named large props in frame. Every
+# wider scale in both real MIGRATED_PAIRS fixtures (including their covers)
+# names >= MIN_SIGNATURE_OBJECTS; only CLOSE/MACRO shots ever sit at 1. See T21.
+TIGHT_SCALES_ONE_OBJECT_FLOOR = frozenset({"CLOSE", "MACRO"})
+BANNED_REGISTER_B_STRINGS = (
+    "dslr", "shot on 35mm film", "documentary", "photorealistic", "photographic",
+    "photograph", "bokeh", "shallow depth of field", "depth of field", "leica",
+    "kodachrome", "cinematic still", "film still", "lens flare", "telephoto",
+    "wide-angle lens", "macro lens", "iso ",
+)
 BANNED_REGISTER_B_PATTERNS = (
     re.compile(r"\d+\s*mm"),
     re.compile(r"\bf/\d"),
@@ -437,34 +764,50 @@ BANNED_REGISTER_B_PATTERNS = (
 
 
 def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
-    """C8-C10: the world lock and the register vocabulary separation."""
+    """C8-C10: the world lock and the register vocabulary separation.
+
+    C8 is a mention check over the world-lock terms (word-boundary matched,
+    plural-tolerant), not a depiction check -- it confirms the sport and at
+    least MIN_SIGNATURE_OBJECTS signature objects are named in the prompt
+    text. The floor drops to 1 for TIGHT_SCALES_ONE_OBJECT_FLOOR shots
+    (CLOSE, MACRO): an extreme close-up can only credibly hold one named
+    prop in frame, so a 2-object floor there would demand incoherent prose
+    rather than close a real evasion (see the T21 report for the fixture
+    evidence behind this carve-out).
+    """
     findings: list[Finding] = []
     sport = world.get("register_a_sport", "").strip().lower()
     objects = [o.lower() for o in signature_objects(world)]
 
     for shot in shots:
         body = prompt_body(shot).lower()
+        full_prompt = shot.prompt.lower()
 
         if shot.register == "A":
             if not sport:
                 findings.append(
                     Finding("C8", shot.index, "world lock declares no register_a_sport")
                 )
-            elif sport not in body:
+            elif not re.search(rf"\b{re.escape(sport)}\b", body):
                 findings.append(
                     Finding("C8", shot.index, f"Register A prompt does not name the sport {sport!r}")
                 )
-            if not any(obj in body for obj in objects):
+            matched_objects = [obj for obj in objects if re.search(rf"\b{re.escape(obj)}s?\b", body)]
+            required_objects = (
+                1 if shot.scale in TIGHT_SCALES_ONE_OBJECT_FLOOR else MIN_SIGNATURE_OBJECTS
+            )
+            if len(matched_objects) < required_objects:
                 findings.append(
                     Finding(
                         "C8",
                         shot.index,
-                        "Register A prompt contains none of the signature objects "
-                        f"{objects!r}; the sport will not read",
+                        f"Register A prompt mentions {len(matched_objects)} of the signature "
+                        f"objects {objects!r}; needs at least {required_objects}. C8 is a "
+                        "mention check over the world-lock terms, not a depiction check.",
                     )
                 )
             for banned in BANNED_REGISTER_A_STRINGS:
-                if banned in body:
+                if banned in full_prompt:
                     findings.append(
                         Finding(
                             "C9",
@@ -476,7 +819,7 @@ def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
 
         if shot.register == "B":
             for banned in BANNED_REGISTER_B_STRINGS:
-                if banned in body:
+                if banned in full_prompt:
                     findings.append(
                         Finding(
                             "C10",
@@ -486,7 +829,7 @@ def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
                         )
                     )
             for pattern in BANNED_REGISTER_B_PATTERNS:
-                match = pattern.search(body)
+                match = pattern.search(full_prompt)
                 if match:
                     findings.append(
                         Finding(
@@ -503,13 +846,45 @@ def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
 MAX_SHARED_CLAUSES = 5
 MIN_CLAUSES = 10
 MIN_WORDS = 60
+MAX_CLAUSE_SIMILARITY = 0.6
+MIN_DISTINCT_TOKEN_RATIO = 0.55
+
+
+def _clause_tokens(clause: str) -> frozenset[str]:
+    return frozenset(re.findall(r"[a-z0-9]+", clause))
+
+
+def _clauses_are_near_duplicates(left: str, right: str) -> bool:
+    """Jaccard overlap of the two clauses' token sets.
+
+    Byte equality per clause was the old test, and one appended word per clause
+    defeated it while changing no visual idea (finding C-82).
+    """
+    a, b = _clause_tokens(left), _clause_tokens(right)
+    if not a or not b:
+        return False
+    return len(a & b) / len(a | b) >= MAX_CLAUSE_SIMILARITY
 
 
 def check_prompt_clone(shots: list[Shot]) -> list[Finding]:
-    """C11: anti-clone. Consistency belongs in --sref, not a copied prompt body."""
+    """C11: anti-clone. Consistency belongs in --sref, not a copied prompt body.
+
+    Two clauses are "shared" if they are near-duplicates (Jaccard token overlap),
+    not byte-identical -- one appended word per clause used to take a 12-clause
+    exact clone to 0 shared clauses while changing no visual idea (finding C-82).
+    Each of `left`'s clauses can satisfy at most one match, so padding `right` with
+    repeats of the same clause cannot inflate the count past `left`'s own clause count.
+    """
     findings: list[Finding] = []
     for left, right in _pairs(shots):
-        shared = set(body_clauses(left)) & set(body_clauses(right))
+        available = list(body_clauses(left))
+        shared: list[str] = []
+        for r_clause in body_clauses(right):
+            for i, l_clause in enumerate(available):
+                if _clauses_are_near_duplicates(l_clause, r_clause):
+                    shared.append(l_clause)
+                    del available[i]
+                    break
         if len(shared) > MAX_SHARED_CLAUSES:
             findings.append(
                 Finding(
@@ -524,7 +899,14 @@ def check_prompt_clone(shots: list[Shot]) -> list[Finding]:
 
 
 def check_prompt_density(shots: list[Shot]) -> list[Finding]:
-    """C12: every prompt carries concrete renderable content in all nine layers."""
+    """C12: the prompt body clears a clause floor, a word floor and a repetition floor.
+
+    Deliberately NOT a nine-layer content check -- nothing here maps a clause to a
+    layer, and the previous docstring's claim that it did was false (finding C-83).
+    What it does catch is the shape of a padded body: a body whose distinct-token
+    ratio falls below MIN_DISTINCT_TOKEN_RATIO is repeating itself to clear the
+    floors rather than describing anything.
+    """
     findings: list[Finding] = []
     for shot in shots:
         clause_count = len(body_clauses(shot))
@@ -533,7 +915,7 @@ def check_prompt_density(shots: list[Shot]) -> list[Finding]:
                 Finding(
                     "C12",
                     shot.index,
-                    f"{clause_count} clause(s); need >= {MIN_CLAUSES}. All 9 layers must carry "
+                    f"{clause_count} clause(s); need >= {MIN_CLAUSES}. The body must carry "
                     "concrete renderable content.",
                 )
             )
@@ -542,6 +924,15 @@ def check_prompt_density(shots: list[Shot]) -> list[Finding]:
             findings.append(
                 Finding("C12", shot.index, f"{words} words in body; need >= {MIN_WORDS}")
             )
+        tokens = re.findall(r"[a-z0-9]+", _body_without_no_text(shot).lower())
+        if tokens and len(set(tokens)) / len(tokens) < MIN_DISTINCT_TOKEN_RATIO:
+            findings.append(Finding(
+                "C12", shot.index,
+                f"{len(set(tokens))} distinct tokens in {len(tokens)} words "
+                f"(ratio {len(set(tokens)) / len(tokens):.2f}, need >= "
+                f"{MIN_DISTINCT_TOKEN_RATIO}); the body is padding to clear the "
+                "length floor, not describing the shot.",
+            ))
     return findings
 
 
@@ -557,9 +948,16 @@ def _pairs(shots: list[Shot]):
 
 
 STYLIZE_RE = re.compile(r"--(?:s|stylize)\s+(\d+)")
-REGISTER_BANDS = {"A": (80, 120, True), "B": (400, 700, False)}
+# PLATE carries no register look, so it has no --raw requirement and no register
+# band -- but it is still a render, and a render with no --s is not a specified
+# render. The band is wide and low: a plate is a ground, not a stylised image.
+REGISTER_BANDS = {"A": (80, 120, True), "B": (400, 700, False), "PLATE": (0, 250, False)}
 # A bare version number like "8.2" -- the only non-URL shape allowed to carry a period.
 URL_OR_VERSION_TOKEN_RE = re.compile(r"^\d+\.\d+$")
+# The format's aspect ratio, as a module constant so a future non-vertical format
+# overrides it in one place. C13 previously asserted only that --ar was *present*.
+REQUIRED_ASPECT_RATIO = "9:16"
+AR_FLAG_RE = re.compile(r"--ar\s+(\S+)")
 
 
 def check_format(shots: list[Shot]) -> list[Finding]:
@@ -588,8 +986,15 @@ def check_format(shots: list[Shot]) -> list[Finding]:
         if not flags:
             findings.append(Finding("C13", shot.index, "no parameter block"))
             continue
-        if "--ar" not in flags:
+        aspect = AR_FLAG_RE.search(flags)
+        if aspect is None:
             findings.append(Finding("C13", shot.index, "no --ar in the parameter block"))
+        elif aspect.group(1) != REQUIRED_ASPECT_RATIO:
+            findings.append(Finding(
+                "C13", shot.index,
+                f"--ar {aspect.group(1)} is not the required {REQUIRED_ASPECT_RATIO}; "
+                "a Short is vertical and every asset must be generated that way.",
+            ))
         for punctuation in (",", ";", "."):
             if punctuation not in flags:
                 continue
@@ -709,45 +1114,43 @@ def check_style_reference(shots: list[Shot]) -> list[Finding]:
     ]
 
 
-MOODBOARD_FLAG_RE = re.compile(r"--p\b")
-
-
 def check_style_mechanism(shots: list[Shot]) -> list[Finding]:
-    """C17: every non-PLATE shot carries some style mechanism.
+    """C17: every non-PLATE shot carries a {style:...} slot.
 
-    C16 rejects a bad code but says nothing about a shot with no code at all, which is
-    the same defect one step removed: the shot renders in whatever default aesthetic
-    the model picks, and the Short stops reading as one look.
+    Only a {style:...} slot counts. A literal --sref (however plausible its digits)
+    and a --p profile are both unresolvable against the Library, so a sheet carrying
+    them declares no slots, C20 never runs, and Gate C passes a Short whose look is
+    unrecorded (findings C-79, C-80). The slot is the one mechanism that has a single
+    resolution path, and that path is C20.
+
+    C16 still exists alongside this: it validates the *shape* of any literal --sref
+    or --p an author writes next to the slot (or in place of it, before this check
+    catches that) — a fabricated code, a slot-string misused as a literal value, and
+    so on. C16 answers "is this literal well-formed"; C17 answers "is there a
+    recorded lock at all". A well-formed literal no longer satisfies C17 on its own.
 
     PLATE shots are exempt — they are subject-free background plates with no register
     look to lock (visual-registers.md §5).
-
-    Presence is checked with `SREF_FLAG_RE` — the same anchored, word-boundary regex
-    C16 uses to find --sref occurrences — rather than a raw `"--sref" in flags"`
-    substring test. The two checks answer different questions (C17: is some
-    mechanism written at all; C16: is its value real) but must agree on what counts
-    as "an --sref is here" so a bare, valueless `--sref` isn't invisible to one
-    check while silently satisfying the other.
     """
     findings: list[Finding] = []
     for shot in shots:
         if shot.register == "PLATE":
             continue
         flags = prompt_flags(shot)
-        has_mechanism = (
-            SREF_FLAG_RE.search(flags) is not None
-            or MOODBOARD_FLAG_RE.search(flags) is not None
-            or STYLE_SLOT_RE.search(flags) is not None
-        )
-        if not has_mechanism:
-            findings.append(
-                Finding(
-                    "C17",
-                    shot.index,
-                    "no style mechanism in the parameter block; every non-PLATE shot needs "
-                    "a literal --sref/--p or a {style:...} slot, or it renders off-look",
-                )
-            )
+        # Only a {style:...} slot counts. A literal --sref (however plausible its
+        # digits) and a --p profile are both unresolvable against the Library, so a
+        # sheet carrying them declares no slots, C20 never runs, and Gate C passes a
+        # Short whose look is unrecorded (findings C-79, C-80). The slot is the one
+        # mechanism that has a single resolution path, and that path is C20.
+        if STYLE_SLOT_RE.search(flags) is None:
+            findings.append(Finding(
+                "C17", shot.index,
+                "no {style:...} slot in the parameter block. A literal --sref or --p "
+                "is not a recorded style lock: it resolves against nothing, so C20 "
+                "cannot check it and the Short's look is not written down anywhere. "
+                "Bind the register to a Style Library entry in the styleboard and "
+                "write its slot here.",
+            ))
     return findings
 
 
@@ -839,8 +1242,9 @@ ENTRY_HEADING_RE = re.compile(r"^###\s+(\S+)\s*$")
 LIBRARY_CODE_RE = re.compile(r"^\s*code:\s*(.+?)\s*$")
 
 
-def parse_style_library(text: str) -> dict[str, str]:
-    """Every entry label in docs/style-library.md, mapped to its harvested code.
+def parse_style_library_checked(text: str) -> tuple[dict[str, str], list[Finding]]:
+    """Every entry label in docs/style-library.md, mapped to its harvested code, plus
+    the parse layer's own rejects.
 
     The code is carried for reporting only -- C20 asks whether a label *exists*, not
     whether it has been harvested yet. An entry with `code: UNHARVESTED`, or a
@@ -848,8 +1252,15 @@ def parse_style_library(text: str) -> dict[str, str]:
     maps to a falsy code and still counts as present: Gate C runs on the sheet, before
     any render, so binding to a recorded-but-unharvested world is a legitimate
     intermediate state. What C20 catches is a label naming no entry at all.
+
+    An entry heading that fails VALID_SLOT_VALUE_RE (an annotation, capitalization, a
+    stray character) used to be silently dropped -- the parse looked complete and C20
+    failed every sheet binding the missing label, blaming the sheet for a Library typo
+    (finding C-76). An unterminated fence silently dropped every entry after it, the
+    same way.
     """
     library: dict[str, str] = {}
+    findings: list[Finding] = []
     in_entries = False
     in_fence = False
     label: str | None = None
@@ -873,9 +1284,38 @@ def parse_style_library(text: str) -> dict[str, str]:
         if not in_entries:
             continue
         heading = ENTRY_HEADING_RE.match(stripped)
-        if heading and VALID_SLOT_VALUE_RE.match(heading.group(1)):
-            label = heading.group(1)
-            library[label] = ""
+        if stripped.startswith("### "):
+            if heading and VALID_SLOT_VALUE_RE.match(heading.group(1)):
+                label = heading.group(1)
+                library[label] = ""
+            else:
+                findings.append(Finding(
+                    "PARSE", None,
+                    f"'{stripped}' sits under '## Entries' but is not a bare kebab-case "
+                    "label, so the entry is invisible to C20 and every sheet binding it "
+                    "fails against a Library that looks complete. Required: "
+                    "'### <lowercase-kebab-label>' and nothing else on the line.",
+                    kind="parse",
+                ))
+            continue
+    if in_fence:
+        findings.append(Finding(
+            "PARSE", None,
+            "unterminated ``` fence in the Style Library; every entry after it was "
+            "dropped.",
+            kind="parse",
+        ))
+    return library, findings
+
+
+def parse_style_library(text: str) -> dict[str, str]:
+    """Every entry label in docs/style-library.md, mapped to its harvested code.
+
+    Dict-only wrapper kept for pipeline_app.gates.py:111's existing call site (package
+    P3, frozen interface per this plan's §6.1). Use parse_style_library_checked for the
+    fail-closed variant that also reports what it had to drop.
+    """
+    library, _findings = parse_style_library_checked(text)
     return library
 
 
@@ -917,10 +1357,10 @@ def check_slot_labels(
                     Finding(
                         "C20",
                         shot.index,
-                        f"{key!r} = {value!r} is not an entry in docs/style-library.md, so the "
-                        f"slot resolves to nothing and the shot renders with no style lock. "
-                        f"Known entries: {known}. Fix the label, or harvest the world and add "
-                        f"an entry.",
+                        f"the styleboard's WORLD LOCK binds {key} to {value!r}, which is not "
+                        f"an entry in docs/style-library.md — fix the label in the STYLEBOARD, "
+                        f"not in this sheet. Known entries: {known}. Fix the label, or harvest "
+                        f"the world and add an entry.",
                     )
                 )
     return findings
@@ -932,9 +1372,12 @@ def lint(
     *,
     cover: Shot | None = None,
     library: dict[str, str] | None = None,
+    declared_shot_count: int | None = None,
 ) -> list[Finding]:
     """Run every Gate C check, in check order."""
     findings = [
+        *check_shot_count(shots, declared_shot_count),
+        *check_plate_budget(shots),
         *check_sequence(shots),
         *check_register_balance(shots),
         *check_world_lock(shots, world),
@@ -980,20 +1423,56 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=DEFAULT_STYLE_LIBRARY,
         help="path to the Style Library C20 resolves slot labels against "
-             f"(default: {DEFAULT_STYLE_LIBRARY}). Only read when the sheet has slots.",
+             f"(default: {DEFAULT_STYLE_LIBRARY}). Only read when the sheet has slots. "
+             "A non-default path is recorded in the output as [NON-DEFAULT].",
     )
     args = parser.parse_args(argv)
 
-    sheet_text = args.sheet.read_text(encoding="utf-8")
-    shots, sheet_world = parse_sheet(sheet_text)
+    sheet_text = _read(args.sheet, "sheet")
+    if sheet_text is None:
+        return EXIT_UNREADABLE_INPUT
+    parse = parse_sheet(sheet_text)
+    shots, sheet_world = parse.shots, parse.world
+
     if args.styleboard is not None:
-        world = parse_world_lock(args.styleboard.read_text(encoding="utf-8"))
+        styleboard_text = _read(args.styleboard, "styleboard")
+        if styleboard_text is None:
+            return EXIT_UNREADABLE_INPUT
+        world = parse_world_lock(styleboard_text)
+        if not world:
+            # Parity with pipeline_app.gates.run_prompt_sheet_gate:86-96. Linting
+            # against an empty world emits a wall of C8/C18 findings naming the
+            # wrong artifact. Fail closed and say which file is empty.
+            print(
+                f"Gate C: styleboard {args.styleboard.name} has no parseable WORLD LOCK "
+                f"block -- Gate C cannot check {args.sheet.name} against an empty world."
+            )
+            return EXIT_MISSING_DEPENDENCY
+        if sheet_world:
+            # A legacy sheet that still carries its own WORLD LOCK block used to have
+            # it silently discarded in favor of the styleboard's, with zero indication
+            # anything was overridden -- including when the sheet's block had gone
+            # stale and now contradicts the styleboard.
+            parse.findings.append(Finding(
+                "PARSE", None,
+                f"the sheet at {args.sheet.name} carries its own WORLD LOCK block, but a "
+                f"styleboard was also supplied at {args.styleboard.name}; the sheet's "
+                "block is being discarded -- remove it from the sheet if the styleboard "
+                "is now authoritative, or drop --styleboard if the sheet's own block "
+                "should still apply.",
+                kind="parse",
+            ))
     else:
         world = sheet_world
 
     if not shots:
+        if parse.findings:
+            # These are the exact, already-computed reasons nothing parsed -- the
+            # operator gets which lines are wrong, not just that something is wrong.
+            for finding in parse.findings:
+                print(f"  [{finding.check}] {finding.beat}: {finding.message}")
         print(f"Gate C: no shots parsed from {args.sheet}. Check the sheet format.")
-        return 2
+        return EXIT_UNPARSEABLE
 
     cover = parse_cover(sheet_text)
 
@@ -1007,33 +1486,44 @@ def main(argv: list[str] | None = None) -> int:
                 f"Gate C: Style Library not found at {args.style_library}. C20 cannot "
                 f"resolve this sheet's slot labels. Pass --style-library."
             )
-            return 2
-        library = parse_style_library(args.style_library.read_text(encoding="utf-8"))
+            return EXIT_MISSING_DEPENDENCY
+        library_text = _read(args.style_library, "Style Library")
+        if library_text is None:
+            return EXIT_UNREADABLE_INPUT
+        library, library_findings = parse_style_library_checked(library_text)
+        if library_findings:
+            print(
+                f"Gate C: Style Library at {args.style_library} could not be fully parsed:"
+            )
+            for finding in library_findings:
+                print(f"  [{finding.check}] {finding.message}")
+            return EXIT_MISSING_DEPENDENCY
         if not library:
             print(
                 f"Gate C: no entries parsed from {args.style_library}. C20 cannot check "
                 f"this sheet's slot labels against an empty Library."
             )
-            return 2
+            return EXIT_MISSING_DEPENDENCY
+
+    if library is not None:
+        marker = "" if args.style_library == DEFAULT_STYLE_LIBRARY else " [NON-DEFAULT]"
+        print(f"Gate C: Style Library{marker}: {args.style_library} "
+              f"({len(library)} entries)")
 
     findings = [
+        *parse.findings,
         *check_cover_present(sheet_text),
-        *lint(shots, world, cover=cover, library=library),
+        *lint(shots, world, cover=cover, library=library,
+              declared_shot_count=parse.declared_shot_count),
     ]
     if not findings:
         print(f"Gate C: PASS — {len(shots)} shots, 0 findings.")
-        return 0
+        return EXIT_PASS
 
     print(f"Gate C: FAIL — {len(shots)} shots, {len(findings)} finding(s).")
     for finding in findings:
-        if finding.shot_index is None:
-            where = "sheet"
-        elif finding.shot_index == 0:
-            where = "cover"
-        else:
-            where = f"shot {finding.shot_index}"
-        print(f"  [{finding.check}] {where}: {finding.message}")
-    return 1
+        print(f"  [{finding.check}] {finding.beat}: {finding.message}")
+    return EXIT_FINDINGS
 
 
 if __name__ == "__main__":
