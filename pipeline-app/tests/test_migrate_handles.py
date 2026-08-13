@@ -47,9 +47,9 @@ def test_migrate_skips_a_handle_colliding_with_one_already_registered(conn, tmp_
         {"handle": "john.doe.5", "display_name": "A", "keyword_filter": None, "note": "guru channel"},
     ])
 
-    count = migrate(conn, manifest_path, now="2026-07-30T00:00:00Z")
+    result = migrate(conn, manifest_path, now="2026-07-30T00:00:00Z")
 
-    assert count == 0
+    assert result.seeded == 0
     assert db.get_handle_by_platform_and_handle(conn, "youtube", "john.doe.5") is None
     err = capsys.readouterr().err
     assert "john.doe.5" in err
@@ -64,9 +64,9 @@ def test_migrate_skips_a_collision_between_two_manifest_entries(conn, tmp_path):
         {"handle": "johndoe5", "display_name": "B", "keyword_filter": None, "note": "guru channel"},
     ])
 
-    count = migrate(conn, manifest_path, now="2026-07-30T00:00:00Z")
+    result = migrate(conn, manifest_path, now="2026-07-30T00:00:00Z")
 
-    assert count == 1
+    assert result.seeded == 1
     assert db.get_handle_by_platform_and_handle(conn, "youtube", "john.doe.5") is not None
     assert db.get_handle_by_platform_and_handle(conn, "youtube", "johndoe5") is None
 
@@ -79,9 +79,9 @@ def test_migrate_seeds_the_rest_despite_one_collision(conn, tmp_path):
         {"handle": "@Romayroh", "display_name": "R", "keyword_filter": None, "note": "guru channel"},
     ])
 
-    count = migrate(conn, manifest_path, now="2026-07-30T00:00:00Z")
+    result = migrate(conn, manifest_path, now="2026-07-30T00:00:00Z")
 
-    assert count == 1
+    assert result.seeded == 1
     assert db.get_handle_by_platform_and_handle(conn, "youtube", "@Romayroh") is not None
 
 

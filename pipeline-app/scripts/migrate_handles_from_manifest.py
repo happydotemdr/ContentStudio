@@ -12,6 +12,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -40,21 +41,13 @@ class ManifestError(Exception):
     fully read is worse than no roster, because the operator believes it."""
 
 
-class MigrateResult(int):
-    """The seeded-handle count, for existing callers that compare it to an
-    int, plus ``seeded``/``errors`` so a caller can tell "ran clean and
-    seeded nothing" apart from "something went wrong" without depending on
-    whether an exception happened to be raised. ``errors`` is always empty
-    today -- validate_keys() raises rather than partially succeeding -- the
-    field exists so a future partial-failure mode does not have to change
-    this shape again.
-    """
-
-    def __new__(cls, seeded: int, errors: list[str] | None = None) -> "MigrateResult":
-        obj = super().__new__(cls, seeded)
-        obj.seeded = seeded
-        obj.errors = list(errors) if errors else []
-        return obj
+@dataclass
+class MigrateResult:
+    seeded: int = 0
+    updated: int = 0
+    skipped: int = 0
+    drift: list[dict] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 def validate_keys(data: dict) -> None:
@@ -138,7 +131,7 @@ def migrate(conn: sqlite3.Connection, manifest_path: Path, now: str) -> MigrateR
         if _seed(conn, "bluesky", handle, entry.get("display_name"),
                  derive_cohort(note, handle), None, now):
             count += 1
-    return MigrateResult(count)
+    return MigrateResult(seeded=count)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -169,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         conn.close()
         return 2
     conn.close()
-    print(f"migrated {result} handles from {manifest_path} into {db_path}")
+    print(f"migrated {result.seeded} handles from {manifest_path} into {db_path}")
     return 0
 
 
