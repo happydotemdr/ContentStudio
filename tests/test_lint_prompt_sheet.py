@@ -1282,3 +1282,91 @@ def test_an_unindented_world_lock_body_is_reported_not_silently_empty():
     absent = parse_sheet("nothing here\n")
     assert flat.world == {} and absent.world == {}
     assert flat.findings != absent.findings
+
+
+# --- Mutation testing: take a green sheet, break one thing, assert Gate C fails --
+#
+# F-14: the suite bypassed the parser, so the largest hole in the gate was
+# structurally unreachable by any existing test. Each case below is an evasion the
+# audit confirmed by execution against these same fixtures. `expected` is the check
+# that must fire; `""` means "any finding at all, but never a pass".
+
+MUTATIONS = [
+    # id,                       find,                        replace,                     expected
+    ("heading-hyphen",          "### Shot 4 — Build",        "### Shot 4 - Build",        "PARSE"),
+    ("heading-endash",          "### Shot 4 — Build",        "### Shot 4 – Build",        "PARSE"),
+    ("heading-no-middot",       "· Register B · ARTIFACT",   "- Register B · ARTIFACT",   "PARSE"),
+    ("heading-lowercase-scale", "· ARTIFACT · CLOSE ·",      "· ARTIFACT · Close ·",      "PARSE"),
+    ("heading-underscore-scale","· WORLD · MID-WIDE ·",      "· WORLD · MID_WIDE ·",      "PARSE"),
+    ("heading-lowercase-reg",   "· Register B · WORLD",      "· register B · WORLD",      "PARSE"),
+    ("heading-two-hashes",      "### Shot 7 —",              "## Shot 7 —",               "PARSE"),
+    ("heading-deleted",         "### Shot 4 — Build",        "Shot 4 — Build",            "C21"),
+    ("index-duplicated",        "### Shot 5 —",              "### Shot 4 —",              "C21"),
+    ("index-renumbered",        "### Shot 11 —",             "### Shot 12 —",             "C21"),
+    ("declared-count-mismatch", "PER-SHOT PROMPTS",          "SHOT COUNT: 12\n\nPER-SHOT PROMPTS", "C21"),
+    ("sref-invented-number",    "{style:register_a}",        "--sref 11111111",           "C17"),
+    ("sref-bare-p",             "{style:register_a}",        "--p",                       "C17"),
+    ("ar-landscape",            "--ar 9:16",                 "--ar 16:9",                 "C13"),
+    ("plate-relabel",           "· Register B · WORLD ·",    "· Register PLATE · PLATE ·","C15"),
+    ("venue-synonym",           "a municipal club soccer",   "a vacant gym, a municipal club soccer", "C9"),
+    ("registerb-photographic",  "luminous oil painting",     "photorealistic bokeh render", "C10"),
+    ("fenced-heading",          "PER-SHOT PROMPTS",          "PER-SHOT PROMPTS\n\n```text\n### Shot 99 — X · Register A · DETAIL · MACRO · LOW\n```", ""),
+    ("world-blank-line",        "  register_b_thinker:",     "\n  register_b_thinker:",   ""),
+    ("world-second-block",      "PER-SHOT PROMPTS",          "WORLD LOCK\n  register_a_sport: hockey\n\nPER-SHOT PROMPTS", "PARSE"),
+    ("cover-fence-markdown",    "```text",                   "```markdown",               ""),
+    ("sport-compound-only",     "club soccer boot",          "clubsoccerboot",            "C8"),
+]
+
+
+@pytest.mark.parametrize("case", MUTATIONS, ids=[m[0] for m in MUTATIONS])
+def test_a_single_mutation_of_a_green_sheet_always_fails_gate_c(case, tmp_path, capsys):
+    """The gate is fail-closed or it is not a gate. Each of these was confirmed by
+    execution to pass the pre-remediation gate."""
+    _id, find, replace, expected = case
+    original = WORKED.read_text(encoding="utf-8")
+    assert find in original, f"{_id}: mutation anchor no longer present in the fixture"
+    sheet = tmp_path / "mutated.md"
+    sheet.write_text(original.replace(find, replace, 1), encoding="utf-8")
+
+    code = main([str(sheet), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")])
+    out = capsys.readouterr().out
+
+    assert code != 0, f"{_id}: Gate C passed a mutated sheet\n{out}"
+    assert "PASS" not in out, f"{_id}: {out}"
+    if expected:
+        assert f"[{expected}]" in out, f"{_id}: expected {expected}, got:\n{out}"
+
+
+def test_the_unmutated_fixture_is_the_control(capsys):
+    """Without this, every mutation test above would pass on a gate that failed
+    everything -- the tautology the mutation class exists to avoid."""
+    code = main([
+        str(WORKED), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")
+    ])
+    assert code == 0, capsys.readouterr().out
+
+
+LIBRARY_MUTATIONS = [
+    ("entry-annotated",  "### rgs-present-soccer-a", "### rgs-present-soccer-a (channel)"),
+    ("entry-capitalised","### rgs-present-soccer-a", "### RGS-Present-Soccer-A"),
+    ("section-renamed",  "## Entries",               "## Library entries"),
+]
+
+
+@pytest.mark.parametrize("case", LIBRARY_MUTATIONS, ids=[m[0] for m in LIBRARY_MUTATIONS])
+def test_a_reformatted_style_library_fails_loudly_naming_the_library(case, tmp_path, capsys):
+    """C-76: a partially-parsed Library made C20 blame the sheet for a typo the
+    sheet does not have."""
+    _id, find, replace = case
+    library = tmp_path / "style-library.md"
+    library.write_text(
+        STYLE_LIBRARY.read_text(encoding="utf-8").replace(find, replace, 1), encoding="utf-8"
+    )
+    code = main([
+        str(WORKED),
+        "--styleboard", str(FIXTURES / "worked_example_styleboard.md"),
+        "--style-library", str(library),
+    ])
+    out = capsys.readouterr().out
+    assert code != 0, f"{_id}: {out}"
+    assert "style-library" in out, f"{_id}: the Library must be named as the file at fault\n{out}"
