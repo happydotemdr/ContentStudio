@@ -1596,6 +1596,19 @@ def test_dry_run_remains_the_default_with_no_flags(tmp_path, capsys):
     return 0
 ```
 
+**§0 amendment (found during pre-review, before dispatch) — forward reference to T18.** The `if failed or
+enrichment_incomplete or unparsed_skipped:` line references `unparsed_skipped`, a variable T18 (the next
+task) computes for real — it does not exist anywhere in the file today (`grep unparsed_skipped
+backfill_youtube_frontmatter.py` returns nothing before this task lands). Dispatched exactly as written,
+this line raises `NameError: name 'unparsed_skipped' is not defined` the moment `main()` reaches it — every
+one of this task's own tests would hit that, not just a hypothetical edge case, since this line runs on
+every `main()` call. **Fix:** add a stub immediately before the `enrichment_incomplete` line:
+```python
+    unparsed_skipped = 0  # T18 replaces this with a real per-file count
+```
+T18 replaces this single assignment with its own computed value (same name, same scope) — it does not add
+a second definition or touch the `if failed or enrichment_incomplete or unparsed_skipped:` line itself.
+
 - [ ] **Run** → pass. **Commit:** `fix(backfill): count per-file write failures and exit non-zero on a partial run`
 
 ---
