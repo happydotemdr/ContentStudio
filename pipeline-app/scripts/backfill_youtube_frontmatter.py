@@ -64,12 +64,26 @@ def parse_existing(path: Path) -> dict:
     if not meta:
         # Old format: metadata lived in a '## metadata' section as a list.
         meta = {k: v.strip() for k, v in _OLD_META_RE.findall(sections.get("metadata", ""))}
+    meta_parsed = bool(meta)
+
+    inferred: list[str] = []
+    video_id = meta.get("video_id")
+    if not video_id:
+        video_id = path.name.split("__", 1)[0]
+        inferred.append("video_id")
+    handle = meta.get("handle")
+    if not handle:
+        handle = f"@{path.parent.name}"
+        inferred.append("handle")
+    for field_name in ("channel", "upload_date", "fetched_at"):
+        if not meta.get(field_name):
+            inferred.append(field_name)
 
     return {
         "path": path,
-        "video_id": meta.get("video_id") or path.name.split("__", 1)[0],
+        "video_id": video_id,
         "title": title,
-        "handle": meta.get("handle") or f"@{path.parent.name}",
+        "handle": handle,
         "channel": meta.get("channel") or "",
         "upload_date": meta.get("upload_date") or "",
         "duration_s": meta.get("duration_s") or None,
@@ -82,6 +96,8 @@ def parse_existing(path: Path) -> dict:
         "like_count": meta.get("like_count"),
         "comment_count": meta.get("comment_count"),
         "manual_captions": meta.get("manual_captions"),
+        "meta_parsed": meta_parsed,
+        "inferred_fields": inferred,
     }
 
 
@@ -120,7 +136,7 @@ def build_meta(existing: dict, api_record: dict | None) -> dict:
         key=lambda s: _SOURCE_RANK.get(s, 0),
     )
 
-    return {
+    out = {
         "video_id": video_id,
         "url": f"https://www.youtube.com/watch?v={video_id}",
         "handle": existing["handle"],
@@ -138,6 +154,12 @@ def build_meta(existing: dict, api_record: dict | None) -> dict:
         "metadata_source": metadata_source,
         "fetched_at": existing["fetched_at"] or None,
     }
+    # A plain old-format file with an empty field is a read absence, not an
+    # inference -- only surface metadata_inferred when the block itself
+    # failed to parse (D-05).
+    if not existing["meta_parsed"] and existing["inferred_fields"]:
+        out["metadata_inferred"] = sorted(existing["inferred_fields"])
+    return out
 
 
 def render(existing: dict, meta: dict) -> str:
@@ -161,6 +183,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--corpus-root", type=Path, default=CORPUS_ROOT)
     ap.add_argument("--no-api", action="store_true",
                     help="skip Data API enrichment; only reformat what is already on disk")
+    ap.add_argument("--rewrite-unparsed", action="store_true",
+                    help="also rewrite files whose metadata block did not parse; "
+                         "their inferred fields are recorded in metadata_inferred")
     args = ap.parse_args(argv)
 
     if not args.no_api and youtube_api.api_key() is None:
@@ -185,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     if not files:
         print(f"no corpus files under {args.corpus_root}")
         return 0
+    unparsed = [f for f in files if not f["meta_parsed"]]
 
     api_records: dict[str, dict] = {}
     if not args.no_api:
@@ -209,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
     missing = enriched = 0
     failed: list[tuple[Path, str]] = []
     for existing in files:
+        if not existing["meta_parsed"] and not args.rewrite_unparsed:
+            continue                        # counted below, never written
         record = api_records.get(existing["video_id"])
         meta = build_meta(existing, record)
         if record:
@@ -236,12 +264,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  transcript missing     : {missing}")
     print(f"  transcript present     : {len(files) - missing}")
     print(f"  failed to write        : {len(failed)}")
+    print(f"  metadata did not parse : {len(unparsed)}"
+          + ("" if args.rewrite_unparsed else "  (skipped; pass --rewrite-unparsed to convert)"))
     if failed:
         for path, why in failed:
             print(f"    - {path}: {why}")
     if not args.apply:
         print("\nDry run -- re-run with --apply to write.")
-    unparsed_skipped = 0  # T18 replaces this with a real per-file count
+    unparsed_skipped = 0 if args.rewrite_unparsed else len(unparsed)
     enrichment_incomplete = (not args.no_api) and enriched < len(files)
     if failed or enrichment_incomplete or unparsed_skipped:      # unparsed: T18
         return 3

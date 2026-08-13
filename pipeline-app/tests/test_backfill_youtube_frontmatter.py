@@ -45,6 +45,23 @@ OLD_FORMAT_NO_TRANSCRIPT = """# Some Blocked Video
 """
 
 
+UNPARSEABLE = """# Hand Edited Record
+
+## metadata
+
+video_id = abc999
+channel = Somebody
+
+## description
+
+d
+
+## transcript
+
+t
+"""
+
+
 ALREADY_ENRICHED = """---
 video_id: enriched1
 url: https://www.youtube.com/watch?v=enriched1
@@ -107,6 +124,23 @@ def test_parse_existing_treats_placeholders_as_empty(tmp_path):
 def test_parse_existing_falls_back_to_filename_for_video_id(tmp_path):
     path = _corpus(tmp_path, "abc999__no-metadata-at-all.md", "# Just a title\n")
     assert backfill.parse_existing(path)["video_id"] == "abc999"
+
+
+def test_a_file_whose_metadata_did_not_parse_is_flagged(tmp_path):
+    """FAULT: parse_existing silently reconstructed video_id from the filename
+    and handle from the directory, with no indication (D-05)."""
+    rec = backfill.parse_existing(_corpus(tmp_path, "abc999__hand-edited.md", UNPARSEABLE))
+    assert rec["meta_parsed"] is False
+    assert set(rec["inferred_fields"]) >= {"video_id", "handle"}
+
+
+def test_an_inferred_record_is_distinguishable_from_a_read_one(tmp_path):
+    """DISTINGUISHABILITY: both used to produce identical-looking frontmatter."""
+    inferred = backfill.parse_existing(_corpus(tmp_path, "abc999__a.md", UNPARSEABLE))
+    read = backfill.parse_existing(_corpus(tmp_path, "0l2g3Bujy1Y__b.md", OLD_FORMAT))
+    assert inferred["meta_parsed"] != read["meta_parsed"]
+    assert backfill.build_meta(inferred, None).get("metadata_inferred")
+    assert "metadata_inferred" not in backfill.build_meta(read, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -325,3 +359,26 @@ def test_dry_run_remains_the_default_with_no_flags(tmp_path, capsys):
     assert backfill.main(["--corpus-root", str(tmp_path), "--no-api"]) == 0
     assert path.read_text(encoding="utf-8") == before
     assert "Dry run" in capsys.readouterr().out
+
+
+def test_unparsed_files_are_skipped_by_default_and_reported(tmp_path, capsys):
+    """SURFACING: non-zero exit + a named count, and the file is untouched."""
+    path = _corpus(tmp_path, "abc999__a.md", UNPARSEABLE)
+    _corpus(tmp_path, "0l2g3Bujy1Y__b.md", OLD_FORMAT)
+    before = path.read_text(encoding="utf-8")
+
+    rc = backfill.main(["--corpus-root", str(tmp_path), "--no-api", "--apply"])
+
+    assert rc == 3
+    assert path.read_text(encoding="utf-8") == before
+    assert "metadata did not parse : 1" in capsys.readouterr().out
+
+
+def test_rewrite_unparsed_opts_in_and_records_the_inference(tmp_path):
+    path = _corpus(tmp_path, "abc999__a.md", UNPARSEABLE)
+    rc = backfill.main(["--corpus-root", str(tmp_path), "--no-api", "--apply",
+                        "--rewrite-unparsed"])
+    assert rc == 0
+    meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert meta["video_id"] == "abc999"
+    assert set(meta["metadata_inferred"]) >= {"video_id", "handle"}
