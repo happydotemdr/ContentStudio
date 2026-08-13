@@ -724,6 +724,7 @@ MAX_SHARED_CLAUSES = 5
 MIN_CLAUSES = 10
 MIN_WORDS = 60
 MAX_CLAUSE_SIMILARITY = 0.6
+MIN_DISTINCT_TOKEN_RATIO = 0.55
 
 
 def _clause_tokens(clause: str) -> frozenset[str]:
@@ -775,7 +776,14 @@ def check_prompt_clone(shots: list[Shot]) -> list[Finding]:
 
 
 def check_prompt_density(shots: list[Shot]) -> list[Finding]:
-    """C12: every prompt carries concrete renderable content in all nine layers."""
+    """C12: the prompt body clears a clause floor, a word floor and a repetition floor.
+
+    Deliberately NOT a nine-layer content check -- nothing here maps a clause to a
+    layer, and the previous docstring's claim that it did was false (finding C-83).
+    What it does catch is the shape of a padded body: a body whose distinct-token
+    ratio falls below MIN_DISTINCT_TOKEN_RATIO is repeating itself to clear the
+    floors rather than describing anything.
+    """
     findings: list[Finding] = []
     for shot in shots:
         clause_count = len(body_clauses(shot))
@@ -784,7 +792,7 @@ def check_prompt_density(shots: list[Shot]) -> list[Finding]:
                 Finding(
                     "C12",
                     shot.index,
-                    f"{clause_count} clause(s); need >= {MIN_CLAUSES}. All 9 layers must carry "
+                    f"{clause_count} clause(s); need >= {MIN_CLAUSES}. The body must carry "
                     "concrete renderable content.",
                 )
             )
@@ -793,6 +801,15 @@ def check_prompt_density(shots: list[Shot]) -> list[Finding]:
             findings.append(
                 Finding("C12", shot.index, f"{words} words in body; need >= {MIN_WORDS}")
             )
+        tokens = re.findall(r"[a-z0-9]+", _body_without_no_text(shot).lower())
+        if tokens and len(set(tokens)) / len(tokens) < MIN_DISTINCT_TOKEN_RATIO:
+            findings.append(Finding(
+                "C12", shot.index,
+                f"{len(set(tokens))} distinct tokens in {len(tokens)} words "
+                f"(ratio {len(set(tokens)) / len(tokens):.2f}, need >= "
+                f"{MIN_DISTINCT_TOKEN_RATIO}); the body is padding to clear the "
+                "length floor, not describing the shot.",
+            ))
     return findings
 
 

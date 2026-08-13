@@ -445,9 +445,45 @@ def test_c12_flags_too_few_words():
 
 
 def test_c12_passes_a_dense_prompt():
-    body = ", ".join(f"clause {n} with several extra descriptive words here" for n in range(12))
+    # Genuinely varied clauses, not "clause N" repeated with an index swapped in --
+    # that shape is itself padding and (correctly, post-C-83) now trips the new
+    # repetition floor. This fixture clears clause/word/repetition floors alike.
+    clauses = [
+        "weathered oak bleachers under harsh midday sun",
+        "scuffed leather soccer ball resting on damp grass",
+        "chalk-lined penalty box catching low golden light",
+        "rust-streaked goalpost anchored in packed clay soil",
+        "torn corner flag snapping in a stiff breeze",
+        "muddy cleats abandoned beside a wooden bench",
+        "faded number seven jersey draped over a fence",
+        "cracked asphalt walkway leading toward the pitch",
+        "dented water bottle rolling near the sideline chalk",
+        "frayed net swaying gently from a missed shot",
+        "sun-bleached scoreboard frozen at a tied match",
+        "worn whistle dangling from a coach's weathered hand",
+    ]
+    body = ", ".join(clauses)
     shot = make_shot(1, "A", prompt=body + ", No Text. --ar 9:16")
     assert "C12" not in codes(check_prompt_quality([shot]))
+
+
+def test_c12_flags_a_body_padded_with_repeated_filler():
+    """C-83, confirmed by execution: the docstring promised a nine-layer content
+    check; the implementation was a length floor, and padding is exactly what a
+    model produces against a length target."""
+    body = ", ".join(f"w{n} filler token phrase alpha beta gamma" for n in range(10))
+    shot = make_shot(1, "A", prompt=body + ", club soccer goal net, No Text. --ar 9:16")
+    assert "C12" in codes(check_prompt_density([shot]))
+
+
+def test_c12_is_silent_on_a_real_dense_prompt():
+    """Anti-tautology: the repetition check must separate padding from density."""
+    shots, _ = parse_sheet(WORKED.read_text(encoding="utf-8"))
+    assert check_prompt_density(shots) == []
+
+
+def test_c12_docstring_does_not_claim_a_nine_layer_content_check():
+    assert "nine layers" not in check_prompt_density.__doc__
 
 
 DENSE_A = ", ".join(f"clause {n} with several extra descriptive words here" for n in range(12))
