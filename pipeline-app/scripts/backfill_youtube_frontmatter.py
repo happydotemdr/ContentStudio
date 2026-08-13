@@ -172,6 +172,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"querying Data API for {len(set(ids))} videos (~{calls} quota units)...")
         api_records = youtube_api.fetch_metadata(ids)
         print(f"  got metadata for {len(api_records)}/{len(set(ids))}")
+        unique = len(set(ids))
+        if unique and not api_records:
+            obs.log("backfill.enrichment_total_miss", level="error", requested=unique)
+            print(
+                f"! refusing to write: Data API enrichment returned 0 of {unique} "
+                "records. A key is configured, so this is an exhausted quota, a "
+                "revoked key, or a network failure -- not an empty result.\n"
+                "  Nothing has been written. Re-run when the API is reachable, or "
+                "pass --no-api to reformat on-disk data only.",
+                file=sys.stderr,
+            )
+            return 2
 
     missing = enriched = 0
     for existing in files:

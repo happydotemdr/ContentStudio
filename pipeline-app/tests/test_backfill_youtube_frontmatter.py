@@ -200,3 +200,35 @@ def test_no_api_is_the_explicit_escape_hatch(tmp_path, monkeypatch):
     assert backfill.main(["--corpus-root", str(tmp_path), "--no-api", "--apply"]) == 0
     meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
     assert meta["metadata_source"] == "yt-dlp"
+
+
+def test_total_enrichment_miss_aborts_before_writing_anything(tmp_path, monkeypatch, capsys):
+    """DISTINGUISHABILITY: 'the API returned nothing for all 420 ids' must be
+    observably different from 'the API had nothing to add'. Before the fix both
+    printed `got metadata for 0/N` and rewrote everything (D-04)."""
+    monkeypatch.setattr(backfill.youtube_api, "api_key", lambda: "k")
+    monkeypatch.setattr(backfill.youtube_api, "fetch_metadata", lambda ids, **kw: {})
+    path = _corpus(tmp_path, "0l2g3Bujy1Y__x.md", OLD_FORMAT)
+    before = path.read_text(encoding="utf-8")
+
+    rc = backfill.main(["--corpus-root", str(tmp_path), "--apply"])
+
+    assert rc == 2
+    assert path.read_text(encoding="utf-8") == before
+    assert "0 of 1" in capsys.readouterr().err
+
+
+def test_partial_enrichment_is_not_treated_as_a_total_miss(tmp_path, monkeypatch):
+    """The counterpart: a genuinely partial result (deleted/private videos) is
+    normal and must still write. Same shape, different outcome."""
+    monkeypatch.setattr(backfill.youtube_api, "api_key", lambda: "k")
+    monkeypatch.setattr(backfill.youtube_api, "fetch_metadata",
+                        lambda ids, **kw: {"0l2g3Bujy1Y": {"view_count": 7}})
+    good = _corpus(tmp_path, "0l2g3Bujy1Y__x.md", OLD_FORMAT)
+    _corpus(tmp_path, "blocked1__y.md", OLD_FORMAT_NO_TRANSCRIPT)
+
+    rc = backfill.main(["--corpus-root", str(tmp_path), "--apply"])
+
+    assert rc == 3                                   # partial: written, but not clean
+    meta, _ = artifacts.parse_frontmatter(good.read_text(encoding="utf-8"))
+    assert meta["view_count"] == 7
