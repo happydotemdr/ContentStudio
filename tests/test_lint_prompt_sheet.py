@@ -1673,7 +1673,7 @@ MUTATIONS = [
     ("heading-endash",          "### Shot 4 — Build",        "### Shot 4 – Build",        "PARSE"),
     ("heading-no-middot",       "· Register B · ARTIFACT",   "- Register B · ARTIFACT",   "PARSE"),
     ("heading-lowercase-scale", "· ARTIFACT · CLOSE ·",      "· ARTIFACT · Close ·",      "PARSE"),
-    ("heading-underscore-scale","· WORLD · MID-WIDE ·",      "· WORLD · MID_WIDE ·",      "PARSE"),
+    ("heading-underscore-scale","· ACTION-ADJACENT · MID-WIDE ·", "· ACTION-ADJACENT · MID_WIDE ·", "PARSE"),
     ("heading-lowercase-reg",   "· Register B · WORLD",      "· register B · WORLD",      "PARSE"),
     ("heading-two-hashes",      "### Shot 7 —",              "## Shot 7 —",               "PARSE"),
     ("heading-deleted",         "### Shot 4 — Build",        "Shot 4 — Build",            "C21"),
@@ -1687,7 +1687,12 @@ MUTATIONS = [
     ("venue-synonym",           "a municipal club soccer",   "a vacant gym, a municipal club soccer", "C9"),
     ("registerb-photographic",  "luminous oil painting",     "photorealistic bokeh render", "C10"),
     ("fenced-heading",          "PER-SHOT PROMPTS",          "PER-SHOT PROMPTS\n\n```text\n### Shot 99 — X · Register A · DETAIL · MACRO · LOW\n```", ""),
-    ("world-blank-line",        "  register_b_thinker:",     "\n  register_b_thinker:",   ""),
+    # "world-blank-line" used to live here, but its anchor ("  register_b_thinker:")
+    # exists only in worked_example_styleboard.md, never in the sheet -- every other
+    # case in this table mutates the sheet. It is exercised on its own below, against
+    # the styleboard, because that mutation is no longer a corruption the gate should
+    # reject (see the test's docstring) and forcing it through this shared "always
+    # fails" harness would be the tautology the harness exists to avoid.
     ("world-second-block",      "PER-SHOT PROMPTS",          "WORLD LOCK\n  register_a_sport: hockey\n\nPER-SHOT PROMPTS", "PARSE"),
     ("cover-fence-markdown",    "```text",                   "```markdown",               ""),
     ("sport-compound-only",     "club soccer boot",          "clubsoccerboot",            "C8"),
@@ -1720,6 +1725,32 @@ def test_the_unmutated_fixture_is_the_control(capsys):
         str(WORKED), "--styleboard", str(FIXTURES / "worked_example_styleboard.md")
     ])
     assert code == 0, capsys.readouterr().out
+
+
+def test_a_blank_line_inside_the_styleboards_world_lock_block_is_tolerated(tmp_path, capsys):
+    """Retargeted from the old "world-blank-line" MUTATIONS row: its anchor
+    ("  register_b_thinker:") lives only in worked_example_styleboard.md, so the
+    mutation, applied to WORKED as the shared table did, could never even find its
+    anchor. Applied to the correct file, it is also not a corruption: T5 fixed
+    _read_world_block to skip blank lines inside the block rather than treat one as
+    the block's end (the old walk truncated on the first line that failed
+    WORLD_ENTRY_RE, silently dropping every entry after it). This guards that a
+    blank line here still parses every entry and still passes the gate."""
+    original = (FIXTURES / "worked_example_styleboard.md").read_text(encoding="utf-8")
+    anchor = "  register_b_thinker:"
+    assert anchor in original, "mutation anchor no longer present in the fixture"
+    mutated_text = original.replace(anchor, "\n" + anchor, 1)
+
+    world = parse_world_lock(mutated_text)
+    assert world.get("register_b_thinker") == "Plutarch"
+    assert world.get("slot_register_b") == "rgs-sourceera-painterly-b"
+
+    styleboard = tmp_path / "styleboard.md"
+    styleboard.write_text(mutated_text, encoding="utf-8")
+    code = main([str(WORKED), "--styleboard", str(styleboard)])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "PASS" in out
 
 
 # --- C-77: the Library warns its own headings are load-bearing ---------------
