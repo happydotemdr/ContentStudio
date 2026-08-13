@@ -45,6 +45,35 @@ OLD_FORMAT_NO_TRANSCRIPT = """# Some Blocked Video
 """
 
 
+ALREADY_ENRICHED = """---
+video_id: enriched1
+url: https://www.youtube.com/watch?v=enriched1
+handle: '@nicknimmin'
+channel: Nick Nimmin
+upload_date: '2025-08-16'
+duration_s: 441
+view_count: 24013
+like_count: 1184
+comment_count: 97
+manual_captions: true
+transcript_status: present
+transcript_source: yt-dlp
+metadata_source: youtube-data-api-v3
+fetched_at: '2026-07-23T17:58:26+00:00'
+---
+
+# Already Enriched
+
+## description
+
+d
+
+## transcript
+
+t
+"""
+
+
 def _corpus(tmp_path: Path, name: str, text: str) -> Path:
     channel_dir = tmp_path / "nicknimmin"
     channel_dir.mkdir(parents=True, exist_ok=True)
@@ -115,6 +144,31 @@ def test_build_meta_without_api_keeps_ytdlp_provenance(tmp_path):
     assert meta["metadata_source"] == "yt-dlp"
     assert meta["view_count"] is None
     assert meta["duration_s"] == 441  # coerced from the old string
+
+
+def test_build_meta_never_downgrades_metadata_source(tmp_path):
+    """D-04: the record must never end up ASSERTING a weaker provenance than
+    the data it replaced."""
+    rec = backfill.parse_existing(_corpus(tmp_path, "enriched1__x.md", ALREADY_ENRICHED))
+    meta = backfill.build_meta(rec, None)
+    assert meta["metadata_source"] == "youtube-data-api-v3"
+
+
+def test_build_meta_never_nulls_an_existing_count(tmp_path):
+    rec = backfill.parse_existing(_corpus(tmp_path, "enriched1__x.md", ALREADY_ENRICHED))
+    meta = backfill.build_meta(rec, None)
+    assert meta["view_count"] == 24013
+    assert meta["like_count"] == 1184
+    assert meta["comment_count"] == 97
+    assert meta["manual_captions"] is True
+
+
+def test_a_fresh_api_record_still_wins_over_stale_stored_counts(tmp_path):
+    """Preserve-on-absent must not become never-update."""
+    rec = backfill.parse_existing(_corpus(tmp_path, "enriched1__x.md", ALREADY_ENRICHED))
+    meta = backfill.build_meta(rec, {"view_count": 99999, "manual_captions": False})
+    assert meta["view_count"] == 99999
+    assert meta["manual_captions"] is False
 
 
 # --------------------------------------------------------------------------- #

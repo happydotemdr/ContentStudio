@@ -77,6 +77,11 @@ def parse_existing(path: Path) -> dict:
         "fetched_at": meta.get("fetched_at") or "",
         "description": description,
         "transcript": transcript,
+        "metadata_source": meta.get("metadata_source") or "",
+        "view_count": meta.get("view_count"),
+        "like_count": meta.get("like_count"),
+        "comment_count": meta.get("comment_count"),
+        "manual_captions": meta.get("manual_captions"),
     }
 
 
@@ -89,6 +94,15 @@ def _coerce_int(value) -> int | None:
         return None
 
 
+_SOURCE_RANK = {"": 0, "none": 0, "yt-dlp": 1, "youtube-data-api-v3": 2}
+
+
+def _keep(api_value, existing_value):
+    """API wins when it says anything; otherwise keep what the file already
+    held. Never replace a real value with None (D-04)."""
+    return existing_value if api_value is None else api_value
+
+
 def build_meta(existing: dict, api_record: dict | None) -> dict:
     api_record = api_record or {}
     has_transcript = bool(existing["transcript"].strip())
@@ -98,6 +112,14 @@ def build_meta(existing: dict, api_record: dict | None) -> dict:
     if duration is None:
         duration = _coerce_int(existing["duration_s"])
 
+    derived_source = "youtube-data-api-v3" if api_record else (
+        "yt-dlp" if existing["upload_date"] else "none")
+    existing_source = existing["metadata_source"]
+    metadata_source = max(
+        (derived_source, existing_source),
+        key=lambda s: _SOURCE_RANK.get(s, 0),
+    )
+
     return {
         "video_id": video_id,
         "url": f"https://www.youtube.com/watch?v={video_id}",
@@ -105,16 +127,15 @@ def build_meta(existing: dict, api_record: dict | None) -> dict:
         "channel": api_record.get("channel") or existing["channel"],
         "upload_date": api_record.get("upload_date") or existing["upload_date"] or None,
         "duration_s": duration,
-        "view_count": api_record.get("view_count"),
-        "like_count": api_record.get("like_count"),
-        "comment_count": api_record.get("comment_count"),
-        "manual_captions": api_record.get("manual_captions"),
+        "view_count": _keep(api_record.get("view_count"), existing["view_count"]),
+        "like_count": _keep(api_record.get("like_count"), existing["like_count"]),
+        "comment_count": _keep(api_record.get("comment_count"), existing["comment_count"]),
+        "manual_captions": _keep(api_record.get("manual_captions"), existing["manual_captions"]),
         "transcript_status": "present" if has_transcript else "missing",
         # A transcript we already hold keeps its original provenance; only a
         # genuinely absent one is downgraded to "none".
         "transcript_source": existing["transcript_source"] if has_transcript else "none",
-        "metadata_source": "youtube-data-api-v3" if api_record else (
-            "yt-dlp" if existing["upload_date"] else "none"),
+        "metadata_source": metadata_source,
         "fetched_at": existing["fetched_at"] or None,
     }
 
