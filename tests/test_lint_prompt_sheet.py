@@ -411,6 +411,27 @@ def test_c11_passes_when_prompts_are_genuinely_different():
     assert "C11" not in codes(check_prompt_quality(shots))
 
 
+def test_c11_still_flags_an_exact_clone():
+    a = build_prompt("unique head one")
+    b = build_prompt("unique head two")
+    assert "C11" in codes(check_prompt_clone([make_shot(1, prompt=a), make_shot(3, prompt=a)]))
+
+
+def test_c11_flags_a_clone_disguised_by_one_appended_word_per_clause():
+    """C-82, confirmed by execution: one word per clause took 12 shared clauses to 0."""
+    original = build_prompt("unique head one")
+    disguised = ", ".join(f"{c} here" for c in original.split(", "))
+    findings = check_prompt_clone([make_shot(1, prompt=original), make_shot(3, prompt=disguised)])
+    assert "C11" in codes(findings)
+
+
+def test_c11_is_silent_on_genuinely_different_prompts():
+    """Distinguishability, and the anti-tautology guard: a similarity threshold that
+    fires on everything is not a check."""
+    _shots, findings = lint_fixture("worked_example_sheet.md", "worked_example_styleboard.md")
+    assert "C11" not in codes(findings)
+
+
 def test_c12_flags_too_few_clauses():
     body = ", ".join(f"clause {n} with several extra words here now" for n in range(4))
     shot = make_shot(1, "A", prompt=body + ", No Text. --ar 9:16")

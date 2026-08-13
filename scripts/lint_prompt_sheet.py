@@ -723,13 +723,44 @@ def check_world_lock(shots: list[Shot], world: dict[str, str]) -> list[Finding]:
 MAX_SHARED_CLAUSES = 5
 MIN_CLAUSES = 10
 MIN_WORDS = 60
+MAX_CLAUSE_SIMILARITY = 0.6
+
+
+def _clause_tokens(clause: str) -> frozenset[str]:
+    return frozenset(re.findall(r"[a-z0-9]+", clause))
+
+
+def _clauses_are_near_duplicates(left: str, right: str) -> bool:
+    """Jaccard overlap of the two clauses' token sets.
+
+    Byte equality per clause was the old test, and one appended word per clause
+    defeated it while changing no visual idea (finding C-82).
+    """
+    a, b = _clause_tokens(left), _clause_tokens(right)
+    if not a or not b:
+        return False
+    return len(a & b) / len(a | b) >= MAX_CLAUSE_SIMILARITY
 
 
 def check_prompt_clone(shots: list[Shot]) -> list[Finding]:
-    """C11: anti-clone. Consistency belongs in --sref, not a copied prompt body."""
+    """C11: anti-clone. Consistency belongs in --sref, not a copied prompt body.
+
+    Two clauses are "shared" if they are near-duplicates (Jaccard token overlap),
+    not byte-identical -- one appended word per clause used to take a 12-clause
+    exact clone to 0 shared clauses while changing no visual idea (finding C-82).
+    Each of `left`'s clauses can satisfy at most one match, so padding `right` with
+    repeats of the same clause cannot inflate the count past `left`'s own clause count.
+    """
     findings: list[Finding] = []
     for left, right in _pairs(shots):
-        shared = set(body_clauses(left)) & set(body_clauses(right))
+        available = list(body_clauses(left))
+        shared: list[str] = []
+        for r_clause in body_clauses(right):
+            for i, l_clause in enumerate(available):
+                if _clauses_are_near_duplicates(l_clause, r_clause):
+                    shared.append(l_clause)
+                    del available[i]
+                    break
         if len(shared) > MAX_SHARED_CLAUSES:
             findings.append(
                 Finding(
