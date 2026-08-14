@@ -103,3 +103,16 @@ def conn(tmp_db_path):
     connection = db.init_db(tmp_db_path)
     yield connection
     connection.close()
+
+
+@pytest.fixture
+def lock_test_dir():
+    """Real icacls locking is intentionally one-way and the same non-elevated
+    account cannot undo it (spec §10) -- files created here are NOT
+    guaranteed deletable after a test locks them. Deliberately NOT tmp_path:
+    pytest's retention cleanup of old tmp_path runs would hit a real
+    PermissionError. Gitignored; accumulates over time; clear from an
+    elevated shell periodically."""
+    d = Path(__file__).resolve().parent / ".lock_test_scratch"
+    d.mkdir(exist_ok=True)
+    return d
