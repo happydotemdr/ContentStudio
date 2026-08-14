@@ -81,7 +81,19 @@ def _block_unmarked_network(request, monkeypatch):
 
 @pytest.fixture
 def tmp_db_path(tmp_path) -> Path:
-    return tmp_path / "doc_ingest_test.db"
+    # Use a separate temp directory for the database (not inside tmp_path,
+    # which is the input tree). This ensures tests checking for no writes
+    # to the input tree don't see database file changes.
+    import tempfile
+    db_dir = tempfile.mkdtemp()
+    db_path = Path(db_dir) / "doc_ingest_test.db"
+    yield db_path
+    # Clean up
+    import shutil
+    try:
+        shutil.rmtree(db_dir, ignore_errors=True)
+    except Exception:
+        pass
 
 
 @pytest.fixture
