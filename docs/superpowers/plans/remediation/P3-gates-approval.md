@@ -2277,10 +2277,23 @@ def _stage_conflict(request, project_id: int, stage_id: str, message: str,
     )
 ```
 
-  Replace all five `PlainTextResponse` returns in this file (chat locked, chat busy, approve
-  409, edit grounding, edit locked) with `_stage_conflict(...)`. Status codes unchanged.
-  `projects.py` and `discovery.py` are **not** this package's — E-04's other three sites
-  belong to P5/P8.
+  Replace all **six** `PlainTextResponse` returns in this file (chat locked, chat busy, approve
+  409, edit grounding, edit locked, **and the edit route's gate-escaped 409** — see the amendment
+  immediately below) with `_stage_conflict(...)`. Status codes unchanged. `projects.py` and
+  `discovery.py` are **not** this package's — E-04's other three sites belong to P5/P8.
+
+> **Amendment (T19 dispatch, this session): the count is six, not five — T4's own text already
+> named the sixth site.** Confirmed empirically: `routes/stages.py`'s `edit_stage_output_route`
+> has a `PlainTextResponse(str(exc), status_code=409)` in its gate-escaped exception handler
+> (added by T4, already landed on this branch). T4's own plan text says so explicitly: "`_stage_conflict`
+> arrives in T19; until then return `PlainTextResponse(str(exc), 409)` and T19 swaps it." T19's own
+> "replace all five" sentence was written before T4 introduced this site and was never updated —
+> the same class of drift this package has hit twice before (T2B/T6, T10's cross-surface test).
+> **Resolution:** T19 replaces six sites, not five: chat locked, chat busy, approve 409, edit
+> grounding, edit locked, and the edit route's gate-escaped 409. All six take the same
+> `_stage_conflict(request, project_id, stage_id, message)` shape; none need a different `kind`
+> or `status_code` (all stay 409 except confirm each site's current status code before assuming —
+> read the live file, do not assume every one is 409).
 
 - [ ] **Run** → green (P15 adds the `error-banner` markup; until then add the minimal
       `{% if error_banner %}` block **is P15's**, so coordinate: this task asserts the context
