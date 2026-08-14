@@ -782,3 +782,28 @@ def test_a_failed_linter_exec_does_not_leave_a_broken_module_registered(tmp_path
         gates._load_linter(tmp_path, "lint_broken")
     assert "lint_broken" not in sys.modules
     assert (tmp_path, "lint_broken") not in gates._LINTER_CACHE
+
+
+# --- F-73: declare repo-root dependencies ------------------------------------
+
+
+REPO_ROOT_DEPENDENCIES = (
+    Path("tests") / "fixtures",          # the Gate C sheet/styleboard fixtures
+    Path("docs") / "style-library.md",   # C20 and Gate S resolve labels against it
+    Path("scripts") / "lint_prompt_sheet.py",
+    Path("scripts") / "lint_script_language.py",
+)
+
+
+def test_the_app_suite_declares_the_repo_root_paths_it_reads():
+    """F-73: this file resolves parents[2] and reads four paths OUTSIDE
+    pipeline-app/, so the app suite is not independently relocatable and editing
+    docs/style-library.md -- a documentation file nobody associates with the app
+    suite -- breaks app tests. The coupling is real; make it declared and
+    self-describing rather than latent, so a missing path fails with the reason
+    instead of a confusing gate error."""
+    missing = [str(p) for p in REPO_ROOT_DEPENDENCIES if not (REPO_ROOT / p).exists()]
+    assert not missing, (
+        "the pipeline-app suite reads these repo-root paths and cannot run without "
+        f"them: {missing}. See F-73 -- this suite is not independently relocatable."
+    )
