@@ -8,6 +8,7 @@ the one-paragraph version of that reasoning."""
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 _SCHEMA = """
@@ -99,6 +100,58 @@ CREATE VIRTUAL TABLE IF NOT EXISTS conversions_fts USING fts5(
 
 SCHEMA_VERSION = 1
 
+_TXN_DEPTH: dict[int, int] = {}
+
+_MIGRATIONS: list[tuple[int, str]] = []  # (target_version, DDL/DML) -- empty until schema changes
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection):
+    """One explicit boundary around a multi-row invariant. Nests: an inner
+    block joins the outer one rather than committing early.
+
+    Unlike pipeline_app.db.transaction, this does not need cross-thread
+    commit-suppression tracking, because each connection here has exactly one
+    owning worker for its whole life (spec §5) -- there is no other thread
+    that could observe a boundary it doesn't own."""
+    key = id(conn)
+    depth = _TXN_DEPTH.get(key, 0)
+    if depth == 0:
+        conn.execute("BEGIN")
+    _TXN_DEPTH[key] = depth + 1
+    try:
+        yield conn
+    except BaseException:
+        _TXN_DEPTH[key] = depth
+        if depth == 0:
+            conn.execute("ROLLBACK")
+        raise
+    else:
+        _TXN_DEPTH[key] = depth
+        if depth == 0:
+            conn.execute("COMMIT")
+
+
+def apply_migrations(conn: sqlite3.Connection) -> None:
+    """Runs any migration whose target version is above the DB's current
+    schema_version, in order, each in its own BEGIN IMMEDIATE (DDL commits
+    immediately regardless, same caveat as pipeline_app.db.apply_migrations).
+    Empty today -- Task 2's schema is version 1 and this app has shipped
+    nothing yet to migrate away from. Add entries here, never edit _SCHEMA's
+    already-shipped shape in place."""
+    current = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
+    for target_version, ddl in _MIGRATIONS:
+        if target_version <= current:
+            continue
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.executescript(ddl)
+            conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (target_version,))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
     """One connection per caller, never shared across threads (spec §5) --
@@ -120,4 +173,5 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         "INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, ?)",
         (SCHEMA_VERSION,),
     )
+    apply_migrations(conn)
     return conn

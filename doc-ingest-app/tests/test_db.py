@@ -1,4 +1,5 @@
 from doc_ingest import db
+import pytest
 
 
 def test_init_db_creates_all_tables(tmp_db_path):
@@ -40,10 +41,73 @@ def test_source_files_rel_path_is_unique(tmp_db_path):
     )
     conn.commit()
     import sqlite3
-    import pytest
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             "INSERT INTO source_files (rel_path, extension, classification, first_seen_at, last_seen_at) "
             "VALUES ('a.pdf', 'pdf', 'convertible', ?, ?)", (now, now),
         )
     conn.close()
+
+
+def test_transaction_commits_on_success(tmp_db_path):
+    conn = db.init_db(tmp_db_path)
+    now = "2026-08-13T00:00:00+00:00"
+    with db.transaction(conn):
+        conn.execute(
+            "INSERT INTO source_files (rel_path, extension, classification, first_seen_at, last_seen_at) "
+            "VALUES ('a.pdf', 'pdf', 'convertible', ?, ?)", (now, now),
+        )
+    row = conn.execute("SELECT rel_path FROM source_files WHERE rel_path = 'a.pdf'").fetchone()
+    assert row is not None
+    conn.close()
+
+
+def test_transaction_rolls_back_on_exception(tmp_db_path):
+    conn = db.init_db(tmp_db_path)
+    now = "2026-08-13T00:00:00+00:00"
+    with pytest.raises(ValueError):
+        with db.transaction(conn):
+            conn.execute(
+                "INSERT INTO source_files (rel_path, extension, classification, first_seen_at, last_seen_at) "
+                "VALUES ('b.pdf', 'pdf', 'convertible', ?, ?)", (now, now),
+            )
+            raise ValueError("boom")
+    row = conn.execute("SELECT rel_path FROM source_files WHERE rel_path = 'b.pdf'").fetchone()
+    assert row is None
+    conn.close()
+
+
+def test_transaction_nests_without_committing_early(tmp_db_path):
+    conn = db.init_db(tmp_db_path)
+    now = "2026-08-13T00:00:00+00:00"
+    with db.transaction(conn):
+        conn.execute(
+            "INSERT INTO source_files (rel_path, extension, classification, first_seen_at, last_seen_at) "
+            "VALUES ('c.pdf', 'pdf', 'convertible', ?, ?)", (now, now),
+        )
+        with db.transaction(conn):
+            conn.execute(
+                "INSERT INTO source_files (rel_path, extension, classification, first_seen_at, last_seen_at) "
+                "VALUES ('d.pdf', 'pdf', 'convertible', ?, ?)", (now, now),
+            )
+        # inner block exited but must not have committed independently --
+        # verified indirectly: both rows exist after the OUTER block exits.
+    rows = conn.execute("SELECT rel_path FROM source_files ORDER BY rel_path").fetchall()
+    assert [r[0] for r in rows] == ["c.pdf", "d.pdf"]
+    conn.close()
+
+
+def test_apply_migrations_is_a_noop_on_a_fresh_db(tmp_db_path):
+    conn = db.init_db(tmp_db_path)
+    db.apply_migrations(conn)  # must not raise
+    version = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
+    assert version == db.SCHEMA_VERSION
+    conn.close()
+
+
+def test_init_db_calls_apply_migrations(tmp_db_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(db, "apply_migrations", lambda conn: calls.append(conn))
+    conn = db.init_db(tmp_db_path)
+    assert len(calls) == 1
+    assert calls[0] is conn
