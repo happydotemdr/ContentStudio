@@ -673,6 +673,88 @@ def test_a_javascript_url_via_ordinary_markdown_link_syntax_is_stripped(tmp_path
     assert "click" in html  # the link text and tag survive; only href is dropped
 
 
+def test_a_fenced_code_block_with_a_script_tag_does_not_reach_a_live_tag(client):
+    """C1's fenced-code-block scenario: a script tag written inside a
+    ` ``` ` fence must not reach the page as a live tag. (`write_artifact`
+    strips the body, so this can't also exercise the entity-decode path an
+    indented block would -- `markdown.markdown()` has no `fenced_code`
+    extension registered, so `<script>` here passes through as a literal
+    HTML block, which the sanitizer's existing script-skip logic already
+    catches; the inline-code-span test below is what exercises the C1
+    entity-decode path specifically.)"""
+    test_client, tmp_path, app = client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    stage_dir = run_dir / "01-ideation"
+
+    artifacts.write_artifact(
+        stage_dir, 1, {"stage": "shorts-ideation", "status": "draft"},
+        "```\n<script>alert(1)</script>\n```",
+    )
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert "<script>alert(1)</script>" not in page.text
+
+
+def test_an_inline_code_span_with_a_script_tag_does_not_reach_a_live_tag(client):
+    """Same C1 hazard as the fenced-block case, via an inline code span --
+    `markdown.markdown()` already HTML-escapes the span's contents, and the
+    sanitizer must not undo that escaping when it walks the parsed text node."""
+    test_client, tmp_path, app = client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    stage_dir = run_dir / "01-ideation"
+
+    artifacts.write_artifact(
+        stage_dir, 1, {"stage": "shorts-ideation", "status": "draft"},
+        "inline `<script>alert(2)</script>` code",
+    )
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert "<script>alert(2)</script>" not in page.text
+    assert "&lt;script&gt;alert(2)&lt;/script&gt;" in page.text.lower()
+
+
+def test_ordinary_text_with_ampersand_and_angle_brackets_round_trips_readable(client):
+    """C1's fix must not corrupt ordinary prose that happens to contain `&`,
+    `<`, `>` outside of any tag -- it should read as normal escaped text, not
+    get mangled by a second, un-intended round of entity processing."""
+    test_client, tmp_path, app = client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    stage_dir = run_dir / "01-ideation"
+
+    artifacts.write_artifact(
+        stage_dir, 1, {"stage": "shorts-ideation", "status": "draft"},
+        "AT&T says 5 < 6 and 6 > 5.",
+    )
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert "AT&amp;T says 5 &lt; 6 and 6 &gt; 5." in page.text
+
+
+def test_a_style_block_cannot_leak_raw_markup_past_the_sanitizer(client):
+    """C2: HTMLParser.CDATA_CONTENT_ELEMENTS is ("script", "style") -- the
+    parser hands `<style>...</style>`'s raw, unparsed innards to `handle_data`
+    exactly like it does for `<script>`. Pre-fix, only `script` bumped
+    `_skip_depth`, so a `<style>` block's contents fell through to the
+    "drop tag, keep text" branch and leaked whatever markup an attacker put
+    inside it, unparsed, as if it were a real HTML fragment."""
+    test_client, tmp_path, app = client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    stage_dir = run_dir / "01-ideation"
+
+    artifacts.write_artifact(
+        stage_dir, 1, {"stage": "shorts-ideation", "status": "draft"},
+        "<style><img src=y onerror=alert(2)></style>",
+    )
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert "<img" not in page.text.lower()
+    assert "onerror" not in page.text.lower()
+
+
 def test_stage_page_renders_gate_results_and_override_field(tmp_path: Path, monkeypatch):
     """Finding 2a: the stage page must render the latest artifact's `gates`
     entries -- name, status, and each finding's check/beat/message/kind -- so

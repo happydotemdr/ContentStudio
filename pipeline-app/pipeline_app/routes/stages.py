@@ -1,4 +1,5 @@
 import datetime
+import html as html_escape
 import json
 from html.parser import HTMLParser
 
@@ -90,7 +91,7 @@ class _HTMLSanitizer(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self._out = []
-        self._skip_depth = 0  # >0 while inside a <script> (or nested one)
+        self._skip_depth = 0  # >0 while inside a <script>/<style> (or nested one)
 
     def _build_attr_str(self, attrs) -> str:
         parts = []
@@ -104,7 +105,12 @@ class _HTMLSanitizer(HTMLParser):
         return "".join(parts)
 
     def handle_starttag(self, tag, attrs):
-        if tag == "script":
+        # `style` gets the same CDATA treatment as `script` (C2): HTMLParser's
+        # CDATA_CONTENT_ELEMENTS is ("script", "style") -- for either tag,
+        # handle_data receives the tag's raw unparsed innards, not markup this
+        # sanitizer has walked, so both must be dropped whole rather than
+        # falling through to the "drop tag, keep text" branch below.
+        if tag in ("script", "style"):
             self._skip_depth += 1
             return
         if self._skip_depth:
@@ -114,14 +120,14 @@ class _HTMLSanitizer(HTMLParser):
         self._out.append(f"<{tag}{self._build_attr_str(attrs)}>")
 
     def handle_startendtag(self, tag, attrs):
-        if tag == "script" or self._skip_depth:
+        if tag in ("script", "style") or self._skip_depth:
             return
         if tag not in _ALLOWED_TAGS:
             return
         self._out.append(f"<{tag}{self._build_attr_str(attrs)} />")
 
     def handle_endtag(self, tag):
-        if tag == "script":
+        if tag in ("script", "style"):
             self._skip_depth = max(0, self._skip_depth - 1)
             return
         if self._skip_depth:
@@ -130,8 +136,15 @@ class _HTMLSanitizer(HTMLParser):
             self._out.append(f"</{tag}>")
 
     def handle_data(self, data):
+        # HTMLParser(convert_charrefs=True) hands this method already
+        # entity-DECODED text (C1) -- markdown escapes `<script>` inside a
+        # fenced/inline code block to `&lt;script&gt;`, HTMLParser decodes
+        # that back to `<script>` before it reaches here, and appending it
+        # verbatim would reconstitute live markup from what should stay
+        # inert text. Escaping on the way OUT closes that regardless of how
+        # the entity arrived.
         if not self._skip_depth:
-            self._out.append(data)
+            self._out.append(html_escape.escape(data, quote=False))
 
     def get_html(self) -> str:
         return "".join(self._out)
