@@ -6836,6 +6836,77 @@ reset-failure path would itself skip the second (folder-level) reset call — an
 edge-case regression on exactly the failure path Finding 3 was meant to make safe,
 though inert whenever `icacls` succeeds (which it did on every actual run).
 
+**Task 22 (Drive metadata sync + `.gdoc`/`.gsheet` export wiring, the FINAL task) —
+a merge-safety hazard caught by the controller before dispatch, plus two Important
+review findings, all resolved.**
+
+*Caught by the controller before dispatch:* the brief's Step 6 instructed replacing
+the entire `doc_ingest/worker.py` module with a full-file version written against the
+ORIGINAL Task 15 code — one that predates Task 15's own fix round and therefore omits
+both fixes logged above (the pre-write `try/except Exception` poison-pill guard, and
+`resume_unlocked_conversions`'s per-row error isolation). Applying it literally would
+have silently regressed both. **Resolved:** the implementer was dispatched with
+explicit instructions to MERGE Task 22's Drive-native additions into the file as
+currently committed via targeted edits, not a literal replacement. Verified two ways:
+mechanically (the implementer's own `git diff` showed zero hunks inside
+`resume_unlocked_conversions`) and independently by the task reviewer (Opus), who
+traced the exact boundary of the pre-write `try/except` in the new diff and confirmed
+it now correctly wraps BOTH the new Drive-native branch and the existing local-file
+branch, with the write→commit→lock→verify sequence still outside it (preserving the
+"a post-write crash must still propagate uncaught" property
+`test_process_job_resumes_lock_only_after_a_simulated_crash` depends on).
+
+*Found by the task reviewer (Opus):* two further Important, real-production-risk
+findings.
+1. The pre-existing `test_run_ingest_cron.py` end-to-end `run_once` test(s) made an
+unmocked call to the new `drive_client.build_default_service(cfg)`. Harmless on this
+machine (no cached `token.json`), but on an operator machine that has completed
+SETUP.md's one-time OAuth consent, the SAME test would reach `get_credentials`, which
+can refresh credentials over the network AND call `token_path.write_text(creds.to_json())`
+— **overwriting the operator's real credential file** from what is supposed to be a
+hermetic unit test. Worse than the machine-dependence risk the implementer had
+already independently caught and fixed in `test_worker.py` (see below) — left
+unaddressed in the cron test.
+2. `sync_drive_metadata` (`drive_sync.py`, new in this task) had no per-row
+isolation — a single malformed or mid-race-deleted `.gdoc`/`.gsheet` stub (`parse_stub`
+raising) escaped the whole function, silently disabling Drive sync for every OTHER
+row in the same batch (the entire ~100-file Drive corpus), repeating every 30-minute
+wake until a human happened to notice one stderr line. Same failure class as Task
+15's fix #2, newly introduced in this task's own code — plan-mandated (the brief's
+verbatim loop had no isolation).
+
+**Resolved:** (1) both `run_once` tests now mock `run_ingest_cron.drive_client.build_default_service`
+via a shared helper, plus a new explicit test (`test_run_once_continues_past_a_failing_drive_check`)
+that forces the factory to raise and asserts `process_job` still ran afterward — proving
+the catch-and-continue behavior directly rather than inferring it from a passing test
+on a machine that happens to lack credentials. (2) `sync_drive_metadata`'s per-row
+work now runs inside its own `try/except Exception`, recording a `drive_stub_read_failed`
+`events` row (matching the `resume_unlocked_conversions`/`gauntlet.run_gate2` pattern,
+written inside the function's existing transaction, no redundant `BEGIN`) and
+continuing to the next row; a new test seeds four stubs (one clean, three corrupted
+in three different ways including the real scan/check race) and asserts the clean
+row still syncs and exactly three failure events are recorded. Fix commit: `4f716ef`
+(building on `9575719`). Reviewed clean in the scoped re-review — both findings
+ADDRESSED, `worker.py` independently reconfirmed untouched by this fix diff (so
+Task 15's two fixes stand exactly as previously verified), one Minor non-blocking
+durability nit noted (the new `drive_stub_read_failed` events are written after the
+`build_batch_metadata` call, so a failure in that call itself — API error, expired
+credentials mid-run — would still lose the per-row failure records for that pass;
+pre-existing behavior for that specific failure mode, not a regression).
+
+Two sound judgment calls the implementer made beyond the brief's literal text, both
+independently verified by the task reviewer: (A) a pre-existing test
+(`test_process_job_fails_cleanly_on_unmapped_extension_...`) had its trigger silently
+invalidated by this task — `.gdoc`/`.gsheet` now take the Drive-native branch instead
+of ever reaching `_source_type_for`'s `KeyError`, and the test was only still passing
+because this machine lacks `token.json`; renamed and rewrote it to inject a raising
+`drive_service_factory` instead, making it deterministic and modeling the real
+production case (a Drive-native job on a machine with a missing/expired token). (B)
+added a `.gsheet` worker test, since the brief's two given Drive-native worker tests
+are both `.gdoc`, leaving the entire `.gsheet` half of `_convert_drive_native`
+without any test coverage despite `.gsheet` being a substantial share of the real
+Drive corpus.
+
 ---
 
 ## Execution Handoff
