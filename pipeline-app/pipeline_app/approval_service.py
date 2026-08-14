@@ -79,6 +79,17 @@ def approve_stage(
     # is built to refuse. A registered gate with no recorded result blocks
     # exactly as a failing one does, and says which of the two it is.
     recorded = latest_meta.get("gates") or []
+    # `recorded` is whatever yaml.safe_load produced from hand-writable
+    # frontmatter (grounding's most acutely) -- a string, scalar, or
+    # list-of-strings would otherwise reach classify_gates's `.get()`
+    # comprehension and surface as an unhandled 500, not the 409 every other
+    # approval conflict produces (A-36).
+    if not isinstance(recorded, list) or any(not isinstance(g, dict) for g in recorded):
+        raise ValueError(
+            f"Stage '{stage_id}': the `gates` block in {latest.name} is not a list of "
+            f"gate results (found {type(recorded).__name__}). Fix the artifact's "
+            "frontmatter, or regenerate the stage."
+        )
     classified = classify_gates(stage_id, recorded)
     blocking = [g for g in classified if g["blocking"]]
 

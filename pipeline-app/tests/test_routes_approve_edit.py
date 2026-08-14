@@ -313,6 +313,21 @@ def test_approve_route_with_no_artifact_returns_409(client):
     assert "No artifact to approve" in approve_resp.text
 
 
+def test_approve_route_returns_409_not_500_for_a_malformed_gates_block(two_stage_client):
+    """End-to-end proof that the route surfaces this as a conflict, not a crash."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "body")
+    test_client.post(f"/projects/{project_id}/stages/ideation/approve")
+    artifacts.write_artifact(
+        run_dir / "02-scripting", 1,
+        {"schema_version": 1, "stage": "shorts-scripting", "status": "draft", "gates": "pass"},
+        "body",
+    )
+    approve_resp = test_client.post(f"/projects/{project_id}/stages/scripting/approve")
+    assert approve_resp.status_code == 409
+
+
 def test_approve_route_unknown_project_404s(client):
     test_client, _tmp_path, _app = client
     resp = test_client.post("/projects/999/stages/ideation/approve")

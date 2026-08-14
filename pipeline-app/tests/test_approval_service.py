@@ -284,6 +284,23 @@ def _seed_scripting_awaiting_review(conn, tmp_path: Path) -> tuple[int, Path, Pa
     return project_id, run_dir, stage_dir
 
 
+@pytest.mark.parametrize("value", ["pass", 1, ["gate_d_script_language"], {"name": "x"}])
+def test_a_malformed_gates_frontmatter_value_raises_valueerror(conn, tmp_path, value):
+    """A-36: `recorded` is whatever yaml.safe_load produced. A string, scalar or
+    list-of-strings made the comprehension call .get on a non-mapping and raise
+    AttributeError -- an unhandled 500, not the 409 every other approval
+    conflict produces. Most acute for `grounding`, whose frontmatter is
+    hand-written and entirely uncontrolled."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    artifacts.write_artifact(
+        stage_dir, 1,
+        {"schema_version": 1, "stage": "shorts-scripting", "status": "draft", "gates": value},
+        "body",
+    )
+    with pytest.raises(ValueError, match="artifact.v1.md"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+
 def _write_artifact_with_gates(stage_dir: Path, status: str | None) -> Path:
     gate = {
         "name": "gate_d_script_language",
