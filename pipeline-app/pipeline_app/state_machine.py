@@ -31,6 +31,22 @@ def stages_to_unlock(all_stage_defs: list[StageDef], approved_stage_ids: set[str
     return unlocked
 
 
+def stages_to_relock(all_stage_defs: list[StageDef], approved_stage_ids: set[str]) -> list[str]:
+    """The inverse of stages_to_unlock: dependents whose dependencies are no
+    longer all approved (A-45).
+
+    An already-approved stage is never relocked -- it has an artifact of its
+    own and the right treatment is staleness, not a lock that would hide it.
+    """
+    relock = []
+    for stage in all_stage_defs:
+        if stage.id in approved_stage_ids:
+            continue
+        if stage.depends_on and not all(dep in approved_stage_ids for dep in stage.depends_on):
+            relock.append(stage.id)
+    return relock
+
+
 def is_stale(recorded_depends_on: list[dict], current_hashes: dict[str, str]) -> bool:
     for dep in recorded_depends_on:
         path = dep["path"]

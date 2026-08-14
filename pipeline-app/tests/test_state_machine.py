@@ -3,6 +3,7 @@ from pipeline_app.state_machine import (
     StageStatus,
     compute_initial_status,
     is_stale,
+    stages_to_relock,
     stages_to_unlock,
 )
 
@@ -55,3 +56,44 @@ def test_is_stale_false_for_empty_dependencies():
 def test_is_stale_true_when_dependency_missing_from_current_hashes():
     recorded = [{"path": "missing.md", "sha256": "abc123"}]
     assert is_stale(recorded, {}) is True
+
+
+def test_stages_to_relock_finds_a_dependent_whose_dependency_left_approved():
+    """A-45: stages_to_unlock is a one-way ratchet and LOCKED is never passed to
+    update_stage_status anywhere in the app. Approve scripting (unlocking
+    styleboard and voiceover), then hand-edit scripting -- the dependents stay
+    ready, runnable and approvable on a dependency that is no longer approved."""
+    stages = [
+        StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02"),
+        StageDef(id="styleboard", skill="shorts-styleboard", dir_prefix="02b",
+                 depends_on=["scripting"]),
+    ]
+    assert stages_to_relock(stages, approved_stage_ids=set()) == ["styleboard"]
+    assert stages_to_relock(stages, approved_stage_ids={"scripting"}) == []
+
+
+def test_stages_to_relock_is_the_exact_inverse_of_stages_to_unlock():
+    """The DAG invariant must hold in both directions or `locked` records a
+    high-water mark rather than the current topology."""
+    stages = [
+        StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02"),
+        StageDef(id="voiceover", skill="voiceover-brief", dir_prefix="03",
+                 depends_on=["scripting"]),
+        StageDef(id="visual", skill="visual-prompts", dir_prefix="03",
+                 depends_on=["scripting"]),
+        StageDef(id="assembly", skill="shorts-assembly", dir_prefix="04",
+                 depends_on=["voiceover", "visual"]),
+    ]
+    for approved in ({"scripting"}, {"scripting", "voiceover"}, set()):
+        unlockable = set(stages_to_unlock(stages, approved))
+        relockable = set(stages_to_relock(stages, approved))
+        assert not (unlockable & relockable)
+
+
+def test_stages_to_relock_never_relocks_an_approved_stage():
+    stages = [
+        StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02"),
+        StageDef(id="styleboard", skill="shorts-styleboard", dir_prefix="02b",
+                 depends_on=["scripting"]),
+    ]
+    assert stages_to_relock(stages, approved_stage_ids={"styleboard"}) == []
