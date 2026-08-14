@@ -2757,14 +2757,31 @@ def test_a_downstream_rgs_stage_does_not_inject_a_stale_grounding_pointer(client
       gate the `grounding_pointer` injection at `:157-160` on
       `verify_pointer(grounding_dir, repo_root).state == "ok"`, recording an event and surfacing
       staleness on `hash_mismatch` / `missing_target`.
-- [ ] **Adopt P4 §7.4's two one-line asks in the same file** (both are P4 findings whose call
-      site is P3's; neither changes P3's finding count):
-  - `routes/stages.py:287` — `propagate_staleness(...)` gained an optional `repo_root=`.
-    Pass `repo_root=repo_root`; that is what closes **A-14** on the hand-edit path.
-  - the grounding branch (≈`:186`) — after `write_pointer(...)`, call
-    `turn_service.propagate_grounding_staleness(conn, repo_root, run_dir, stage_defs, project_id)`
-    so a re-pointed brief invalidates downstream immediately rather than one turn late.
-- [ ] **Run** → green. **Commit:** `fix(stages): adopt P2's grounding_service API and P4's staleness keywords`
+- [ ] ~~**Adopt P4 §7.4's two one-line asks in the same file**~~ **DEFERRED — see amendment below.**
+- [ ] **Run** → green. **Commit:** `fix(stages): adopt P2's grounding_service API`
+
+> **Amendment (T24 dispatch, this session): the two P4 §7.4 asks below cannot be adopted today —
+> P4 has not executed.** Confirmed empirically: `turn_service.propagate_staleness`'s live
+> signature is `(conn, run_dir, all_stage_defs, project_id, changed_stage_id)` — no `repo_root=`
+> keyword exists. `turn_service.propagate_grounding_staleness` does not exist anywhere in the
+> repo (`grep -rn "propagate_grounding_staleness" pipeline-app/` returns nothing). Both are P4's
+> own work, not yet landed; this session's resume prompt confirms "P3 runs alone, before P4, per
+> the landing order." T24's text presented them as adoptable in the same commit as the
+> already-landed P2 grounding_service API — that half of T24 is real and executed below; the
+> P4 half is not executable yet and is **routed back to P4**, the same way Handoff H2 already
+> routes `resolve_upstream_by_stage`'s semantics to P4. **Deferred asks, for P4's own session to
+> either adopt at its own call site or hand back to P3 as a fast-follow once P4 lands:**
+>
+> - `routes/stages.py`'s hand-edit route's `propagate_staleness(...)` call — pass `repo_root=repo_root`
+>   once that keyword exists, closing **A-14** on the hand-edit path (not in P3's own finding
+>   set; A-14 belongs to whichever package owns it).
+> - The grounding branch's turn-completion handler — after `write_pointer(...)`, call
+>   `turn_service.propagate_grounding_staleness(conn, repo_root, run_dir, stage_defs, project_id)`
+>   once it exists, so a re-pointed brief invalidates downstream immediately.
+>
+> Neither deferral blocks or weakens anything T24 actually closes today (P2's grounding_service
+> API adoption, below) — both are additive keywords/calls layered on top of code this task
+> already brings current.
 
 > **Not adopted here:** P4 §7.4 also flags that `preflight.py:38-40` re-derives status from
 > artifact existence and so launders `stale` (A-46's other half), needing a persisted
