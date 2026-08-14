@@ -6907,6 +6907,80 @@ are both `.gdoc`, leaving the entire `.gsheet` half of `_convert_drive_native`
 without any test coverage despite `.gsheet` being a substantial share of the real
 Drive corpus.
 
+## Final Whole-Branch Review (subagent-driven-development runtime)
+
+After all 23 tasks (0-22) completed, per the skill's process a final whole-branch
+review ran on the most capable available model (Opus), pointed at this Execution
+Deviations log and the SDD ledger's deferred-minor lines for triage.
+
+**Assessment: "Ready to merge? With fixes."** No Critical findings — the review traced
+all four job-lifecycle paths (local-file happy path, Drive-native happy path, crash
+recovery via `resume_unlocked_conversions`, and the two-layer read-only enforcement
+composing correctly) and found the architecture sound end to end. Five Important
+findings, all in the same failure class: a single bad or transient event silently
+killing an entire 30-minute cron wake, or in two cases wedging the pipeline
+permanently — a class no single task's own review could see, since each finding
+spans code introduced across different tasks.
+
+1. `scan.walk_source_tree` had no per-file isolation — one `PermissionError` on any
+file (routine on a live Google Drive sync folder) aborted the whole wake.
+2. `_run_one_worker`'s connection-open and claim calls were unguarded, and manifest
+regeneration had no protection from an exception escaping the drain loop.
+3. `job_timeout_s` was a dead config field — no timeout anywhere meant one hung call
+could wedge the pipeline permanently (Task Scheduler's skip-if-running default means
+no subsequent wake would ever fire).
+4. The Claude Code `PreToolUse` hook and the Windows ACL lock were anchored to
+different roots — the hook's project-relative path check silently gave zero
+protection whenever the session root didn't align with the real output tree
+(confirmed true in the very worktree this plan was implemented in).
+5. `verify_locked`'s prefix-strip (already flagged as a deferred Minor in Task 13's
+own review) was promoted to Important in whole-branch context — it's the only
+automated confirmation the OS-level lock actually landed, and its failure direction
+is silent under-locking.
+
+**Resolved, one fix wave covering all five** (per the skill's final-review process:
+one fixer, one scoped re-review, no second wave): (1) per-entry `try/except` in
+`walk_source_tree`, skip-and-log rather than propagate. (2) `_run_one_worker`'s guard
+widened to cover connection-open + claim + process with correct no-double-close
+control flow; the drain loop itself wrapped so manifest regeneration is always
+reached. (3) `future.result(timeout=cfg.job_timeout_s)` catching
+`concurrent.futures.TimeoutError`, with an explicit, honest acknowledgment in both
+code comments and the log message that `ThreadPoolExecutor` cannot actually cancel a
+running thread — this bounds the MAIN LOOP's wait, not the underlying work; a truly
+infinite hang still blocks process exit via the non-daemon thread join. (4) the
+hook's `decide()` falls back to the same `_CONVERTED_PATH_RE` regex the
+Bash/PowerShell branch already used, whenever the project-relative check can't
+confirm protection — verified strictly widening, never narrowing, existing coverage.
+(5) `verify_locked` replaced the prefix-strip entirely with a direct search for the
+contiguous substring `(OWNER RIGHTS|S-1-3-4):\(DENY\)`, which cannot appear except as
+part of a genuine ACE line since `:` is always stripped from filenames by
+`naming.sanitize_component`. Fix commit: `7f5a971`.
+
+Reviewed clean in the scoped re-review (Opus) — all 5 findings ADDRESSED with
+file:line evidence for each, no new Critical/Important breakage. Six residual items
+were individually adjudicated and parked (none load-bearing): a directory-listing
+call outside Finding 1's guard, empirically confirmed unreachable on this
+interpreter's `pathlib`/`os.scandir` behavior (version-scoped — would become
+reachable on a CPython downgrade to ≤3.11, not a live concern here); a
+previously-unanticipated second-order effect where a file skipped by the new scan
+guard is transiently marked `missing` for that one wake (self-healing, and strictly
+better than the pre-fix whole-wake failure); the mandated broad `except Exception` in
+the scan loop would also mask a systematic logic bug as "every file skipped," not
+just I/O errors (as-specified by the finding, narrowing to `OSError` is a possible
+future refinement); Finding 3's worst case is `worker_pool_size × job_timeout_s` per
+batch, not a single `job_timeout_s` (still strictly better than the pre-fix unbounded
+wait); a minor comment-accuracy overstatement about which wake benefits from the
+timeout fix (the real, still-worthwhile gains — prompt manifest regeneration, `run_once`
+returning, no pile-up of further batches onto a wedged pool — are correctly stated
+elsewhere); and Finding 4's fallback is a disclosed, intentional behavior-widening
+that exactly matches the Bash/PowerShell branch's existing regex-based scope.
+
+**Full app suite: 177/177 passing** (up from 169 pre-fix-wave). **Repo-root suite:
+371/372**, the one failure being the pre-existing, unrelated
+`test_lint_prompt_sheet.py::test_a_single_mutation_of_a_green_sheet_always_fails_gate_c[fenced-heading]`
+confirmed at session start and reconfirmed independently by multiple task
+implementers throughout this plan's execution — never touched by this branch.
+
 ---
 
 ## Execution Handoff
