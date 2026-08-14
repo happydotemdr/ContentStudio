@@ -13,12 +13,24 @@ from __future__ import annotations
 
 import getpass
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
 
 _DENY_RIGHTS = "WD,WA,WEA,DE,WDAC,WO"
 _OWNER_RIGHTS_SID = "*S-1-3-4"
+
+# A genuine icacls deny ACE is printed as "<principal>:(DENY)(<rights>)" with
+# NO separator between the principal and the colon -- so the trustee token and
+# "(DENY)" are CONTIGUOUS. That contiguity is what makes this safe to search
+# for anywhere in icacls's output, echoed file path included: ':' is one of the
+# nine characters naming.sanitize_component strips unconditionally from every
+# name this pipeline creates, so no converted filename or folder can contain a
+# colon at all, and therefore no path echo can ever produce this substring.
+# icacls resolves S-1-3-4 to its display name "OWNER RIGHTS" on some Windows
+# builds and prints the raw SID on others; both forms are accepted.
+_OWNER_RIGHTS_DENY_ACE_RE = re.compile(r"(?:OWNER RIGHTS|S-1-3-4):\(DENY\)", re.IGNORECASE)
 
 
 def apply_readonly_lock(path: Path) -> None:
@@ -64,32 +76,25 @@ def verify_locked(path: Path) -> bool:
     if os.access(path, os.W_OK):
         return False
     result = subprocess.run(["icacls", str(path)], capture_output=True, text=True, check=True)
-    output = result.stdout
-    # icacls prints the echoed file path immediately followed by the FIRST
-    # ACE on the SAME line (confirmed empirically: "<path> OWNER
-    # RIGHTS:(DENY)(...)"), then each subsequent ACE on its own line. On
-    # Windows, the converted filename/folder is derived from user-controlled
-    # Drive document titles -- so scanning the raw output (path text
-    # included) for the sentinel substrings anywhere, independently, would
-    # let a filename/folder that merely happens to contain text resembling
-    # both "OWNER RIGHTS"/"S-1-3-4" and "DENY" (e.g. a coaching doc titled
-    # around "Owner Rights ... Denial ...") be misread as a real ACE match
-    # -- silently reporting a file as fully locked when it carries zero ACL
-    # protection (e.g. a crash-resume file with only the read-only
-    # attribute set, no icacls calls having landed yet). Strip the KNOWN
-    # path string (not just "line 1") from the front of the output before
-    # scanning, since the path and the first real ACE can share a line --
-    # discarding the whole first line would silently lose that ACE instead.
-    # Then require the OWNER-RIGHTS-identifying token AND the "(DENY)"
-    # marker (parenthesized, matching icacls's real ACE format "OWNER
-    # RIGHTS:(DENY)(...)") to appear TOGETHER on the same ACE line -- not
-    # just anywhere, independently, in the whole output.
-    path_str = str(path)
-    if output.startswith(path_str):
-        output = output[len(path_str):]
-    for line in output.splitlines():
-        line_upper = line.upper()
-        has_owner_rights_entry = "S-1-3-4" in line or "OWNER RIGHTS" in line_upper
-        if has_owner_rights_entry and "(DENY)" in line_upper:
-            return True
-    return False
+    # icacls prints the echoed file path immediately followed by the FIRST ACE
+    # on the SAME line ("<path> OWNER RIGHTS:(DENY)(...)"), then each
+    # subsequent ACE on its own line. Because the converted filename is derived
+    # from a user-controlled Drive document title, a naive scan for "OWNER
+    # RIGHTS"/"S-1-3-4" and "DENY" as INDEPENDENT substrings would let a
+    # coaching doc titled around "Owner Rights (deny) ..." be misread as a real
+    # ACE -- reporting an unprotected file as fully locked, and this call is the
+    # only automated confirmation the OS-level lock actually landed.
+    #
+    # An earlier version defended against that by stripping the echoed path
+    # prefix, which required str(path) to byte-match icacls's own output. That
+    # match is not reliable: a non-ASCII filename (curly apostrophes, accented
+    # characters -- ordinary in a real coaching archive) can decode differently
+    # under an OEM-vs-ANSI codepage mismatch between icacls and
+    # subprocess.run(text=True), the strip silently no-ops, and the check falls
+    # back to the broad scan it was written to prevent -- i.e. it fails OPEN.
+    #
+    # The contiguous-substring match below has no such dependency: it needs the
+    # trustee token and "(DENY)" adjacent across a colon, exactly as icacls
+    # formats a real ACE, and ':' cannot occur in any name this pipeline
+    # creates (see _OWNER_RIGHTS_DENY_ACE_RE).
+    return bool(_OWNER_RIGHTS_DENY_ACE_RE.search(result.stdout))

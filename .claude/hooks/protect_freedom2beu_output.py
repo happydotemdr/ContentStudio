@@ -25,19 +25,38 @@ _CONVERTED_PATH_RE = re.compile(r"Freedom2BeU[\\/]converted", re.IGNORECASE)
 
 
 def decide(tool_name: str, resolved_path: Path, project_root: Path) -> str | None:
+    if tool_name not in ("Edit", "Write", "NotebookEdit"):
+        return None
+
+    # The project-relative check is the precise one, but it only fires when the
+    # path actually sits under $CLAUDE_PROJECT_DIR. The real output root is an
+    # ABSOLUTE path from Config (default C:\Projects\ContentStudio\Freedom2BeU)
+    # and the two roots routinely disagree -- a git worktree session is rooted
+    # at .claude/worktrees/<branch>/, so relative_to() raises ValueError and
+    # every Edit/Write into the real converted tree used to sail through with
+    # zero hook protection. Whenever the project-relative test cannot CONFIRM
+    # the path is protected (raised, or matched a different prefix), fall back
+    # to the same root-independent regex the Bash/PowerShell branch already
+    # relies on. Keeps the hook dependency-free -- it never reads Config.
     try:
         rel = resolved_path.resolve().relative_to(project_root.resolve())
     except ValueError:
+        rel = None
+
+    protected = rel is not None and tuple(p.lower() for p in rel.parts[:2]) == tuple(
+        p.lower() for p in _PROTECTED_PREFIX
+    )
+    if not protected:
+        protected = bool(_CONVERTED_PATH_RE.search(str(resolved_path)))
+    if not protected:
         return None
-    if tuple(p.lower() for p in rel.parts[:2]) != tuple(p.lower() for p in _PROTECTED_PREFIX):
-        return None
-    if tool_name in ("Edit", "Write", "NotebookEdit"):
-        return (
-            f"{rel} is under Freedom2BeU/converted/ -- validated conversions are "
-            f"read-only by design (spec §10); write a new version through the "
-            f"doc-ingest-app pipeline instead"
-        )
-    return None
+
+    label = rel if rel is not None else resolved_path
+    return (
+        f"{label} is under Freedom2BeU/converted/ -- validated conversions are "
+        f"read-only by design (spec §10); write a new version through the "
+        f"doc-ingest-app pipeline instead"
+    )
 
 
 def looks_like_a_write_command(command_text: str) -> bool:

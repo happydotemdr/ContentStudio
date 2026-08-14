@@ -83,6 +83,45 @@ def test_decide_denies_a_differently_cased_converted_path(tmp_path):
     assert reason_lower is not None
 
 
+def test_decide_denies_a_converted_path_outside_the_project_root(tmp_path):
+    """The Windows ACL in lock.py protects the ABSOLUTE cfg.output_root, which
+    routinely does not sit under $CLAUDE_PROJECT_DIR -- a git-worktree session
+    is rooted at .claude/worktrees/<branch>/, so relative_to() raises
+    ValueError. decide() used to return None there, leaving Edit/Write/
+    NotebookEdit against the real converted tree with zero hook protection
+    while the Bash/PowerShell branch (a root-independent regex) kept working.
+    The fallback puts the two branches on equal footing."""
+    project_root = tmp_path / ".claude" / "worktrees" / "some-branch"
+    project_root.mkdir(parents=True)
+    target = Path(r"C:\Projects\ContentStudio\Freedom2BeU\converted\coaching\a.pdf.md")
+    reason = decide("Edit", target, project_root)
+    assert reason is not None
+    assert "read-only by design" in reason
+
+
+def test_decide_allows_a_non_converted_path_outside_the_project_root(tmp_path):
+    """The fallback must not become a blanket deny for everything outside the
+    project root -- only paths the converted-tree regex actually matches."""
+    project_root = tmp_path / ".claude" / "worktrees" / "some-branch"
+    project_root.mkdir(parents=True)
+    assert decide("Edit", Path(r"C:\Projects\ContentStudio\Freedom2BeU\_tmp\job-1\staged.md"), project_root) is None
+    assert decide("Edit", Path(r"C:\Projects\SomethingElse\notes.md"), project_root) is None
+
+
+def test_decide_denies_a_converted_path_nested_below_the_project_root(tmp_path):
+    """Same fallback also covers the in-project-root-but-not-at-depth-2 case:
+    the prefix check only looks at rel.parts[:2]."""
+    project_root = tmp_path
+    target = project_root / "nested" / "Freedom2BeU" / "converted" / "a.md"
+    assert decide("Edit", target, project_root) is not None
+
+
+def test_decide_ignores_non_write_tools_even_under_converted(tmp_path):
+    project_root = tmp_path
+    target = project_root / "Freedom2BeU" / "converted" / "a.pdf.md"
+    assert decide("Read", target, project_root) is None
+
+
 @pytest.mark.allow_subprocess
 def test_notebook_edit_via_main_denies_converted_path(tmp_path):
     """The real NotebookEdit tool payload uses "notebook_path", not "file_path". This

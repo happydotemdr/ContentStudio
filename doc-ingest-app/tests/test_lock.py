@@ -13,6 +13,63 @@ def _fresh_target(lock_test_dir):
     return lock_test_dir / f"locked-{uuid.uuid4().hex}.md"
 
 
+def _stub_icacls(monkeypatch, stdout: str) -> None:
+    """Feeds verify_locked a synthetic icacls transcript. Deliberately NOT a
+    real lock: every real lock leaves a permanently undeletable fixture behind
+    (see conftest's lock_test_dir docstring), and the two cases below are
+    about how the OUTPUT is parsed, not about whether icacls works."""
+    def _fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(lock.subprocess, "run", _fake_run)
+    monkeypatch.setattr(lock.os, "access", lambda p, mode: False)
+
+
+def test_verify_locked_is_not_fooled_by_owner_rights_and_deny_text_in_a_filename(tmp_path, monkeypatch):
+    """verify_locked is the ONLY automated confirmation the OS-level lock
+    landed, so a false positive silently reports an unprotected file as
+    locked. The converted filename comes from a user-controlled Drive title,
+    so "Owner Rights (deny)" is constructible. The previous defence stripped
+    the echoed path prefix, which required str(path) to byte-match icacls's
+    own output -- a non-ASCII filename can decode differently under an
+    OEM-vs-ANSI codepage mismatch, the strip silently no-ops, and the check
+    fails OPEN. Here the echoed path deliberately does NOT match str(path)."""
+    target = tmp_path / "Owner Rights (deny) notes \u2019v2\u2019.md"
+    target.write_text("content", encoding="utf-8")
+    _stub_icacls(
+        monkeypatch,
+        "C:\\out\\Owner Rights (deny) notes ?v2?.md BUILTIN\\Users:(I)(F)\n"
+        "                                          NT AUTHORITY\\SYSTEM:(I)(F)\n"
+        "\nSuccessfully processed 1 files; Failed processing 0 files\n",
+    )
+    assert lock.verify_locked(target) is False
+
+
+def test_verify_locked_finds_a_real_ace_when_the_echoed_path_does_not_byte_match(tmp_path, monkeypatch):
+    """The other half of the same fix: a genuine ACE must still be recognised
+    when the prefix strip would have failed. ':' can never appear in a name
+    this pipeline creates (naming.FORBIDDEN_CHARS strips it), so the
+    contiguous "<trustee>:(DENY)" form is unambiguous no matter what the path
+    echo decoded to."""
+    target = tmp_path / "d\u2019accord \u2014 se\u0301ance.md"
+    target.write_text("content", encoding="utf-8")
+    _stub_icacls(
+        monkeypatch,
+        "C:\\out\\d?accord ? se?ance.md OWNER RIGHTS:(DENY)(DE,WDAC,WO,WA,WEA,WD)\n"
+        "                              BUILTIN\\Users:(I)(F)\n",
+    )
+    assert lock.verify_locked(target) is True
+
+
+def test_verify_locked_accepts_the_raw_sid_form_of_the_ace(tmp_path, monkeypatch):
+    """Some Windows builds print the raw S-1-3-4 SID instead of resolving it
+    to the "OWNER RIGHTS" display name; both must count."""
+    target = tmp_path / "doc.md"
+    target.write_text("content", encoding="utf-8")
+    _stub_icacls(monkeypatch, "C:\\out\\doc.md S-1-3-4:(DENY)(DE,WDAC,WO,WA,WEA,WD)\n")
+    assert lock.verify_locked(target) is True
+
+
 @pytest.mark.allow_subprocess
 def test_apply_readonly_lock_denies_a_real_write(lock_test_dir):
     target = _fresh_target(lock_test_dir)

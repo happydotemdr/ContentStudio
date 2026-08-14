@@ -8,6 +8,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import hashlib
+import sys
 from pathlib import Path
 from typing import Iterator
 
@@ -77,28 +78,46 @@ def _sha256_file(path: Path) -> str:
 
 def walk_source_tree(root: Path) -> Iterator[ScannedEntry]:
     for path in sorted(root.rglob("*")):
-        if not path.is_file():
+        # Per-file isolation is load-bearing, not defensive padding. The input
+        # root is a live Google Drive sync folder: any single file can be
+        # transiently locked (PermissionError) or vanish mid-walk
+        # (FileNotFoundError) while Drive rewrites it. Without this guard, one
+        # such file raises out of this generator, straight through
+        # sync.sync_source_files's single wrapping transaction and out of
+        # run_ingest_cron.run_once -- killing the ENTIRE 30-minute wake (no
+        # enqueue, no drain, no manifest). A skipped file costs nothing: it is
+        # simply not synced this pass, and the next wake picks it up once the
+        # transient condition clears.
+        try:
+            if not path.is_file():
+                continue
+            rel_path = path.relative_to(root).as_posix()
+            extension = path.suffix[1:].lower() if path.suffix else ""
+            sniffed = sniff_signature(path) if extension == "" else None
+            stat = path.stat()
+            mtime_iso = dt.datetime.fromtimestamp(stat.st_mtime, tz=dt.timezone.utc).isoformat()
+            # Only hash what change-detection actually needs: 'convertible'
+            # local files (content_hash drives their enqueue comparison) and
+            # 'gdoc_pointer' stubs (always 176 bytes regardless, so hashing them
+            # is free even though drive_modified_time, not this hash, drives
+            # their change detection). Hashing everything unconditionally would
+            # mean sha256'ing all 60 video files in the real corpus -- up to
+            # 1.1GB each -- on every 30-minute wake, for a value nothing
+            # downstream ever reads (excluded_media is never enqueued, spec §2).
+            classification = classify(extension, sniffed)
+            content_hash = _sha256_file(path) if classification in ("convertible", "gdoc_pointer") else None
+            entry = ScannedEntry(
+                rel_path=rel_path,
+                extension=extension,
+                sniffed_signature=sniffed,
+                size_bytes=stat.st_size,
+                mtime_iso=mtime_iso,
+                content_hash=content_hash,
+            )
+        except Exception as exc:
+            print(f"scan: skipping {path} due to {exc}", file=sys.stderr)
             continue
-        rel_path = path.relative_to(root).as_posix()
-        extension = path.suffix[1:].lower() if path.suffix else ""
-        sniffed = sniff_signature(path) if extension == "" else None
-        stat = path.stat()
-        mtime_iso = dt.datetime.fromtimestamp(stat.st_mtime, tz=dt.timezone.utc).isoformat()
-        # Only hash what change-detection actually needs: 'convertible'
-        # local files (content_hash drives their enqueue comparison) and
-        # 'gdoc_pointer' stubs (always 176 bytes regardless, so hashing them
-        # is free even though drive_modified_time, not this hash, drives
-        # their change detection). Hashing everything unconditionally would
-        # mean sha256'ing all 60 video files in the real corpus -- up to
-        # 1.1GB each -- on every 30-minute wake, for a value nothing
-        # downstream ever reads (excluded_media is never enqueued, spec §2).
-        classification = classify(extension, sniffed)
-        content_hash = _sha256_file(path) if classification in ("convertible", "gdoc_pointer") else None
-        yield ScannedEntry(
-            rel_path=rel_path,
-            extension=extension,
-            sniffed_signature=sniffed,
-            size_bytes=stat.st_size,
-            mtime_iso=mtime_iso,
-            content_hash=content_hash,
-        )
+        # Yielded OUTSIDE the try so a consumer-side exception (which resumes
+        # inside this generator at the yield point) can never be mistaken for
+        # a per-file I/O failure and swallowed here.
+        yield entry

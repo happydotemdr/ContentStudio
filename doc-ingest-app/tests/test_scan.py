@@ -111,6 +111,52 @@ def test_walk_source_tree_computes_a_hash_for_a_convertible_file(tmp_path):
     assert entries[0].content_hash is not None
 
 
+def test_walk_source_tree_survives_a_file_whose_stat_fails(tmp_path, monkeypatch, capsys):
+    """The input root is a live Google Drive sync folder: a single file can be
+    transiently locked or vanish mid-walk. Without per-file isolation, that one
+    error escapes this generator, passes through sync.sync_source_files's
+    wrapping transaction and out of run_ingest_cron.run_once -- killing the
+    whole 30-minute wake. The other files must still be yielded."""
+    (tmp_path / "a.pdf").write_bytes(b"%PDF-1.4 fake")
+    (tmp_path / "b.pdf").write_bytes(b"%PDF-1.4 also fake")
+    (tmp_path / "c.txt").write_bytes(b"plain text")
+
+    real_stat = Path.stat
+
+    def _flaky_stat(self, *args, **kwargs):
+        if self.name == "b.pdf":
+            raise PermissionError(13, "The process cannot access the file")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _flaky_stat)
+    entries = list(scan.walk_source_tree(tmp_path))
+
+    assert sorted(e.rel_path for e in entries) == ["a.pdf", "c.txt"]
+    assert "scan: skipping" in capsys.readouterr().err
+
+
+def test_walk_source_tree_survives_a_file_that_cannot_be_opened(tmp_path, monkeypatch, capsys):
+    """Same isolation guarantee for the two places walk_source_tree opens a
+    file (sniff_signature and _sha256_file), which is where a Drive-held lock
+    actually surfaces as PermissionError."""
+    (tmp_path / "a.pdf").write_bytes(b"%PDF-1.4 fake")
+    (tmp_path / "locked.pdf").write_bytes(b"%PDF-1.4 fake")
+    (tmp_path / "c.md").write_bytes(b"# heading")
+
+    real_open = open
+
+    def _flaky_open(path, mode="r", *a, **kw):
+        if isinstance(path, (str, Path)) and Path(path).name == "locked.pdf":
+            raise PermissionError(13, "The process cannot access the file")
+        return real_open(path, mode, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", _flaky_open)
+    entries = list(scan.walk_source_tree(tmp_path))
+
+    assert sorted(e.rel_path for e in entries) == ["a.pdf", "c.md"]
+    assert "locked.pdf" in capsys.readouterr().err
+
+
 def test_walk_source_tree_skips_hashing_excluded_media(tmp_path):
     # Hashing every file unconditionally would mean sha256'ing every video
     # in the real corpus -- up to 1.1GB each -- for a value nothing
