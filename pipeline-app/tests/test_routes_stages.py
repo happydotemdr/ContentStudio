@@ -537,6 +537,104 @@ def test_the_grounding_edit_refusal_keeps_its_message(client):
     assert "rgs-briefs" in resp.text
 
 
+def test_the_stage_page_publishes_the_hand_edit_contract(client):
+    """A-84/E-07: `POST .../edit` mints a version, re-gates the body, propagates
+    staleness and resets the stage -- 60 lines of carefully-reasoned behavior
+    with no template posting to it anywhere in the repo. The route is KEPT (its
+    four latent defects are closed by T2/T3/T4), so the server must hand the
+    template everything it needs to render the form."""
+    test_client, tmp_path, app = client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "body")
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    ctx = page.context
+    assert ctx["edit_allowed"] is True
+    assert ctx["edit_action"] == f"/projects/{project_id}/stages/ideation/edit"
+    assert ctx["edit_field"] == "body"
+
+
+def test_grounding_never_offers_the_hand_edit_form(client):
+    """The route already refuses grounding (its output lives in rgs-briefs/),
+    so the page must not offer a form that can only 409."""
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "raisinggoodsports"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    ctx = test_client.get(f"/projects/{project_id}/stages/grounding").context
+    assert ctx["edit_allowed"] is False
+    assert ctx["edit_blocked_reason"]
+
+
+# "inputs" is T21's key, not this task's -- see task-20 brief and report for
+# why it's excluded here rather than added early.
+PUBLISHED_CONTEXT_KEYS = frozenset({
+    "gate_view", "has_blocking_gate", "gate_override", "gate_overrides",
+    "artifact_version", "artifact_created_at", "artifact_finalized_at",
+    "edit_allowed", "edit_blocked_reason", "edit_action", "edit_field",
+    "error_banner",
+})
+
+
+@pytest.mark.parametrize("with_artifact", [True, False])
+def test_every_published_context_key_is_present_on_every_render(client, with_artifact):
+    """The contract test for §6. P15 binds templates to these names and Jinja
+    renders a missing key as EMPTY -- so an absent key is not a crash, it is a
+    blank panel. That is exactly how the first draft of this contract and P15's
+    would have silently reimplemented E-03 (a never-ran gate rendering as a
+    clean pass). A key that is sometimes absent is the same defect in slower
+    motion, so this asserts presence on BOTH the has-artifact and no-artifact
+    renders."""
+    test_client, tmp_path, app = client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    if with_artifact:
+        artifacts.write_artifact(
+            run_dir / "01-ideation", 1,
+            {"stage": "shorts-ideation", "version": 1, "status": "draft",
+             "created_at": "2026-08-08T00:00:00+00:00", "finalized_at": None},
+            "body",
+        )
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert PUBLISHED_CONTEXT_KEYS <= set(page.context)
+
+
+def test_the_conflict_render_carries_the_same_context_keys_as_the_normal_one(two_stage_client):
+    """The 409 body is the same template with the same keys -- differing only in
+    error_banner being non-None. P15 binds to that unconditionally."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, _run_dir = _new_project(test_client, app, tmp_path)
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/edit", data={"body": "sneaky edit"}
+    )
+    assert resp.status_code == 409
+    assert PUBLISHED_CONTEXT_KEYS <= set(resp.context)
+    assert resp.context["error_banner"]["kind"] == "conflict"
+
+
+def test_the_stage_page_reports_which_artifact_version_is_on_screen(client):
+    """P15's E-06: stage_page parsed the frontmatter into output_meta and then
+    discarded it, so an operator could not tell v1 from v7, or whether the body
+    had been regenerated since they last looked."""
+    test_client, tmp_path, app = client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(
+        run_dir / "01-ideation", 1,
+        {"stage": "shorts-ideation", "version": 1, "status": "draft",
+         "created_at": "2026-08-08T00:00:00+00:00", "finalized_at": None},
+        "v1 body",
+    )
+    artifacts.write_artifact(
+        run_dir / "01-ideation", 2,
+        {"stage": "shorts-ideation", "version": 2, "status": "final",
+         "created_at": "2026-08-08T01:00:00+00:00",
+         "finalized_at": "2026-08-08T02:00:00+00:00"},
+        "v2 body",
+    )
+    ctx = test_client.get(f"/projects/{project_id}/stages/ideation").context
+    assert ctx["artifact_version"] == 2
+    assert ctx["artifact_created_at"] == "2026-08-08T01:00:00+00:00"
+    assert ctx["artifact_finalized_at"] == "2026-08-08T02:00:00+00:00"
+
+
 GATE_MATRIX = [
     ("passing",     [{"name": "gate_d_script_language", "status": "pass", "findings": []}]),
     ("failing",     [{"name": "gate_d_script_language", "status": "fail", "findings": []}]),

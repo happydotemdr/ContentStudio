@@ -103,6 +103,7 @@ def _stage_context(request: Request, project_id: int, stage_id: str, *, error_ba
 
     output_body = None
     output_gates = []
+    output_meta = {}
     latest = artifacts.resolve_latest_artifact(request.app.state.repo_root, stage_id, stage_dir)
     if latest is not None:
         output_meta, output_body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
@@ -126,6 +127,15 @@ def _stage_context(request: Request, project_id: int, stage_id: str, *, error_ba
         }]
     has_blocking_gate = any(g["blocking"] for g in gate_view)
 
+    edit_blocked_reason = None
+    if stage_id == "grounding":
+        edit_blocked_reason = ("Grounding's output lives in rgs-briefs/ -- edit that file "
+                               "directly, not through this app.")
+    elif is_locked_or_running(stage_row["status"]):
+        edit_blocked_reason = f"Stage is {stage_row['status']} and cannot be edited yet."
+
+    overrides = artifacts.read_gate_overrides(latest) if latest is not None else []
+
     transcript = _load_transcript(stage_dir)
     stage_rows = db_mod.list_stages(request.app.state.conn, project_id)
     nav = build_stage_nav(stage_defs, stage_rows)
@@ -137,6 +147,21 @@ def _stage_context(request: Request, project_id: int, stage_id: str, *, error_ba
         "output_body": output_body, "output_html": output_html,
         "output_gates": output_gates, "gate_view": gate_view,
         "has_blocking_gate": has_blocking_gate,
+        "edit_allowed": edit_blocked_reason is None and output_body is not None,
+        "edit_blocked_reason": edit_blocked_reason,
+        "edit_action": f"/projects/{project_id}/stages/{stage_id}/edit",
+        "edit_field": "body",
+        # P15's E-06: these three were parsed into output_meta and then thrown
+        # away, so the page could not say whether the body on screen was v1 or
+        # v7. None means the key was absent, and artifact_finalized_at is None
+        # is the reliable "still a draft" signal (stage_status moves
+        # independently of it).
+        "artifact_version": output_meta.get("version"),
+        "artifact_created_at": output_meta.get("created_at"),
+        "artifact_finalized_at": output_meta.get("finalized_at"),
+        # Append-only per P2's A-38 fix; the singular is the most recent entry.
+        "gate_overrides": overrides,
+        "gate_override": overrides[-1] if overrides else None,
         "transcript": transcript, "nav": nav,
         "active_nav": "projects",
         "cli_available": request.app.state.cli_available,
