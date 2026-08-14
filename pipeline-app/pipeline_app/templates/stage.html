@@ -2,6 +2,8 @@
 {% block content %}
 <h1>{{ project.run_id }} — {{ stage_id }}</h1>
 
+{% if error_banner %}<div class="error-banner">{{ error_banner.message }}</div>{% endif %}
+
 <section class="input-panel">
   <h2>Input</h2>
   {% if grounding_input_html %}
@@ -57,7 +59,7 @@
   <p class="stale-override-note">This stage is stale (built on a since-changed upstream input). Approving now will override the staleness cascade instead of regenerating.</p>
   {% endif %}
   <form method="post" action="/projects/{{ project.id }}/stages/{{ stage_id }}/approve">
-    {% if has_failing_gate %}
+    {% if has_blocking_gate %}
     <label for="override_reason">Override reason (a gate above is failing/erroring)</label>
     <input type="text" id="override_reason" name="override_reason" placeholder="e.g. dash is inside a verbatim 1886 quote">
     {% endif %}

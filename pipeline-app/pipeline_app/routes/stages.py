@@ -3,7 +3,7 @@ import json
 
 import markdown
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from pipeline_app import (
     approval_service,
@@ -14,6 +14,7 @@ from pipeline_app import (
     obs,
     turn_service,
 )
+from pipeline_app.approval_service import classify_gates
 from pipeline_app.pipeline_config import build_stage_nav, stage_dir_name
 from pipeline_app.state_machine import is_locked_or_running
 
@@ -67,8 +68,7 @@ def _resolve_project_stage(request: Request, project_id: int, stage_id: str):
     return project, stage_def, stage_row
 
 
-@router.get("/projects/{project_id}/stages/{stage_id}", response_class=HTMLResponse)
-def stage_page(request: Request, project_id: int, stage_id: str):
+def _stage_context(request: Request, project_id: int, stage_id: str, *, error_banner=None) -> dict:
     project, stage_def, stage_row = _resolve_project_stage(request, project_id, stage_id)
     stage_defs = request.app.state.stage_defs
     run_dir = request.app.state.repo_root / "runs" / project["run_id"]
@@ -108,29 +108,58 @@ def stage_page(request: Request, project_id: int, stage_id: str):
         output_meta, output_body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
         output_gates = output_meta.get("gates") or []
     output_html = markdown.markdown(output_body) if output_body else None
-    # Only surface the override input when there is something to override --
-    # keeps a healthy stage's approve form free of the word "override" (the
-    # stale-cue paragraph above already owns that word for the staleness
-    # case) and matches the "known unknown, not a failure" treatment: a
-    # `skipped` finding alone must not invite an override.
-    has_failing_gate = any(g.get("status") in ("fail", "error") for g in output_gates)
+    # gate_view/has_blocking_gate are the ONE classifier every surface reads
+    # (approve_stage, the per-gate tag, and the page-level flag) -- see
+    # classify_gates's docstring. A never-ran gate is blocking; only an
+    # explicit "pass" is not. classify_gates assumes a list of dicts;
+    # approval_service.approve_stage validates that shape before it ever gets
+    # here and raises a 409 on anything else, but a re-render via
+    # _stage_conflict (this exact malformed-gates case, via approve_stage's
+    # ValueError) re-reads the same frontmatter independently, so this must
+    # not trust the shape either -- fail-closed (blocking, not a 500).
+    if isinstance(output_gates, list) and all(isinstance(g, dict) for g in output_gates):
+        gate_view = classify_gates(stage_id, output_gates)
+    else:
+        gate_view = [{
+            "name": None, "state": "malformed", "status_raw": output_gates,
+            "blocking": True, "findings": [],
+        }]
+    has_blocking_gate = any(g["blocking"] for g in gate_view)
 
     transcript = _load_transcript(stage_dir)
     stage_rows = db_mod.list_stages(request.app.state.conn, project_id)
     nav = build_stage_nav(stage_defs, stage_rows)
 
+    return {
+        "project": project, "stage_id": stage_id, "stage_status": stage_row["status"],
+        "input_body": input_body, "input_html": input_html,
+        "grounding_input_body": grounding_input_body, "grounding_input_html": grounding_input_html,
+        "output_body": output_body, "output_html": output_html,
+        "output_gates": output_gates, "gate_view": gate_view,
+        "has_blocking_gate": has_blocking_gate,
+        "transcript": transcript, "nav": nav,
+        "active_nav": "projects",
+        "cli_available": request.app.state.cli_available,
+        "error_banner": error_banner,
+    }
+
+
+def _stage_conflict(request: Request, project_id: int, stage_id: str, message: str,
+                     *, kind: str = "conflict", status_code: int = 409):
+    """E-04: an expected failure returns the page it came from, with a banner --
+    same status code, recoverable UI. PlainTextResponse threw away the header,
+    the nav, the form and any typed content."""
+    context = _stage_context(request, project_id, stage_id,
+                              error_banner={"kind": kind, "message": message})
     return request.app.state.templates.TemplateResponse(
-        request, "stage.html",
-        {
-            "project": project, "stage_id": stage_id, "stage_status": stage_row["status"],
-            "input_body": input_body, "input_html": input_html,
-            "grounding_input_body": grounding_input_body, "grounding_input_html": grounding_input_html,
-            "output_body": output_body, "output_html": output_html,
-            "output_gates": output_gates, "has_failing_gate": has_failing_gate,
-            "transcript": transcript, "nav": nav,
-            "active_nav": "projects",
-            "cli_available": request.app.state.cli_available,
-        },
+        request, "stage.html", context, status_code=status_code
+    )
+
+
+@router.get("/projects/{project_id}/stages/{stage_id}", response_class=HTMLResponse)
+def stage_page(request: Request, project_id: int, stage_id: str):
+    return request.app.state.templates.TemplateResponse(
+        request, "stage.html", _stage_context(request, project_id, stage_id)
     )
 
 
@@ -143,9 +172,9 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
     # StreamingResponse body generator is first iterated, by which point a
     # 200 and SSE headers are already committed.
     if is_locked_or_running(stage_row["status"]):
-        return PlainTextResponse(
+        return _stage_conflict(
+            request, project_id, stage_id,
             f"Stage '{stage_id}' is {stage_row['status']} and cannot accept chat messages yet.",
-            status_code=409,
         )
     conn = request.app.state.conn
     repo_root = request.app.state.repo_root
@@ -160,7 +189,9 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
     # explicit "already running" error. Checking here lets a concurrent
     # request get a clean 409 with no response ever started.
     if turn_service.any_turn_running(conn):
-        return PlainTextResponse("Another stage turn is already running.", status_code=409)
+        return _stage_conflict(
+            request, project_id, stage_id, "Another stage turn is already running."
+        )
 
     grounding_pointer = None
     if project["brand"] == "raisinggoodsports" and stage_id != "grounding":
@@ -230,7 +261,7 @@ def approve_stage_route(
         # Nothing to approve yet, the locked/running invariant, or a failing
         # gate -- approval_service raises for all three; an explicit conflict
         # state, never a 500.
-        return PlainTextResponse(str(exc), status_code=409)
+        return _stage_conflict(request, project_id, stage_id, str(exc))
     return RedirectResponse(url=f"/projects/{project_id}/stages/{stage_id}", status_code=303)
 
 
@@ -238,14 +269,14 @@ def approve_stage_route(
 def edit_stage_output_route(request: Request, project_id: int, stage_id: str, body: str = Form(...)):
     project, stage_def, stage_row = _resolve_project_stage(request, project_id, stage_id)
     if stage_id == "grounding":
-        return PlainTextResponse(
+        return _stage_conflict(
+            request, project_id, stage_id,
             "Grounding's output lives in rgs-briefs/ -- edit that file directly, not through this app.",
-            status_code=409,
         )
     if is_locked_or_running(stage_row["status"]):
-        return PlainTextResponse(
+        return _stage_conflict(
+            request, project_id, stage_id,
             f"Stage '{stage_id}' is {stage_row['status']} and cannot be edited yet.",
-            status_code=409,
         )
     conn = request.app.state.conn
     repo_root = request.app.state.repo_root
@@ -272,7 +303,7 @@ def edit_stage_output_route(request: Request, project_id: int, stage_id: str, bo
             message=f"hand edit of '{stage_id}' aborted: {exc}",
             detail={"project_id": project_id, "stage_id": stage_id},
         )
-        return PlainTextResponse(str(exc), status_code=409)
+        return _stage_conflict(request, project_id, stage_id, str(exc))
     finally:
         scratch.unlink(missing_ok=True)
 

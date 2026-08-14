@@ -24,6 +24,32 @@ def client(tmp_path: Path, monkeypatch):
     return TestClient(app, follow_redirects=False), tmp_path, app
 
 
+@pytest.fixture
+def two_stage_client(tmp_path: Path, monkeypatch):
+    """ideation -> scripting, mirroring test_routes_approve_edit.py's fixture
+    of the same name (not shared/importable across the two test files -- see
+    task 19's brief)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n"
+        "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n"
+        "    depends_on: [ideation]\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    return TestClient(app, follow_redirects=False), tmp_path, app
+
+
+def _new_project(test_client, app, tmp_path: Path, slug="abc", brand="generic"):
+    resp = test_client.post("/projects", data={"slug": slug, "brand": brand})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    return project_id, tmp_path / "runs" / project["run_id"]
+
+
 def test_stage_page_shows_input_output_and_transcript(client):
     test_client, tmp_path, app = client
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
@@ -447,3 +473,65 @@ def test_stage_page_renders_markdown_as_html_not_raw_text(client):
     assert "<h2>Concept Brief</h2>" in page.text
     assert "<li>angle: contrarian</li>" in page.text
     assert "## Concept Brief" not in page.text
+
+
+def test_a_gate_block_re_renders_the_stage_page_with_a_banner(two_stage_client):
+    """E-04: eight operator-reachable error states navigated the browser to an
+    unstyled text document with no header, no nav, no back link and no form to
+    retry from. Recovery was browser-back in every case. Keep the status codes;
+    return the page."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    assert test_client.post(f"/projects/{project_id}/stages/ideation/approve").status_code == 303
+
+    artifacts.write_artifact(
+        run_dir / "02-scripting", 1,
+        {
+            "schema_version": 1, "stage": "shorts-scripting", "version": 1, "status": "draft",
+            "gates": [{"name": "gate_d_script_language", "status": "fail", "findings": [
+                {"check": "D1", "beat": "HOOK", "message": "em-dash in VO line", "kind": "fail"},
+            ]}],
+        },
+        "script body",
+    )
+
+    resp = test_client.post(f"/projects/{project_id}/stages/scripting/approve")
+    assert resp.status_code == 409
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "gate_d_script_language" in resp.text        # the page, not a text file
+    assert 'name="override_reason"' in resp.text        # a way forward from here
+    assert "error-banner" in resp.text
+
+
+def test_a_locked_stage_edit_re_renders_with_a_banner(two_stage_client):
+    """409 + text/html + 'error-banner', for the edit route's locked-stage
+    guard. scripting depends_on: [ideation], which hasn't been approved, so
+    scripting is still locked."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, _run_dir = _new_project(test_client, app, tmp_path)
+
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/scripting/edit", data={"body": "sneaky edit"}
+    )
+    assert resp.status_code == 409
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "error-banner" in resp.text
+    assert "locked" in resp.text
+
+
+def test_the_grounding_edit_refusal_keeps_its_message(client):
+    """409 + 'rgs-briefs' still present in the rendered page, for the
+    grounding edit refusal specifically (use the existing `client` fixture,
+    which already declares a `grounding` stage)."""
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "rgs", "brand": "raisinggoodsports"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/grounding/edit", data={"body": "hand-edited text"}
+    )
+    assert resp.status_code == 409
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "error-banner" in resp.text
+    assert "rgs-briefs" in resp.text
