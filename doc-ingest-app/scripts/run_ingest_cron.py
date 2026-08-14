@@ -18,7 +18,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from doc_ingest import db, jobs, sync, worker
+from doc_ingest import db, jobs, manifest, sync, worker
 from doc_ingest.config import load_config
 
 
@@ -69,6 +69,12 @@ def run_once(db_path: Path, cfg) -> None:
             futures = [pool.submit(_run_one_worker, db_path, cfg) for _ in range(cfg.worker_pool_size)]
             for future in futures:
                 future.result()
+
+    manifest_conn = db.get_connection(db_path)
+    try:
+        manifest.regenerate(manifest_conn, cfg.output_root)
+    finally:
+        manifest_conn.close()
 
 
 def main(argv: list[str] | None = None) -> int:
