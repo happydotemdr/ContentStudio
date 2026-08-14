@@ -1,0 +1,123 @@
+"""doc-ingest-app's own schema, connection factory, and transaction boundary.
+Reimplemented rather than imported from pipeline_app/db.py, deliberately: the
+two apps share no database and no code (spec §3), and this app's concurrency
+model -- one SQLite connection per worker, never shared across threads -- is
+simpler than pipeline_app's shared-connection design and does not need its
+cross-thread commit-suppression machinery. See db.transaction (Task 3) for
+the one-paragraph version of that reasoning."""
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS source_files (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    rel_path            TEXT NOT NULL UNIQUE,
+    extension           TEXT NOT NULL,
+    sniffed_signature   TEXT,
+    classification      TEXT NOT NULL CHECK (classification IN
+        ('convertible','catalog_only','excluded_media','gdoc_pointer','blocked_unknown','missing')),
+    size_bytes          INTEGER,
+    mtime               TEXT,
+    content_hash        TEXT,
+    doc_id              TEXT,
+    resource_key        TEXT,
+    drive_modified_time TEXT,
+    drive_mime_type     TEXT,
+    first_seen_at       TEXT NOT NULL,
+    last_seen_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_files_classification ON source_files(classification);
+
+CREATE TABLE IF NOT EXISTS conversion_jobs (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_file_id                  INTEGER NOT NULL REFERENCES source_files(id) ON DELETE CASCADE,
+    status                          TEXT NOT NULL CHECK (status IN
+        ('pending','claimed','converting','placing','complete','failed')),
+    worker_id                       TEXT,
+    claimed_at                      TEXT,
+    heartbeat_at                    TEXT,
+    finished_at                     TEXT,
+    failure_reason                  TEXT,
+    tmp_dir                         TEXT,
+    source_hash_at_attempt          TEXT,
+    drive_modified_time_at_attempt  TEXT,
+    created_at                      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversion_jobs_status ON conversion_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_conversion_jobs_source_file ON conversion_jobs(source_file_id);
+
+CREATE TABLE IF NOT EXISTS conversions (
+    id                                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_file_id                     INTEGER NOT NULL REFERENCES source_files(id) ON DELETE CASCADE,
+    job_id                             INTEGER REFERENCES conversion_jobs(id) ON DELETE SET NULL,
+    version_number                     INTEGER NOT NULL,
+    output_path                        TEXT NOT NULL,
+    status                             TEXT NOT NULL CHECK (status IN ('current','superseded')),
+    source_type                        TEXT NOT NULL CHECK (source_type IN
+        ('pdf','docx','xlsx','gdoc','gsheet','txt','md','ppt')),
+    source_hash_at_conversion          TEXT,
+    drive_modified_time_at_conversion  TEXT,
+    conversion_tool                    TEXT NOT NULL CHECK (conversion_tool IN
+        ('firecrawl-parse','google-docs-export','google-docs-export-docx-fallback',
+         'google-sheets-export','passthrough')),
+    converted_at                       TEXT NOT NULL,
+    gauntlet_passed_at                 TEXT,
+    locked_confirmed_at                TEXT,
+    page_count                         INTEGER,
+    word_count                         INTEGER,
+    sheet_count                        INTEGER,
+    row_count_total                    INTEGER,
+    UNIQUE(source_file_id, version_number)
+);
+CREATE INDEX IF NOT EXISTS idx_conversions_status ON conversions(status);
+CREATE INDEX IF NOT EXISTS idx_conversions_converted_at ON conversions(converted_at);
+CREATE INDEX IF NOT EXISTS idx_conversions_source_type ON conversions(source_type);
+
+CREATE TABLE IF NOT EXISTS events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              TEXT NOT NULL,
+    event_type      TEXT NOT NULL,
+    source_file_id  INTEGER REFERENCES source_files(id) ON DELETE SET NULL,
+    conversion_id   INTEGER REFERENCES conversions(id) ON DELETE SET NULL,
+    details_json    TEXT
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS conversions_fts USING fts5(
+    conversion_id UNINDEXED,
+    source_rel_path,
+    output_path UNINDEXED,
+    body
+);
+"""
+
+SCHEMA_VERSION = 1
+
+
+def get_connection(db_path: Path) -> sqlite3.Connection:
+    """One connection per caller, never shared across threads (spec §5) --
+    check_same_thread stays at its default (True) on purpose, so an accidental
+    cross-thread use raises immediately instead of silently corrupting a
+    boundary the way a shared connection would."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def init_db(db_path: Path) -> sqlite3.Connection:
+    conn = get_connection(db_path)
+    conn.executescript(_SCHEMA)
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, ?)",
+        (SCHEMA_VERSION,),
+    )
+    return conn
