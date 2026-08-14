@@ -535,3 +535,52 @@ def test_the_grounding_edit_refusal_keeps_its_message(client):
     assert resp.headers["content-type"].startswith("text/html")
     assert "error-banner" in resp.text
     assert "rgs-briefs" in resp.text
+
+
+GATE_MATRIX = [
+    ("passing",     [{"name": "gate_d_script_language", "status": "pass", "findings": []}]),
+    ("failing",     [{"name": "gate_d_script_language", "status": "fail", "findings": []}]),
+    ("errored",     [{"name": "gate_d_script_language", "status": "error", "findings": []}]),
+    ("never_ran",   []),
+    ("wrong_gate",  [{"name": "gate_c_prompt_sheet", "status": "pass", "findings": []}]),
+    ("unknown",     [{"name": "gate_d_script_language", "status": "skipped", "findings": []}]),
+    ("no_status",   [{"name": "gate_d_script_language", "findings": []}]),
+    ("skipped_only", [{"name": "gate_d_script_language", "status": "pass",
+                      "findings": [{"check": "D5", "beat": "SETUP", "kind": "skipped",
+                                    "message": "no computable time range"}]}]),
+]
+
+
+@pytest.mark.parametrize("label,gates_block", GATE_MATRIX, ids=[c[0] for c in GATE_MATRIX])
+def test_the_page_flag_the_per_gate_tag_and_the_approve_decision_never_disagree(
+    two_stage_client, label, gates_block
+):
+    """E-03's real mechanism, closed structurally. A never-ran gate rendered as
+    a clean pass; the approve form rendered WITHOUT the override field; clicking
+    Approve returned a bare 409 with no path forward. P15 now renders
+    gate_view[].blocking as a per-gate tag and has_blocking_gate as the
+    page-level flag, so there are three surfaces that must agree. They all read
+    one classifier; this asserts it."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    assert test_client.post(f"/projects/{project_id}/stages/ideation/approve").status_code == 303
+    artifacts.write_artifact(
+        run_dir / "02-scripting", 1,
+        {"schema_version": 1, "stage": "shorts-scripting", "version": 1,
+         "status": "draft", "gates": gates_block},
+        "script body",
+    )
+
+    ctx = test_client.get(f"/projects/{project_id}/stages/scripting").context
+    page_flag = ctx["has_blocking_gate"]
+
+    assert page_flag == any(g["blocking"] for g in ctx["gate_view"])
+    approve = test_client.post(f"/projects/{project_id}/stages/scripting/approve")
+    assert (approve.status_code == 409) == page_flag, (
+        f"{label}: page says blocking={page_flag} but approve returned "
+        f"{approve.status_code}"
+    )
+    assert ('name="override_reason"' in test_client.get(
+        f"/projects/{project_id}/stages/scripting"
+    ).text) == page_flag
