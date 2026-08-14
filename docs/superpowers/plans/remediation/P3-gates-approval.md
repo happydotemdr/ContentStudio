@@ -1199,6 +1199,26 @@ def test_the_only_gate_c_divergence_is_the_empty_world_lock_input_error(tmp_path
       (`gates.py`) and record anything CLI-side in Handoff H1.
 - [ ] **Commit:** `test(gates): assert the CLI and app Gate C agree, and bound the one exception`
 
+> **Amendment (T7B dispatch, this session): `test_app_and_cli_gate_c_report_identical_findings`
+> needs a by-design carve-out for the P3-6 stray-world-lock message, or the `"failing"` case
+> breaks the moment T7B closes P3-6.** Confirmed empirically: `tests/fixtures/failing_sheet.md`
+> (paired with `passing_styleboard.md` in `DIFFERENTIAL_CASES`) carries its own stray `WORLD LOCK`
+> block. Before T7B, P3-6 was an unclosed gap and neither side emitted the stray-world-lock
+> finding for that pairing, so the full `(check, shot_index, message)` tuple equality this test
+> asserts never exercised it. Once T7B lands (correctly making both sides emit the finding), the
+> two messages differ **by design** — the CLI's says `"drop --styleboard"`, the app's says `"drop
+> the styleboard input"` (T7B's own brief mandates this wording split, since the app has no CLI
+> flag) — and the test's strict equality now fails on exactly the wording T7B was told to
+> introduce. This is not a real behavioral divergence; it is a test written before the wording
+> split existed. **Resolution:** normalize both sides' `PARSE`/stray-world-lock message before
+> comparing in `test_app_and_cli_gate_c_report_identical_findings` — e.g. `message.replace("the
+> styleboard input", "--styleboard")` (or an equivalent substring normalization) applied to both
+> `_app_findings` and `_cli_findings` output before the set equality check, so every other finding
+> still compares byte-for-byte and only this one documented wording split is tolerated. Do **not**
+> weaken the comparison for any other check id, and do not touch the new P3-6-specific test's own
+> substring assertion (already correctly scoped). T7B's own implementer found this and correctly
+> stopped rather than loosening the assertion unilaterally — this amendment is what unblocks it.
+
 ---
 
 ### T7B — Close the four confirmed parity gaps: PR1 / P3-1, P3-2, P3-3, P3-6
