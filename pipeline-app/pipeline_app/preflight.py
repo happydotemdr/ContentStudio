@@ -27,13 +27,42 @@ def _unwedge_stage(
     turn_id: int,
 ) -> None:
     stage_row = db_mod.get_stage_by_row_id(conn, stage_row_id)
-    if stage_row is None or stage_row["status"] != StageStatus.RUNNING.value:
+    if stage_row is None:
+        _skip(
+            conn, "stage-row-missing", severity="error",
+            message=f"turn {turn_id} orphaned but its stage_row {stage_row_id} no "
+                    f"longer exists; nothing to unwedge",
+            stage_row_id=stage_row_id, turn_id=turn_id,
+        )
+        return
+    if stage_row["status"] != StageStatus.RUNNING.value:
+        # The sweep's normal idempotency path, not a fault: another sweep (or
+        # this same one, on a re-run) already moved the stage off RUNNING, so
+        # there is nothing left to unwedge here.
+        _skip(
+            conn, "not-running", severity="info",
+            message=f"turn {turn_id} orphaned but stage_row {stage_row_id} is "
+                    f"already {stage_row['status']!r}, not running; no-op",
+            stage_row_id=stage_row_id, turn_id=turn_id, status=stage_row["status"],
+        )
         return
     stage_def = stage_defs_by_id.get(stage_row["stage_id"])
     if stage_def is None:
+        _skip(
+            conn, "stage-def-missing", severity="error",
+            message=f"turn {turn_id} orphaned on stage {stage_row['stage_id']!r}, "
+                    f"which is no longer in pipeline.yaml; stage stays wedged",
+            stage_row_id=stage_row_id, turn_id=turn_id, stage_id=stage_row["stage_id"],
+        )
         return
     project = db_mod.get_project(conn, stage_row["project_id"])
     if project is None:
+        _skip(
+            conn, "project-missing", severity="error",
+            message=f"turn {turn_id} orphaned on stage_row {stage_row_id} but its "
+                    f"project {stage_row['project_id']} no longer exists",
+            stage_row_id=stage_row_id, turn_id=turn_id, project_id=stage_row["project_id"],
+        )
         return
     run_dir = repo_root / "runs" / project["run_id"]
     stage_dir = run_dir / stage_dir_name(stage_def)
@@ -53,6 +82,13 @@ def _unwedge_stage(
                     "turn_id": turn_id, "artifact": latest.name},
         )
     _quarantine_raw_output(stage_dir)
+
+
+def _skip(conn: sqlite3.Connection, reason: str, *, severity: str, message: str, **detail) -> None:
+    obs.record_event(
+        conn, kind="preflight.unwedge_skipped", severity=severity, source="preflight",
+        message=message, detail={"reason": reason, **detail},
+    )
 
 
 def _quarantine_raw_output(stage_dir: Path) -> Path | None:

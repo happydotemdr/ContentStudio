@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -106,6 +107,103 @@ def test_the_dead_turns_raw_output_is_quarantined_not_left_as_the_next_baseline(
     quarantined = list(stage_dir.glob("raw_output.orphaned-*.md"))
     assert len(quarantined) == 1
     assert quarantined[0].read_text(encoding="utf-8") == "half a turn"
+
+
+def test_a_stage_id_no_longer_in_pipeline_yaml_is_reported(conn, tmp_path):
+    """F-28 FAULT: the three early returns each return None with no log. A stage
+    whose id was renamed or removed from pipeline.yaml stays wedged at RUNNING
+    across every restart, and the sweep reports nothing."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    stage_row_id = db.create_stage_row(conn, project_id, "removed-stage", "running")
+    db.create_turn(conn, stage_row_id, "running", "2026-07-25T12:00:00Z", "events/x.jsonl")
+
+    reconcile_orphaned_turns(conn, tmp_path, STAGE_DEFS)
+
+    row = conn.execute(
+        "SELECT * FROM events WHERE kind = 'preflight.unwedge_skipped'"
+    ).fetchone()
+    assert row is not None
+    assert row["severity"] == "error"
+    assert "removed-stage" in row["message"]
+    assert db.get_stage_by_row_id(conn, stage_row_id)["status"] == "running"
+
+
+def test_an_unwedge_skip_is_distinguishable_from_a_successful_unwedge(conn, tmp_path):
+    """F-28 DISTINGUISHABILITY: a swept stage and a stage the sweep could not
+    touch both left the function returning None."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "running")
+    db.create_turn(conn, stage_row_id, "running", "2026-07-25T12:00:00Z", "events/x.jsonl")
+
+    reconcile_orphaned_turns(conn, tmp_path, STAGE_DEFS)
+
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM events WHERE kind = 'preflight.unwedge_skipped'"
+    ).fetchone()["c"] == 0
+
+
+def test_a_stage_already_moved_off_running_is_an_info_level_no_op(conn, tmp_path):
+    """The sweep's normal idempotency path (e.g. two sweeps racing, or a stage
+    already unwedged by a previous pass): the turn row is still 'running' but
+    its owning stage row has already moved off RUNNING. This is reachable
+    through the public entrypoint because list_running_turns reads `turns`
+    only -- it never joins back to `stages` -- so nothing stops a running turn
+    from pointing at a stage row that is no longer RUNNING. Not an error: the
+    stage did not get stuck, so this must not be reported at the same
+    severity as the three genuinely-broken cases."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "ready")
+    db.create_turn(conn, stage_row_id, "running", "2026-07-25T12:00:00Z", "events/x.jsonl")
+
+    reconcile_orphaned_turns(conn, tmp_path, STAGE_DEFS)
+
+    row = conn.execute(
+        "SELECT * FROM events WHERE kind = 'preflight.unwedge_skipped'"
+    ).fetchone()
+    assert row is not None
+    assert row["severity"] == "info"
+    assert json.loads(row["detail"])["reason"] == "not-running"
+    assert db.get_stage_by_row_id(conn, stage_row_id)["status"] == "ready"
+
+
+@pytest.mark.parametrize("reason", ["stage-row-missing", "stage-def-missing", "project-missing"])
+def test_each_defensive_return_names_which_one_fired(conn, tmp_path, reason):
+    """F-28 SURFACING: three different causes, three different fixes. Each is
+    constructed through the public `reconcile_orphaned_turns` entrypoint, not
+    by calling `_unwedge_stage` directly -- `stage-row-missing` and
+    `project-missing` both need a running turn whose FK target has since been
+    removed out from under it, which the schema only allows with foreign-key
+    enforcement briefly toggled off (a real, if rare, way for a row to end up
+    orphaned: e.g. a manual DB repair, or a bulk delete run before this
+    project turned enforcement on)."""
+    if reason == "stage-row-missing":
+        project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+        stage_row_id = db.create_stage_row(conn, project_id, "ideation", "running")
+        db.create_turn(conn, stage_row_id, "running", "2026-07-25T12:00:00Z", "events/x.jsonl")
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DELETE FROM stages WHERE id = ?", (stage_row_id,))
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = ON")
+    elif reason == "stage-def-missing":
+        project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+        stage_row_id = db.create_stage_row(conn, project_id, "removed-stage", "running")
+        db.create_turn(conn, stage_row_id, "running", "2026-07-25T12:00:00Z", "events/x.jsonl")
+    else:  # "project-missing"
+        project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+        stage_row_id = db.create_stage_row(conn, project_id, "ideation", "running")
+        db.create_turn(conn, stage_row_id, "running", "2026-07-25T12:00:00Z", "events/x.jsonl")
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = ON")
+
+    reconcile_orphaned_turns(conn, tmp_path, STAGE_DEFS)
+
+    row = conn.execute(
+        "SELECT detail FROM events WHERE kind = 'preflight.unwedge_skipped'"
+    ).fetchone()
+    assert row is not None
+    assert json.loads(row["detail"])["reason"] == reason
 
 
 def test_check_cli_available_true_when_binary_found():
