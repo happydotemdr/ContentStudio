@@ -1,5 +1,6 @@
 import datetime
 import json
+from html.parser import HTMLParser
 
 import markdown
 from fastapi import APIRouter, Form, HTTPException, Request
@@ -19,6 +20,98 @@ from pipeline_app.pipeline_config import build_stage_nav, stage_dir_name
 from pipeline_app.state_machine import is_locked_or_running
 
 router = APIRouter()
+
+# Allowlist, not a denylist (per the amendment to T21's brief): a denylist of
+# "dangerous" tags misses whatever nobody thought of, but markdown.markdown()
+# only ever emits from a small, known vocabulary, so enumerating that
+# vocabulary is exhaustive by construction, not by vigilance.
+_ALLOWED_TAGS = frozenset({
+    "p", "br", "hr",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "ul", "ol", "li",
+    "strong", "em", "b", "i", "a", "code", "pre", "blockquote",
+    "table", "thead", "tbody", "tr", "th", "td",
+    "img",
+})
+# Self-closing/void elements in the allowlist -- HTMLParser reports these via
+# handle_startendtag or a start tag with no matching end tag, so they must
+# never be pushed onto the "wait for matching close" stack below.
+_VOID_TAGS = frozenset({"br", "hr", "img"})
+
+
+class _HTMLSanitizer(HTMLParser):
+    """Stdlib-only allowlist sanitizer for `markdown.markdown()` output.
+
+    Artifact bodies are model-generated and hand-editable text that becomes
+    HTML rendered with Jinja's `| safe` -- untrusted by construction. This
+    walks the parse tree rather than regexing tags, so a `<script>` split
+    across attributes or an `onerror=` spelled with mixed case still gets
+    caught (regex-based stripping is exactly the kind of denylist this
+    amendment rejects)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._out = []
+        self._skip_depth = 0  # >0 while inside a <script> (or nested one)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script":
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        if tag not in _ALLOWED_TAGS:
+            return  # drop the tag, keep its text content (handled by handle_data)
+        safe_attrs = [
+            (name, value) for name, value in attrs
+            if not name.lower().startswith("on")
+        ]
+        attr_str = "".join(f' {name}="{value}"' for name, value in safe_attrs if value is not None)
+        self._out.append(f"<{tag}{attr_str}>")
+
+    def handle_startendtag(self, tag, attrs):
+        if tag == "script" or self._skip_depth:
+            return
+        if tag not in _ALLOWED_TAGS:
+            return
+        safe_attrs = [
+            (name, value) for name, value in attrs
+            if not name.lower().startswith("on")
+        ]
+        attr_str = "".join(f' {name}="{value}"' for name, value in safe_attrs if value is not None)
+        self._out.append(f"<{tag}{attr_str} />")
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
+        if self._skip_depth:
+            return
+        if tag in _ALLOWED_TAGS and tag not in _VOID_TAGS:
+            self._out.append(f"</{tag}>")
+
+    def handle_data(self, data):
+        if not self._skip_depth:
+            self._out.append(data)
+
+    def get_html(self) -> str:
+        return "".join(self._out)
+
+
+def _sanitize_html(html: str) -> str:
+    sanitizer = _HTMLSanitizer()
+    sanitizer.feed(html)
+    sanitizer.close()
+    return sanitizer.get_html()
+
+
+def _render(body: str | None) -> str | None:
+    """Markdown -> sanitized HTML. Artifact bodies are model-generated and
+    hand-editable, so `markdown.markdown` output is untrusted by construction:
+    a raw <script> or an onerror= attribute in a pasted prompt sheet reaches the
+    template's `| safe` otherwise. Sanitizing at the PRODUCER means a new
+    consumer (an htmx fragment, a partial, a future panel) cannot forget."""
+    return _sanitize_html(markdown.markdown(body)) if body else None
 
 
 def _load_transcript(stage_dir):
@@ -74,16 +167,30 @@ def _stage_context(request: Request, project_id: int, stage_id: str, *, error_ba
     run_dir = request.app.state.repo_root / "runs" / project["run_id"]
     stage_dir = run_dir / stage_dir_name(stage_def)
 
-    input_sections = []
+    # One card per DECLARED dependency, present or not (E-05). Concatenating only
+    # the ones that resolved made a partial input look complete.
+    inputs = []
     for dep_id in stage_def.depends_on:
         up_def = next(s for s in stage_defs if s.id == dep_id)
-        up_dir = run_dir / stage_dir_name(up_def)
-        up_latest = artifacts.latest_artifact_path(up_dir)
+        up_latest = artifacts.latest_artifact_path(run_dir / stage_dir_name(up_def))
+        body = None
         if up_latest is not None:
-            _, dep_body = artifacts.parse_frontmatter(up_latest.read_text(encoding="utf-8"))
-            input_sections.append(f"## From {dep_id}\n\n{dep_body}")
-    input_body = "\n\n---\n\n".join(input_sections) if input_sections else None
-    input_html = markdown.markdown(input_body) if input_body else None
+            _, body = artifacts.parse_frontmatter(up_latest.read_text(encoding="utf-8"))
+        inputs.append({
+            "stage_id": dep_id,
+            "present": up_latest is not None,
+            "malformed": False,          # set by a later task's MalformedArtifactError handler
+            "artifact": up_latest.name if up_latest is not None else None,
+            "body": body,                # raw source text -- never rendered via `| safe`
+            "html": _render(body),       # sanitized at the producer
+        })
+    # Keep input_body/input_html populated for one release: a later package's
+    # task migrates the template off them, but any template code not yet
+    # updated to read `inputs` must still work.
+    input_body = "\n\n---\n\n".join(
+        f"## From {i['stage_id']}\n\n{i['body']}" for i in inputs if i["present"]
+    ) or None
+    input_html = _render(input_body)
 
     # Grounding is an optional RGS companion, not a formal `depends_on` --
     # the chat/turn_service path already hands it to the AI via
@@ -99,7 +206,7 @@ def _stage_context(request: Request, project_id: int, stage_id: str, *, error_ba
             _, grounding_input_body = artifacts.parse_frontmatter(
                 grounding_path.read_text(encoding="utf-8")
             )
-    grounding_input_html = markdown.markdown(grounding_input_body) if grounding_input_body else None
+    grounding_input_html = _render(grounding_input_body)
 
     output_body = None
     output_gates = []
@@ -108,7 +215,7 @@ def _stage_context(request: Request, project_id: int, stage_id: str, *, error_ba
     if latest is not None:
         output_meta, output_body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
         output_gates = output_meta.get("gates") or []
-    output_html = markdown.markdown(output_body) if output_body else None
+    output_html = _render(output_body)
     # gate_view/has_blocking_gate are the ONE classifier every surface reads
     # (approve_stage, the per-gate tag, and the page-level flag) -- see
     # classify_gates's docstring. A never-ran gate is blocking; only an
@@ -142,7 +249,7 @@ def _stage_context(request: Request, project_id: int, stage_id: str, *, error_ba
 
     return {
         "project": project, "stage_id": stage_id, "stage_status": stage_row["status"],
-        "input_body": input_body, "input_html": input_html,
+        "input_body": input_body, "input_html": input_html, "inputs": inputs,
         "grounding_input_body": grounding_input_body, "grounding_input_html": grounding_input_html,
         "output_body": output_body, "output_html": output_html,
         "output_gates": output_gates, "gate_view": gate_view,

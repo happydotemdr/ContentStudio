@@ -368,6 +368,123 @@ def test_stage_page_shows_all_upstream_inputs_not_just_first(tmp_path: Path, mon
     assert "visual prompt sheet text" in page.text
 
 
+def test_a_missing_upstream_artifact_is_reported_not_dropped(tmp_path: Path, monkeypatch):
+    """E-05 FAULT: the `if up_latest is not None` guard skipped an absent
+    dependency and the panel rendered the rest with no gap indicated. 'No
+    upstream input.' appeared only when EVERY dependency was missing, so the
+    operator reviewed a partial input believing it complete -- and the same
+    partial context is what the turn was actually given."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: voiceover\n    skill: voiceover-brief\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "  - id: visual\n    skill: visual-prompts\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "  - id: assembly\n    skill: shorts-assembly\n    dir_prefix: \"04\"\n"
+        "    depends_on: [voiceover, visual]\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+
+    # Only "voiceover" has an artifact; "visual" has none.
+    artifacts.write_artifact(run_dir / "03-voiceover", 1, {"stage": "voiceover-brief"}, "voiceover brief text")
+
+    ctx = test_client.get(f"/projects/{project_id}/stages/assembly").context
+    assert [i["stage_id"] for i in ctx["inputs"]] == ["voiceover", "visual"]
+    assert [i["present"] for i in ctx["inputs"]] == [True, False]
+
+
+def test_a_missing_upstream_is_distinguishable_from_an_empty_one(tmp_path: Path, monkeypatch):
+    """E-05 DISTINGUISHABILITY: an upstream artifact with an empty body and an
+    upstream artifact that does not exist are different facts."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: voiceover\n    skill: voiceover-brief\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "  - id: visual\n    skill: visual-prompts\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "  - id: assembly\n    skill: shorts-assembly\n    dir_prefix: \"04\"\n"
+        "    depends_on: [voiceover, visual]\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+
+    # "voiceover" has an artifact with an EMPTY body; "visual" has no artifact.
+    artifacts.write_artifact(run_dir / "03-voiceover", 1, {"stage": "voiceover-brief"}, "")
+
+    ctx = test_client.get(f"/projects/{project_id}/stages/assembly").context
+    by_id = {i["stage_id"]: i for i in ctx["inputs"]}
+    assert by_id["voiceover"]["present"] is True
+    assert by_id["voiceover"]["body"] == ""
+    assert by_id["visual"]["present"] is False
+    assert by_id["visual"]["body"] is None
+
+
+def test_every_declared_dependency_appears_even_when_all_are_missing(tmp_path: Path, monkeypatch):
+    """E-05 SURFACING: the human-reachable signal is one card per declared
+    dependency, always."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: voiceover\n    skill: voiceover-brief\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "  - id: visual\n    skill: visual-prompts\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "  - id: assembly\n    skill: shorts-assembly\n    dir_prefix: \"04\"\n"
+        "    depends_on: [voiceover, visual]\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    ctx = test_client.get(f"/projects/{project_id}/stages/assembly").context
+    assert len(ctx["inputs"]) == 2
+    assert all(not i["present"] for i in ctx["inputs"])
+
+
+def test_a_script_tag_in_an_upstream_artifact_does_not_reach_the_context(tmp_path: Path, monkeypatch):
+    """Artifact bodies are model-generated and hand-editable; stage.html renders
+    inputs[].html through `| safe`. Sanitize at the producer so no consumer has
+    to remember."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: voiceover\n    skill: voiceover-brief\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "  - id: assembly\n    skill: shorts-assembly\n    dir_prefix: \"04\"\n"
+        "    depends_on: [voiceover]\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+
+    artifacts.write_artifact(
+        run_dir / "03-voiceover", 1, {"stage": "voiceover-brief"},
+        "<script>alert(1)</script>\n\nnormal text",
+    )
+    # The assembly stage's own output also carries the same hazard.
+    artifacts.write_artifact(
+        run_dir / "04-assembly", 1, {"stage": "shorts-assembly"},
+        "<script>alert(2)</script>\n\noutput text",
+    )
+
+    ctx = test_client.get(f"/projects/{project_id}/stages/assembly").context
+    assert "<script>" not in ctx["inputs"][0]["html"]
+    assert "normal text" in ctx["inputs"][0]["html"]
+    assert "<script>" not in ctx["output_html"]
+
+
 def test_stage_page_renders_gate_results_and_override_field(tmp_path: Path, monkeypatch):
     """Finding 2a: the stage page must render the latest artifact's `gates`
     entries -- name, status, and each finding's check/beat/message/kind -- so
@@ -564,13 +681,11 @@ def test_grounding_never_offers_the_hand_edit_form(client):
     assert ctx["edit_blocked_reason"]
 
 
-# "inputs" is T21's key, not this task's -- see task-20 brief and report for
-# why it's excluded here rather than added early.
 PUBLISHED_CONTEXT_KEYS = frozenset({
     "gate_view", "has_blocking_gate", "gate_override", "gate_overrides",
     "artifact_version", "artifact_created_at", "artifact_finalized_at",
     "edit_allowed", "edit_blocked_reason", "edit_action", "edit_field",
-    "error_banner",
+    "error_banner", "inputs",
 })
 
 
