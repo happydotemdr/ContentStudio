@@ -1067,3 +1067,68 @@ def test_the_page_flag_the_per_gate_tag_and_the_approve_decision_never_disagree(
     assert ('name="override_reason"' in test_client.get(
         f"/projects/{project_id}/stages/scripting"
     ).text) == page_flag
+
+
+def test_a_never_ran_gate_is_visible_on_the_page_not_just_in_the_context(two_stage_client):
+    """I1: `output_gates == []` synthesizes a `never_ran` entry in `gate_view`
+    (has_blocking_gate is True), but the old template rendered its Gates panel
+    from `output_gates` -- an empty list means an empty panel, so a never-ran
+    gate's override field appeared with no visible row explaining why. The
+    template must read `gate_view`, which is non-empty even here."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    assert test_client.post(f"/projects/{project_id}/stages/ideation/approve").status_code == 303
+    artifacts.write_artifact(
+        run_dir / "02-scripting", 1,
+        {"schema_version": 1, "stage": "shorts-scripting", "version": 1,
+         "status": "draft", "gates": []},
+        "script body",
+    )
+
+    page = test_client.get(f"/projects/{project_id}/stages/scripting")
+    assert page.status_code == 200
+    assert "gate_d_script_language" in page.text
+    assert "never_ran" in page.text
+
+
+def test_a_malformed_gates_value_shows_a_sensible_notice_not_garbage(two_stage_client):
+    """I1: a malformed `gates` value (a string instead of a list) makes
+    `_stage_context` synthesize a single `{"name": None, "state": "malformed",
+    ...}` entry -- the old template, iterating `output_gates` directly, would
+    have iterated the STRING's characters instead (Jinja treats a string as an
+    iterable of one-character strings) and rendered an empty `status-` span per
+    character. The new template must show one sensible row, naming no gate and
+    stating "malformed", never a wall of empty spans."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    assert test_client.post(f"/projects/{project_id}/stages/ideation/approve").status_code == 303
+    artifacts.write_artifact(
+        run_dir / "02-scripting", 1,
+        {"schema_version": 1, "stage": "shorts-scripting", "version": 1,
+         "status": "draft", "gates": "not-a-list"},
+        "script body",
+    )
+
+    page = test_client.get(f"/projects/{project_id}/stages/scripting")
+    assert page.status_code == 200
+    assert "malformed" in page.text
+    assert 'class="status "' not in page.text
+    assert page.text.count('status-') < 5
+
+
+def test_a_missing_dependency_names_the_stage_id_and_says_missing(two_stage_client):
+    """I1/E-05: `inputs` already carries one card per declared dependency, present
+    or not, but the old template rendered from `input_html`, which silently
+    concatenates only the PRESENT ones -- a missing upstream dependency was
+    invisible rather than reported. scripting depends_on [ideation]; approving
+    scripting's own edit route is blocked while ideation is unapproved, but the
+    stage page itself (a GET) must still show the missing-dependency card."""
+    test_client, tmp_path, app = two_stage_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+
+    page = test_client.get(f"/projects/{project_id}/stages/scripting")
+    assert page.status_code == 200
+    assert "ideation" in page.text
+    assert "no input yet from ideation" in page.text
