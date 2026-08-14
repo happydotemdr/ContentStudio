@@ -315,5 +315,6 @@ def edit_stage_output_route(request: Request, project_id: int, stage_id: str, bo
     # now exists (even if the stage had already been approved).
     turn_service.propagate_staleness(conn, run_dir, stage_defs, project_id, stage_id)
     db_mod.update_stage_status(conn, stage_row["id"], "awaiting_review")
+    approval_service.relock_unsatisfied_dependents(conn, run_dir, stage_defs, project_id)
 
     return RedirectResponse(url=f"/projects/{project_id}/stages/{stage_id}", status_code=303)

@@ -544,6 +544,82 @@ def visual_client(tmp_path: Path, monkeypatch):
     return TestClient(app, follow_redirects=False), tmp_path, app
 
 
+def _approve_scripting(test_client, project_id):
+    """The fixture's scripting artifacts are written straight to disk with no
+    `gates` key, which GATE_REGISTRY's gate_d_script_language then reports as
+    never-ran and blocking -- the same override route every other hand-edit
+    test in this module takes for a fixture body that isn't real gate input."""
+    return test_client.post(
+        f"/projects/{project_id}/stages/scripting/approve",
+        data={"override_reason": "test fixture body is not real script-language-gate input"},
+    )
+
+
+def test_hand_editing_an_approved_stage_relocks_a_dependent_with_no_artifact(visual_client):
+    """A-45 FAULT."""
+    test_client, tmp_path, app = visual_client
+    _install_real_script_linter(tmp_path)
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(run_dir / "02-scripting", 1, {"stage": "shorts-scripting"}, "script v1")
+    assert _approve_scripting(test_client, project_id).status_code in (200, 303, 307)
+    assert db.get_stage(app.state.conn, project_id, "styleboard")["status"] == "ready"
+    test_client.post(f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT})
+    assert db.get_stage(app.state.conn, project_id, "styleboard")["status"] == "locked"
+
+
+def test_a_dependent_that_has_its_own_artifact_goes_stale_rather_than_locked(visual_client):
+    """A-45 DISTINGUISHABILITY: 'you cannot start this yet' and 'what you already
+    made is out of date' are different states and must not collapse into one.
+    Locking a stage that has output would hide the output."""
+    test_client, tmp_path, app = visual_client
+    _install_real_script_linter(tmp_path)
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    scripting_dir = run_dir / "02-scripting"
+    artifacts.write_artifact(scripting_dir, 1, {"stage": "shorts-scripting"}, "script v1")
+    assert _approve_scripting(test_client, project_id).status_code in (200, 303, 307)
+    # depends_on must record scripting's actual v1 hash, or propagate_staleness's
+    # is_stale check (no recorded deps -> vacuously not stale) never fires and
+    # this test can't tell the relock behaviour from a no-op (mirrors the
+    # two_stage_client fixtures above that build depends_on by hand for the
+    # same reason).
+    artifacts.write_artifact(
+        run_dir / "02b-styleboard", 1,
+        {
+            "stage": "shorts-styleboard",
+            "depends_on": [{
+                "path": "02-scripting/artifact.v1.md",
+                "sha256": artifacts.compute_sha256(scripting_dir / "artifact.v1.md"),
+            }],
+        },
+        "styleboard v1",
+    )
+    approve_resp = test_client.post(
+        f"/projects/{project_id}/stages/styleboard/approve",
+        data={"override_reason": "test fixture body carries no real gate result"},
+    )
+    assert approve_resp.status_code in (200, 303, 307)
+    test_client.post(f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT})
+    row = db.get_stage(app.state.conn, project_id, "styleboard")
+    assert row["status"] == "stale"
+    assert (run_dir / "02b-styleboard" / "artifact.v1.md").exists()
+
+
+def test_a_relock_is_recorded_as_an_event(visual_client):
+    """A-45 SURFACING: a stage silently reverting to `locked` under the operator
+    is exactly the kind of state change that needs a row."""
+    test_client, tmp_path, app = visual_client
+    _install_real_script_linter(tmp_path)
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(run_dir / "02-scripting", 1, {"stage": "shorts-scripting"}, "script v1")
+    assert _approve_scripting(test_client, project_id).status_code in (200, 303, 307)
+    test_client.post(f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT})
+    row = app.state.conn.execute(
+        "SELECT kind, severity FROM events WHERE kind = 'stage.relocked'"
+    ).fetchone()
+    assert row is not None
+    assert row["severity"] == "info"
+
+
 def test_hand_editing_a_visual_sheet_is_gated_against_the_styleboards_world_lock(visual_client):
     """A-30/A-62 FAULT, F-17 coverage. The sheet body is byte-identical in both
     halves; only the styleboard's slot label differs. Before the fix the edit

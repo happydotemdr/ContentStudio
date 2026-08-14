@@ -5,7 +5,12 @@ from pathlib import Path
 from pipeline_app import artifacts, db as db_mod, obs
 from pipeline_app.gates import GATE_REGISTRY
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
-from pipeline_app.state_machine import StageStatus, is_locked_or_running, stages_to_unlock
+from pipeline_app.state_machine import (
+    StageStatus,
+    is_locked_or_running,
+    stages_to_relock,
+    stages_to_unlock,
+)
 
 KNOWN_STATUSES = frozenset({"pass", "fail", "error"})
 
@@ -148,3 +153,41 @@ def approve_stage(
                 db_mod.update_stage_status(conn, row["id"], StageStatus.READY.value)
 
     return newly_unlocked
+
+
+def relock_unsatisfied_dependents(
+    conn: sqlite3.Connection,
+    run_dir: Path,
+    stage_defs: list[StageDef],
+    project_id: int,
+) -> list[str]:
+    """Bring `locked` back in line with the current DAG (A-45).
+
+    stages_to_unlock is a one-way ratchet: once a dependent is unlocked nothing
+    ever locks it again, so hand-editing an approved stage left its dependents
+    runnable and approvable on a dependency that is no longer approved. A
+    dependent that already has an artifact is left alone -- propagate_staleness
+    owns that case, and locking it would hide output the operator can see.
+    """
+    rows = db_mod.list_stages(conn, project_id)
+    approved = {r["stage_id"] for r in rows if r["status"] == StageStatus.APPROVED.value}
+    by_id = {r["stage_id"]: r for r in rows}
+    relocked = []
+    for sid in stages_to_relock(stage_defs, approved):
+        row = by_id.get(sid)
+        if row is None or row["status"] in (
+            StageStatus.LOCKED.value, StageStatus.RUNNING.value
+        ):
+            continue
+        stage_def = next(s for s in stage_defs if s.id == sid)
+        stage_dir = run_dir / stage_dir_name(stage_def)
+        if artifacts.latest_artifact_path(stage_dir) is not None:
+            continue
+        db_mod.update_stage_status(conn, row["id"], StageStatus.LOCKED.value)
+        relocked.append(sid)
+        obs.record_event(
+            conn, kind="stage.relocked", severity="info", source="approval_service",
+            message=f"stage '{sid}' relocked: dependency no longer approved",
+            detail={"project_id": project_id, "stage_id": sid},
+        )
+    return relocked
