@@ -58,6 +58,56 @@ def test_reconcile_is_a_no_op_when_nothing_running(conn, tmp_path: Path):
     assert reconcile_orphaned_turns(conn, tmp_path, STAGE_DEFS) == 0
 
 
+def test_reconcile_records_an_event_naming_the_project_and_stage(conn, tmp_path):
+    """A-77 FAULT + SURFACING: _unwedge_stage restores awaiting_review whenever
+    ANY artifact resolves -- but that artifact came from a PREVIOUS turn; the
+    killed turn produced nothing. The resulting state is byte-identical to a
+    healthy stage awaiting review, so the operator approves stale output
+    believing the last turn succeeded. /doctor shows a bare orphaned_count."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "running")
+    db.create_turn(conn, stage_row_id, "running", "2026-07-25T12:00:00Z", "events/x.jsonl")
+    artifacts.write_artifact(
+        tmp_path / "runs" / "abc-1" / "01-ideation", 1, {"stage": "shorts-ideation"}, "body"
+    )
+
+    reconcile_orphaned_turns(conn, tmp_path, STAGE_DEFS)
+
+    row = conn.execute("SELECT * FROM events WHERE kind = 'turn.orphaned'").fetchone()
+    assert row is not None
+    assert row["severity"] == "warning"
+    assert "abc-1" in row["message"] and "ideation" in row["message"]
+
+
+def test_an_orphaned_stage_is_distinguishable_from_a_healthy_awaiting_review(conn, tmp_path):
+    """A-77 DISTINGUISHABILITY: the whole defect is that the two states are
+    byte-identical. A healthy stage produces no turn.orphaned event."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "awaiting_review")
+    reconcile_orphaned_turns(conn, tmp_path, STAGE_DEFS)
+    assert conn.execute("SELECT COUNT(*) c FROM events "
+                        "WHERE kind = 'turn.orphaned'").fetchone()["c"] == 0
+
+
+def test_the_dead_turns_raw_output_is_quarantined_not_left_as_the_next_baseline(conn, tmp_path):
+    """A-77: the dead turn's partially-written raw_output.md became the NEXT
+    turn's before_mtime baseline, so a resumed turn writing identical content
+    was detected as a change and one writing nothing was reported no_artifact."""
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
+    stage_row_id = db.create_stage_row(conn, project_id, "ideation", "running")
+    db.create_turn(conn, stage_row_id, "running", "2026-07-25T12:00:00Z", "events/x.jsonl")
+    stage_dir = tmp_path / "runs" / "abc-1" / "01-ideation"
+    stage_dir.mkdir(parents=True)
+    (stage_dir / "raw_output.md").write_text("half a turn", encoding="utf-8")
+
+    reconcile_orphaned_turns(conn, tmp_path, STAGE_DEFS)
+
+    assert not (stage_dir / "raw_output.md").exists()
+    quarantined = list(stage_dir.glob("raw_output.orphaned-*.md"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == "half a turn"
+
+
 def test_check_cli_available_true_when_binary_found():
     result = check_cli_available(which_fn=lambda name: r"C:\fake\claude.CMD")
     assert result["available"] is True
