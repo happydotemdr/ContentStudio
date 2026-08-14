@@ -749,6 +749,42 @@ def test_a_styleboard_slot_value_shaped_like_an_invented_code_fails(tmp_path):
     assert "S3" in {f["check"] for f in result["findings"]}
 
 
+def test_a_malformed_style_library_entry_errors_gate_s_naming_the_library(tmp_path):
+    """I2: `_check_styleboard_slots` used the unchecked `parse_style_library`,
+    reintroducing the exact defect T7B fixed for Gate C (P3-3/C-76) -- a
+    `### ` entry heading that fails the kebab-case shape is silently dropped,
+    so a styleboard slot bound to that exact label failed S4 as if the label
+    were simply unknown, naming the styleboard for a defect that lives in the
+    Library. `parse_style_library_checked` surfaces the malformed heading as a
+    `library_findings` entry; Gate S must now raise/record `status: "error"`
+    naming the Library file instead of a confusing S4."""
+    library_text = (REPO_ROOT / "docs" / "style-library.md").read_text(encoding="utf-8")
+    corrupted_library = library_text.replace(
+        "### rgs-present-soccer-a", "### RGS-present-soccer-a"
+    )
+    assert corrupted_library != library_text
+
+    linter = gates._load_linter(REPO_ROOT, "lint_prompt_sheet")
+    _library, library_findings = linter.parse_style_library_checked(corrupted_library)
+    assert library_findings, "the mutation must actually break parse_style_library_checked"
+
+    fake_repo = tmp_path / "repo"
+    (fake_repo / "scripts").mkdir(parents=True)
+    shutil.copy(
+        REPO_ROOT / "scripts" / "lint_prompt_sheet.py",
+        fake_repo / "scripts" / "lint_prompt_sheet.py",
+    )
+    (fake_repo / "docs").mkdir()
+    (fake_repo / "docs" / "style-library.md").write_text(corrupted_library, encoding="utf-8")
+
+    path = tmp_path / "artifact.v1.md"
+    path.write_text(_world_lock(slot_register_b="rgs-sourceera-painterly-c"), encoding="utf-8")
+    result = gates.run_gates_for_stage(fake_repo, "styleboard", path, {})[0]
+    assert result["status"] == "error"
+    assert "style-library.md" in result["findings"][0]["message"]
+    assert "S4" not in {f["check"] for f in result["findings"]}
+
+
 def test_a_styleboard_label_naming_no_library_entry_fails_here_not_downstream(tmp_path):
     """A-33/A-34's real fix: C20 blamed the sheet for a label the STYLEBOARD
     chose, once per affected shot. Catch it where it was written."""

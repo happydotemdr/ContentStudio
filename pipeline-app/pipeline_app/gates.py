@@ -304,7 +304,19 @@ def _check_styleboard_slots(repo_root, linter, artifact_path: Path, world: dict)
             f"Style Library not found at {library_path} -- Gate S cannot resolve "
             f"{artifact_path.name}'s slot labels"
         )
-    library = linter.parse_style_library(library_path.read_text(encoding="utf-8"))
+    library, library_findings = linter.parse_style_library_checked(
+        library_path.read_text(encoding="utf-8")
+    )
+    if library_findings:
+        # Mirrors run_prompt_sheet_gate's identical fix (T7B): a malformed
+        # Library entry heading looks complete but silently drops that entry,
+        # so parse_style_library (unchecked) would make Gate S blame the
+        # styleboard's slot label with a confusing S4 instead of naming the
+        # Library-side typo that's the real problem.
+        detail = "; ".join(f"[{f.check}] {f.message}" for f in library_findings)
+        raise GateInputError(
+            f"Style Library at {library_path} could not be fully parsed: {detail}"
+        )
     if not library:
         raise GateInputError(
             f"no entries parsed from {library_path} -- Gate S cannot check "
@@ -352,6 +364,15 @@ def run_styleboard_gate(
     return findings
 
 
+# P2's migrations.py backfill (out of this package's file ownership) writes
+# synthetic styleboard artifacts with `gates: []`, on the strength of its own
+# comment there: "styleboard registers no gates (gates.GATE_REGISTRY), so []
+# is the registry-consistent value." Registering "styleboard" below makes
+# that comment false -- classify_gates("styleboard", []) now synthesizes a
+# never_ran (blocking) gate for every backfilled artifact, requiring an
+# override to approve. This is a cross-package handoff to flag for P2, not
+# something to silently patch around from gates.py, approval_service.py, or
+# anywhere else in this package.
 GATE_REGISTRY: dict[str, list[tuple[str, GateRunner]]] = {
     "scripting": [("gate_d_script_language", run_script_language_gate)],
     "visual": [("gate_c_prompt_sheet", run_prompt_sheet_gate)],
