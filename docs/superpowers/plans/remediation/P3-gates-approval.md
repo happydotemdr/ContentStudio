@@ -1663,6 +1663,32 @@ def classify_gates(stage_id: str, recorded: list[dict]) -> list[dict]:
 
 - [ ] **Run** → green. **Commit:** `fix(approval): treat any status other than "pass" as blocking`
 
+> **Amendment (T10 dispatch, this session): the cross-surface invariant test
+> (`test_the_page_flag_the_per_gate_tag_and_the_approve_decision_never_disagree`) has THREE
+> undeclared forward dependencies and must be deferred, not written as part of T10.** Confirmed
+> empirically against the live repo:
+> 1. `_stage_context` does not exist as a standalone function yet — today `stage_page`'s logic is
+>    inline, and `_stage_context` is only extracted out in **T19** (`_stage_conflict` calls it).
+> 2. `gate_view` and `has_blocking_gate` do not exist anywhere in `routes/stages.py` yet — the
+>    current inline logic only computes `has_failing_gate = any(g.get("status") in ("fail",
+>    "error") for g in output_gates)` and passes `output_gates` (the raw list) to the template.
+>    Neither T19's nor T20's own shown code snippets actually add the line wiring
+>    `gate_view = classify_gates(stage_id, output_gates)` / `has_blocking_gate = any(g["blocking"]
+>    for g in gate_view)` into `_stage_context` — §6's "Contract for P15" prose describes the end
+>    state but no numbered task's shown code performs the wiring. **T19 must perform it** (see the
+>    amendment inserted at T19 below) — it is the natural point, since T19 is where
+>    `_stage_context` is extracted from `stage_page` in the first place, and `has_failing_gate` is
+>    exactly the value `gate_view`/`has_blocking_gate` replace.
+> 3. `_scripting_client` (used by this test) is referenced nowhere else in this plan — it is not
+>    defined anywhere in `test_routes_stages.py` or any other task's text. It needs to be written
+>    (or an existing equivalent fixture substituted) at the point this test actually runs.
+>
+> **Resolution:** T10 itself (`classify_gates`, `approve_stage`'s three fail-closed tests) has no
+> forward dependency and is dispatched as-is, in full. The **cross-surface invariant test is
+> deferred** to run immediately after T19 lands (see T19's own amendment below), once
+> `_stage_context`, `gate_view`, and `has_blocking_gate` all exist. Do not write it as part of
+> T10's own dispatch.
+
 ---
 
 ### T11 — A malformed `gates` value is a 409, not a 500
@@ -2260,6 +2286,88 @@ def _stage_conflict(request, project_id: int, stage_id: str, message: str,
       `{% if error_banner %}` block **is P15's**, so coordinate: this task asserts the context
       key and status code, and the markup assertions move green when P15 lands).
 - [ ] **Commit:** `fix(stages): return the stage page with a banner instead of plain text`
+
+> **Amendment (deferred from T10, this session): wire `gate_view`/`has_blocking_gate` into
+> `_stage_context` as part of this task's own extraction, and add the deferred cross-surface
+> invariant test here.** T10 (already landed) added `classify_gates` to `approval_service.py` but
+> could not wire it into `routes/stages.py` because `_stage_context` did not exist as a
+> standalone function until this task extracts it. Since this task is already replacing
+> `stage_page`'s inline body with `_stage_context`, do the replacement in the same motion:
+>
+> - Delete the current `has_failing_gate = any(g.get("status") in ("fail", "error") for g in
+>   output_gates)` line.
+> - Add `from pipeline_app.approval_service import classify_gates` (or wherever `classify_gates`
+>   actually lives after T10 — confirm by `grep -n "def classify_gates" pipeline_app/*.py` before
+>   writing the import).
+> - Add `gate_view = classify_gates(stage_id, output_gates)` and `has_blocking_gate =
+>   any(g["blocking"] for g in gate_view)`, and put both in the context dict returned by
+>   `_stage_context`. Keep `output_gates` in the context too for one release (per §6's own note);
+>   do not delete it here — T23/T24 or a later cleanup removes it.
+> - Update every existing test in `test_routes_stages.py` (and any other file) that currently
+>   asserts on `has_failing_gate` to use `has_blocking_gate/gate_view` instead — grep for
+>   `has_failing_gate` across `pipeline-app/tests/` before implementing, so no test is left
+>   asserting on a key you just deleted.
+>
+> Then, **now that `_stage_context`, `gate_view`, and `has_blocking_gate` all exist**, add T10's
+> deferred cross-surface invariant test to `test_routes_stages.py`:
+>
+> ```python
+> GATE_MATRIX = [
+>     ("passing",     [{"name": "gate_d_script_language", "status": "pass", "findings": []}]),
+>     ("failing",     [{"name": "gate_d_script_language", "status": "fail", "findings": []}]),
+>     ("errored",     [{"name": "gate_d_script_language", "status": "error", "findings": []}]),
+>     ("never_ran",   []),
+>     ("wrong_gate",  [{"name": "gate_c_prompt_sheet", "status": "pass", "findings": []}]),
+>     ("unknown",     [{"name": "gate_d_script_language", "status": "skipped", "findings": []}]),
+>     ("no_status",   [{"name": "gate_d_script_language", "findings": []}]),
+>     ("skipped_only", [{"name": "gate_d_script_language", "status": "pass",
+>                       "findings": [{"check": "D5", "beat": "SETUP", "kind": "skipped",
+>                                     "message": "no computable time range"}]}]),
+> ]
+>
+>
+> @pytest.mark.parametrize("label,gates_block", GATE_MATRIX, ids=[c[0] for c in GATE_MATRIX])
+> def test_the_page_flag_the_per_gate_tag_and_the_approve_decision_never_disagree(
+>     tmp_path, monkeypatch, label, gates_block
+> ):
+>     """E-03's real mechanism, closed structurally. A never-ran gate rendered as
+>     a clean pass; the approve form rendered WITHOUT the override field; clicking
+>     Approve returned a bare 409 with no path forward. P15 now renders
+>     gate_view[].blocking as a per-gate tag and has_blocking_gate as the
+>     page-level flag, so there are three surfaces that must agree. They all read
+>     one classifier; this asserts it."""
+>     test_client, tmp_path, app = _scripting_client(tmp_path, monkeypatch)
+>     project_id, run_dir = _new_project(test_client, app, tmp_path)
+>     artifacts.write_artifact(
+>         run_dir / "02-scripting", 1,
+>         {"schema_version": 1, "stage": "shorts-scripting", "version": 1,
+>          "status": "draft", "gates": gates_block},
+>         "script body",
+>     )
+>
+>     ctx = test_client.get(f"/projects/{project_id}/stages/scripting").context
+>     page_flag = ctx["has_blocking_gate"]
+>
+>     assert page_flag == any(g["blocking"] for g in ctx["gate_view"])
+>     approve = test_client.post(f"/projects/{project_id}/stages/scripting/approve")
+>     assert (approve.status_code == 409) == page_flag, (
+>         f"{label}: page says blocking={page_flag} but approve returned "
+>         f"{approve.status_code}"
+>     )
+>     assert ('name="override_reason"' in test_client.get(
+>         f"/projects/{project_id}/stages/scripting"
+>     ).text) == page_flag
+> ```
+>
+> `_scripting_client` does not exist anywhere in this plan or the live repo — write it as a
+> fixture mirroring `two_stage_client`'s shape (a `pipeline.yaml` with an `ideation -> scripting`
+> pipeline, `create_app(repo_root=tmp_path, ...)`, returning `(TestClient(app,
+> follow_redirects=False), tmp_path, app)`), or substitute `two_stage_client` directly if its
+> existing pipeline.yaml already satisfies this test's needs (it declares exactly `ideation ->
+> scripting` — check whether that's sufficient before writing a near-duplicate fixture). Run this
+> test after the `_stage_context`/`gate_view` wiring above, confirm all 8 parametrized cases pass,
+> and include it in this task's own commit (or a separate `test(stages): assert the page flag,
+> gate tag and approve decision never disagree` commit — your call).
 
 ---
 
