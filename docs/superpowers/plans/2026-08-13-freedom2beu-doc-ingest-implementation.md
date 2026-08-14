@@ -6633,6 +6633,47 @@ either form, mirroring `verify_locked()`'s own pre-existing dual-form logic. Cau
 and fixed before committing, not a review finding; unrelated to the flagged empirical
 unknown itself.
 
+**Task 13 (`lock.py`) — a dedicated security-focused review (Opus) found two Important,
+plan-mandated findings in `verify_locked()` (originally this plan's own Step 5 code).**
+1. `verify_locked()` scanned the WHOLE icacls stdout — including the echoed file path
+itself, before any ACE line — for two completely uncorrelated substrings
+(`"S-1-3-4"`/`"OWNER RIGHTS"` and `"DENY"`, matched anywhere, not required on the same
+line). A real, user-controlled Drive document title containing both substrings could
+false-positive `verify_locked()` as `True` on the crash-resume path (read-only
+attribute set, no ACL call has actually landed yet) — silently recording a file as
+locked while it carries zero real ACL protection. Silent UNDER-locking of real client
+data is the dangerous direction of this class of bug.
+2. No test in the 7-test suite pinned the mandated ACCOUNT-level deny call (the first
+of the two required icacls calls) — a regression that deleted it would have passed
+every existing test, since the OWNER RIGHTS deny alone satisfies every assertion in
+the brief's own test file.
+
+**Resolved:** `verify_locked()` now strips the echoed path prefix from icacls output
+before scanning, then requires the OWNER-RIGHTS token and a parenthesized `(DENY)`
+marker to co-occur on the SAME line (not just anywhere in the output) — closing the
+uncorrelated-substring hole. One deviation from the reviewer's literal suggested
+implementation ("skip the first output line"): real icacls output concatenates the
+echoed path and the FIRST real ACE onto one line, so naive line-skipping would have
+discarded that ACE and produced a permanent false-negative instead of fixing the
+false-positive; prefix-stripping achieves the same correlation guarantee without
+losing ACE coverage — verified correct by the re-review's own hand-trace of the
+adversarial scenario (a path containing both an OWNER-RIGHTS-like token and a
+`(DENY)`-like substring). A new test assertion pins the account-level deny (`assert
+f"{account.upper()}:(DENY)" in result.stdout.upper()`). Fix commit: `53f6501`.
+Reviewed clean in the scoped re-review (both findings ADDRESSED, no new
+Critical/Important breakage). Two Low/non-blocking notes deferred to the SDD ledger
+for the final whole-branch review to triage: (a) the prefix-strip fails *open* (falls
+back toward the old broad-scan behavior) if the echoed path doesn't byte-match
+`str(path)` — realistically triggerable only by an OEM/ANSI codepage mismatch on a
+non-ASCII filename, not by content; a cheap structural fix exists (match the
+contiguous substring `"OWNER RIGHTS:(DENY)"`/`"S-1-3-4:(DENY)"` directly, since `:` is
+one of the nine characters `naming.sanitize_component` always strips, so no real
+filename can ever contain it — this would remove the prefix-strip dependency
+entirely); (b) the fix report's own adversarial-filename repro doesn't actually
+exercise the new code path it's offered as evidence for (evidence-quality gap only,
+not a code defect — the re-review's own independent hand-trace is what actually
+confirms the fix).
+
 ---
 
 ## Execution Handoff
