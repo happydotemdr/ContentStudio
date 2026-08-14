@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import shutil
 from pathlib import Path
 
@@ -90,6 +91,39 @@ def test_a_linter_that_raises_is_an_error_not_a_pass(tmp_path, monkeypatch):
     results = gates.run_gates_for_stage(REPO_ROOT, "scripting", path, {})
     assert results[0]["status"] == "error"
     assert "linter exploded" in results[0]["findings"][0]["message"]
+
+
+def test_a_linter_calling_sys_exit_is_an_error_not_an_escape(tmp_path, monkeypatch):
+    """A-40: the fail-closed claim held for everything under Exception but not
+    for BaseException. A linter calling sys.exit() at import (lint_prompt_sheet
+    guards this only by __name__) raised SystemExit straight through the handler.
+    In the turn path that call sits AFTER turn_service's own except BaseException
+    block closes, so the escape left the turn AND the stage at `running`, wedging
+    the app's single-flight lock until a restart."""
+    def exiting(_repo_root, _path, _upstream):
+        raise SystemExit(2)
+
+    monkeypatch.setitem(gates.GATE_REGISTRY, "scripting", [("gate_exit", exiting)])
+    path = tmp_path / "raw_output.md"
+    path.write_text(CLEAN_SCRIPT, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "scripting", path, {})
+    assert results[0]["status"] == "error"
+    assert "SystemExit" in results[0]["findings"][0]["message"]
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, asyncio.CancelledError])
+def test_genuine_cancellation_is_re_raised_not_swallowed(tmp_path, monkeypatch, exc):
+    """The other half, and the reason this is not a widened BLE001: cancellation
+    must still propagate. Nothing NEW is swallowed -- only SystemExit-class
+    escapes that previously wedged a stage become recorded errors."""
+    def cancelling(_repo_root, _path, _upstream):
+        raise exc()
+
+    monkeypatch.setitem(gates.GATE_REGISTRY, "scripting", [("gate_cancel", cancelling)])
+    path = tmp_path / "raw_output.md"
+    path.write_text(CLEAN_SCRIPT, encoding="utf-8")
+    with pytest.raises(exc):
+        gates.run_gates_for_stage(REPO_ROOT, "scripting", path, {})
 
 
 def test_visual_stage_is_registered():

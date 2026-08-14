@@ -12,6 +12,7 @@ identity, so they are loaded by file path rather than imported.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 from collections.abc import Mapping
@@ -19,8 +20,12 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from pipeline_app import artifacts
+from pipeline_app import artifacts, obs
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
+
+# Re-raised, never recorded: these are the process or the caller saying stop, and
+# converting them into a recorded gate result would swallow a real cancellation.
+_CANCELLATION = (KeyboardInterrupt, asyncio.CancelledError, GeneratorExit)
 
 # (repo_root, artifact_path, upstream) -> findings. `upstream` maps an upstream
 # stage id to its latest artifact, because a gate is not always a function of
@@ -364,15 +369,22 @@ def run_gates_for_stage(
     for name, runner in GATE_REGISTRY.get(stage_id, []):
         try:
             findings = runner(repo_root, artifact_path, upstream)
-        except Exception as exc:  # noqa: BLE001 -- fail-closed is the whole point
+        except _CANCELLATION:
+            raise
+        except BaseException as exc:  # noqa: BLE001 -- fail-closed is the whole point
+            # Widened from Exception deliberately (A-40): SystemExit from a linter
+            # calling sys.exit() outside its __main__ guard used to escape into
+            # turn_service AFTER its own recovery block had closed, leaving the
+            # turn and the stage wedged at `running`. Nothing new is silenced --
+            # cancellation is re-raised above and every catch is reported below.
+            obs.log("gate.failed_closed", level="error", gate=name, stage=stage_id,
+                    artifact=str(artifact_path), error=f"{type(exc).__name__}: {exc}")
             results.append({
                 "name": name,
                 "status": "error",
                 "findings": [{
-                    "check": getattr(exc, "check", "GATE"),
-                    "beat": None,
-                    "message": str(exc),
-                    "kind": "error",
+                    "check": getattr(exc, "check", "GATE"), "beat": None, "shot_index": None,
+                    "kind": "error", "message": f"{type(exc).__name__}: {exc}",
                 }],
             })
             continue
