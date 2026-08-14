@@ -585,3 +585,41 @@ def test_the_edit_path_and_a_direct_gate_run_produce_identical_results(visual_cl
         tmp_path, "visual", reference_sheet, {"styleboard": styleboard_path}
     )
     assert recorded["gates"] == expected
+
+
+@pytest.fixture
+def styleboard_client(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n"
+        "  - id: styleboard\n    skill: shorts-styleboard\n    dir_prefix: \"02b\"\n"
+        "    depends_on: [ideation]\n",
+        encoding="utf-8",
+    )
+    _install_gate_c_inputs(tmp_path)
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    return TestClient(app, follow_redirects=False), tmp_path, app
+
+
+def test_hand_editing_a_styleboard_runs_the_styleboard_gate(styleboard_client):
+    """F-17 (styleboard-edit half, deferred from T5 until the styleboard gate
+    existed). two_stage_client declares no styleboard stage at all, so this
+    uses its own fixture (styleboard: ideation -> styleboard) rather than
+    visual_client, whose stages are scripting/styleboard/visual and would
+    require unlocking a stage this test has no use for."""
+    test_client, tmp_path, app = styleboard_client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    test_client.post(f"/projects/{project_id}/stages/ideation/approve")
+
+    resp = test_client.post(
+        f"/projects/{project_id}/stages/styleboard/edit",
+        data={"body": "=== STYLEBOARD ===\n\nBINDINGS\n  none\n"},
+    )
+    assert resp.status_code == 303
+    meta, _ = artifacts.parse_frontmatter(
+        (run_dir / "02b-styleboard" / "artifact.v1.md").read_text(encoding="utf-8")
+    )
+    assert meta["gates"][0]["name"] == "gate_s_styleboard"
+    assert meta["gates"][0]["status"] == "fail"
