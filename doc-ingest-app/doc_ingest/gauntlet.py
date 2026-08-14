@@ -85,7 +85,7 @@ def run_gate1(source_type: str, source_size_bytes: int, assembled_markdown: str,
 
     if source_type in ("docx", "gdoc"):
         source_wc = independent_metadata.get("source_word_count")
-        if source_wc:
+        if source_wc is not None:
             output_wc = len(body.split())
             low = source_wc * (1 - cfg.word_count_tolerance_pct)
             high = source_wc * (1 + cfg.word_count_tolerance_pct)
@@ -105,7 +105,7 @@ def run_gate1(source_type: str, source_size_bytes: int, assembled_markdown: str,
                 return GauntletResult(False, "sheet_count_mismatch")
 
         source_rows = independent_metadata.get("source_row_count")
-        if source_rows:
+        if source_rows is not None:
             output_rows = _count_output_table_rows(body)
             low = source_rows * (1 - cfg.row_count_tolerance_pct)
             high = source_rows * (1 + cfg.row_count_tolerance_pct)

@@ -172,6 +172,32 @@ def test_xlsx_sheet_count_mismatch_fails():
     assert result.failure_reason == "sheet_count_mismatch"
 
 
+def test_docx_word_count_zero_source_still_triggers_parity_check():
+    # Zero is a legitimate word count value. With source_word_count=0,
+    # the check should still fire if output has any words (vs silently skipping).
+    cfg = Config(word_count_tolerance_pct=0.15, size_ratio_floor=0.0)
+    body = "some words in the output"  # 5 words, but source is 0
+    result = gauntlet.run_gate1(
+        "docx", 50000, _assembled(body=body),
+        {"source_word_count": 0}, cfg,
+    )
+    assert result.passed is False
+    assert result.failure_reason == "word_count_parity_failed"
+
+
+def test_xlsx_row_count_zero_source_still_triggers_parity_check():
+    # Zero is a legitimate row count value. With source_row_count=0,
+    # the check should still fire if output has any rows (vs silently skipping).
+    cfg = Config(row_count_tolerance_pct=0.05, size_ratio_floor=0.0)
+    body = "## Sheet1\n\n| A | B |\n|---|---|\n| 1 | 2 |\n"  # 1 row, but source is 0
+    result = gauntlet.run_gate1(
+        "xlsx", 20000, _assembled(body=body),
+        {"source_sheet_count": 1, "source_row_count": 0}, cfg,
+    )
+    assert result.passed is False
+    assert result.failure_reason == "row_count_mismatch"
+
+
 def test_ppt_unsupported_is_a_gate1_failure_not_a_crash():
     result = gauntlet.run_gate1("ppt", 20000, "", {"conversion_error": "unsupported_type: bad format"}, Config())
     assert result.passed is False
