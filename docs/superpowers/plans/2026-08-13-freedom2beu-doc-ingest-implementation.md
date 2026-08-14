@@ -6599,6 +6599,20 @@ Fix commit: `df862a1`. Reviewed clean in the scoped re-review (finding ADDRESSED
 `page_count` confirmed untouched, no new breakage; 19/19 gate1 tests, 112/112 full
 suite).
 
+**Task 12 (`gauntlet.py` Gate 2) — `test_gate2_logs_a_collision_and_appends_a_hash_suffix`
+(originally this plan's own Step 1 test code) seeded two `conversions` rows for the
+SAME `(source_a, version=1)` pair,** violating the schema's
+`UNIQUE(source_file_id, version_number)` constraint — and directly contradicting the
+test's own comment, which says the collision-occupying row should be seeded "under a
+DIFFERENT source_file_id" but the code as written reused `source_a` for both rows.
+Caught by the implementer before committing, not by review. **Resolved:** the
+collision-occupying row is now seeded under a third, distinct source file
+(`source_c`), matching the comment's stated intent and the working pattern already
+used by the adjacent threshold test. `run_gate2` production code is untouched by this
+fix — the bug was entirely in the brief's own test fixture. Same commit as Task 12's
+implementation (`7a5ee5f`), since the bug was caught before the first commit, not in
+a post-review fix round.
+
 ---
 
 ## Execution Handoff
