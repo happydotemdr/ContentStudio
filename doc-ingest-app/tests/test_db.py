@@ -111,3 +111,42 @@ def test_init_db_calls_apply_migrations(tmp_db_path, monkeypatch):
     conn = db.init_db(tmp_db_path)
     assert len(calls) == 1
     assert calls[0] is conn
+
+
+def test_transaction_depth_does_not_leak_across_connections(tmp_path):
+    """Verify that _TXN_DEPTH entries are cleaned up when a connection's
+    transaction completes, preventing id() reuse hazards where a new
+    connection could inherit stale depth from an old one."""
+    import gc
+    db_path_1 = tmp_path / "db1.db"
+    db_path_2 = tmp_path / "db2.db"
+    now = "2026-08-13T00:00:00+00:00"
+
+    # Create and use first connection
+    conn1 = db.init_db(db_path_1)
+    with db.transaction(conn1):
+        conn1.execute(
+            "INSERT INTO source_files (rel_path, extension, classification, first_seen_at, last_seen_at) "
+            "VALUES ('file1.pdf', 'pdf', 'convertible', ?, ?)", (now, now),
+        )
+    # After transaction completes, depth entry should be cleaned from _TXN_DEPTH
+    depth_entries_after_first = len(db._TXN_DEPTH)
+    conn1.close()
+
+    # Create and use second connection (may reuse an id() from the first)
+    conn2 = db.init_db(db_path_2)
+    # The second connection must start its transaction correctly (depth==0 case)
+    # by issuing BEGIN, not inheriting a stale depth from conn1
+    with db.transaction(conn2):
+        conn2.execute(
+            "INSERT INTO source_files (rel_path, extension, classification, first_seen_at, last_seen_at) "
+            "VALUES ('file2.pdf', 'pdf', 'convertible', ?, ?)", (now, now),
+        )
+    # Verify data was committed (if it inherited a stale nonzero depth, it would be missing)
+    row = conn2.execute("SELECT rel_path FROM source_files WHERE rel_path = 'file2.pdf'").fetchone()
+    assert row is not None, "Second connection's transaction was not committed (depth leak hazard)"
+    conn2.close()
+
+    # After all transactions complete, _TXN_DEPTH should be cleaned up
+    gc.collect()  # Force collection to be safe
+    assert len(db._TXN_DEPTH) == 0, "Transaction depth entries were not cleaned up"

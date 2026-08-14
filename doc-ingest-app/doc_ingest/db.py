@@ -113,7 +113,13 @@ def transaction(conn: sqlite3.Connection):
     Unlike pipeline_app.db.transaction, this does not need cross-thread
     commit-suppression tracking, because each connection here has exactly one
     owning worker for its whole life (spec §5) -- there is no other thread
-    that could observe a boundary it doesn't own."""
+    that could observe a boundary it doesn't own.
+
+    Note: _TXN_DEPTH is keyed by id(conn) and entries are explicitly deleted
+    when depth returns to 0. This prevents a hazard where a stale depth entry
+    could be reused if CPython recycles an id() for a new connection object.
+    sqlite3.Connection objects are not weak-referenceable in CPython, so
+    WeakKeyDictionary is not an option here."""
     key = id(conn)
     depth = _TXN_DEPTH.get(key, 0)
     if depth == 0:
@@ -125,11 +131,13 @@ def transaction(conn: sqlite3.Connection):
         _TXN_DEPTH[key] = depth
         if depth == 0:
             conn.execute("ROLLBACK")
+            del _TXN_DEPTH[key]
         raise
     else:
         _TXN_DEPTH[key] = depth
         if depth == 0:
             conn.execute("COMMIT")
+            del _TXN_DEPTH[key]
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
