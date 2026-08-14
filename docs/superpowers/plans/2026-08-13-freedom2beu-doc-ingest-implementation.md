@@ -6552,6 +6552,35 @@ as Task 7's implementation — the bug was caught before the first commit, not i
 post-review fix round). 19/19 `test_jobs.py` passed across 3 consecutive runs, no
 flakiness; full suite 76/76.
 
+**Task 0/9 (`requirements.txt`'s `firecrawl-py` pin) — Task 0 pinned `firecrawl-py==2.*`,
+but Task 9's entire brief (`Firecrawl` class, `.parse()` method,
+`firecrawl.v2.types.ParseOptions`) is written against an API that does not exist in
+the 2.x line at all.** Confirmed empirically before dispatching Task 9: the installed
+2.16.5 has no `Firecrawl` attribute (`from firecrawl import Firecrawl` raises
+`ImportError`), no `firecrawl.v2` submodule, and its top-level API is the older
+`FirecrawlApp`/`ScrapeOptions`-shaped surface. Side-loaded `firecrawl-py==4.35.0` into
+an isolated scratch directory to confirm the brief's exact imports
+(`Firecrawl`, `firecrawl.v2.types.ParseOptions`, `Firecrawl.parse(..., options=...)`,
+`Document.markdown`) all exist and match from 4.x onward — `ParseOptions` is a
+`ScrapeOptions` subclass, so it satisfies `parse()`'s declared parameter type.
+Every one of Task 9's own tests would have failed immediately regardless of
+implementation quality, since `mock.patch("firecrawl.Firecrawl")` itself raises
+`AttributeError` against a package with no such class. Also surfaced in the same
+investigation: the plan's Global Constraint that `doc-ingest-app/` gets its "own
+venv" was never actually honored by Task 0 — there is no `doc-ingest-app/.venv`, so
+every dependency in `requirements.txt` installs into this machine's shared,
+non-project-scoped Python environment. **Resolved:** per the human partner's explicit
+choice (bump the shared environment rather than retroactively create an isolated
+venv), `requirements.txt`'s pin was changed to `firecrawl-py==4.*` and the shared
+environment's installed package was upgraded via `pip install --upgrade
+"firecrawl-py==4.35.*"` to 4.35.0, verified importable (`Firecrawl`, `ParseOptions`)
+before Task 9 was dispatched. No other part of this repo depends on the `firecrawl-py`
+pip package (confirmed by a repo-wide grep) — `pipeline-app`'s own Firecrawl usage
+goes through a separate MCP server, not this pip package, so this upgrade's blast
+radius stays contained to `doc-ingest-app` in practice, even without an isolated venv.
+The "own venv" gap itself remains open — noted here rather than silently left
+undiscovered, but out of scope to retroactively fix under this decision.
+
 ---
 
 ## Execution Handoff

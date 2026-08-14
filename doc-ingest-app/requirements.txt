@@ -2,7 +2,7 @@ pyyaml==6.0.*
 pypdf==6.10.*
 python-docx==1.1.*
 openpyxl==3.1.*
-firecrawl-py==2.*
+firecrawl-py==4.*
 google-api-python-client==2.*
 google-auth==2.*
 google-auth-oauthlib==1.*
