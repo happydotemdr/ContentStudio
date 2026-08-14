@@ -18,7 +18,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from doc_ingest import db, jobs, manifest, sync, worker
+from doc_ingest import db, drive_client, drive_sync, jobs, manifest, sync, worker
 from doc_ingest.config import load_config
 
 
@@ -50,6 +50,17 @@ def run_once(db_path: Path, cfg) -> None:
 
         counts = sync.sync_source_files(conn, cfg.input_root)
         print(f"scan: {counts}")
+
+        try:
+            service = drive_client.build_default_service(cfg)
+            drive_updated = drive_sync.sync_drive_metadata(conn, service, cfg)
+            print(f"drive check: updated {drive_updated} gdoc/gsheet row(s)")
+        except Exception as exc:
+            # Missing/expired Drive credentials (e.g. SETUP.md's one-time
+            # consent hasn't been done yet on this machine) must not block
+            # local-file processing -- log and continue with whatever
+            # local-file jobs are ready.
+            print(f"drive check skipped: {exc}", file=sys.stderr)
 
         created = jobs.enqueue_pending_jobs(conn)
         print(f"enqueued {created} job(s)")

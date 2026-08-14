@@ -128,3 +128,18 @@ def test_retry_gives_up_after_max_attempts():
     cfg = Config(drive_retry_max_attempts=2, drive_retry_base_delay_s=0.001)
     with pytest.raises(HttpError):
         drive_client._with_retry(_always_fails, cfg)
+
+
+def test_build_default_service_fails_fast_without_a_cached_token(tmp_path, monkeypatch):
+    """The empirical claim: a missing token.json must raise immediately, not
+    reach InstalledAppFlow.run_local_server -- which would open an
+    interactive browser flow and hang the unattended cron indefinitely.
+    Points the function's own __file__ at a fresh tmp_path so app_root
+    resolves somewhere token.json provably doesn't exist."""
+    import doc_ingest.drive_client as dc_module
+
+    fake_module_path = tmp_path / "fake_app" / "doc_ingest" / "drive_client.py"
+    monkeypatch.setattr(dc_module, "__file__", str(fake_module_path))
+
+    with pytest.raises(RuntimeError, match="SETUP.md step 6"):
+        drive_client.build_default_service(Config())

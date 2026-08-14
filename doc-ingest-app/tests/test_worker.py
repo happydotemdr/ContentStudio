@@ -210,24 +210,34 @@ def test_process_job_updates_heartbeat_while_converting(conn, tmp_path):
     assert job_row[0] == "complete"
 
 
-def test_process_job_fails_cleanly_on_unmapped_extension_instead_of_looping_forever(conn, tmp_path):
-    """A .gdoc/.gsheet source file is enqueued by enqueue_pending_jobs
-    (classification='gdoc_pointer') well before Task 22 lands the Drive-
-    export branch that knows how to handle it -- _source_type_for raises a
-    plain KeyError for any such file today, since 'gdoc' isn't in
-    _LOCAL_EXTENSIONS. Left uncaught, that exception would leave the job
-    stuck at 'converting' forever: reclaim_stale_jobs would reset it to
-    'pending', it would be re-claimed, and it would crash identically on
-    every future wake -- an unbounded poison-pill retry loop, since the job
-    never reaches 'failed' and enqueue_pending_jobs's already-failed-at-
-    this-version guard can never engage."""
+def test_process_job_fails_cleanly_on_a_pre_write_error_instead_of_looping_forever(conn, tmp_path):
+    """ANY unexpected exception in the pre-write section (stage/convert/
+    gauntlet) must become a clean 'failed' job, not propagate. Left
+    uncaught, it would leave the job stuck at 'converting' forever:
+    reclaim_stale_jobs would reset it to 'pending', it would be re-claimed,
+    and it would crash identically on every future wake -- an unbounded
+    poison-pill retry loop, since the job never reaches 'failed' and
+    enqueue_pending_jobs's already-failed-at-this-version guard can never
+    engage.
+
+    Before Task 22 this was triggered by a .gdoc row hitting
+    _source_type_for's KeyError (no Drive branch existed yet). Task 22's
+    Drive branch removed that specific trigger, so the failure is injected
+    explicitly here via drive_service_factory -- which also models the real
+    production case this handler now has to cover: a Drive-native job on a
+    machine whose token.json is missing or expired. Injecting it rather
+    than relying on token.json's real absence keeps the test deterministic
+    on an operator machine that has completed SETUP.md step 6."""
     input_root = tmp_path / "input"
     input_root.mkdir()
     output_root = tmp_path / "output"
     cfg = Config(input_root=input_root, output_root=output_root)
     job_id = _seed_pending_job(conn, input_root, rel_path="Folder/Doc.gdoc", content=b"fake gdoc stub content")
 
-    worker.process_job(conn, job_id, cfg, worker_id="w1")
+    def _no_drive_credentials(cfg_arg):
+        raise RuntimeError("doc-ingest-app has no cached Drive token")
+
+    worker.process_job(conn, job_id, cfg, worker_id="w1", drive_service_factory=_no_drive_credentials)
 
     job_row = conn.execute("SELECT status, failure_reason FROM conversion_jobs WHERE id = ?", (job_id,)).fetchone()
     assert job_row[0] == "failed"
@@ -325,3 +335,170 @@ def test_resume_unlocked_conversions_isolates_a_failing_row_and_still_resumes_th
     ).fetchone()
     assert event_row is not None
     assert event_row[1] == conversion_1_id
+
+
+def test_process_job_handles_a_gdoc_via_mocked_drive_export(conn, tmp_path):
+    from unittest.mock import MagicMock
+
+    from doc_ingest import frontmatter as frontmatter_mod
+    from doc_ingest.config import Config
+
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    output_root = tmp_path / "output"
+    cfg = Config(input_root=input_root, output_root=output_root)
+
+    stub_path = input_root / "Session Notes.gdoc"
+    stub_path.write_text('{"doc_id": "doc-1", "resource_key": "rk1", "email": "admin@freedom2beu.com"}', encoding="utf-8")
+    sync.sync_source_files(conn, input_root)
+    # Simulates drive_sync.sync_drive_metadata (Task 22) having already
+    # populated this -- exercised directly by test_drive_sync.py; this test
+    # only needs the column populated to prove process_job uses it, not the
+    # full sync flow again.
+    conn.execute("UPDATE source_files SET drive_modified_time = '2026-08-10T00:00:00Z' WHERE rel_path = 'Session Notes.gdoc'")
+    conn.commit()
+    jobs.enqueue_pending_jobs(conn)
+    job_id = jobs.claim_job(conn, worker_id="w1")
+
+    def _fake_export_google_doc(service, doc_id, dest_path, cfg_arg):
+        from doc_ingest.convert import ConversionResult
+        dest_path.write_bytes(b"# Exported directly as markdown\n\nplenty of real words here")
+        return ConversionResult(success=True, markdown_body="# Exported directly as markdown\n\nplenty of real words here", tool="google-docs-export", error=None)
+
+    mock_service_factory = lambda cfg_arg: MagicMock()
+    with patch("doc_ingest.drive_client.export_google_doc", side_effect=_fake_export_google_doc), \
+         patch("doc_ingest.lock.apply_readonly_lock"), \
+         patch("doc_ingest.lock.verify_locked", return_value=True):
+        worker.process_job(conn, job_id, cfg, worker_id="w1", drive_service_factory=mock_service_factory)
+
+    job_row = conn.execute("SELECT status, failure_reason FROM conversion_jobs WHERE id = ?", (job_id,)).fetchone()
+    assert job_row[0] == "complete", job_row[1]
+    conversion = conn.execute(
+        "SELECT source_type, conversion_tool, drive_modified_time_at_conversion, output_path "
+        "FROM conversions WHERE job_id = ?", (job_id,)
+    ).fetchone()
+    assert conversion[:3] == ("gdoc", "google-docs-export", "2026-08-10T00:00:00Z")
+
+    # source_modified_at must be the Drive edit time, NOT the static local
+    # stub's own filesystem mtime (spec §4 step 3, §7).
+    output_file = output_root / "converted" / conversion[3]
+    fm, _ = frontmatter_mod.parse(output_file.read_text(encoding="utf-8"))
+    assert fm["source_modified_at"] == "2026-08-10T00:00:00Z"
+
+
+def test_process_job_handles_a_gdoc_docx_fallback_export(conn, tmp_path):
+    """Proves the docx-fallback filename fix: export_google_doc writes docx
+    bytes to a path initially named export.md (it doesn't know the format
+    ahead of time); _convert_drive_native must rename it to export.docx
+    before treating it as a real docx (independent word-count reader, and
+    the file/content-type sent to firecrawl must agree)."""
+    from unittest.mock import MagicMock
+
+    import docx as docx_lib
+
+    from doc_ingest.config import Config
+
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    output_root = tmp_path / "output"
+    cfg = Config(input_root=input_root, output_root=output_root)
+
+    stub_path = input_root / "Long Session Notes.gdoc"
+    stub_path.write_text('{"doc_id": "doc-2", "resource_key": "rk2", "email": "admin@freedom2beu.com"}', encoding="utf-8")
+    sync.sync_source_files(conn, input_root)
+    conn.execute("UPDATE source_files SET drive_modified_time = '2026-08-10T00:00:00Z' WHERE rel_path = 'Long Session Notes.gdoc'")
+    conn.commit()
+    jobs.enqueue_pending_jobs(conn)
+    job_id = jobs.claim_job(conn, worker_id="w1")
+
+    def _fake_export_google_doc(service, doc_id, dest_path, cfg_arg):
+        from doc_ingest.convert import ConversionResult
+        document = docx_lib.Document()
+        document.add_paragraph("word " * 50)
+        document.save(dest_path)  # written to a path still named export.md
+        return ConversionResult(success=True, markdown_body=None, tool="google-docs-export-docx-fallback", error=None)
+
+    def _fake_convert(staged_path, source_type, cfg_arg):
+        from doc_ingest.convert import ConversionResult
+        assert staged_path.suffix == ".docx"  # the rename must have already happened
+        assert source_type == "docx"
+        return ConversionResult(success=True, markdown_body="word " * 50, tool="firecrawl-parse", error=None)
+
+    mock_service_factory = lambda cfg_arg: MagicMock()
+    with patch("doc_ingest.drive_client.export_google_doc", side_effect=_fake_export_google_doc), \
+         patch("doc_ingest.worker._convert", side_effect=_fake_convert), \
+         patch("doc_ingest.lock.apply_readonly_lock"), \
+         patch("doc_ingest.lock.verify_locked", return_value=True):
+        worker.process_job(conn, job_id, cfg, worker_id="w1", drive_service_factory=mock_service_factory)
+
+    job_row = conn.execute("SELECT status, failure_reason FROM conversion_jobs WHERE id = ?", (job_id,)).fetchone()
+    assert job_row[0] == "complete", job_row[1]
+    conversion = conn.execute(
+        "SELECT source_type, conversion_tool, word_count FROM conversions WHERE job_id = ?", (job_id,)
+    ).fetchone()
+    assert conversion == ("gdoc", "google-docs-export-docx-fallback", 50)
+
+
+def test_process_job_handles_a_gsheet_via_mocked_drive_export(conn, tmp_path):
+    """The .gsheet half of _convert_drive_native -- the other ~half of the
+    real Drive corpus. Distinct from the .gdoc paths above in three ways
+    worth their own coverage: source_type resolves to 'gsheet' (not 'gdoc')
+    from the extension, the export always goes to export.xlsx with no
+    format-fallback rename, and the independent metadata is the
+    sheet/row-count pair Gate 1's xlsx/gsheet branch checks rather than a
+    word count."""
+    from unittest.mock import MagicMock
+
+    import openpyxl
+
+    from doc_ingest.config import Config
+
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    output_root = tmp_path / "output"
+    cfg = Config(input_root=input_root, output_root=output_root)
+
+    stub_path = input_root / "Budget.gsheet"
+    stub_path.write_text('{"doc_id": "sheet-1", "resource_key": "rk3", "email": "admin@freedom2beu.com"}', encoding="utf-8")
+    sync.sync_source_files(conn, input_root)
+    conn.execute("UPDATE source_files SET drive_modified_time = '2026-08-11T00:00:00Z' WHERE rel_path = 'Budget.gsheet'")
+    conn.commit()
+    jobs.enqueue_pending_jobs(conn)
+    job_id = jobs.claim_job(conn, worker_id="w1")
+
+    row_count = 5
+
+    def _fake_export_google_sheet(service, doc_id, dest_path, cfg_arg):
+        from doc_ingest.convert import ConversionResult
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        for i in range(row_count):
+            sheet.append([f"cell-{i}-a", f"cell-{i}-b"])
+        workbook.save(dest_path)
+        return ConversionResult(success=True, markdown_body=None, tool="google-sheets-export", error=None)
+
+    def _fake_convert(staged_path, source_type, cfg_arg):
+        from doc_ingest.convert import ConversionResult
+        assert staged_path.suffix == ".xlsx"
+        assert source_type == "xlsx"  # exported bytes are converted as a real xlsx...
+        # One header + one separator + row_count data rows, so Gate 1's
+        # output-side counts (1 table block, row_count rows) match what
+        # read_xlsx_sheet_and_row_counts reports for the workbook above.
+        body = "| a | b |\n|---|---|\n" + "".join(f"| c{i} | d{i} |\n" for i in range(row_count))
+        return ConversionResult(success=True, markdown_body=body, tool="firecrawl-parse", error=None)
+
+    mock_service_factory = lambda cfg_arg: MagicMock()
+    with patch("doc_ingest.drive_client.export_google_sheet", side_effect=_fake_export_google_sheet), \
+         patch("doc_ingest.worker._convert", side_effect=_fake_convert), \
+         patch("doc_ingest.lock.apply_readonly_lock"), \
+         patch("doc_ingest.lock.verify_locked", return_value=True):
+        worker.process_job(conn, job_id, cfg, worker_id="w1", drive_service_factory=mock_service_factory)
+
+    job_row = conn.execute("SELECT status, failure_reason FROM conversion_jobs WHERE id = ?", (job_id,)).fetchone()
+    assert job_row[0] == "complete", job_row[1]
+    conversion = conn.execute(
+        "SELECT source_type, conversion_tool, sheet_count, row_count_total, "
+        "drive_modified_time_at_conversion FROM conversions WHERE job_id = ?", (job_id,)
+    ).fetchone()
+    # ...but the RECORDED source_type/tool stay Drive-native, not 'xlsx'/'firecrawl-parse'.
+    assert conversion == ("gsheet", "google-sheets-export", 1, row_count, "2026-08-11T00:00:00Z")

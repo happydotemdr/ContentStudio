@@ -10,7 +10,11 @@ lock and flips the job to 'complete' once it lands, never a reconversion.
 A heartbeat thread runs on its own connection for the life of the job (spec
 §5: never share conn across threads) so reclaim_stale_jobs (Task 7) can tell
 a live worker from a dead one even when the actual conversion step takes
-longer than the reclaim staleness threshold."""
+longer than the reclaim staleness threshold.
+
+Handles both local files (pdf/docx/xlsx/txt/md/ppt) and Drive-native sources
+(.gdoc/.gsheet, classification='gdoc_pointer') -- the latter export via
+drive_client (Task 14) instead of copying from cfg.input_root."""
 from __future__ import annotations
 
 import datetime as dt
@@ -19,7 +23,7 @@ import shutil
 import threading
 from pathlib import Path
 
-from doc_ingest import convert, db, frontmatter, gauntlet, jobs, lock, metadata_readers
+from doc_ingest import convert, db, drive_client, frontmatter, gauntlet, jobs, lock, metadata_readers, naming
 
 _LOCAL_EXTENSIONS = {"pdf": "pdf", "docx": "docx", "xlsx": "xlsx", "txt": "txt", "md": "md", "ppt": "ppt"}
 
@@ -71,6 +75,56 @@ def _convert(staged_path, source_type: str, cfg):
     return convert.convert_local_file(staged_path, source_type, cfg)
 
 
+def _convert_drive_native(service, doc_id: str, source_type: str, tmp_dir, cfg):
+    """Drive export first, then -- for anything that came back as raw bytes
+    rather than markdown (the docx/xlsx fallback paths, spec §9) -- the same
+    local conversion + independent-reader path a real local file of that
+    type would get. tool is preserved from the EXPORT step (google-docs-
+    export / google-docs-export-docx-fallback / google-sheets-export), not
+    overwritten with 'firecrawl-parse', so the record correctly shows the
+    file came via Drive.
+
+    export_google_doc doesn't know ahead of time whether it'll get markdown
+    or docx bytes, so it writes to whatever path it's given -- if the docx
+    fallback happened, the file at that path IS docx content but is still
+    named export.md at that point. It's renamed to export.docx before being
+    treated as a real .docx (read by metadata_readers, sent to firecrawl
+    with a matching filename) rather than left as a .md-named file holding
+    binary docx bytes."""
+    if source_type == "gdoc":
+        dest = tmp_dir / "export.md"
+        export_result = drive_client.export_google_doc(service, doc_id, dest, cfg)
+        if not export_result.success:
+            return export_result, None, {}
+        if export_result.tool == "google-docs-export":
+            return export_result, dest, {}  # direct markdown -- see Task 22's open item 2
+
+        docx_path = tmp_dir / "export.docx"
+        dest.rename(docx_path)
+        metadata = {
+            "source_word_count": metadata_readers.read_docx_word_count(docx_path),
+            "source_table_count": metadata_readers.read_docx_table_count(docx_path),
+        }
+        converted = _convert(docx_path, "docx", cfg)
+        merged = convert.ConversionResult(
+            success=converted.success, markdown_body=converted.markdown_body,
+            tool=export_result.tool, error=converted.error,
+        )
+        return merged, docx_path, metadata
+
+    dest = tmp_dir / "export.xlsx"
+    export_result = drive_client.export_google_sheet(service, doc_id, dest, cfg)
+    if not export_result.success:
+        return export_result, None, {}
+    sheet_count, row_count = metadata_readers.read_xlsx_sheet_and_row_counts(dest)
+    converted = _convert(dest, "xlsx", cfg)
+    merged = convert.ConversionResult(
+        success=converted.success, markdown_body=converted.markdown_body,
+        tool=export_result.tool, error=converted.error,
+    )
+    return merged, dest, {"source_sheet_count": sheet_count, "source_row_count": row_count}
+
+
 def _independent_metadata(staged_path, source_type: str) -> dict:
     """SOURCE-side values only, read independently of firecrawl's own
     output -- Gate 1 (Task 11) computes every OUTPUT-side count itself from
@@ -114,16 +168,19 @@ def _fail_job(conn, job_id: int, reason: str) -> None:
         )
 
 
-def process_job(conn, job_id: int, cfg, worker_id: str) -> None:
+def process_job(conn, job_id: int, cfg, worker_id: str, drive_service_factory=None) -> None:
     job = conn.execute(
         "SELECT source_file_id FROM conversion_jobs WHERE id = ?", (job_id,)
     ).fetchone()
     source_file_id = job[0]
     source = conn.execute(
-        "SELECT rel_path, extension, size_bytes, sniffed_signature, mtime, content_hash "
-        "FROM source_files WHERE id = ?", (source_file_id,)
+        "SELECT rel_path, extension, size_bytes, sniffed_signature, mtime, content_hash, "
+        "classification, doc_id, drive_modified_time FROM source_files WHERE id = ?",
+        (source_file_id,),
     ).fetchone()
-    rel_path, extension, size_bytes, sniffed_signature, source_mtime, source_hash = source
+    (rel_path, extension, size_bytes, sniffed_signature, source_mtime, local_content_hash,
+     classification, doc_id, drive_modified_time) = source
+    is_drive_native = classification == "gdoc_pointer"
 
     tmp_dir = cfg.tmp_root / f"job-{job_id}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -142,12 +199,12 @@ def process_job(conn, job_id: int, cfg, worker_id: str) -> None:
     heartbeat_thread.start()
     try:
         # --- steps 6-8: stage, convert, gauntlet -- ANY unexpected exception
-        # here (an unmapped extension such as a .gdoc/.gsheet row enqueued
-        # before Task 22's Drive-export branch lands, a corrupt/encrypted
-        # PDF/DOCX/XLSX that metadata_readers can't parse, a staging I/O
-        # error, etc.) is converted to a clean job failure rather than
-        # allowed to propagate. Left unhandled, the job would stay stuck at
-        # 'converting' forever, get reset to 'pending' by reclaim_stale_jobs
+        # here (an unmapped extension, a corrupt/encrypted PDF/DOCX/XLSX that
+        # metadata_readers can't parse, a staging I/O error, or -- since Task
+        # 22 -- a Drive-native failure such as a missing/expired token.json or
+        # a non-retryable Drive API error) is converted to a clean job failure
+        # rather than allowed to propagate. Left unhandled, the job would stay
+        # stuck at 'converting' forever, get reset to 'pending' by reclaim_stale_jobs
         # once the staleness threshold passes, get re-claimed, and crash
         # identically -- an unbounded poison-pill retry loop that burns a
         # real billed firecrawl .parse() call every single pass (since
@@ -161,17 +218,39 @@ def process_job(conn, job_id: int, cfg, worker_id: str) -> None:
         # rather than losing track of an already-written, already-committed
         # conversion.
         try:
-            source_type = _source_type_for(extension, sniffed_signature)
+            if is_drive_native:
+                source_type = "gdoc" if extension == "gdoc" else "gsheet"
+                service = (drive_service_factory or drive_client.build_default_service)(cfg)
+                conversion_result, staged_path, independent_metadata = _convert_drive_native(
+                    service, doc_id, source_type, tmp_dir, cfg,
+                )
+                # source_hash for frontmatter/conversions -- see Task 22's open
+                # item 1 (a real headRevisionId isn't fetched yet;
+                # drive_modified_time is a practical stand-in with the same "did
+                # the content change" purpose).
+                source_hash = drive_modified_time
+                # source_modified_at must be the actual Drive edit time, NOT the
+                # local stub's filesystem mtime -- the stub is a static 176-byte
+                # pointer that never changes when the real document is edited
+                # (spec §4 step 3, §7). Using the stub's mtime here would be
+                # exactly the conflation the mtime-vs-modifiedTime regression
+                # test (Task 22) exists to catch, just moved into frontmatter
+                # instead of into enqueue's change detection.
+                source_modified_at = drive_modified_time
+            else:
+                source_type = _source_type_for(extension, sniffed_signature)
 
-            staged_path = tmp_dir / rel_path.rsplit("/", 1)[-1]
-            shutil.copy2(cfg.input_root / rel_path, staged_path)
+                staged_path = tmp_dir / rel_path.rsplit("/", 1)[-1]
+                shutil.copy2(cfg.input_root / rel_path, staged_path)
 
-            conversion_result = _convert(staged_path, source_type, cfg)
+                conversion_result = _convert(staged_path, source_type, cfg)
+                independent_metadata = _independent_metadata(staged_path, source_type) if conversion_result.success else {}
+                source_hash = local_content_hash
+                source_modified_at = source_mtime
+
             if not conversion_result.success:
                 _fail_job(conn, job_id, conversion_result.error)
                 return
-
-            independent_metadata = _independent_metadata(staged_path, source_type)
 
             prior_version = conn.execute(
                 "SELECT MAX(version_number) FROM conversions WHERE source_file_id = ?", (source_file_id,)
@@ -186,7 +265,7 @@ def process_job(conn, job_id: int, cfg, worker_id: str) -> None:
             frontmatter_extras = _frontmatter_extras(independent_metadata)
             base_fm = {
                 "source_path": rel_path, "source_type": source_type, "source_hash": source_hash,
-                "source_modified_at": source_mtime, "converted_at": _now_iso(),
+                "source_modified_at": source_modified_at, "converted_at": _now_iso(),
                 "conversion_tool": conversion_result.tool, "version": version, "status": "current",
                 "business_line": "freedom2beu", "gauntlet_passed_at": _now_iso(),
             }
@@ -204,9 +283,17 @@ def process_job(conn, job_id: int, cfg, worker_id: str) -> None:
         # --- 9(a): write the final file ---
         final_path = cfg.converted_root / dest_rel_path
         final_path.parent.mkdir(parents=True, exist_ok=True)
-        final_path.write_text(assembled, encoding="utf-8")
+        # \\?\-prefixed open(), not final_path.write_text(): the defense-in-
+        # depth backstop spec §6 describes for a path that's still over
+        # cfg.long_path_threshold_chars despite naming.py's shortening --
+        # applied at this one call site because Python's open() on Windows
+        # honors the prefix reliably, which icacls (lock.py) is not
+        # guaranteed to (naming.long_path's docstring, Task 4).
+        with open(naming.long_path(final_path), "w", encoding="utf-8") as fh:
+            fh.write(assembled)
 
         # --- 9(b): commit the DB row as current + FTS, one transaction ---
+        drive_modified_time_at_conversion = drive_modified_time if is_drive_native else None
         with db.transaction(conn):
             conn.execute(
                 "UPDATE conversions SET status = 'superseded' WHERE source_file_id = ? AND status = 'current'",
@@ -216,13 +303,15 @@ def process_job(conn, job_id: int, cfg, worker_id: str) -> None:
                 """
                 INSERT INTO conversions
                     (source_file_id, job_id, version_number, output_path, status, source_type,
-                     source_hash_at_conversion, conversion_tool, converted_at, gauntlet_passed_at,
+                     source_hash_at_conversion, drive_modified_time_at_conversion, conversion_tool,
+                     converted_at, gauntlet_passed_at,
                      page_count, word_count, sheet_count, row_count_total)
-                VALUES (?, ?, ?, ?, 'current', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, 'current', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_file_id, job_id, version, dest_rel_path, source_type,
-                    source_hash, conversion_result.tool, _now_iso(), _now_iso(),
+                    source_hash, drive_modified_time_at_conversion, conversion_result.tool,
+                    _now_iso(), _now_iso(),
                     frontmatter_extras.get("page_count"),
                     frontmatter_extras.get("word_count"),
                     frontmatter_extras.get("sheet_count"),

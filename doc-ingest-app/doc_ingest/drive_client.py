@@ -110,3 +110,30 @@ def export_google_sheet(service, doc_id: str, dest_path: Path, cfg) -> Conversio
     )
     dest_path.write_bytes(content)
     return ConversionResult(success=True, markdown_body=None, tool="google-sheets-export", error=None)
+
+
+def build_default_service(cfg):
+    """Lazily builds a real Drive service from cached credentials -- called
+    only when a Drive-native job actually needs one (worker.py), never at
+    import time and never for local-file jobs. Token/client-secret paths are
+    fixed relative to the app root per SETUP.md.
+
+    Deliberately does NOT fall through to get_credentials' interactive
+    browser flow when token.json is missing: run_ingest_cron.py runs
+    unattended under Task Scheduler, and InstalledAppFlow.run_local_server
+    blocks indefinitely waiting for a browser that will never appear there --
+    wedging every subsequent 30-minute wake under Task Scheduler's
+    skip-if-running default (spec §11). The one-time interactive consent
+    belongs to SETUP.md step 6, run by hand, not to an unattended cron wake."""
+    from googleapiclient.discovery import build
+
+    app_root = Path(__file__).resolve().parents[1]
+    token_path = app_root / "token.json"
+    if not token_path.exists():
+        raise RuntimeError(
+            "doc-ingest-app has no cached Drive token -- run SETUP.md step 6 "
+            "(one-time interactive consent) before the cron can process "
+            "gdoc/gsheet files"
+        )
+    creds = get_credentials(token_path, app_root / "client_secret.json")
+    return build("drive", "v3", credentials=creds)
