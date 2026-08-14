@@ -6633,6 +6633,102 @@ either form, mirroring `verify_locked()`'s own pre-existing dual-form logic. Cau
 and fixed before committing, not a review finding; unrelated to the flagged empirical
 unknown itself.
 
+**Task 13 (`lock.py`) — a dedicated security-focused review (Opus) found two Important,
+plan-mandated findings in `verify_locked()` (originally this plan's own Step 5 code).**
+1. `verify_locked()` scanned the WHOLE icacls stdout — including the echoed file path
+itself, before any ACE line — for two completely uncorrelated substrings
+(`"S-1-3-4"`/`"OWNER RIGHTS"` and `"DENY"`, matched anywhere, not required on the same
+line). A real, user-controlled Drive document title containing both substrings could
+false-positive `verify_locked()` as `True` on the crash-resume path (read-only
+attribute set, no ACL call has actually landed yet) — silently recording a file as
+locked while it carries zero real ACL protection. Silent UNDER-locking of real client
+data is the dangerous direction of this class of bug.
+2. No test in the 7-test suite pinned the mandated ACCOUNT-level deny call (the first
+of the two required icacls calls) — a regression that deleted it would have passed
+every existing test, since the OWNER RIGHTS deny alone satisfies every assertion in
+the brief's own test file.
+
+**Resolved:** `verify_locked()` now strips the echoed path prefix from icacls output
+before scanning, then requires the OWNER-RIGHTS token and a parenthesized `(DENY)`
+marker to co-occur on the SAME line (not just anywhere in the output) — closing the
+uncorrelated-substring hole. One deviation from the reviewer's literal suggested
+implementation ("skip the first output line"): real icacls output concatenates the
+echoed path and the FIRST real ACE onto one line, so naive line-skipping would have
+discarded that ACE and produced a permanent false-negative instead of fixing the
+false-positive; prefix-stripping achieves the same correlation guarantee without
+losing ACE coverage — verified correct by the re-review's own hand-trace of the
+adversarial scenario (a path containing both an OWNER-RIGHTS-like token and a
+`(DENY)`-like substring). A new test assertion pins the account-level deny (`assert
+f"{account.upper()}:(DENY)" in result.stdout.upper()`). Fix commit: `53f6501`.
+Reviewed clean in the scoped re-review (both findings ADDRESSED, no new
+Critical/Important breakage). Two Low/non-blocking notes deferred to the SDD ledger
+for the final whole-branch review to triage: (a) the prefix-strip fails *open* (falls
+back toward the old broad-scan behavior) if the echoed path doesn't byte-match
+`str(path)` — realistically triggerable only by an OEM/ANSI codepage mismatch on a
+non-ASCII filename, not by content; a cheap structural fix exists (match the
+contiguous substring `"OWNER RIGHTS:(DENY)"`/`"S-1-3-4:(DENY)"` directly, since `:` is
+one of the nine characters `naming.sanitize_component` always strips, so no real
+filename can ever contain it — this would remove the prefix-strip dependency
+entirely); (b) the fix report's own adversarial-filename repro doesn't actually
+exercise the new code path it's offered as evidence for (evidence-quality gap only,
+not a code defect — the re-review's own independent hand-trace is what actually
+confirms the fix).
+
+**Task 15 (`worker.py`) — a dedicated integration review (Opus) found two Important,
+plan-mandated findings, both robustness gaps at the module's exception boundaries.**
+1. `process_job` (originally this plan's own Step 3 code) had NO exception handling
+anywhere in its pre-write section (staging, `_convert`, independent metadata, Gate 2,
+frontmatter build, Gate 1) — only the outer `finally` (heartbeat stop, tmp_dir
+cleanup) wrapped it, with no `except`. Any uncaught exception there (a corrupt/
+encrypted source file that `metadata_readers` can't parse, an unmapped extension's
+`KeyError`, a staging I/O error) left the job stuck at `'converting'` forever:
+`reclaim_stale_jobs` resets it to `'pending'`, it's re-claimed, crashes identically —
+an unbounded poison-pill loop that burns a real, billed firecrawl `.parse()` call
+every iteration (since `_convert` runs before the failure point in most triggers),
+and the job never reaches `'failed'`, so `enqueue_pending_jobs`'s already-failed-at-
+this-version guard — the only backstop against retry loops in the whole design —
+never engages.
+2. `resume_unlocked_conversions` had no per-row error isolation — `lock.
+apply_readonly_lock`'s `check=True` means any icacls failure raises `CalledProcessError`,
+which escaped the `for` loop entirely, aborting the whole sweep and permanently
+disabling crash-recovery for every OTHER unlocked conversion (not just the failing
+one) until manual intervention. This is the module that exists specifically to BE
+the crash-recovery mechanism, so one poisoned row taking down recovery for
+everything else was disproportionate to the mandate.
+
+**Resolved, both scoped carefully to preserve existing test semantics:** (1) a new
+inner `try/except Exception` wraps ONLY the pre-write section (from source-type
+resolution through Gate 1), converting any unexpected exception to a clean
+`_fail_job(conn, job_id, f"unexpected_error: {exc}")` call — the post-write (write →
+commit → lock → verify) section's behavior is UNCHANGED: an exception from `lock.
+apply_readonly_lock` still propagates out of `process_job` uncaught, exactly as
+`test_process_job_resumes_lock_only_after_a_simulated_crash` already required and
+continues to require (a regression tripwire duplicating this assertion was also
+added). (2) each row's lock attempt in `resume_unlocked_conversions` is now isolated
+in its own `try/except`, logging an `events` row (`event_type='resume_lock_failed'`)
+on failure and continuing to the next row rather than aborting the sweep. Fix commit:
+`c41506e`. Reviewed clean in the scoped re-review (both findings ADDRESSED — the
+re-review specifically hand-traced the exception-boundary indentation to confirm the
+post-write section is genuinely outside the new handler, and confirmed a second row
+genuinely succeeds after the first raises — no new Critical/Important breakage).
+
+Two Low/non-blocking notes from the re-review, both inherent trade-offs of the
+mandated fix shape rather than defects, deferred to the ledger for final-review
+triage: (a) a *transient* pre-write error (e.g. a momentary `database is locked` past
+the busy_timeout under concurrent workers) is now also permanently marked `'failed'`
+at that source-file version rather than being retried on the next wake — this
+trade is inherent to closing the unbounded-retry hole, and a future refinement could
+carve out known-retryable exception types; (b) `resume_lock_failed` events accrue
+unboundedly on a persistently-broken lock (one row per wake, no backoff/dedup) — this
+is exactly what the finding specified ("log and continue"), noted only as an
+operational consequence for whoever eventually owns events-table retention. The
+re-review also flagged one out-of-scope observation for Task 22, not a defect in this
+fix: `.gdoc`/`.gsheet` files still get a fresh `'failed'` `conversion_jobs` row every
+30-minute wake until Task 22 wires Drive metadata sync (since `drive_modified_time`
+stays NULL until then, so the already-failed-this-version guard's gdoc branch never
+matches) — costly in DB-row accumulation but NOT in billed API calls, since
+`_source_type_for` raises before `_convert` is ever reached.
+
 **Task 18 (`query.py`) — an environment-dependent SQL bug in the brief's own code.**
 `query.search`'s text-search branch used `WHERE f MATCH ?`, referencing the
 `conversions_fts` table's FROM-clause alias `f` inside the `MATCH` clause. On this
@@ -6691,101 +6787,54 @@ doesn't actually contain that substring — the regex logic itself was independe
 verified correct, so this is a documentation mismatch in the test, not a functional
 gap) — deferred to the ledger, non-blocking.
 
-**Task 15 (`worker.py`) — a dedicated integration review (Opus) found two Important,
-plan-mandated findings, both robustness gaps at the module's exception boundaries.**
-1. `process_job` (originally this plan's own Step 3 code) had NO exception handling
-anywhere in its pre-write section (staging, `_convert`, independent metadata, Gate 2,
-frontmatter build, Gate 1) — only the outer `finally` (heartbeat stop, tmp_dir
-cleanup) wrapped it, with no `except`. Any uncaught exception there (a corrupt/
-encrypted source file that `metadata_readers` can't parse, an unmapped extension's
-`KeyError`, a staging I/O error) left the job stuck at `'converting'` forever:
-`reclaim_stale_jobs` resets it to `'pending'`, it's re-claimed, crashes identically —
-an unbounded poison-pill loop that burns a real, billed firecrawl `.parse()` call
-every iteration (since `_convert` runs before the failure point in most triggers),
-and the job never reaches `'failed'`, so `enqueue_pending_jobs`'s already-failed-at-
-this-version guard — the only backstop against retry loops in the whole design —
-never engages.
-2. `resume_unlocked_conversions` had no per-row error isolation — `lock.
-apply_readonly_lock`'s `check=True` means any icacls failure raises `CalledProcessError`,
-which escaped the `for` loop entirely, aborting the whole sweep and permanently
-disabling crash-recovery for every OTHER unlocked conversion (not just the failing
-one) until manual intervention. This is the module that exists specifically to BE
-the crash-recovery mechanism, so one poisoned row taking down recovery for
-everything else was disproportionate to the mandate.
+**Task 21 (integration test + real read-only-enforcement tests) — pre-commit self-fix
+plus three Important review findings, all traced to the brief's own verbatim code.**
 
-**Resolved, both scoped carefully to preserve existing test semantics:** (1) a new
-inner `try/except Exception` wraps ONLY the pre-write section (from source-type
-resolution through Gate 1), converting any unexpected exception to a clean
-`_fail_job(conn, job_id, f"unexpected_error: {exc}")` call — the post-write (write →
-commit → lock → verify) section's behavior is UNCHANGED: an exception from `lock.
-apply_readonly_lock` still propagates out of `process_job` uncaught, exactly as
-`test_process_job_resumes_lock_only_after_a_simulated_crash` already required and
-continues to require (a regression tripwire duplicating this assertion was also
-added). (2) each row's lock attempt in `resume_unlocked_conversions` is now isolated
-in its own `try/except`, logging an `events` row (`event_type='resume_lock_failed'`)
-on failure and continuing to the next row rather than aborting the sweep. Fix commit:
-`c41506e`. Reviewed clean in the scoped re-review (both findings ADDRESSED — the
-re-review specifically hand-traced the exception-boundary indentation to confirm the
-post-write section is genuinely outside the new handler, and confirmed a second row
-genuinely succeeds after the first raises — no new Critical/Important breakage).
+*Caught by the implementer before the first commit:* `test_integration.py`'s SQL
+selected `sf.source_type` in a `conversion_jobs`/`source_files` join, but that column
+exists only on `conversions`. Fixed to `sf.extension` — diagnostic-only (used solely
+in an assertion-failure message), so the fix provably cannot change the test's
+pass/fail outcome, confirmed independently by the task reviewer (Opus).
 
-Two Low/non-blocking notes from the re-review, both inherent trade-offs of the
-mandated fix shape rather than defects, deferred to the ledger for final-review
-triage: (a) a *transient* pre-write error (e.g. a momentary `database is locked` past
-the busy_timeout under concurrent workers) is now also permanently marked `'failed'`
-at that source-file version rather than being retried on the next wake — this
-trade is inherent to closing the unbounded-retry hole, and a future refinement could
-carve out known-retryable exception types; (b) `resume_lock_failed` events accrue
-unboundedly on a persistently-broken lock (one row per wake, no backoff/dedup) — this
-is exactly what the finding specified ("log and continue"), noted only as an
-operational consequence for whoever eventually owns events-table retention. The
-re-review also flagged one out-of-scope observation for Task 22, not a defect in this
-fix: `.gdoc`/`.gsheet` files still get a fresh `'failed'` `conversion_jobs` row every
-30-minute wake until Task 22 wires Drive metadata sync (since `drive_modified_time`
-stays NULL until then, so the already-failed-this-version guard's gdoc branch never
-matches) — costly in DB-row accumulation but NOT in billed API calls, since
-`_source_type_for` raises before `_convert` is ever reached.
+*Found by the task reviewer, an Opus pass that also explicitly re-verified all three
+of this task's real-ACL safety constraints (the real archive is never referenced —
+including confirming `worker.py`'s module-attribute lock access means the mocks in
+`test_integration.py` genuinely intercept and no real lock ever lands in `tmp_path`;
+`lock_test_dir` fixtures are never cleaned up; the readonly-input test resets its own
+ACL):*
+1. `test_a_readonly_input_folder_makes_any_write_attempt_fail_with_a_real_os_error`
+denied write on ONE FILE only, never on the folder itself — proving "a write to a
+denied file fails" but not "a new file cannot be created in a denied folder," despite
+the test's own name promising folder-level enforcement.
+2. The gdoc integration test's trailing comment named Task 22's worker tests
+(`test_process_job_handles_a_gdoc_via_mocked_drive_export` etc.) at a commit where
+Task 22 hadn't been implemented yet, and the test's own name overstated what it
+covers (classification-only, no conversion produced).
+3. The ACL `/reset` in the `finally` block discarded its exit status entirely — a
+failed reset would silently strand a locked file inside `tmp_path`, invisible to
+anyone, defeating the exact purpose the `lock_test_dir`/`tmp_path` split exists to
+serve.
 
-**Task 13 (`lock.py`) — a dedicated security-focused review (Opus) found two Important,
-plan-mandated findings in `verify_locked()` (originally this plan's own Step 5 code).**
-1. `verify_locked()` scanned the WHOLE icacls stdout — including the echoed file path
-itself, before any ACE line — for two completely uncorrelated substrings
-(`"S-1-3-4"`/`"OWNER RIGHTS"` and `"DENY"`, matched anywhere, not required on the same
-line). A real, user-controlled Drive document title containing both substrings could
-false-positive `verify_locked()` as `True` on the crash-resume path (read-only
-attribute set, no ACL call has actually landed yet) — silently recording a file as
-locked while it carries zero real ACL protection. Silent UNDER-locking of real client
-data is the dangerous direction of this class of bug.
-2. No test in the 7-test suite pinned the mandated ACCOUNT-level deny call (the first
-of the two required icacls calls) — a regression that deleted it would have passed
-every existing test, since the OWNER RIGHTS deny alone satisfies every assertion in
-the brief's own test file.
-
-**Resolved:** `verify_locked()` now strips the echoed path prefix from icacls output
-before scanning, then requires the OWNER-RIGHTS token and a parenthesized `(DENY)`
-marker to co-occur on the SAME line (not just anywhere in the output) — closing the
-uncorrelated-substring hole. One deviation from the reviewer's literal suggested
-implementation ("skip the first output line"): real icacls output concatenates the
-echoed path and the FIRST real ACE onto one line, so naive line-skipping would have
-discarded that ACE and produced a permanent false-negative instead of fixing the
-false-positive; prefix-stripping achieves the same correlation guarantee without
-losing ACE coverage — verified correct by the re-review's own hand-trace of the
-adversarial scenario (a path containing both an OWNER-RIGHTS-like token and a
-`(DENY)`-like substring). A new test assertion pins the account-level deny (`assert
-f"{account.upper()}:(DENY)" in result.stdout.upper()`). Fix commit: `53f6501`.
-Reviewed clean in the scoped re-review (both findings ADDRESSED, no new
-Critical/Important breakage). Two Low/non-blocking notes deferred to the SDD ledger
-for the final whole-branch review to triage: (a) the prefix-strip fails *open* (falls
-back toward the old broad-scan behavior) if the echoed path doesn't byte-match
-`str(path)` — realistically triggerable only by an OEM/ANSI codepage mismatch on a
-non-ASCII filename, not by content; a cheap structural fix exists (match the
-contiguous substring `"OWNER RIGHTS:(DENY)"`/`"S-1-3-4:(DENY)"` directly, since `:` is
-one of the nine characters `naming.sanitize_component` always strips, so no real
-filename can ever contain it — this would remove the prefix-strip dependency
-entirely); (b) the fix report's own adversarial-filename repro doesn't actually
-exercise the new code path it's offered as evidence for (evidence-quality gap only,
-not a code defect — the re-review's own independent hand-trace is what actually
-confirms the fix).
+**Resolved:** (1) added a folder-level `icacls <input_root> /deny <account>:(WD,AD)`
+plus an assertion that creating a NEW file inside the denied folder also raises
+`PermissionError`, with both the file- and folder-level ACLs reset in `finally`. (2)
+renamed to `test_a_gdoc_pointer_is_classified_and_routed_away_from_firecrawl`,
+comment reworded to future tense with an explicit "produces no conversion"
+disclaimer. (3) added an `_icacls_reset` helper that captures the reset's
+`CompletedProcess` and `warnings.warn(...)`s (not `check=True`, which would mask a
+primary assertion failure) on a non-zero return code. Fix commit: `e0ef1e7`. Reviewed
+clean in the scoped re-review — all three findings ADDRESSED, safety constraints
+re-verified to still hold in the modified code (including confirming the NEW
+folder-level deny is also reset). Two new Minor, failure-path-only issues surfaced by
+the fix itself, deferred to the ledger for final-review triage rather than a further
+round (both are only reachable if `icacls` itself fails, which the happy-path test
+run doesn't exercise): the new folder-level `icacls` call sits just outside the
+`try:` block, so if THAT specific call were to fail, the file-level deny from the
+line before it would be stranded uncaught; and `warnings.warn` under this suite's
+`filterwarnings = error` pytest config actually raises rather than warns, which on a
+reset-failure path would itself skip the second (folder-level) reset call — an
+edge-case regression on exactly the failure path Finding 3 was meant to make safe,
+though inert whenever `icacls` succeeds (which it did on every actual run).
 
 ---
 
