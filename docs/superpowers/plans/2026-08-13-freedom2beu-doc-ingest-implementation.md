@@ -6533,6 +6533,25 @@ new regression test, and the test's "id() reuse" framing doesn't actually force 
 recycled id() since `conn1` stays in scope, though it still correctly proves the
 core defect — permanent dict-entry accumulation — is fixed).
 
+**Task 7 (`jobs.py`) — `test_claim_deterministically_excludes_a_second_connection`
+(originally this plan's own Step 1 test code) created `conn_a`/`conn_b` in the main
+thread but used each inside a separate worker thread (`_claim_a`/`_claim_b`).**
+`db.get_connection` deliberately keeps `check_same_thread=True` (Task 2/3's own
+documented choice — this app's concurrency model is DB-claimed via `BEGIN IMMEDIATE`,
+so cross-thread connection reuse should fail loudly, not be silently permitted), so
+the test's own connections hit `sqlite3.ProgrammingError` at the first cross-thread
+`execute()` call — a deterministic failure, not flakiness, caught by the implementer
+before review. The sibling test in the same file
+(`test_two_connections_racing_one_pending_job_only_one_wins`) already used the
+correct pattern (create/use/close the connection entirely inside its owning thread).
+**Resolved:** restructured the one test to match — `conn_a`/`conn_b` are now created
+and closed entirely inside `_claim_a`/`_claim_b`, never touched from the main thread
+or the other thread. No change to `db.py` or `jobs.py` production code; this was a
+test-only bug in the plan's own prescribed test. Fix commit: `4500130` (same commit
+as Task 7's implementation — the bug was caught before the first commit, not in a
+post-review fix round). 19/19 `test_jobs.py` passed across 3 consecutive runs, no
+flakiness; full suite 76/76.
+
 ---
 
 ## Execution Handoff
