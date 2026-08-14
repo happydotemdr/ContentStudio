@@ -205,6 +205,43 @@ def test_stage_page_grounding_output_pointer_target_missing_shows_no_output(clie
     assert "No output yet." in page.text
 
 
+def test_a_malformed_artifact_is_a_409_naming_the_file_not_a_500(client):
+    """P2 A-68/A-69: parse_frontmatter RAISES MalformedArtifactError now instead
+    of returning ({}, text) and masking a truncated artifact as an unversioned
+    one. A MalformedArtifactError reaching the operator as a bare 500 is a
+    regression, not a fix."""
+    test_client, tmp_path, app = client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    stage_dir = run_dir / "01-ideation"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    (stage_dir / "artifact.v1.md").write_text("---\nstage: x\nbody with no closing fence\n",
+                                              encoding="utf-8")
+
+    resp = test_client.post(f"/projects/{project_id}/stages/ideation/approve")
+    assert resp.status_code == 409
+    assert "artifact.v1.md" in resp.text
+    row = app.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'artifact.malformed'"
+    ).fetchone()
+    assert row["severity"] == "error"
+
+
+def test_a_malformed_artifact_renders_the_stage_page_rather_than_blanking_it(client):
+    """The GET path: _stage_context parses the same file. A malformed artifact
+    must show as an explicit banner, not as a stage with no output -- which is
+    indistinguishable from a stage that never ran."""
+    test_client, tmp_path, app = client
+    project_id, run_dir = _new_project(test_client, app, tmp_path)
+    stage_dir = run_dir / "01-ideation"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    (stage_dir / "artifact.v1.md").write_text("---\nstage: x\nbody with no closing fence\n",
+                                              encoding="utf-8")
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert page.status_code == 200
+    assert page.context["error_banner"]["kind"] == "malformed_artifact"
+
+
 def test_stage_page_unknown_project_returns_404(client):
     test_client, tmp_path, app = client
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})

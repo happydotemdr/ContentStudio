@@ -213,12 +213,20 @@ def _stage_context(request: Request, project_id: int, stage_id: str, *, error_ba
         up_def = next(s for s in stage_defs if s.id == dep_id)
         up_latest = artifacts.latest_artifact_path(run_dir / stage_dir_name(up_def))
         body = None
+        malformed = False
         if up_latest is not None:
-            _, body = artifacts.parse_frontmatter(up_latest.read_text(encoding="utf-8"))
+            try:
+                _, body = artifacts.read_artifact(up_latest)
+            except artifacts.MalformedArtifactError:
+                # E-05 extends to an unreadable upstream, not just an absent
+                # one: the card must show "present but broken", not silently
+                # drop body/html and look identical to a clean stage that
+                # simply produced nothing.
+                malformed = True
         inputs.append({
             "stage_id": dep_id,
             "present": up_latest is not None,
-            "malformed": False,          # set by a later task's MalformedArtifactError handler
+            "malformed": malformed,
             "artifact": up_latest.name if up_latest is not None else None,
             "body": body,                # raw source text -- never rendered via `| safe`
             "html": _render(body),       # sanitized at the producer
@@ -250,11 +258,28 @@ def _stage_context(request: Request, project_id: int, stage_id: str, *, error_ba
     output_body = None
     output_gates = []
     output_meta = {}
+    error_banner_from_malformed = None
     latest = artifacts.resolve_latest_artifact(request.app.state.repo_root, stage_id, stage_dir)
     if latest is not None:
-        output_meta, output_body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
-        output_gates = output_meta.get("gates") or []
+        try:
+            output_meta, output_body = artifacts.read_artifact(latest)
+        except artifacts.MalformedArtifactError as exc:
+            error_banner_from_malformed = {
+                "kind": "malformed_artifact",
+                "message": f"{exc.path.name} is malformed ({exc.reason}). Fix the file or "
+                           "regenerate the stage.",
+            }
+        else:
+            output_gates = output_meta.get("gates") or []
     output_html = _render(output_body)
+    # An explicit error_banner (e.g. _stage_conflict re-rendering a 409 for a
+    # blocking gate or a locked stage) is the caller's own diagnosis of THIS
+    # request and takes priority over one discovered incidentally while
+    # re-reading the output file for the page shell -- the caller's banner is
+    # what the operator was actually trying to do; a malformed artifact
+    # discovered along the way is real but secondary, and would otherwise
+    # silently replace a more specific, more relevant message.
+    error_banner = error_banner or error_banner_from_malformed
     # gate_view/has_blocking_gate are the ONE classifier every surface reads
     # (approve_stage, the per-gate tag, and the page-level flag) -- see
     # classify_gates's docstring. A never-ran gate is blocking; only an
@@ -280,7 +305,14 @@ def _stage_context(request: Request, project_id: int, stage_id: str, *, error_ba
     elif is_locked_or_running(stage_row["status"]):
         edit_blocked_reason = f"Stage is {stage_row['status']} and cannot be edited yet."
 
-    overrides = artifacts.read_gate_overrides(latest) if latest is not None else []
+    # Skip re-reading a file _stage_context already found malformed above --
+    # read_gate_overrides calls read_artifact internally too, and would raise
+    # the identical MalformedArtifactError a second time for no new signal.
+    overrides = (
+        artifacts.read_gate_overrides(latest)
+        if latest is not None and error_banner_from_malformed is None
+        else []
+    )
 
     transcript = _load_transcript(stage_dir)
     stage_rows = db_mod.list_stages(request.app.state.conn, project_id)

@@ -419,6 +419,26 @@ def test_override_on_already_final_artifact_records_reason_without_rewriting_gat
     assert meta_after["gates"][0]["status"] == "fail"  # the record is not rewritten
 
 
+def test_an_override_on_an_already_final_artifact_is_timestamped(conn, tmp_path):
+    """P2 A-38: record_gate_override's `at` is required and keyword-only. The
+    already-final branch deliberately skips stamp_final, so before this the
+    override carried NO timestamp at all -- only stages.approved_at moved, and
+    nothing linked the two."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "fail")
+    meta, body = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    meta["status"] = "final"
+    path.write_text(artifacts.render_frontmatter(meta, body), encoding="utf-8")
+
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+                  override_reason="verified by hand")
+
+    overrides = artifacts.read_gate_overrides(path)
+    assert len(overrides) == 1
+    assert overrides[0]["reason"] == "verified by hand"
+    assert overrides[0]["at"].endswith("+00:00")
+
+
 def _write_artifact_without_gates(stage_dir: Path) -> Path:
     """The pre-existing-artifact shape: minted before this stage had gates, or
     by a path that forgot to run them. No `gates` key at all."""

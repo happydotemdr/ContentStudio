@@ -77,7 +77,18 @@ def approve_stage(
     # already-final artifact on disk, and stage.html's override note makes
     # approving it directly (without regenerating) an encouraged path, not
     # an edge case.
-    latest_meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+    try:
+        latest_meta, _ = artifacts.read_artifact(latest)
+    except artifacts.MalformedArtifactError as exc:
+        obs.record_event(
+            conn, kind="artifact.malformed", severity="error", source="approval_service",
+            message=f"cannot approve '{stage_id}': {exc.path.name} is malformed ({exc.reason})",
+            detail={"project_id": project_id, "stage_id": stage_id, "path": str(exc.path)},
+        )
+        raise ValueError(
+            f"Stage '{stage_id}': {exc.path.name} is not a readable artifact ({exc.reason}). "
+            "Fix the file or regenerate the stage."
+        ) from exc
 
     # Registry-aware, deliberately: reading only what the frontmatter happens to
     # carry makes an ABSENT `gates` key indistinguishable from a clean run. Any
@@ -139,7 +150,7 @@ def approve_stage(
             # comment above), but an override reason supplied on THIS call is
             # still a real decision and must not be dropped just because the
             # artifact was already final -- see artifacts.record_gate_override.
-            artifacts.record_gate_override(latest, override_reason)
+            artifacts.record_gate_override(latest, override_reason, at=now)
     with db_mod.transaction(conn):
         db_mod.update_stage_status(conn, stage_row["id"], StageStatus.APPROVED.value, approved_at=now)
 
