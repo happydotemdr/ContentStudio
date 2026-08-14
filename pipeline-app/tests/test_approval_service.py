@@ -284,17 +284,58 @@ def _seed_scripting_awaiting_review(conn, tmp_path: Path) -> tuple[int, Path, Pa
     return project_id, run_dir, stage_dir
 
 
-def _write_artifact_with_gates(stage_dir: Path, status: str) -> Path:
+def _write_artifact_with_gates(stage_dir: Path, status: str | None) -> Path:
+    gate = {
+        "name": "gate_d_script_language",
+        "findings": [{"check": "D1", "beat": "HOOK", "message": "em-dash", "kind": "fail"}],
+    }
+    if status is not None:
+        gate["status"] = status
     meta = {
         "schema_version": 1, "run_id": "r1", "stage": "shorts-scripting", "version": 1,
         "status": "draft", "created_at": "2026-08-06T00:00:00+00:00", "finalized_at": None,
         "supersedes": None, "depends_on": [],
-        "gates": [{
-            "name": "gate_d_script_language", "status": status,
-            "findings": [{"check": "D1", "beat": "HOOK", "message": "em-dash", "kind": "fail"}],
-        }],
+        "gates": [gate],
     }
     return artifacts.write_artifact(stage_dir, 1, meta, "body")
+
+
+@pytest.mark.parametrize("status", ["skipped", None, "PASS", "", "passs"])
+def test_an_unrecognized_gate_status_blocks_approval(conn, tmp_path, status):
+    """A-35 FAULT: the block condition tested `status in ("fail","error")` and
+    the never-ran test only asked whether the NAME appeared, so `skipped`, null,
+    a missing key or a typo satisfied both and approved with no override and no
+    message."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, status)
+    with pytest.raises(ValueError, match="unrecognized"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+
+def test_an_unrecognized_status_is_distinguishable_from_a_failure(conn, tmp_path):
+    """A-35 DISTINGUISHABILITY: 'the gate failed', 'the gate never ran' and 'the
+    gate recorded a word we do not know' are three different facts with three
+    different fixes."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "skipped")
+    with pytest.raises(ValueError) as excinfo:
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+    message = str(excinfo.value)
+    assert "'skipped'" in message
+    assert "never ran" not in message
+
+
+def test_an_unrecognized_status_records_an_event(conn, tmp_path):
+    """A-35 SURFACING: a vocabulary change must be findable after the fact, not
+    only in the 409 the operator dismissed."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "skipped")
+    with pytest.raises(ValueError):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+    rows = conn.execute(
+        "SELECT kind, severity FROM events WHERE kind = 'gate.unknown_status'"
+    ).fetchall()
+    assert [(r["kind"], r["severity"]) for r in rows] == [("gate.unknown_status", "warning")]
 
 
 def test_approve_raises_on_a_failing_gate_without_an_override(conn, tmp_path):

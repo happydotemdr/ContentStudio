@@ -2,10 +2,39 @@ import datetime
 import sqlite3
 from pathlib import Path
 
-from pipeline_app import artifacts, db as db_mod
+from pipeline_app import artifacts, db as db_mod, obs
 from pipeline_app.gates import GATE_REGISTRY
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
 from pipeline_app.state_machine import StageStatus, is_locked_or_running, stages_to_unlock
+
+KNOWN_STATUSES = frozenset({"pass", "fail", "error"})
+
+
+def classify_gates(stage_id: str, recorded: list[dict]) -> list[dict]:
+    """One entry per gate, carrying `state` and the `blocking` verdict.
+
+    The ONE place a gate result is judged. approve_stage used to consult
+    GATE_REGISTRY for a never-ran gate while stage_page's has_failing_gate only
+    looked for fail/error, so the page and the 409 disagreed -- that disagreement
+    IS E-03. Every surface reads this list: the approve decision, gate_view, and
+    has_blocking_gate. Only an explicit "pass" is not blocking (A-35).
+    """
+    reported = {g.get("name") for g in recorded}
+    classified = []
+    for g in recorded:
+        status = g.get("status")
+        state = {
+            "pass": "passed", "fail": "failed", "error": "errored",
+        }.get(status, "unknown")
+        classified.append({
+            "name": g.get("name"), "state": state, "status_raw": status,
+            "blocking": state != "passed", "findings": g.get("findings") or [],
+        })
+    classified.extend({
+        "name": name, "state": "never_ran", "status_raw": None,
+        "blocking": True, "findings": [],
+    } for name, _runner in GATE_REGISTRY.get(stage_id, []) if name not in reported)
+    return classified
 
 
 def approve_stage(
@@ -50,15 +79,33 @@ def approve_stage(
     # is built to refuse. A registered gate with no recorded result blocks
     # exactly as a failing one does, and says which of the two it is.
     recorded = latest_meta.get("gates") or []
-    failing = [g for g in recorded if g.get("status") in ("fail", "error")]
-    reported_names = {g.get("name") for g in recorded}
-    never_ran = [
-        name for name, _runner in GATE_REGISTRY.get(stage_id, [])
-        if name not in reported_names
-    ]
-    if (failing or never_ran) and not override_reason:
-        problems = [f"{g['name']} ({g['status']})" for g in failing]
-        problems += [f"{name} (never ran -- no result in the artifact)" for name in never_ran]
+    classified = classify_gates(stage_id, recorded)
+    blocking = [g for g in classified if g["blocking"]]
+
+    # Recorded here regardless of override_reason: an override silences the
+    # 409 the operator sees, but a status the codebase doesn't recognize is a
+    # vocabulary drift bug that must stay findable in `events` even when
+    # someone overrides past it (A-35 SURFACING).
+    for g in blocking:
+        if g["state"] == "unknown":
+            obs.record_event(
+                conn, kind="gate.unknown_status", severity="warning", source="approval_service",
+                message=(f"gate {g['name']!r} on stage '{stage_id}' recorded status "
+                          f"{g['status_raw']!r}, which is not one of {sorted(KNOWN_STATUSES)}"),
+                detail={"project_id": project_id, "stage_id": stage_id},
+            )
+
+    if blocking and not override_reason:
+        problems = []
+        for g in blocking:
+            if g["state"] == "never_ran":
+                problems.append(f"{g['name']} (never ran -- no result in the artifact)")
+            elif g["state"] == "unknown":
+                problems.append(
+                    f"{g['name']} (unrecognized status {g['status_raw']!r} -- only 'pass' passes)"
+                )
+            else:
+                problems.append(f"{g['name']} ({g['status_raw']})")
         raise ValueError(
             f"Stage '{stage_id}' has a blocking gate: {', '.join(problems)}. "
             "Fix the findings and regenerate, or approve with an override reason."
