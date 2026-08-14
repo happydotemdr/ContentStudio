@@ -158,7 +158,8 @@ def run_prompt_sheet_gate(
     """
     linter = _load_linter(repo_root, "lint_prompt_sheet")
     sheet_text = artifact_path.read_text(encoding="utf-8")
-    shots, sheet_world = linter.parse_sheet(sheet_text)
+    parse = linter.parse_sheet(sheet_text)
+    shots, sheet_world = parse.shots, parse.world
     if not shots:
         raise ValueError(f"no shots parsed from {artifact_path.name} -- check the sheet format")
 
@@ -183,6 +184,20 @@ def run_prompt_sheet_gate(
                 f"--styleboard {styleboard_path.name}` reports the same defect as a "
                 f"per-shot C8/C18 wall naming the sheet; the defect is in the styleboard."
             )
+        if sheet_world:
+            # A legacy sheet that still carries its own WORLD LOCK block, mirrored
+            # from lint_prompt_sheet.main -- the sheet's block is discarded in
+            # favor of the styleboard's, and that discard is recorded rather than
+            # silent (finding P3-6).
+            parse.findings.append(linter.Finding(
+                "PARSE", None,
+                f"the sheet at {artifact_path.name} carries its own WORLD LOCK block, but a "
+                f"styleboard was also supplied at {styleboard_path.name}; the sheet's "
+                "block is being discarded -- remove it from the sheet if the styleboard "
+                "is now authoritative, or drop the styleboard input if the sheet's own "
+                "block should still apply.",
+                kind="parse",
+            ))
 
     cover = linter.parse_cover(sheet_text)
 
@@ -197,7 +212,19 @@ def run_prompt_sheet_gate(
                 f"Style Library not found at {library_path} -- Gate C cannot resolve "
                 f"{artifact_path.name}'s slot labels"
             )
-        library = linter.parse_style_library(library_path.read_text(encoding="utf-8"))
+        library, library_findings = linter.parse_style_library_checked(
+            library_path.read_text(encoding="utf-8")
+        )
+        if library_findings:
+            # Mirrors main()'s early EXIT_MISSING_DEPENDENCY: a Library with a
+            # malformed entry heading looks complete but silently drops that
+            # entry, so a sheet binding it fails C20 one stage later naming the
+            # wrong problem (finding P3-3). Fail closed here instead, naming the
+            # Library file and what was wrong with it.
+            detail = "; ".join(f"[{f.check}] {f.message}" for f in library_findings)
+            raise GateInputError(
+                f"Style Library at {library_path} could not be fully parsed: {detail}"
+            )
         if not library:
             # Same reasoning as the empty-styleboard branch above: linting against an
             # empty Library would report every slot as unknown, naming the wrong
@@ -208,8 +235,10 @@ def run_prompt_sheet_gate(
             )
 
     findings = [
+        *parse.findings,
         *linter.check_cover_present(sheet_text),
-        *linter.lint(shots, world, cover=cover, library=library),
+        *linter.lint(shots, world, cover=cover, library=library,
+                     declared_shot_count=parse.declared_shot_count),
     ]
     return _as_dicts(findings)
 

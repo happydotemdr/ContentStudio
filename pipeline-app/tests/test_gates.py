@@ -1,4 +1,5 @@
 import ast
+import shutil
 from pathlib import Path
 
 import pytest
@@ -465,19 +466,32 @@ def _cli_findings(sheet: Path, styleboard: Path | None, library: Path) -> set[tu
     comparison is against the CLI's decisions rather than a paraphrase of them."""
     linter = gates._load_linter(REPO_ROOT, "lint_prompt_sheet")
     sheet_text = sheet.read_text(encoding="utf-8")
-    shots, sheet_world = linter.parse_sheet(sheet_text)
-    world = (
-        linter.parse_world_lock(styleboard.read_text(encoding="utf-8"))
-        if styleboard is not None else sheet_world
-    )
+    parse = linter.parse_sheet(sheet_text)
+    shots, sheet_world = parse.shots, parse.world
+    if styleboard is not None:
+        world = linter.parse_world_lock(styleboard.read_text(encoding="utf-8"))
+        if sheet_world:
+            parse.findings.append(linter.Finding(
+                "PARSE", None,
+                f"the sheet at {sheet.name} carries its own WORLD LOCK block, but a "
+                f"styleboard was also supplied at {styleboard.name}; the sheet's "
+                "block is being discarded -- remove it from the sheet if the styleboard "
+                "is now authoritative, or drop --styleboard if the sheet's own block "
+                "should still apply.",
+                kind="parse",
+            ))
+    else:
+        world = sheet_world
     cover = linter.parse_cover(sheet_text)
     lib = (
-        linter.parse_style_library(library.read_text(encoding="utf-8"))
+        linter.parse_style_library_checked(library.read_text(encoding="utf-8"))[0]
         if linter.sheet_declares_slots(shots, cover) else None
     )
     findings = [
+        *parse.findings,
         *linter.check_cover_present(sheet_text),
-        *linter.lint(shots, world, cover=cover, library=lib),
+        *linter.lint(shots, world, cover=cover, library=lib,
+                     declared_shot_count=parse.declared_shot_count),
     ]
     return {(f.check, f.shot_index, f.message) for f in findings}
 
@@ -496,6 +510,19 @@ DIFFERENTIAL_CASES = [
 ]
 
 
+def _normalize_stray_world_lock_wording(findings: set[tuple]) -> set[tuple]:
+    """P3-6's stray-WORLD-LOCK finding is, by design, worded differently on each
+    side -- the CLI says '--styleboard' (a real flag it has); the app says 'the
+    styleboard input' (it has no command line). That is the one documented,
+    intentional wording split, so normalize just this finding's message before
+    the byte-for-byte comparison below -- every other check id still compares
+    exactly as it did before."""
+    return {
+        (check, shot_index, message.replace("the styleboard input", "--styleboard"))
+        for check, shot_index, message in findings
+    }
+
+
 @pytest.mark.parametrize("label,sheet,styleboard", DIFFERENTIAL_CASES,
                          ids=[c[0] for c in DIFFERENTIAL_CASES])
 def test_app_and_cli_gate_c_report_identical_findings(label, sheet, styleboard):
@@ -503,7 +530,9 @@ def test_app_and_cli_gate_c_report_identical_findings(label, sheet, styleboard):
     laxer app -- and nothing tested it. C-74, C-75 and A-31 are all divergences
     the two suites could not see because each tested its own side."""
     library = REPO_ROOT / "docs" / "style-library.md"
-    assert _app_findings(sheet, styleboard) == _cli_findings(sheet, styleboard, library)
+    app = _normalize_stray_world_lock_wording(_app_findings(sheet, styleboard))
+    cli = _normalize_stray_world_lock_wording(_cli_findings(sheet, styleboard, library))
+    assert app == cli
 
 
 def test_the_only_gate_c_divergence_is_the_empty_world_lock_input_error(tmp_path):
@@ -521,3 +550,116 @@ def test_the_only_gate_c_divergence_is_the_empty_world_lock_input_error(tmp_path
                         REPO_ROOT / "docs" / "style-library.md")
     assert {c for c, _i, _m in app} == {"C0"}
     assert {c for c, _i, _m in cli} <= {"C8", "C18"}
+
+
+# --- T7B: closing the four remaining CLI/app Gate C parity gaps --------------
+
+
+def test_a_malformed_shot_heading_produces_the_same_parse_finding_on_both_sides(tmp_path):
+    """P3-1 / C-70: a heading close enough to look intentional but missing its
+    trailing camera-height field used to be silently skipped, dropping that
+    shot from every check C1-C20 on the app side while the CLI recorded a
+    blocking PARSE finding naming the line."""
+    original = (FIXTURES / "passing_sheet.md").read_text(encoding="utf-8")
+    corrupted = original.replace(
+        "### Shot 2 — Setup (3–8s) · Register B · WORLD · XWIDE · EYE",
+        "### Shot 2 — Setup (3–8s) · Register B · WORLD · XWIDE",
+    )
+    assert corrupted != original
+    sheet = tmp_path / "sheet.md"
+    sheet.write_text(corrupted, encoding="utf-8")
+    styleboard = FIXTURES / "passing_styleboard.md"
+    library = REPO_ROOT / "docs" / "style-library.md"
+
+    app = _app_findings(sheet, styleboard)
+    cli = _cli_findings(sheet, styleboard, library)
+    assert app == cli
+    assert any(
+        check == "PARSE" and shot_index is None and "line 12" in message
+        for check, shot_index, message in cli
+    ), cli
+
+
+def test_a_wrong_declared_shot_count_is_flagged_identically_on_both_sides(tmp_path):
+    """P3-2 / C-71: `declared_shot_count` must reach `lint()` on both sides so
+    `check_shot_count`'s C21 mismatch finding fires identically, not only on
+    the CLI."""
+    original = (FIXTURES / "passing_sheet.md").read_text(encoding="utf-8")
+    mutated = original.replace(
+        "PER-SHOT PROMPTS\n", "PER-SHOT PROMPTS\nSHOT COUNT: 6\n", 1
+    )
+    assert mutated != original
+    sheet = tmp_path / "sheet.md"
+    sheet.write_text(mutated, encoding="utf-8")
+    styleboard = FIXTURES / "passing_styleboard.md"
+    library = REPO_ROOT / "docs" / "style-library.md"
+
+    app = _app_findings(sheet, styleboard)
+    cli = _cli_findings(sheet, styleboard, library)
+    assert app == cli
+    assert any(
+        check == "C21" and "declares 6 shot(s) but 5 parsed" in message
+        for check, _shot_index, message in cli
+    ), cli
+
+
+def test_a_malformed_style_library_entry_makes_the_app_error_like_the_clis_early_exit(tmp_path):
+    """P3-3 / C-76: a `### ` entry heading that fails the kebab-case shape used
+    to be silently dropped by the unchecked `parse_style_library`, so a sheet
+    binding that exact label failed C20 one stage later, naming the sheet for
+    a defect that lives in the Library. `parse_style_library_checked` surfaces
+    the malformed heading as a `library_findings` entry; the CLI exits
+    EXIT_MISSING_DEPENDENCY on it (confirmed directly below), and the app must
+    now raise/record the equivalent `status: "error"` naming the Library file,
+    rather than deferring to a confusing C20 failure."""
+    library_text = (REPO_ROOT / "docs" / "style-library.md").read_text(encoding="utf-8")
+    corrupted_library = library_text.replace(
+        "### rgs-present-soccer-a", "### RGS-present-soccer-a"
+    )
+    assert corrupted_library != library_text
+
+    linter = gates._load_linter(REPO_ROOT, "lint_prompt_sheet")
+    _library, library_findings = linter.parse_style_library_checked(corrupted_library)
+    assert library_findings, "the mutation must actually break parse_style_library_checked"
+
+    fake_repo = tmp_path / "repo"
+    (fake_repo / "scripts").mkdir(parents=True)
+    shutil.copy(
+        REPO_ROOT / "scripts" / "lint_prompt_sheet.py",
+        fake_repo / "scripts" / "lint_prompt_sheet.py",
+    )
+    (fake_repo / "docs").mkdir()
+    (fake_repo / "docs" / "style-library.md").write_text(corrupted_library, encoding="utf-8")
+
+    upstream = {"styleboard": FIXTURES / "passing_styleboard.md"}
+    result = gates.run_gates_for_stage(
+        fake_repo, "visual", FIXTURES / "passing_sheet.md", upstream
+    )[0]
+    assert result["status"] == "error"
+    assert "style-library.md" in result["findings"][0]["message"]
+
+
+def test_a_stray_sheet_world_lock_alongside_a_styleboard_is_flagged_identically(tmp_path):
+    """P3-6: a legacy sheet that still carries its own WORLD LOCK block, now
+    also fed a styleboard, has that block silently discarded unless both sides
+    record the discard. Message wording differs only in "--styleboard" (CLI)
+    vs. "the styleboard input" (app); assert on the shared substring, not full
+    equality."""
+    original = (FIXTURES / "passing_sheet.md").read_text(encoding="utf-8")
+    stray_world = "WORLD LOCK\n  register_a_sport: club soccer\n\n"
+    mutated = stray_world + original
+    assert mutated != original
+    sheet = tmp_path / "sheet.md"
+    sheet.write_text(mutated, encoding="utf-8")
+    styleboard = FIXTURES / "passing_styleboard.md"
+    library = REPO_ROOT / "docs" / "style-library.md"
+
+    app = _app_findings(sheet, styleboard)
+    cli = _cli_findings(sheet, styleboard, library)
+
+    for findings in (app, cli):
+        stray = [
+            (check, shot_index, message) for check, shot_index, message in findings
+            if check == "PARSE" and shot_index is None and "own WORLD LOCK block" in message
+        ]
+        assert len(stray) == 1, findings
