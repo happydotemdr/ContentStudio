@@ -14,6 +14,7 @@ longer than the reclaim staleness threshold."""
 from __future__ import annotations
 
 import datetime as dt
+import json
 import shutil
 import threading
 from pathlib import Path
@@ -123,7 +124,6 @@ def process_job(conn, job_id: int, cfg, worker_id: str) -> None:
         "FROM source_files WHERE id = ?", (source_file_id,)
     ).fetchone()
     rel_path, extension, size_bytes, sniffed_signature, source_mtime, source_hash = source
-    source_type = _source_type_for(extension, sniffed_signature)
 
     tmp_dir = cfg.tmp_root / f"job-{job_id}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -141,39 +141,64 @@ def process_job(conn, job_id: int, cfg, worker_id: str) -> None:
     )
     heartbeat_thread.start()
     try:
-        staged_path = tmp_dir / rel_path.rsplit("/", 1)[-1]
-        shutil.copy2(cfg.input_root / rel_path, staged_path)
+        # --- steps 6-8: stage, convert, gauntlet -- ANY unexpected exception
+        # here (an unmapped extension such as a .gdoc/.gsheet row enqueued
+        # before Task 22's Drive-export branch lands, a corrupt/encrypted
+        # PDF/DOCX/XLSX that metadata_readers can't parse, a staging I/O
+        # error, etc.) is converted to a clean job failure rather than
+        # allowed to propagate. Left unhandled, the job would stay stuck at
+        # 'converting' forever, get reset to 'pending' by reclaim_stale_jobs
+        # once the staleness threshold passes, get re-claimed, and crash
+        # identically -- an unbounded poison-pill retry loop that burns a
+        # real billed firecrawl .parse() call every single pass (since
+        # _convert runs before this can fail), because the job never reaches
+        # 'failed' and enqueue_pending_jobs's already-failed-at-this-version
+        # guard -- the only backstop against retry loops in the whole
+        # design -- can never engage. Deliberately scoped to ONLY this
+        # pre-write section: the write -> commit -> lock -> verify sequence
+        # below must keep raising uncaught, since that's what leaves a job
+        # correctly parked at 'placing' for resume_unlocked_conversions
+        # rather than losing track of an already-written, already-committed
+        # conversion.
+        try:
+            source_type = _source_type_for(extension, sniffed_signature)
 
-        conversion_result = _convert(staged_path, source_type, cfg)
-        if not conversion_result.success:
-            _fail_job(conn, job_id, conversion_result.error)
-            return
+            staged_path = tmp_dir / rel_path.rsplit("/", 1)[-1]
+            shutil.copy2(cfg.input_root / rel_path, staged_path)
 
-        independent_metadata = _independent_metadata(staged_path, source_type)
+            conversion_result = _convert(staged_path, source_type, cfg)
+            if not conversion_result.success:
+                _fail_job(conn, job_id, conversion_result.error)
+                return
 
-        prior_version = conn.execute(
-            "SELECT MAX(version_number) FROM conversions WHERE source_file_id = ?", (source_file_id,)
-        ).fetchone()[0]
-        version = (prior_version or 0) + 1
+            independent_metadata = _independent_metadata(staged_path, source_type)
 
-        gate2_result, dest_rel_path = gauntlet.run_gate2(conn, rel_path, source_file_id, version, cfg)
-        if not gate2_result.passed:
-            _fail_job(conn, job_id, gate2_result.failure_reason)
-            return
+            prior_version = conn.execute(
+                "SELECT MAX(version_number) FROM conversions WHERE source_file_id = ?", (source_file_id,)
+            ).fetchone()[0]
+            version = (prior_version or 0) + 1
 
-        frontmatter_extras = _frontmatter_extras(independent_metadata)
-        base_fm = {
-            "source_path": rel_path, "source_type": source_type, "source_hash": source_hash,
-            "source_modified_at": source_mtime, "converted_at": _now_iso(),
-            "conversion_tool": conversion_result.tool, "version": version, "status": "current",
-            "business_line": "freedom2beu", "gauntlet_passed_at": _now_iso(),
-        }
-        fm = frontmatter.build_frontmatter(base_fm, frontmatter_extras)
-        assembled = frontmatter.serialize(fm, conversion_result.markdown_body)
+            gate2_result, dest_rel_path = gauntlet.run_gate2(conn, rel_path, source_file_id, version, cfg)
+            if not gate2_result.passed:
+                _fail_job(conn, job_id, gate2_result.failure_reason)
+                return
 
-        gate1_result = gauntlet.run_gate1(source_type, size_bytes or 0, assembled, independent_metadata, cfg)
-        if not gate1_result.passed:
-            _fail_job(conn, job_id, gate1_result.failure_reason)
+            frontmatter_extras = _frontmatter_extras(independent_metadata)
+            base_fm = {
+                "source_path": rel_path, "source_type": source_type, "source_hash": source_hash,
+                "source_modified_at": source_mtime, "converted_at": _now_iso(),
+                "conversion_tool": conversion_result.tool, "version": version, "status": "current",
+                "business_line": "freedom2beu", "gauntlet_passed_at": _now_iso(),
+            }
+            fm = frontmatter.build_frontmatter(base_fm, frontmatter_extras)
+            assembled = frontmatter.serialize(fm, conversion_result.markdown_body)
+
+            gate1_result = gauntlet.run_gate1(source_type, size_bytes or 0, assembled, independent_metadata, cfg)
+            if not gate1_result.passed:
+                _fail_job(conn, job_id, gate1_result.failure_reason)
+                return
+        except Exception as exc:
+            _fail_job(conn, job_id, f"unexpected_error: {exc}")
             return
 
         # --- 9(a): write the final file ---
@@ -243,17 +268,43 @@ def resume_unlocked_conversions(conn, cfg) -> list[int]:
     """Re-attempts lock+verify for any 'current' conversion whose write
     completed but whose lock was never confirmed -- never reconverts. Also
     advances the associated conversion_jobs row to 'complete' once the lock
-    actually lands, since process_job deliberately left it at 'placing'."""
+    actually lands, since process_job deliberately left it at 'placing'.
+
+    Each row's lock attempt is isolated in its own try/except: this function
+    IS the crash-recovery mechanism, so one row whose icacls call fails
+    (lock.apply_readonly_lock uses check=True and raises CalledProcessError
+    on any icacls failure) must not abort the whole sweep and strand every
+    OTHER unlocked conversion in the same batch -- and every future wake,
+    since nothing would otherwise mark or skip the failing row. A failure is
+    logged as an events row (mirroring gauntlet.run_gate2's
+    naming_collision_resolved pattern) and the sweep moves on."""
     rows = conn.execute(
-        "SELECT id, output_path, job_id FROM conversions WHERE status = 'current' AND locked_confirmed_at IS NULL"
+        "SELECT id, output_path, job_id, source_file_id FROM conversions "
+        "WHERE status = 'current' AND locked_confirmed_at IS NULL"
     ).fetchall()
     resumed = []
-    for conversion_id, output_path, job_id in rows:
+    for conversion_id, output_path, job_id, source_file_id in rows:
         final_path = cfg.converted_root / output_path
         if not final_path.exists():
             continue
-        lock.apply_readonly_lock(final_path)
-        if lock.verify_locked(final_path):
+        try:
+            lock.apply_readonly_lock(final_path)
+            confirmed = lock.verify_locked(final_path)
+        except Exception as exc:
+            with db.transaction(conn):
+                conn.execute(
+                    "INSERT INTO events (ts, event_type, source_file_id, conversion_id, details_json) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        dt.datetime.now(dt.timezone.utc).isoformat(),
+                        "resume_lock_failed",
+                        source_file_id,
+                        conversion_id,
+                        json.dumps({"error": str(exc)}),
+                    ),
+                )
+            continue
+        if confirmed:
             now = dt.datetime.now(dt.timezone.utc).isoformat()
             with db.transaction(conn):
                 conn.execute(

@@ -208,3 +208,120 @@ def test_process_job_updates_heartbeat_while_converting(conn, tmp_path):
     assert observed["mid_run"] > claimed_heartbeat  # a heartbeat tick landed on the heartbeat thread's own connection during the slow step
     job_row = conn.execute("SELECT status FROM conversion_jobs WHERE id = ?", (job_id,)).fetchone()
     assert job_row[0] == "complete"
+
+
+def test_process_job_fails_cleanly_on_unmapped_extension_instead_of_looping_forever(conn, tmp_path):
+    """A .gdoc/.gsheet source file is enqueued by enqueue_pending_jobs
+    (classification='gdoc_pointer') well before Task 22 lands the Drive-
+    export branch that knows how to handle it -- _source_type_for raises a
+    plain KeyError for any such file today, since 'gdoc' isn't in
+    _LOCAL_EXTENSIONS. Left uncaught, that exception would leave the job
+    stuck at 'converting' forever: reclaim_stale_jobs would reset it to
+    'pending', it would be re-claimed, and it would crash identically on
+    every future wake -- an unbounded poison-pill retry loop, since the job
+    never reaches 'failed' and enqueue_pending_jobs's already-failed-at-
+    this-version guard can never engage."""
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    output_root = tmp_path / "output"
+    cfg = Config(input_root=input_root, output_root=output_root)
+    job_id = _seed_pending_job(conn, input_root, rel_path="Folder/Doc.gdoc", content=b"fake gdoc stub content")
+
+    worker.process_job(conn, job_id, cfg, worker_id="w1")
+
+    job_row = conn.execute("SELECT status, failure_reason FROM conversion_jobs WHERE id = ?", (job_id,)).fetchone()
+    assert job_row[0] == "failed"
+    assert job_row[1].startswith("unexpected_error:")
+    assert not (output_root / "converted").exists() or not any((output_root / "converted").rglob("*.md"))
+
+
+def test_process_job_resumes_lock_only_after_a_simulated_crash_unchanged_still_propagates(conn, tmp_path):
+    """Guard against the pre-write exception handling added above ever
+    creeping into the post-write section: an exception from
+    lock.apply_readonly_lock must still propagate out of process_job
+    uncaught, exactly as before -- that's what leaves the job correctly
+    parked at 'placing' (conversion already written+committed) for
+    resume_unlocked_conversions, rather than the pre-write handler
+    misclassifying it as a job that never got anywhere."""
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    output_root = tmp_path / "output"
+    cfg = Config(input_root=input_root, output_root=output_root)
+    job_id = _seed_pending_job(conn, input_root)
+
+    with patch("doc_ingest.lock.apply_readonly_lock", side_effect=RuntimeError("simulated crash")):
+        with pytest.raises(RuntimeError):
+            worker.process_job(conn, job_id, cfg, worker_id="w1")
+
+    conversion = conn.execute(
+        "SELECT status, locked_confirmed_at FROM conversions WHERE job_id = ?", (job_id,)
+    ).fetchone()
+    assert conversion[0] == "current"
+    assert conversion[1] is None
+    job_row = conn.execute("SELECT status FROM conversion_jobs WHERE id = ?", (job_id,)).fetchone()
+    assert job_row[0] == "placing"
+
+
+def test_resume_unlocked_conversions_isolates_a_failing_row_and_still_resumes_the_rest(conn, tmp_path):
+    """resume_unlocked_conversions IS the crash-recovery mechanism -- one
+    row whose icacls call fails (lock.apply_readonly_lock uses
+    subprocess.run(..., check=True) and raises CalledProcessError on any
+    icacls failure) must not abort the whole sweep and strand every OTHER
+    unlocked conversion in the same batch."""
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    output_root = tmp_path / "output"
+    cfg = Config(input_root=input_root, output_root=output_root)
+
+    with patch("doc_ingest.lock.apply_readonly_lock", side_effect=RuntimeError("simulated crash")):
+        job_id_1 = _seed_pending_job(conn, input_root, rel_path="Folder/One.txt", content=b"first file content")
+        with pytest.raises(RuntimeError):
+            worker.process_job(conn, job_id_1, cfg, worker_id="w1")
+
+        job_id_2 = _seed_pending_job(conn, input_root, rel_path="Folder/Two.txt", content=b"second file content")
+        with pytest.raises(RuntimeError):
+            worker.process_job(conn, job_id_2, cfg, worker_id="w1")
+
+    conversion_1_id, output_path_1 = conn.execute(
+        "SELECT id, output_path FROM conversions WHERE job_id = ?", (job_id_1,)
+    ).fetchone()
+    conversion_2_id, output_path_2 = conn.execute(
+        "SELECT id, output_path FROM conversions WHERE job_id = ?", (job_id_2,)
+    ).fetchone()
+    assert conversion_1_id != conversion_2_id
+    assert output_path_1 != output_path_2
+
+    # Compare resolved Path objects, not raw strings -- output_path is
+    # stored with forward slashes but Path normalizes to backslashes on
+    # Windows, so a substring check against str(path) would never match.
+    failing_final_path = cfg.converted_root / output_path_1
+
+    def _apply_lock_first_row_fails(path):
+        if path == failing_final_path:
+            raise RuntimeError("icacls failed for this one file")
+
+    with patch("doc_ingest.lock.apply_readonly_lock", side_effect=_apply_lock_first_row_fails), \
+         patch("doc_ingest.lock.verify_locked", return_value=True):
+        resumed = worker.resume_unlocked_conversions(conn, cfg)
+
+    assert resumed == [conversion_2_id]
+
+    conversion_1_locked = conn.execute(
+        "SELECT locked_confirmed_at FROM conversions WHERE id = ?", (conversion_1_id,)
+    ).fetchone()[0]
+    conversion_2_locked = conn.execute(
+        "SELECT locked_confirmed_at FROM conversions WHERE id = ?", (conversion_2_id,)
+    ).fetchone()[0]
+    assert conversion_1_locked is None  # the failing row stays unlocked, not silently dropped
+    assert conversion_2_locked is not None
+
+    job_1_status = conn.execute("SELECT status FROM conversion_jobs WHERE id = ?", (job_id_1,)).fetchone()[0]
+    job_2_status = conn.execute("SELECT status FROM conversion_jobs WHERE id = ?", (job_id_2,)).fetchone()[0]
+    assert job_1_status == "placing"  # unchanged -- never got to 'complete'
+    assert job_2_status == "complete"
+
+    event_row = conn.execute(
+        "SELECT event_type, conversion_id FROM events WHERE event_type = 'resume_lock_failed'"
+    ).fetchone()
+    assert event_row is not None
+    assert event_row[1] == conversion_1_id
