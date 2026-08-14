@@ -2579,6 +2579,25 @@ def test_every_declared_dependency_appears_even_when_all_are_missing(tmp_path, m
   and `grounding_input_html` in the same task — all four `_html` keys leave this module
   sanitized, so P15's `| safe` is safe by construction.
 
+  > **Amendment (T21 dispatch, this session): `browse_service.sanitize_html` does not exist yet
+  > — P15 has not executed.** Confirmed empirically: `grep -rn "sanitize_html"
+  > pipeline-app/pipeline_app/` returns nothing, and `browse_service.py` is explicitly listed in
+  > this file's own §1 as **not** owned by this package ("this package does not edit ... `templates/**`
+  > or `browse_service.py` (P15)"). §6's text describes the *answer* to a cross-package design
+  > question already coordinated with P15, but the *implementation* of `sanitize_html` was never
+  > going to exist on this branch before P15's own package runs — landing order has P3 before P15.
+  > **Resolution, same shape as the T2 `_approved_artifact_path` handoff:** implement a small,
+  > private `_sanitize_html(html: str) -> str` function directly in `routes/stages.py` (this
+  > package's own file), using only the stdlib (`html.parser.HTMLParser` with an allowlist of
+  > safe tags/attributes — no new dependency, matching §6's own constraint). `_render` calls this
+  > local function instead of `browse_service.sanitize_html`. When P15 lands, it decides for
+  > itself whether to promote this function to `browse_service.py` (making P3's `_render` import
+  > it from there instead) or keep its own — that reconciliation is P15's call with the code
+  > actually in front of it, not something T21 can pre-resolve. The behavior contract (strip
+  > `<script>`, strip event-handler attributes like `onerror=`, preserve ordinary text and safe
+  > markdown-generated tags) is what T21's own test asserts either way, so the eventual owner does
+  > not matter to correctness today.
+
   Keep `input_body`/`input_html` populated from the present cards for one release so P15's
   template can migrate; both are removed by P15's task and this package's tests do not assert
   on them.
