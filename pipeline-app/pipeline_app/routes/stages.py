@@ -399,7 +399,21 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
     grounding_pointer = None
     if project["brand"] == "raisinggoodsports" and stage_id != "grounding":
         grounding_dir = run_dir / "00-grounding"
-        grounding_pointer = grounding_service.read_pointer(grounding_dir)
+        status = grounding_service.verify_pointer(grounding_dir, repo_root)
+        if status.state == "ok":
+            grounding_pointer = grounding_service.read_pointer(grounding_dir)
+        elif status.state != "no_pointer":
+            # no_pointer means the stage never ran grounding at all -- not an
+            # error, just nothing to inject. Anything else (missing_target,
+            # hash_mismatch, unpinned) is a real staleness/corruption signal.
+            obs.record_event(
+                conn, kind="grounding.pointer_invalid", severity="warning",
+                source="routes.stages", message=(
+                    f"grounding pointer for project {project_id} is {status.state} "
+                    f"-- omitting it from this turn's context"
+                ),
+                detail={"project_id": project_id, "state": status.state},
+            )
 
     if stage_id == "grounding":
         async def event_stream():
@@ -422,12 +436,20 @@ async def stage_chat(request: Request, project_id: int, stage_id: str, message: 
             # rgs-grounding's SKILL.md), so there is nothing to archive —
             # the previous version is simply no longer the pointer target.
             after = grounding_service.snapshot_rgs_briefs(rgs_briefs_dir)
-            new_brief = grounding_service.identify_new_brief(before, after)
+            change = grounding_service.classify_brief_change(before, after)
             stage_row = db_mod.get_stage(conn, project_id, "grounding")
-            if new_brief is not None:
-                grounding_service.write_pointer(grounding_dir, f"rgs-briefs/{new_brief}")
+            if change.brief is not None:
+                grounding_service.write_pointer(
+                    grounding_dir, f"rgs-briefs/{change.brief}", repo_root
+                )
                 db_mod.update_stage_status(conn, stage_row["id"], "awaiting_review")
             else:
+                obs.record_event(
+                    conn, kind="grounding.brief_not_identified", severity="warning",
+                    source="routes.stages", message=change.reason,
+                    detail={"project_id": project_id, "added": change.added,
+                            "modified": change.modified},
+                )
                 db_mod.update_stage_status(conn, stage_row["id"], "no_artifact")
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")

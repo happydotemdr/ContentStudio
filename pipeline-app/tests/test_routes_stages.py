@@ -242,6 +242,80 @@ def test_a_malformed_artifact_renders_the_stage_page_rather_than_blanking_it(cli
     assert page.context["error_banner"]["kind"] == "malformed_artifact"
 
 
+def test_a_grounding_turn_that_identifies_no_brief_records_why(client, monkeypatch):
+    """P2 A-81: identify_new_brief is deleted; classify_brief_change returns a
+    BriefChange carrying `reason`, `added` and `modified`. The no_artifact
+    branch used to discard all of it, so 'the skill wrote nothing' and 'the
+    skill modified an existing brief in place' were the same silent
+    outcome."""
+    test_client, tmp_path, app = client
+    (tmp_path / "rgs-briefs").mkdir()
+    resp = test_client.post("/projects", data={"slug": "rgs", "brand": "raisinggoodsports"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+
+    async def fake_run_stage_turn(*args, **kwargs):
+        assert kwargs.get("finalize_artifact") is False
+        yield {"type": "result", "result": "nothing written to rgs-briefs/"}
+
+    from pipeline_app import turn_service
+    monkeypatch.setattr(turn_service, "run_stage_turn", fake_run_stage_turn)
+
+    with test_client.stream(
+        "POST", f"/projects/{project_id}/stages/grounding/chat", data={"message": "a topic"},
+    ) as response:
+        list(response.iter_text())
+
+    row = app.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'grounding.brief_not_identified'"
+    ).fetchone()
+    assert row is not None
+    assert row["severity"] == "warning"
+    assert row["message"] == "no brief was written"
+    detail = json.loads(row["detail"])
+    assert detail["added"] == []
+    assert detail["modified"] == []
+
+
+def test_a_downstream_rgs_stage_does_not_inject_a_stale_grounding_pointer(client, monkeypatch):
+    """P2 A-80: stage_chat injected grounding_pointer into every downstream RGS
+    kickoff with NO existence check. verify_pointer's state gates it."""
+    test_client, tmp_path, app = client
+    resp = test_client.post("/projects", data={"slug": "rgs", "brand": "raisinggoodsports"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    grounding_dir = run_dir / "00-grounding"
+    rgs_briefs_dir = tmp_path / "rgs-briefs"
+    rgs_briefs_dir.mkdir(parents=True)
+    brief_path = rgs_briefs_dir / "2026-07-27-example-brief.md"
+    brief_path.write_text("brief body", encoding="utf-8")
+    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md", tmp_path)
+    brief_path.unlink()  # pointer target now missing -> verify_pointer returns missing_target
+
+    captured = {}
+
+    async def fake_run_stage_turn(*args, **kwargs):
+        captured["grounding_pointer"] = kwargs.get("grounding_pointer")
+        yield {"type": "result", "result": "done"}
+
+    from pipeline_app import turn_service
+    monkeypatch.setattr(turn_service, "run_stage_turn", fake_run_stage_turn)
+
+    with test_client.stream(
+        "POST", f"/projects/{project_id}/stages/ideation/chat", data={"message": "hi"},
+    ) as response:
+        list(response.iter_text())
+
+    assert captured["grounding_pointer"] is None
+    row = app.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'grounding.pointer_invalid'"
+    ).fetchone()
+    assert row is not None
+    assert row["severity"] == "warning"
+    detail = json.loads(row["detail"])
+    assert detail["state"] == "missing_target"
+
+
 def test_stage_page_unknown_project_returns_404(client):
     test_client, tmp_path, app = client
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
