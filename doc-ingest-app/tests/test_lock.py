@@ -114,3 +114,13 @@ def test_icacls_output_shows_the_owner_rights_deny_entry(lock_test_dir):
     # same as verify_locked's own check.
     assert "S-1-3-4" in result.stdout or "OWNER RIGHTS" in result.stdout.upper()
     assert "DENY" in result.stdout.upper()
+    # Pin the FIRST icacls call too (the account-level deny), not just the
+    # OWNER RIGHTS one. Nothing else in this suite checks for it:
+    # verify_locked() never inspects the account-level entry, and the
+    # account-level deny is not actually redundant with the OWNER RIGHTS
+    # deny -- OWNER RIGHTS only applies while the accessing principal IS the
+    # object's owner, so the account-level deny is what covers a changed-
+    # ownership scenario. Without this assertion, deleting the account-level
+    # /deny call from apply_readonly_lock would silently pass all 7 tests.
+    account = getpass.getuser()
+    assert f"{account.upper()}:(DENY)" in result.stdout.upper()

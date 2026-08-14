@@ -65,10 +65,31 @@ def verify_locked(path: Path) -> bool:
         return False
     result = subprocess.run(["icacls", str(path)], capture_output=True, text=True, check=True)
     output = result.stdout
-    # icacls sometimes resolves the well-known OWNER RIGHTS SID to its
-    # display name ("OWNER RIGHTS") rather than printing the raw "S-1-3-4"
-    # string, depending on Windows version/locale -- match either form, or
-    # this would never report True on a build that resolves it, and every
-    # job would stall at 'placing' forever.
-    has_owner_rights_entry = "S-1-3-4" in output or "OWNER RIGHTS" in output.upper()
-    return has_owner_rights_entry and "DENY" in output.upper()
+    # icacls prints the echoed file path immediately followed by the FIRST
+    # ACE on the SAME line (confirmed empirically: "<path> OWNER
+    # RIGHTS:(DENY)(...)"), then each subsequent ACE on its own line. On
+    # Windows, the converted filename/folder is derived from user-controlled
+    # Drive document titles -- so scanning the raw output (path text
+    # included) for the sentinel substrings anywhere, independently, would
+    # let a filename/folder that merely happens to contain text resembling
+    # both "OWNER RIGHTS"/"S-1-3-4" and "DENY" (e.g. a coaching doc titled
+    # around "Owner Rights ... Denial ...") be misread as a real ACE match
+    # -- silently reporting a file as fully locked when it carries zero ACL
+    # protection (e.g. a crash-resume file with only the read-only
+    # attribute set, no icacls calls having landed yet). Strip the KNOWN
+    # path string (not just "line 1") from the front of the output before
+    # scanning, since the path and the first real ACE can share a line --
+    # discarding the whole first line would silently lose that ACE instead.
+    # Then require the OWNER-RIGHTS-identifying token AND the "(DENY)"
+    # marker (parenthesized, matching icacls's real ACE format "OWNER
+    # RIGHTS:(DENY)(...)") to appear TOGETHER on the same ACE line -- not
+    # just anywhere, independently, in the whole output.
+    path_str = str(path)
+    if output.startswith(path_str):
+        output = output[len(path_str):]
+    for line in output.splitlines():
+        line_upper = line.upper()
+        has_owner_rights_entry = "S-1-3-4" in line or "OWNER RIGHTS" in line_upper
+        if has_owner_rights_entry and "(DENY)" in line_upper:
+            return True
+    return False
