@@ -1,6 +1,7 @@
 import ast
 import asyncio
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -757,3 +758,27 @@ def test_a_styleboard_label_naming_no_library_entry_fails_here_not_downstream(tm
     s4 = [f for f in result["findings"] if f["check"] == "S4"]
     assert len(s4) == 1, "one finding per bad label, not one per downstream shot"
     assert "docs/style-library.md" in s4[0]["message"]
+
+
+# --- T14: _load_linter caches and cleans up after itself --------------------
+
+
+def test_a_linter_is_loaded_once_per_repo_root_and_module():
+    gates._LINTER_CACHE.clear()
+    first = gates._load_linter(REPO_ROOT, "lint_prompt_sheet")
+    second = gates._load_linter(REPO_ROOT, "lint_prompt_sheet")
+    assert first is second
+
+
+def test_a_failed_linter_exec_does_not_leave_a_broken_module_registered(tmp_path):
+    """A-42: the module is inserted into sys.modules under its BARE name before
+    exec_module runs and is never removed, so a failed exec left a
+    half-initialized module registered globally until the next gate run."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "lint_broken.py").write_text("raise RuntimeError('bad module')\n", encoding="utf-8")
+    sys.modules.pop("lint_broken", None)
+    with pytest.raises(RuntimeError):
+        gates._load_linter(tmp_path, "lint_broken")
+    assert "lint_broken" not in sys.modules
+    assert (tmp_path, "lint_broken") not in gates._LINTER_CACHE

@@ -109,12 +109,20 @@ class UpstreamMap(dict):
         return "resolved" if super().__contains__(key) else "absent"
 
 
+_LINTER_CACHE: dict[tuple[Path, str], Any] = {}
+
+
 def _load_linter(repo_root: Path, module_name: str):
+    key = (repo_root, module_name)
+    cached = _LINTER_CACHE.get(key)
+    if cached is not None:
+        return cached
     path = repo_root / "scripts" / f"{module_name}.py"
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load linter at {path}")
     module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(module_name)
     # Load-bearing, not cleanup-eligible: on Python 3.14, `@dataclass` resolves
     # its fields' string annotations by looking the defining module up in
     # sys.modules by name. A module loaded by file path (as these
@@ -123,7 +131,17 @@ def _load_linter(repo_root: Path, module_name: str):
     # own `@dataclass` definitions raise AttributeError before a single check
     # runs.
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # A-42: a failed exec used to leave a half-initialized module registered
+        # under a global bare name until the next gate run replaced it.
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+        raise
+    _LINTER_CACHE[key] = module
     return module
 
 
