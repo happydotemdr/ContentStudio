@@ -485,6 +485,83 @@ def test_a_script_tag_in_an_upstream_artifact_does_not_reach_the_context(tmp_pat
     assert "<script>" not in ctx["output_html"]
 
 
+def test_an_html_entity_decoded_attribute_cannot_inject_a_new_on_attribute(tmp_path: Path, monkeypatch):
+    """Regression: HTMLParser hands `handle_starttag` already-entity-decoded
+    attribute values, so `&quot;` in the source becomes a literal `"` by the
+    time our code sees it. Naively re-serializing that value verbatim into
+    `f' {name}="{value}"'` let the decoded quote close the attribute early and
+    a NEW `onmouseover=` attribute appear in the final string -- one our
+    on*-prefix filter never inspects, because it only ran against the parsed
+    attribute *name* (still just `href`), not anything introduced by our own
+    string concatenation on output. Escaping the value on reserialization is
+    the fix; this reproduces the reviewer's exact repro string end to end
+    through the real route."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: voiceover\n    skill: voiceover-brief\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "  - id: assembly\n    skill: shorts-assembly\n    dir_prefix: \"04\"\n"
+        "    depends_on: [voiceover]\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+
+    artifacts.write_artifact(
+        run_dir / "03-voiceover", 1, {"stage": "voiceover-brief"},
+        '<a href="x&quot; onmouseover=&quot;alert(1)">y</a>',
+    )
+
+    ctx = test_client.get(f"/projects/{project_id}/stages/assembly").context
+    html = ctx["inputs"][0]["html"]
+    # The exploit's whole point is a literal, unescaped '"' breaking out of the
+    # href value and starting a real onmouseover= attribute -- that exact
+    # sequence must never appear in the output.
+    assert '" onmouseover="' not in html
+    assert '<a href="x" onmouseover="alert(1)">y</a>' not in html
+    # "onmouseover" surviving as inert TEXT inside the escaped href value is
+    # fine and expected -- it is no longer a parsed attribute name.
+    assert "&quot;" in html
+
+
+def test_a_javascript_url_via_ordinary_markdown_link_syntax_is_stripped(tmp_path: Path, monkeypatch):
+    """Regression: `markdown.markdown("[click](javascript:alert(1))")` emits
+    `<a href="javascript:alert(1)">click</a>` from plain Markdown link syntax --
+    no raw HTML required, and artifact bodies are model-generated and
+    hand-editable, so this is an ordinary reachable path, not an edge case.
+    Tag-allowlisting and on*-attribute-stripping alone don't catch it; only a
+    URL-scheme check on href/src does. The tag and its text stay; only the
+    unsafe href attribute is dropped."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: voiceover\n    skill: voiceover-brief\n    dir_prefix: \"03\"\n    depends_on: []\n"
+        "  - id: assembly\n    skill: shorts-assembly\n    dir_prefix: \"04\"\n"
+        "    depends_on: [voiceover]\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+
+    artifacts.write_artifact(
+        run_dir / "03-voiceover", 1, {"stage": "voiceover-brief"},
+        "[click](javascript:alert(1))",
+    )
+
+    ctx = test_client.get(f"/projects/{project_id}/stages/assembly").context
+    html = ctx["inputs"][0]["html"]
+    assert "javascript:" not in html
+    assert "click" in html  # the link text and tag survive; only href is dropped
+
+
 def test_stage_page_renders_gate_results_and_override_field(tmp_path: Path, monkeypatch):
     """Finding 2a: the stage page must render the latest artifact's `gates`
     entries -- name, status, and each finding's check/beat/message/kind -- so

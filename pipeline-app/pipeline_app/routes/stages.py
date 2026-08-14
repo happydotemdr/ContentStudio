@@ -37,6 +37,44 @@ _ALLOWED_TAGS = frozenset({
 # handle_startendtag or a start tag with no matching end tag, so they must
 # never be pushed onto the "wait for matching close" stack below.
 _VOID_TAGS = frozenset({"br", "hr", "img"})
+# Attributes whose value is a URL markdown.markdown() can emit unfiltered
+# (image src, link href) -- javascript: is the OWASP #1 bypass for a
+# tag-allowlist-only sanitizer, and `[click](javascript:alert(1))` is
+# ordinary Markdown syntax, not raw HTML a model would need to reach for.
+_URL_ATTRS = frozenset({"href", "src"})
+_URL_SAFE_SCHEMES = frozenset({"http", "https", "mailto"})
+
+
+def _is_safe_url(value: str) -> bool:
+    """A relative/scheme-relative URL, or one using an allowlisted scheme.
+
+    Strips leading whitespace and drops embedded control characters first --
+    `java\\tscript:` and a leading newline before `javascript:` are classic
+    scheme-check bypasses that survive a naive `.startswith()` check (browsers
+    historically ignored tab/newline/CR inside a scheme name)."""
+    stripped = "".join(ch for ch in value if ch not in "\t\n\r").strip()
+    colon = stripped.find(":")
+    slash = stripped.find("/")
+    if colon == -1 or (slash != -1 and slash < colon):
+        return True  # no scheme before the first '/' -> relative/scheme-relative
+    scheme = stripped[:colon].lower()
+    return scheme in _URL_SAFE_SCHEMES
+
+
+def _escape_attr_value(value: str) -> str:
+    """Escape a value being re-serialized into a `"..."`-quoted attribute.
+
+    HTMLParser hands `handle_starttag` already-entity-decoded values (e.g.
+    `&quot;` -> `"`), so a value that looks inert at parse time can break out
+    of the quotes once this class writes it back out verbatim -- re-escaping
+    on OUR OWN output, not trusting how the input arrived, is what closes
+    that gap."""
+    return (
+        value.replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 class _HTMLSanitizer(HTMLParser):
@@ -54,6 +92,17 @@ class _HTMLSanitizer(HTMLParser):
         self._out = []
         self._skip_depth = 0  # >0 while inside a <script> (or nested one)
 
+    def _build_attr_str(self, attrs) -> str:
+        parts = []
+        for name, value in attrs:
+            lname = name.lower()
+            if lname.startswith("on") or value is None:
+                continue
+            if lname in _URL_ATTRS and not _is_safe_url(value):
+                continue  # drop just this attribute, keep the rest of the tag
+            parts.append(f' {name}="{_escape_attr_value(value)}"')
+        return "".join(parts)
+
     def handle_starttag(self, tag, attrs):
         if tag == "script":
             self._skip_depth += 1
@@ -62,24 +111,14 @@ class _HTMLSanitizer(HTMLParser):
             return
         if tag not in _ALLOWED_TAGS:
             return  # drop the tag, keep its text content (handled by handle_data)
-        safe_attrs = [
-            (name, value) for name, value in attrs
-            if not name.lower().startswith("on")
-        ]
-        attr_str = "".join(f' {name}="{value}"' for name, value in safe_attrs if value is not None)
-        self._out.append(f"<{tag}{attr_str}>")
+        self._out.append(f"<{tag}{self._build_attr_str(attrs)}>")
 
     def handle_startendtag(self, tag, attrs):
         if tag == "script" or self._skip_depth:
             return
         if tag not in _ALLOWED_TAGS:
             return
-        safe_attrs = [
-            (name, value) for name, value in attrs
-            if not name.lower().startswith("on")
-        ]
-        attr_str = "".join(f' {name}="{value}"' for name, value in safe_attrs if value is not None)
-        self._out.append(f"<{tag}{attr_str} />")
+        self._out.append(f"<{tag}{self._build_attr_str(attrs)} />")
 
     def handle_endtag(self, tag):
         if tag == "script":
