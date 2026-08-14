@@ -18,7 +18,7 @@ from pathlib import Path
 _PROTECTED_PREFIX = ("Freedom2BeU", "converted")
 
 _WRITE_VERB_RE = re.compile(
-    r"(^|\s)(>>|>|Remove-Item|del|rm|move|Move-Item|copy|Copy-Item|Set-Content|Add-Content|ren|Rename-Item)(\s|$)",
+    r"(^|\s)(>>|>|Remove-Item|del|rm|move|mv|Move-Item|copy|cp|Copy-Item|Set-Content|Add-Content|ren|Rename-Item)(\s|$)",
     re.IGNORECASE,
 )
 _CONVERTED_PATH_RE = re.compile(r"Freedom2BeU[\\/]converted", re.IGNORECASE)
@@ -29,7 +29,7 @@ def decide(tool_name: str, resolved_path: Path, project_root: Path) -> str | Non
         rel = resolved_path.resolve().relative_to(project_root.resolve())
     except ValueError:
         return None
-    if rel.parts[:2] != _PROTECTED_PREFIX:
+    if tuple(p.lower() for p in rel.parts[:2]) != tuple(p.lower() for p in _PROTECTED_PREFIX):
         return None
     if tool_name in ("Edit", "Write", "NotebookEdit"):
         return (
@@ -52,7 +52,8 @@ def main() -> int:
     project_root = Path(os.environ.get("CLAUDE_PROJECT_DIR", ".")).resolve()
 
     if tool_name in ("Edit", "Write", "NotebookEdit"):
-        file_path = payload.get("tool_input", {}).get("file_path")
+        tool_input = payload.get("tool_input", {})
+        file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
         if not file_path:
             return 0
         resolved_path = Path(file_path)
