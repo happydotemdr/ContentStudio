@@ -113,7 +113,7 @@ def test_every_convertible_type_produces_a_locked_current_conversion(conn, tmp_p
         assert fm["status"] == "current"
 
 
-def test_mocked_gdoc_export_produces_a_current_conversion(conn, tmp_path):
+def test_a_gdoc_pointer_is_classified_and_routed_away_from_firecrawl(conn, tmp_path):
     input_root = tmp_path / "input"
     output_root = tmp_path / "output"
     input_root.mkdir()
@@ -124,8 +124,9 @@ def test_mocked_gdoc_export_produces_a_current_conversion(conn, tmp_path):
     sync.sync_source_files(conn, input_root)
     row = conn.execute("SELECT classification FROM source_files WHERE rel_path = 'Session Notes.gdoc'").fetchone()
     assert row[0] == "gdoc_pointer"
-    # Full Drive-native process_job wiring (export -> gauntlet -> lock) is
-    # exercised end-to-end by Task 22's own worker tests
-    # (test_process_job_handles_a_gdoc_via_mocked_drive_export and the
-    # docx-fallback variant); this integration test only confirms
-    # scan/classification correctly routes .gdoc away from firecrawl.
+    # This test only confirms scan/classification correctly routes .gdoc
+    # away from firecrawl -- it does not run process_job and produces no
+    # conversion. Full Drive-native process_job wiring (export -> gauntlet
+    # -> lock) will be exercised end-to-end once Task 22 adds its own
+    # worker tests for the gdoc export path (a mocked-Drive-export happy
+    # path and a docx-fallback variant).

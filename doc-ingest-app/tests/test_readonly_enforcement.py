@@ -4,10 +4,27 @@ from __future__ import annotations
 
 import getpass
 import subprocess
+import warnings
 
 import pytest
 
 from doc_ingest import lock, sync
+
+
+def _icacls_reset(path):
+    """Reset an icacls ACL and surface a failed reset instead of swallowing
+    it -- a silently-failed reset here would leave a file/folder locked
+    inside tmp_path with zero visibility, which is exactly the failure mode
+    the lock_test_dir-vs-tmp_path split exists to avoid for real locks.
+    Deliberately not check=True: this runs from a `finally` block and must
+    never raise over a primary assertion failure/error already in flight."""
+    result = subprocess.run(["icacls", str(path), "/reset"], capture_output=True, text=True)
+    if result.returncode != 0:
+        warnings.warn(
+            f"icacls /reset failed for {path!r} (returncode={result.returncode}): "
+            f"{result.stderr.strip()}",
+            stacklevel=2,
+        )
 
 
 @pytest.mark.allow_subprocess
@@ -22,12 +39,24 @@ def test_a_readonly_input_folder_makes_any_write_attempt_fail_with_a_real_os_err
         ["icacls", str(target), "/deny", f"{account}:(WD,WA,WEA,DE)"],
         capture_output=True, text=True, check=True,
     )
+    # Denying the existing file alone only proves "a write to THIS file
+    # fails" -- it says nothing about the FOLDER being read-only, which is
+    # what the test name and spec §13's guarantee actually claim. Also deny
+    # folder-level Write Data / Add subDirectory on input_root itself so
+    # creating a brand-new file inside it is denied too.
+    subprocess.run(
+        ["icacls", str(input_root), "/deny", f"{account}:(WD,AD)"],
+        capture_output=True, text=True, check=True,
+    )
     try:
         sync.sync_source_files(conn, input_root)  # must not raise -- read-only scan
         with pytest.raises(PermissionError):
             target.write_bytes(b"an attempted mutation of the read-only input tree")
+        with pytest.raises(PermissionError):
+            (input_root / "new.pdf").write_bytes(b"an attempted new file in the read-only input tree")
     finally:
-        subprocess.run(["icacls", str(target), "/reset"], capture_output=True, text=True)
+        _icacls_reset(target)
+        _icacls_reset(input_root)
 
 
 @pytest.mark.allow_subprocess
