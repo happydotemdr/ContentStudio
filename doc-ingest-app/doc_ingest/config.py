@@ -58,7 +58,7 @@ _FIELD_TYPES = typing.get_type_hints(Config)
 def _coerce(name: str, raw: str):
     field_type = _FIELD_TYPES[name]
     if field_type is int:
-        return int(raw)
+        return int(float(raw))
     if field_type is float:
         return float(raw)
     if field_type is Path:
@@ -71,8 +71,12 @@ def load_config(path: Path | None = None) -> Config:
     if path is not None and path.exists():
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for key, value in raw.items():
-            if key in _FIELD_TYPES:
-                values[key] = _coerce(key, str(value)) if not isinstance(value, (int, float)) or _FIELD_TYPES[key] is Path else value
+            if key not in _FIELD_TYPES:
+                raise ValueError(
+                    f"Unknown config key in {path}: {key!r}; valid keys: "
+                    f"{', '.join(sorted(_FIELD_TYPES.keys()))}"
+                )
+            values[key] = _coerce(key, str(value))
 
     for field_name in _FIELD_TYPES:
         env_key = _ENV_PREFIX + field_name.upper()
