@@ -9,6 +9,15 @@
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect_briefs.py\""
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit|Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/protect_freedom2beu_output.py\""
+          }
+        ]
       }
     ]
   }
