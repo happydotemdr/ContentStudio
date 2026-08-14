@@ -257,6 +257,47 @@ REQUIRED_WORLD_KEYS = (
 )
 
 
+def _check_styleboard_slots(repo_root, linter, artifact_path: Path, world: dict) -> list[dict]:
+    slots = {k: v.strip() for k, v in world.items() if k.startswith("slot_") and v.strip()}
+    findings: list[dict] = []
+    malformed = set()
+    for key, value in sorted(slots.items()):
+        if not linter.VALID_SLOT_VALUE_RE.match(value):
+            malformed.add(key)
+            findings.append({
+                "check": "S3", "beat": None, "shot_index": None, "kind": "fail",
+                "message": (
+                    f"{key!r} = {value!r} is not a Style Library label (lowercase "
+                    "kebab-case). Raw Midjourney codes and invented placeholders belong "
+                    "nowhere in a styleboard -- the code is resolved at render time."
+                ),
+            })
+    resolvable = {k: v for k, v in slots.items() if k not in malformed}
+    if not resolvable:
+        return findings
+    library_path = repo_root / "docs" / "style-library.md"
+    if not library_path.is_file():
+        raise GateInputError(
+            f"Style Library not found at {library_path} -- Gate S cannot resolve "
+            f"{artifact_path.name}'s slot labels"
+        )
+    library = linter.parse_style_library(library_path.read_text(encoding="utf-8"))
+    if not library:
+        raise GateInputError(
+            f"no entries parsed from {library_path} -- Gate S cannot check "
+            f"{artifact_path.name}'s slot labels against an empty Library"
+        )
+    known = ", ".join(sorted(library))
+    findings.extend({
+        "check": "S4", "beat": None, "shot_index": None, "kind": "fail",
+        "message": (
+            f"{key!r} = {value!r} is not an entry in docs/style-library.md. Every shot "
+            f"bound to this slot will fail Gate C's C20. Known entries: {known}."
+        ),
+    } for key, value in sorted(resolvable.items()) if value not in library)
+    return findings
+
+
 def run_styleboard_gate(
     repo_root: Path, artifact_path: Path, upstream: Mapping[str, Path]
 ) -> list[dict]:
@@ -284,6 +325,7 @@ def run_styleboard_gate(
         "check": "S2", "beat": None, "shot_index": None, "kind": "fail",
         "message": f"WORLD LOCK is missing {key!r}, which Gate C reads.",
     } for key in REQUIRED_WORLD_KEYS if not world.get(key, "").strip()]
+    findings.extend(_check_styleboard_slots(repo_root, linter, artifact_path, world))
     return findings
 
 

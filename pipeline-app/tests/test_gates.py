@@ -696,3 +696,30 @@ def test_the_passing_styleboard_fixture_passes_its_own_gate():
         REPO_ROOT, "styleboard", FIXTURES / "passing_styleboard.md", {}
     )[0]
     assert result["status"] == "pass", result["findings"]
+
+
+def _world_lock(**overrides) -> str:
+    linter = gates._load_linter(REPO_ROOT, "lint_prompt_sheet")
+    base = linter.parse_world_lock(
+        (FIXTURES / "passing_styleboard.md").read_text(encoding="utf-8")
+    )
+    merged = {**base, **overrides}
+    return "WORLD LOCK\n" + "".join(f"  {k}: {v}\n" for k, v in merged.items())
+
+
+def test_a_styleboard_slot_value_shaped_like_an_invented_code_fails(tmp_path):
+    path = tmp_path / "artifact.v1.md"
+    path.write_text(_world_lock(slot_register_a="SREF-RGS-A-DL01"), encoding="utf-8")
+    result = gates.run_gates_for_stage(REPO_ROOT, "styleboard", path, {})[0]
+    assert "S3" in {f["check"] for f in result["findings"]}
+
+
+def test_a_styleboard_label_naming_no_library_entry_fails_here_not_downstream(tmp_path):
+    """A-33/A-34's real fix: C20 blamed the sheet for a label the STYLEBOARD
+    chose, once per affected shot. Catch it where it was written."""
+    path = tmp_path / "artifact.v1.md"
+    path.write_text(_world_lock(slot_register_b="rgs-sourceera-painterly-c"), encoding="utf-8")
+    result = gates.run_gates_for_stage(REPO_ROOT, "styleboard", path, {})[0]
+    s4 = [f for f in result["findings"] if f["check"] == "S4"]
+    assert len(s4) == 1, "one finding per bad label, not one per downstream shot"
+    assert "docs/style-library.md" in s4[0]["message"]
