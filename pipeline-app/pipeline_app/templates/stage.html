@@ -2,13 +2,28 @@
 {% block content %}
 <h1>{{ project.run_id }} — {{ stage_id }}</h1>
 
+{% if error_banner %}<div class="error-banner">{{ error_banner.message }}</div>{% endif %}
+
 <section class="input-panel">
   <h2>Input</h2>
   {% if grounding_input_html %}
   <h3>Grounding companion</h3>
   <div class="rendered-markdown">{{ grounding_input_html | safe }}</div>
   {% endif %}
-  {% if input_html %}<div class="rendered-markdown">{{ input_html | safe }}</div>{% elif not grounding_input_html %}<p>No upstream input.</p>{% endif %}
+  {% if inputs %}
+  {% for input in inputs %}
+  <h3>From {{ input.stage_id }}</h3>
+  {% if input.present and not input.malformed %}
+  <div class="rendered-markdown">{{ input.html | safe }}</div>
+  {% elif input.malformed %}
+  <p class="input-malformed">malformed -- could not read {{ input.artifact }}</p>
+  {% else %}
+  <p class="input-missing">no input yet from {{ input.stage_id }}</p>
+  {% endif %}
+  {% endfor %}
+  {% elif not grounding_input_html %}
+  <p>No upstream input.</p>
+  {% endif %}
 </section>
 
 <section class="chat-panel">
@@ -32,12 +47,12 @@
 <section class="output-panel">
   <h2>Output</h2>
   {% if output_html %}<div class="rendered-markdown">{{ output_html | safe }}</div>{% else %}<p>No output yet.</p>{% endif %}
-  {% if output_gates %}
+  {% if gate_view %}
   <div class="gates-panel">
     <h3>Gates</h3>
-    {% for gate in output_gates %}
+    {% for gate in gate_view %}
     <div class="gate-result">
-      <span class="status status-{{ gate.status }}">{{ gate.name }}: {{ gate.status }}</span>
+      <span class="status {{ 'status-blocking' if gate.blocking else 'status-ok' }}">{{ gate.name or "unknown gate" }}: {{ gate.state }}{% if gate.status_raw and gate.status_raw != gate.state %} ({{ gate.status_raw }}){% endif %}</span>
       {% if gate.findings %}
       <ul class="gate-findings">
         {% for finding in gate.findings %}
@@ -57,7 +72,7 @@
   <p class="stale-override-note">This stage is stale (built on a since-changed upstream input). Approving now will override the staleness cascade instead of regenerating.</p>
   {% endif %}
   <form method="post" action="/projects/{{ project.id }}/stages/{{ stage_id }}/approve">
-    {% if has_failing_gate %}
+    {% if has_blocking_gate %}
     <label for="override_reason">Override reason (a gate above is failing/erroring)</label>
     <input type="text" id="override_reason" name="override_reason" placeholder="e.g. dash is inside a verbatim 1886 quote">
     {% endif %}

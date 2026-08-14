@@ -284,17 +284,75 @@ def _seed_scripting_awaiting_review(conn, tmp_path: Path) -> tuple[int, Path, Pa
     return project_id, run_dir, stage_dir
 
 
-def _write_artifact_with_gates(stage_dir: Path, status: str) -> Path:
+@pytest.mark.parametrize("value", ["pass", 1, ["gate_d_script_language"], {"name": "x"}])
+def test_a_malformed_gates_frontmatter_value_raises_valueerror(conn, tmp_path, value):
+    """A-36: `recorded` is whatever yaml.safe_load produced. A string, scalar or
+    list-of-strings made the comprehension call .get on a non-mapping and raise
+    AttributeError -- an unhandled 500, not the 409 every other approval
+    conflict produces. Most acute for `grounding`, whose frontmatter is
+    hand-written and entirely uncontrolled."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    artifacts.write_artifact(
+        stage_dir, 1,
+        {"schema_version": 1, "stage": "shorts-scripting", "status": "draft", "gates": value},
+        "body",
+    )
+    with pytest.raises(ValueError, match="artifact.v1.md"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+
+def _write_artifact_with_gates(stage_dir: Path, status: str | None) -> Path:
+    gate = {
+        "name": "gate_d_script_language",
+        "findings": [{"check": "D1", "beat": "HOOK", "message": "em-dash", "kind": "fail"}],
+    }
+    if status is not None:
+        gate["status"] = status
     meta = {
         "schema_version": 1, "run_id": "r1", "stage": "shorts-scripting", "version": 1,
         "status": "draft", "created_at": "2026-08-06T00:00:00+00:00", "finalized_at": None,
         "supersedes": None, "depends_on": [],
-        "gates": [{
-            "name": "gate_d_script_language", "status": status,
-            "findings": [{"check": "D1", "beat": "HOOK", "message": "em-dash", "kind": "fail"}],
-        }],
+        "gates": [gate],
     }
     return artifacts.write_artifact(stage_dir, 1, meta, "body")
+
+
+@pytest.mark.parametrize("status", ["skipped", None, "PASS", "", "passs"])
+def test_an_unrecognized_gate_status_blocks_approval(conn, tmp_path, status):
+    """A-35 FAULT: the block condition tested `status in ("fail","error")` and
+    the never-ran test only asked whether the NAME appeared, so `skipped`, null,
+    a missing key or a typo satisfied both and approved with no override and no
+    message."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, status)
+    with pytest.raises(ValueError, match="unrecognized"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+
+
+def test_an_unrecognized_status_is_distinguishable_from_a_failure(conn, tmp_path):
+    """A-35 DISTINGUISHABILITY: 'the gate failed', 'the gate never ran' and 'the
+    gate recorded a word we do not know' are three different facts with three
+    different fixes."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "skipped")
+    with pytest.raises(ValueError) as excinfo:
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+    message = str(excinfo.value)
+    assert "'skipped'" in message
+    assert "never ran" not in message
+
+
+def test_an_unrecognized_status_records_an_event(conn, tmp_path):
+    """A-35 SURFACING: a vocabulary change must be findable after the fact, not
+    only in the 409 the operator dismissed."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "skipped")
+    with pytest.raises(ValueError):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting")
+    rows = conn.execute(
+        "SELECT kind, severity FROM events WHERE kind = 'gate.unknown_status'"
+    ).fetchall()
+    assert [(r["kind"], r["severity"]) for r in rows] == [("gate.unknown_status", "warning")]
 
 
 def test_approve_raises_on_a_failing_gate_without_an_override(conn, tmp_path):
@@ -359,6 +417,26 @@ def test_override_on_already_final_artifact_records_reason_without_rewriting_gat
     assert meta_after["finalized_at"] == "2026-08-01T00:00:00+00:00"  # untouched, no churn
     assert meta_after["status"] == "final"
     assert meta_after["gates"][0]["status"] == "fail"  # the record is not rewritten
+
+
+def test_an_override_on_an_already_final_artifact_is_timestamped(conn, tmp_path):
+    """P2 A-38: record_gate_override's `at` is required and keyword-only. The
+    already-final branch deliberately skips stamp_final, so before this the
+    override carried NO timestamp at all -- only stages.approved_at moved, and
+    nothing linked the two."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "fail")
+    meta, body = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    meta["status"] = "final"
+    path.write_text(artifacts.render_frontmatter(meta, body), encoding="utf-8")
+
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+                  override_reason="verified by hand")
+
+    overrides = artifacts.read_gate_overrides(path)
+    assert len(overrides) == 1
+    assert overrides[0]["reason"] == "verified by hand"
+    assert overrides[0]["at"].endswith("+00:00")
 
 
 def _write_artifact_without_gates(stage_dir: Path) -> Path:
@@ -494,3 +572,42 @@ def test_reapproving_an_already_final_artifact_with_blank_override_does_not_reco
     meta_after, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
     assert "gate_override_reason" not in meta_after
     assert meta_after["finalized_at"] == "2026-08-01T00:00:00+00:00"
+
+
+@pytest.mark.parametrize("reason", ["   ", "\t", "\n", ""])
+def test_a_blank_override_reason_does_not_release_a_failing_gate(conn, tmp_path, reason):
+    """A-39 FAULT: the stripping that makes an empty reason falsy lived in the
+    ROUTE, not in approve_stage. approve_stage(..., override_reason=" ") is
+    truthy, so it cleared the block AND recorded a blank reason. Any second
+    caller -- a script, a future API, a test -- reintroduces the hole."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "fail")
+    with pytest.raises(ValueError, match="gate"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+                      override_reason=reason)
+
+
+def test_a_blank_override_reason_is_never_recorded_on_the_artifact(conn, tmp_path):
+    """A-39 DISTINGUISHABILITY: a blank reason must be indistinguishable from no
+    reason at all on disk -- not an override entry that reads as a decision
+    someone made. A passing gate is used here (not a failing one) because
+    stamp_final is called -- and its gate_override_reason parameter consulted
+    -- on every approval, blocking or not; the pre-fix bug pollutes even a
+    clean approval's record with a blank-reason override entry."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "pass")
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+                  override_reason="   ")
+    meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert "gate_overrides" not in meta
+
+
+def test_an_override_reason_is_stored_stripped(conn, tmp_path):
+    """A-39 SURFACING: the recorded reason is the audit trail; leading and
+    trailing whitespace in it is noise the reviewer has to see through."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "fail")
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+                  override_reason="  dash is inside a verbatim 1886 quote  ")
+    meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert meta["gate_overrides"][0]["reason"] == "dash is inside a verbatim 1886 quote"

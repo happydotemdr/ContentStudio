@@ -106,6 +106,31 @@ Nothing else. In particular this package **does not** edit `turn_service.py` (P4
 >    sub-check it actually cares about, or add a second signature-object mention to the fixture's
 >    Hook shot body.
 
+> **Pre-review amendment PR1 (found before any task was dispatched, this session).** P11's own
+> plan (`P11-gate-c.md` §6.2, "What P3 must change for full parity") lists **six** requirements
+> for `gates.py`, labelled `P3-1` through `P3-6`. Handoff H1b above (added the same session as
+> this amendment) only carried `P3-6` forward into this plan's text. `P3-1`, `P3-2` and `P3-3`
+> were verified empirically against the live `gates.py` and confirmed still missing:
+>
+> | # | Requirement | Confirmed still missing, empirically | Consequence if left unfixed |
+> |---|---|---|---|
+> | `P3-1` | Consume `parse_sheet(...).findings` | `gates.py` still does `shots, sheet_world = linter.parse_sheet(sheet_text)` — a 2-tuple unpack that discards `.findings` entirely | **The app-side Gate C still has the exact flagship fail-open defect P11's PR advertises as fixed** (a malformed shot heading is silently dropped from every check, C-70) — but only on the CLI path. The pipeline app never calls the CLI; it calls `run_prompt_sheet_gate` directly (see this file's own module docstring: "the app runs the linters instead"). Every real project turn is still exposed. |
+> | `P3-2` | Pass `declared_shot_count` into `linter.lint(...)` | `gates.py` calls `linter.lint(shots, world, cover=cover, library=library)` with no `declared_shot_count` — confirmed `lint()`'s signature accepts it (default `None`, feeding `check_shot_count`) | C-71 (a sheet's declared shot count silently drifting from its actual shot count) is unchecked app-side. |
+> | `P3-3` | Consume `parse_style_library_checked` and fail closed on its findings | `gates.py:111` still calls the unchecked `parse_style_library`, which `lint_prompt_sheet.py`'s own docstring for that function now calls "kept for `pipeline_app.gates.py`'s existing call site" — a compatibility shim, not silent approval to skip the checked variant | C-76 (a malformed Library entry heading silently dropped, then every sheet binding that label fails at C20 blaming the sheet for a Library typo) is unchecked app-side. |
+> | `P3-4` | Keep the Library path hard-coded, no override | **Already compliant** — `gates.py:105`'s `library_path = repo_root / "docs" / "style-library.md"` has no override parameter. Nothing to do. |
+> | `P3-5` | Don't loosen the blocking-kind exemption set | **Already compliant** — `run_gates_for_stage`'s `blocking = [f for f in findings if f.get("kind") != "skipped"]` already treats `"parse"` (and everything else but `"skipped"`) as blocking, once `P3-1` actually feeds parse findings into the list. |
+> | `P3-6` | Flag a stray sheet-carried `WORLD LOCK` block when a styleboard is also supplied | Confirmed missing — `run_prompt_sheet_gate` silently discards `sheet_world` the moment `styleboard_path is not None`, with no equivalent to the CLI's new blocking `PARSE` finding (added in P11's own final-review fix wave, commit `75df69e`) | Already covered by Handoff H1b above; folded into the same fix below rather than handled separately. |
+>
+> None of `P3-1`/`P3-2`/`P3-3`/`P3-6` is in this plan's own 22-finding list (§2) — they carry no
+> `A-*`/`E-*`/`F-*` ID, the same "adopt a frozen/updated neighbour-package interface, close no new
+> finding" shape as T23/T24. But `P3-1` is not cosmetic: it is a live S0-class silent-failure gap
+> in the exact file this package exists to fix, and T1/T2/T6/T7's whole point is that "the app and
+> the CLI are one gate, not a stricter CLI and a laxer app" (`run_prompt_sheet_gate`'s own
+> docstring). Leaving it unfixed while landing T1/T2/T6/T7 would make this package's own parity
+> claim false on day one. **Resolution:** folded into T7, which already anticipated finding and
+> fixing "any real divergence... on the app side" — see T7's amended text below, which absorbs
+> all four items instead of only `P3-6`.
+
 > **Handoff H2 (to P4) — REVISED after P4's counter-contract; P4 was right.** An earlier draft
 > asked P4 to adopt `gates.resolve_upstream_by_stage()` **verbatim** at
 > `turn_service.py:138-143`. P4 read the body first and found that doing so would reintroduce
@@ -371,11 +396,35 @@ def resolve_upstream_by_stage(
     return upstream
 ```
 
-  **`_approved_artifact_path` is lifted verbatim from P4's T6** and deleted from
-  `turn_service.py` in the same commit — do **not** re-derive it here. That is the whole point
-  of the widening: one resolver, one approved-artifact lookup, no second copy. P4's T5/T6/T10
-  tests are the acceptance criteria for the three keywords; the tests below cover only P3's
-  own defaults.
+  > **Amendment (pre-review, this session): "lifted verbatim from P4's T6" is not executable
+  > as written.** This session executes P3 alone, before P4 (per the landing order and this
+  > session's own resume prompt); `turn_service.py` has no `_approved_artifact_path` today —
+  > confirmed empirically, `grep` returns nothing. There is nothing to lift. **Write it fresh in
+  > `gates.py`** (P3's own file) instead, to the semantic the resolver's docstring already
+  > commits to — "resolve the latest artifact whose frontmatter status is `final`, not merely the
+  > highest version":
+  >
+  > ```python
+  > def _approved_artifact_path(repo_root: Path | None, stage_id: str, stage_dir: Path) -> Path | None:
+  >     """The latest artifact version whose frontmatter status is "final" -- the
+  >     approved_only=True half of resolve_upstream_by_stage (A-32). Walks
+  >     versions newest-first over the *raw* directory listing (not
+  >     resolve_latest_artifact, which resolves grounding through its
+  >     pointer.yaml and has no notion of "final" at all) and returns the first
+  >     whose frontmatter status is "final"; None if none is.
+  >     """
+  > ```
+  >
+  > Base it on `artifacts._versions_in(stage_dir)` (returns `list[tuple[int, Path]]`, already
+  > sorted) and `artifacts.parse_frontmatter`, walking newest-first (`reversed(...)` or
+  > `sorted(..., reverse=True)`) and returning the first path whose parsed `meta.get("status")
+  > == "final"`. When P4 lands later, it decides for itself whether to import this from `gates.py`
+  > or keep its own — that is P4's call to make with the code actually in front of it, not
+  > something P3 can pre-resolve today. P4's T5/T6/T10 tests (when P4 runs) are the acceptance
+  > criteria for the three keywords generally; the tests below cover P3's own defaults, plus a new
+  > one asserting `approved_only=True` actually skips a non-final draft in favour of an older final
+  > version (not just returning `{}` when nothing is final at all, which
+  > `test_every_keyword_defaults_to_the_pre_widening_behaviour` already covers).
 
 - [ ] **Implement, `routes/stages.py`** — replace line 266:
 
@@ -452,9 +501,28 @@ def test_include_optional_is_off_by_default(tmp_path):
     )) == ["voiceover", "music"]
 ```
 
-- [ ] **Update the six 3-arg calls in `test_gates.py`** (lines 25, 33, 46, 65, 76, 87, 99) to pass
-      an explicit `{}`, and `_visual_gate`'s default from `None` to `{}`.
-- [ ] **Run the app suite** → T1 and T2 green.
+- [ ] **Update the seven 3-arg calls in `test_gates.py`** (lines 25, 33, 46, 65, 76, 87, 99 — the
+      plan's own earlier count of "six" undercounts by one; verify by grep before editing rather
+      than trusting either number) to pass an explicit `{}`, and `_visual_gate`'s default from
+      `None` to `{}`.
+- [ ] **Handoff H1b item 2 / the confirmed `test_gates.py` regression** — in the same commit,
+      rename and fix `test_visual_gate_without_a_styleboard_uses_a_legacy_sheets_own_world_lock`
+      per §5's table entry below. Verified this session: the fixture's Shot 1 (Hook, MID-WIDE
+      scale — not exempted by P11's CLOSE/MACRO 1-object floor) names only 1 of its 3 declared
+      `register_a_signature_objects` ("goal net, corner flag, soccer ball" — only "soccer ball"
+      appears in the prompt body), so P11's object-count sub-check now correctly fires C8 on this
+      fixture. That is real, unrelated to this test's actual concern (that C8's *sport*-naming
+      sub-check does not fire when the sheet's own world lock is used). The blanket
+      `assert "C8" not in checks` conflates the two. Narrow the assertion to the sport-naming
+      sub-check specifically — assert no `C8` finding's `message` matches
+      `"does not name the sport"` / `"declares no register_a_sport"` (the two message strings
+      `check_world_lock` emits for that sub-check, confirmed against the live linter this
+      session) — rather than asserting `C8` is absent altogether. Do **not** edit the fixture
+      file; it is shared with T7's `"legacy"` differential case and other tests in this file that
+      assert specific `C16` counts against it.
+- [ ] **Run the app suite** → T1 and T2 green, and the previously-failing regression now passes
+      for the right reason (confirm by temporarily reverting only the assertion narrowing and
+      observing the original failure, then reapplying).
 - [ ] **Commit:** `fix(gates): require an upstream map at every run_gates_for_stage call site`
 
 ---
@@ -462,6 +530,21 @@ def test_include_optional_is_off_by_default(tmp_path):
 ### T2B — Three-state upstream resolution: absent, resolved, *excluded*
 
 *Closes the hazard raised in Open decision D1.* Runs immediately after T2, before T4/T5.
+
+> **Amendment (pre-review, this session): T2B has an undeclared forward dependency on T6 — run
+> T6 before T2B.** Confirmed by `grep`: `UpstreamExcludedError(GateInputError)` below references
+> a class that does not exist until T6 defines it (`class GateInputError(ValueError): ... check =
+> "C0"`), and T2B's own `test_an_unapproved_styleboard_makes_gate_c_error_rather_than_use_the_sheets_own_lock`
+> asserts `finding["check"] == "C0"`, which requires `run_gates_for_stage`'s exception handler to
+> already read `getattr(exc, "check", "GATE")` instead of the hardcoded `"GATE"` string — also a
+> T6 change. Executing T2B before T6 as textually ordered would leave the implementer stuck on a
+> `NameError` for a class the plan hasn't introduced yet. T6 has no dependency on T2B, T3, T4 or
+> T5 (it only touches `run_prompt_sheet_gate`'s two existing raise sites and
+> `run_gates_for_stage`'s handler, both already in place after T1/T2) so reordering is safe in
+> both directions. **Corrected execution order for the remainder of this package: T6, T2B, T3,
+> T4, T5, T7, T7B, T8, T9, ..., T24** — i.e. pull T6 forward to run immediately after T2, before
+> T2B, leaving every other task's relative order unchanged. Do not renumber the tasks themselves;
+> only their dispatch order changes.
 
 The audit's single most common defect class is "nothing found" and "something went wrong"
 sharing one representation — Bluesky returned `[]` for both, the cron exited `0` for both, the
@@ -1116,6 +1199,127 @@ def test_the_only_gate_c_divergence_is_the_empty_world_lock_input_error(tmp_path
       (`gates.py`) and record anything CLI-side in Handoff H1.
 - [ ] **Commit:** `test(gates): assert the CLI and app Gate C agree, and bound the one exception`
 
+> **Amendment (T7B dispatch, this session): `test_app_and_cli_gate_c_report_identical_findings`
+> needs a by-design carve-out for the P3-6 stray-world-lock message, or the `"failing"` case
+> breaks the moment T7B closes P3-6.** Confirmed empirically: `tests/fixtures/failing_sheet.md`
+> (paired with `passing_styleboard.md` in `DIFFERENTIAL_CASES`) carries its own stray `WORLD LOCK`
+> block. Before T7B, P3-6 was an unclosed gap and neither side emitted the stray-world-lock
+> finding for that pairing, so the full `(check, shot_index, message)` tuple equality this test
+> asserts never exercised it. Once T7B lands (correctly making both sides emit the finding), the
+> two messages differ **by design** — the CLI's says `"drop --styleboard"`, the app's says `"drop
+> the styleboard input"` (T7B's own brief mandates this wording split, since the app has no CLI
+> flag) — and the test's strict equality now fails on exactly the wording T7B was told to
+> introduce. This is not a real behavioral divergence; it is a test written before the wording
+> split existed. **Resolution:** normalize both sides' `PARSE`/stray-world-lock message before
+> comparing in `test_app_and_cli_gate_c_report_identical_findings` — e.g. `message.replace("the
+> styleboard input", "--styleboard")` (or an equivalent substring normalization) applied to both
+> `_app_findings` and `_cli_findings` output before the set equality check, so every other finding
+> still compares byte-for-byte and only this one documented wording split is tolerated. Do **not**
+> weaken the comparison for any other check id, and do not touch the new P3-6-specific test's own
+> substring assertion (already correctly scoped). T7B's own implementer found this and correctly
+> stopped rather than loosening the assertion unilaterally — this amendment is what unblocks it.
+
+---
+
+### T7B — Close the four confirmed parity gaps: PR1 / P3-1, P3-2, P3-3, P3-6
+
+*Closes no new finding in this plan's own §2 (none of the four carries an `A-*`/`E-*`/`F-*`
+ID — see Pre-review amendment PR1 above). Sequenced immediately after T7 because it depends on
+T7's harness and closes the exact class of divergence T7 exists to catch. Do not skip this task
+or fold it silently into T7's commit — it is real, separately-reviewable TDD work.*
+
+`_cli_findings` (T7) currently **manually re-derives** `main()`'s pipeline rather than calling
+into it, and it was missing the same four pieces `run_prompt_sheet_gate` is missing — so T7's
+parametrized comparison could pass while both sides silently agreed on the *wrong* thing. Fix
+`_cli_findings` and `run_prompt_sheet_gate` **together**, in the same commit, so the fixed CLI
+side is the oracle the fixed app side is tested against — not two independent guesses that
+happen to match.
+
+**What `main()` actually does today (verified against the live `scripts/lint_prompt_sheet.py`,
+this session)**, which both `_cli_findings` and `run_prompt_sheet_gate` must match line for line:
+
+```python
+parse = parse_sheet(sheet_text)                     # SheetParse: .shots, .world, .findings,
+                                                      # .declared_shot_count (a tuple subclass;
+                                                      # `shots, world = parse_sheet(...)` still
+                                                      # works, which is why gates.py's existing
+                                                      # 2-tuple unpack silently compiles while
+                                                      # dropping `.findings`)
+# ... world resolution (styleboard vs sheet's own block; on both branches present, main()
+#     appends a `Finding("PARSE", None, <message below>, kind="parse")` to parse.findings
+#     rather than raising -- it is a blocking finding, not a fatal error)
+library, library_findings = parse_style_library_checked(library_text)   # NOT parse_style_library
+if library_findings:                                 # any malformed Library entry heading
+    return EXIT_MISSING_DEPENDENCY                    # (an early exit, not folded into `findings`)
+findings = [
+    *parse.findings,
+    *check_cover_present(sheet_text),
+    *lint(shots, world, cover=cover, library=library, declared_shot_count=parse.declared_shot_count),
+]
+```
+
+The stray-world-lock finding's exact CLI text (append to `parse.findings` — or, in
+`run_prompt_sheet_gate`'s case, to whatever list feeds the returned findings — whenever
+`styleboard_path is not None and sheet_world` is truthy):
+
+```
+the sheet at {sheet_name} carries its own WORLD LOCK block, but a styleboard was also supplied
+at {styleboard_name}; the sheet's block is being discarded -- remove it from the sheet if the
+styleboard is now authoritative, or drop --styleboard if the sheet's own block should still apply.
+```
+
+(App-side wording may say "the styleboard input" in place of "--styleboard", since the app has
+no command-line flag. The differential test's assertion on this message should check for the
+shared substring "own WORLD LOCK block", not full equality — see the fourth test below.)
+
+- [ ] **Write four failing tests** in `test_gates.py`, each asserting `_app_findings(...) ==
+      _cli_findings(...)` (reuse T7's helpers) or, where the CLI path takes an early exit,
+      asserting `_app_findings` raises/records the equivalent `status: "error"` the way T6's own
+      empty-world-lock test does:
+  1. **P3-1 / C-70** — a sheet whose second shot heading is malformed (e.g. missing its trailing
+     scale/height field, or a stray character breaking `SHOT_HEADING_RE`). Before this task, the
+     app path silently drops that shot from every check (C-70's exact mechanism) while the CLI
+     records a blocking `PARSE` finding naming the line. Build the sheet inline in the test
+     (start from `passing_sheet.md`'s text and corrupt one heading line), not as a new fixture
+     file.
+  2. **P3-2 / C-71** — a sheet whose `Shots: N` declared count does not match its actual shot
+     count. Confirm `check_shot_count` is the function that fires (it is already called by
+     `lint()` when `declared_shot_count` is not `None`; before this task the app path always
+     passes `None`, so the check can never fire there).
+  3. **P3-3 / C-76** — a Style Library text with one malformed `### ` entry heading (e.g. missing
+     the required lowercase-kebab shape). CLI: `EXIT_MISSING_DEPENDENCY`, printing the library
+     finding. App: before this task, `parse_style_library` (the unchecked variant) silently drops
+     the entry and Gate C blames the *sheet* the first time something binds the missing label —
+     assert the app now raises a `ValueError`/records `status: "error"` naming the Library file,
+     matching the CLI's early exit rather than deferring to a confusing C20 failure one stage
+     later.
+  4. **P3-6** — a sheet that still carries its own `WORLD LOCK` block, with a styleboard also
+     supplied. Assert both sides report the same `PARSE` finding (message may differ only in the
+     `--styleboard`-vs-"the styleboard input" wording noted above; check id, shot_index
+     (`None`), and the substring "own WORLD LOCK block" must match).
+- [ ] **Run** → confirm all four fail for the stated reason (the app path silently omits the
+      finding, or the CLI/app pair produce different results) before touching implementation.
+- [ ] **Implement, `gates.py`** — in `run_prompt_sheet_gate`, mirror `main()`'s pipeline above:
+      switch to `parse = linter.parse_sheet(sheet_text)` and read `parse.shots`, `parse.world`,
+      `parse.findings`, `parse.declared_shot_count` from it; append the stray-world-lock finding
+      exactly as `main()` does when both a styleboard and a sheet-side world lock are present;
+      switch `parse_style_library` to `parse_style_library_checked` and raise `ValueError` naming
+      the Library file when `library_findings` is non-empty (same shape as the existing two
+      empty-Library/empty-world `ValueError`s beside it); pass `declared_shot_count=` into
+      `linter.lint(...)`; prepend `parse.findings` (as dicts, via the existing `_as_dicts`) to the
+      returned findings list. Do **not** change `_load_linter`, `GATE_REGISTRY`, or anything in
+      `run_gates_for_stage` — this task is scoped to `run_prompt_sheet_gate`'s body only.
+- [ ] **Update `_cli_findings`** (T7) to the corrected pipeline shown above, so it is a complete
+      mirror rather than a partial one — this is what keeps `test_app_and_cli_gate_c_report_identical_findings`
+      and the four new tests honest against each other rather than against two independently
+      wrong guesses.
+- [ ] **Re-run T7's existing parametrized cases** (`passing`, `failing`, `legacy`, `worked`) —
+      confirm they still pass now that both sides changed. If any of the four now diverges for a
+      reason specific to that fixture, treat it as a fifth real finding and stop to investigate
+      rather than loosening either side's assertion to make it pass.
+- [ ] **Run the full app suite** → green.
+- [ ] **Commit:** `fix(gates): close the four remaining CLI/app Gate C parity gaps (parse findings, declared count, checked library, stray world lock)`
+
 ---
 
 ### T8 — A styleboard gate: the world lock Gate C will later read
@@ -1458,6 +1662,32 @@ def classify_gates(stage_id: str, recorded: list[dict]) -> list[dict]:
   Update `_write_artifact_with_gates` to accept a `status` that may be `None` (omit the key).
 
 - [ ] **Run** → green. **Commit:** `fix(approval): treat any status other than "pass" as blocking`
+
+> **Amendment (T10 dispatch, this session): the cross-surface invariant test
+> (`test_the_page_flag_the_per_gate_tag_and_the_approve_decision_never_disagree`) has THREE
+> undeclared forward dependencies and must be deferred, not written as part of T10.** Confirmed
+> empirically against the live repo:
+> 1. `_stage_context` does not exist as a standalone function yet — today `stage_page`'s logic is
+>    inline, and `_stage_context` is only extracted out in **T19** (`_stage_conflict` calls it).
+> 2. `gate_view` and `has_blocking_gate` do not exist anywhere in `routes/stages.py` yet — the
+>    current inline logic only computes `has_failing_gate = any(g.get("status") in ("fail",
+>    "error") for g in output_gates)` and passes `output_gates` (the raw list) to the template.
+>    Neither T19's nor T20's own shown code snippets actually add the line wiring
+>    `gate_view = classify_gates(stage_id, output_gates)` / `has_blocking_gate = any(g["blocking"]
+>    for g in gate_view)` into `_stage_context` — §6's "Contract for P15" prose describes the end
+>    state but no numbered task's shown code performs the wiring. **T19 must perform it** (see the
+>    amendment inserted at T19 below) — it is the natural point, since T19 is where
+>    `_stage_context` is extracted from `stage_page` in the first place, and `has_failing_gate` is
+>    exactly the value `gate_view`/`has_blocking_gate` replace.
+> 3. `_scripting_client` (used by this test) is referenced nowhere else in this plan — it is not
+>    defined anywhere in `test_routes_stages.py` or any other task's text. It needs to be written
+>    (or an existing equivalent fixture substituted) at the point this test actually runs.
+>
+> **Resolution:** T10 itself (`classify_gates`, `approve_stage`'s three fail-closed tests) has no
+> forward dependency and is dispatched as-is, in full. The **cross-surface invariant test is
+> deferred** to run immediately after T19 lands (see T19's own amendment below), once
+> `_stage_context`, `gate_view`, and `has_blocking_gate` all exist. Do not write it as part of
+> T10's own dispatch.
 
 ---
 
@@ -2047,15 +2277,110 @@ def _stage_conflict(request, project_id: int, stage_id: str, message: str,
     )
 ```
 
-  Replace all five `PlainTextResponse` returns in this file (chat locked, chat busy, approve
-  409, edit grounding, edit locked) with `_stage_conflict(...)`. Status codes unchanged.
-  `projects.py` and `discovery.py` are **not** this package's — E-04's other three sites
-  belong to P5/P8.
+  Replace all **six** `PlainTextResponse` returns in this file (chat locked, chat busy, approve
+  409, edit grounding, edit locked, **and the edit route's gate-escaped 409** — see the amendment
+  immediately below) with `_stage_conflict(...)`. Status codes unchanged. `projects.py` and
+  `discovery.py` are **not** this package's — E-04's other three sites belong to P5/P8.
+
+> **Amendment (T19 dispatch, this session): the count is six, not five — T4's own text already
+> named the sixth site.** Confirmed empirically: `routes/stages.py`'s `edit_stage_output_route`
+> has a `PlainTextResponse(str(exc), status_code=409)` in its gate-escaped exception handler
+> (added by T4, already landed on this branch). T4's own plan text says so explicitly: "`_stage_conflict`
+> arrives in T19; until then return `PlainTextResponse(str(exc), 409)` and T19 swaps it." T19's own
+> "replace all five" sentence was written before T4 introduced this site and was never updated —
+> the same class of drift this package has hit twice before (T2B/T6, T10's cross-surface test).
+> **Resolution:** T19 replaces six sites, not five: chat locked, chat busy, approve 409, edit
+> grounding, edit locked, and the edit route's gate-escaped 409. All six take the same
+> `_stage_conflict(request, project_id, stage_id, message)` shape; none need a different `kind`
+> or `status_code` (all stay 409 except confirm each site's current status code before assuming —
+> read the live file, do not assume every one is 409).
 
 - [ ] **Run** → green (P15 adds the `error-banner` markup; until then add the minimal
       `{% if error_banner %}` block **is P15's**, so coordinate: this task asserts the context
       key and status code, and the markup assertions move green when P15 lands).
 - [ ] **Commit:** `fix(stages): return the stage page with a banner instead of plain text`
+
+> **Amendment (deferred from T10, this session): wire `gate_view`/`has_blocking_gate` into
+> `_stage_context` as part of this task's own extraction, and add the deferred cross-surface
+> invariant test here.** T10 (already landed) added `classify_gates` to `approval_service.py` but
+> could not wire it into `routes/stages.py` because `_stage_context` did not exist as a
+> standalone function until this task extracts it. Since this task is already replacing
+> `stage_page`'s inline body with `_stage_context`, do the replacement in the same motion:
+>
+> - Delete the current `has_failing_gate = any(g.get("status") in ("fail", "error") for g in
+>   output_gates)` line.
+> - Add `from pipeline_app.approval_service import classify_gates` (or wherever `classify_gates`
+>   actually lives after T10 — confirm by `grep -n "def classify_gates" pipeline_app/*.py` before
+>   writing the import).
+> - Add `gate_view = classify_gates(stage_id, output_gates)` and `has_blocking_gate =
+>   any(g["blocking"] for g in gate_view)`, and put both in the context dict returned by
+>   `_stage_context`. Keep `output_gates` in the context too for one release (per §6's own note);
+>   do not delete it here — T23/T24 or a later cleanup removes it.
+> - Update every existing test in `test_routes_stages.py` (and any other file) that currently
+>   asserts on `has_failing_gate` to use `has_blocking_gate/gate_view` instead — grep for
+>   `has_failing_gate` across `pipeline-app/tests/` before implementing, so no test is left
+>   asserting on a key you just deleted.
+>
+> Then, **now that `_stage_context`, `gate_view`, and `has_blocking_gate` all exist**, add T10's
+> deferred cross-surface invariant test to `test_routes_stages.py`:
+>
+> ```python
+> GATE_MATRIX = [
+>     ("passing",     [{"name": "gate_d_script_language", "status": "pass", "findings": []}]),
+>     ("failing",     [{"name": "gate_d_script_language", "status": "fail", "findings": []}]),
+>     ("errored",     [{"name": "gate_d_script_language", "status": "error", "findings": []}]),
+>     ("never_ran",   []),
+>     ("wrong_gate",  [{"name": "gate_c_prompt_sheet", "status": "pass", "findings": []}]),
+>     ("unknown",     [{"name": "gate_d_script_language", "status": "skipped", "findings": []}]),
+>     ("no_status",   [{"name": "gate_d_script_language", "findings": []}]),
+>     ("skipped_only", [{"name": "gate_d_script_language", "status": "pass",
+>                       "findings": [{"check": "D5", "beat": "SETUP", "kind": "skipped",
+>                                     "message": "no computable time range"}]}]),
+> ]
+>
+>
+> @pytest.mark.parametrize("label,gates_block", GATE_MATRIX, ids=[c[0] for c in GATE_MATRIX])
+> def test_the_page_flag_the_per_gate_tag_and_the_approve_decision_never_disagree(
+>     tmp_path, monkeypatch, label, gates_block
+> ):
+>     """E-03's real mechanism, closed structurally. A never-ran gate rendered as
+>     a clean pass; the approve form rendered WITHOUT the override field; clicking
+>     Approve returned a bare 409 with no path forward. P15 now renders
+>     gate_view[].blocking as a per-gate tag and has_blocking_gate as the
+>     page-level flag, so there are three surfaces that must agree. They all read
+>     one classifier; this asserts it."""
+>     test_client, tmp_path, app = _scripting_client(tmp_path, monkeypatch)
+>     project_id, run_dir = _new_project(test_client, app, tmp_path)
+>     artifacts.write_artifact(
+>         run_dir / "02-scripting", 1,
+>         {"schema_version": 1, "stage": "shorts-scripting", "version": 1,
+>          "status": "draft", "gates": gates_block},
+>         "script body",
+>     )
+>
+>     ctx = test_client.get(f"/projects/{project_id}/stages/scripting").context
+>     page_flag = ctx["has_blocking_gate"]
+>
+>     assert page_flag == any(g["blocking"] for g in ctx["gate_view"])
+>     approve = test_client.post(f"/projects/{project_id}/stages/scripting/approve")
+>     assert (approve.status_code == 409) == page_flag, (
+>         f"{label}: page says blocking={page_flag} but approve returned "
+>         f"{approve.status_code}"
+>     )
+>     assert ('name="override_reason"' in test_client.get(
+>         f"/projects/{project_id}/stages/scripting"
+>     ).text) == page_flag
+> ```
+>
+> `_scripting_client` does not exist anywhere in this plan or the live repo — write it as a
+> fixture mirroring `two_stage_client`'s shape (a `pipeline.yaml` with an `ideation -> scripting`
+> pipeline, `create_app(repo_root=tmp_path, ...)`, returning `(TestClient(app,
+> follow_redirects=False), tmp_path, app)`), or substitute `two_stage_client` directly if its
+> existing pipeline.yaml already satisfies this test's needs (it declares exactly `ideation ->
+> scripting` — check whether that's sufficient before writing a near-duplicate fixture). Run this
+> test after the `_stage_context`/`gate_view` wiring above, confirm all 8 parametrized cases pass,
+> and include it in this task's own commit (or a separate `test(stages): assert the page flag,
+> gate tag and approve decision never disagree` commit — your call).
 
 ---
 
@@ -2254,6 +2579,25 @@ def test_every_declared_dependency_appears_even_when_all_are_missing(tmp_path, m
   and `grounding_input_html` in the same task — all four `_html` keys leave this module
   sanitized, so P15's `| safe` is safe by construction.
 
+  > **Amendment (T21 dispatch, this session): `browse_service.sanitize_html` does not exist yet
+  > — P15 has not executed.** Confirmed empirically: `grep -rn "sanitize_html"
+  > pipeline-app/pipeline_app/` returns nothing, and `browse_service.py` is explicitly listed in
+  > this file's own §1 as **not** owned by this package ("this package does not edit ... `templates/**`
+  > or `browse_service.py` (P15)"). §6's text describes the *answer* to a cross-package design
+  > question already coordinated with P15, but the *implementation* of `sanitize_html` was never
+  > going to exist on this branch before P15's own package runs — landing order has P3 before P15.
+  > **Resolution, same shape as the T2 `_approved_artifact_path` handoff:** implement a small,
+  > private `_sanitize_html(html: str) -> str` function directly in `routes/stages.py` (this
+  > package's own file), using only the stdlib (`html.parser.HTMLParser` with an allowlist of
+  > safe tags/attributes — no new dependency, matching §6's own constraint). `_render` calls this
+  > local function instead of `browse_service.sanitize_html`. When P15 lands, it decides for
+  > itself whether to promote this function to `browse_service.py` (making P3's `_render` import
+  > it from there instead) or keep its own — that reconciliation is P15's call with the code
+  > actually in front of it, not something T21 can pre-resolve. The behavior contract (strip
+  > `<script>`, strip event-handler attributes like `onerror=`, preserve ordinary text and safe
+  > markdown-generated tags) is what T21's own test asserts either way, so the eventual owner does
+  > not matter to correctness today.
+
   Keep `input_body`/`input_html` populated from the present cards for one release so P15's
   template can migrate; both are removed by P15's task and this package's tests do not assert
   on them.
@@ -2413,14 +2757,31 @@ def test_a_downstream_rgs_stage_does_not_inject_a_stale_grounding_pointer(client
       gate the `grounding_pointer` injection at `:157-160` on
       `verify_pointer(grounding_dir, repo_root).state == "ok"`, recording an event and surfacing
       staleness on `hash_mismatch` / `missing_target`.
-- [ ] **Adopt P4 §7.4's two one-line asks in the same file** (both are P4 findings whose call
-      site is P3's; neither changes P3's finding count):
-  - `routes/stages.py:287` — `propagate_staleness(...)` gained an optional `repo_root=`.
-    Pass `repo_root=repo_root`; that is what closes **A-14** on the hand-edit path.
-  - the grounding branch (≈`:186`) — after `write_pointer(...)`, call
-    `turn_service.propagate_grounding_staleness(conn, repo_root, run_dir, stage_defs, project_id)`
-    so a re-pointed brief invalidates downstream immediately rather than one turn late.
-- [ ] **Run** → green. **Commit:** `fix(stages): adopt P2's grounding_service API and P4's staleness keywords`
+- [ ] ~~**Adopt P4 §7.4's two one-line asks in the same file**~~ **DEFERRED — see amendment below.**
+- [ ] **Run** → green. **Commit:** `fix(stages): adopt P2's grounding_service API`
+
+> **Amendment (T24 dispatch, this session): the two P4 §7.4 asks below cannot be adopted today —
+> P4 has not executed.** Confirmed empirically: `turn_service.propagate_staleness`'s live
+> signature is `(conn, run_dir, all_stage_defs, project_id, changed_stage_id)` — no `repo_root=`
+> keyword exists. `turn_service.propagate_grounding_staleness` does not exist anywhere in the
+> repo (`grep -rn "propagate_grounding_staleness" pipeline-app/` returns nothing). Both are P4's
+> own work, not yet landed; this session's resume prompt confirms "P3 runs alone, before P4, per
+> the landing order." T24's text presented them as adoptable in the same commit as the
+> already-landed P2 grounding_service API — that half of T24 is real and executed below; the
+> P4 half is not executable yet and is **routed back to P4**, the same way Handoff H2 already
+> routes `resolve_upstream_by_stage`'s semantics to P4. **Deferred asks, for P4's own session to
+> either adopt at its own call site or hand back to P3 as a fast-follow once P4 lands:**
+>
+> - `routes/stages.py`'s hand-edit route's `propagate_staleness(...)` call — pass `repo_root=repo_root`
+>   once that keyword exists, closing **A-14** on the hand-edit path (not in P3's own finding
+>   set; A-14 belongs to whichever package owns it).
+> - The grounding branch's turn-completion handler — after `write_pointer(...)`, call
+>   `turn_service.propagate_grounding_staleness(conn, repo_root, run_dir, stage_defs, project_id)`
+>   once it exists, so a re-pointed brief invalidates downstream immediately.
+>
+> Neither deferral blocks or weakens anything T24 actually closes today (P2's grounding_service
+> API adoption, below) — both are additive keywords/calls layered on top of code this task
+> already brings current.
 
 > **Not adopted here:** P4 §7.4 also flags that `preflight.py:38-40` re-derives status from
 > artifact existence and so launders `stale` (A-46's other half), needing a persisted
@@ -2487,7 +2848,7 @@ def test_a_downstream_rgs_stage_does_not_inject_a_stale_grounding_pointer(client
 
 | File:line | Test | Action | Replacement |
 |---|---|---|---|
-| `pipeline-app/tests/test_gates.py:129-137` | `test_visual_gate_without_a_styleboard_uses_a_legacy_sheets_own_world_lock` | **Rewritten, not deleted.** F-19 records that it "sanctions the empty-upstream branch A-30/A-62 show every hand edit silently takes" — the branch is legitimate for a genuine pre-split sheet and illegitimate for a hand edit. | Rename to `test_a_legacy_sheet_with_no_styleboard_upstream_uses_its_own_world_lock`; pass `{}` **explicitly** (T2 makes the default impossible), and add to the docstring: "Legitimate only for a pre-split sheet. The hand-edit path may never reach this branch — `test_every_production_gate_call_site_passes_a_resolved_upstream_map` is what forbids it." |
+| `pipeline-app/tests/test_gates.py:129-137` | `test_visual_gate_without_a_styleboard_uses_a_legacy_sheets_own_world_lock` | **Rewritten, not deleted.** F-19 records that it "sanctions the empty-upstream branch A-30/A-62 show every hand edit silently takes" — the branch is legitimate for a genuine pre-split sheet and illegitimate for a hand edit. **Also carries the confirmed Handoff-H1b/T21R-01 regression** (P11's C8 object-count floor now legitimately fires on this fixture's Hook shot) — see T2's own step for the narrowed assertion. | Rename to `test_a_legacy_sheet_with_no_styleboard_upstream_uses_its_own_world_lock`; pass `{}` **explicitly** (T2 makes the default impossible); narrow the `"C8" not in checks` assertion to the sport-naming sub-check only (see T2); and add to the docstring: "Legitimate only for a pre-split sheet. The hand-edit path may never reach this branch — `test_every_production_gate_call_site_passes_a_resolved_upstream_map` is what forbids it. The object-count sub-check of C8 is a separate, unrelated concern (T21R-01) and is not asserted here." |
 | `pipeline-app/tests/test_gates.py:25,33,46,65,76,87,99` | seven 3-argument `run_gates_for_stage` calls | **Amended.** Each currently exercises the `upstream=None` default that T2 deletes. | Pass an explicit `{}`; the scripting gate genuinely has no upstream and now says so at the call site. |
 | `pipeline-app/tests/test_gates.py:114` | `_visual_gate(sheet, upstream=None)` | **Amended.** Default changes `None` → `{}`. | Same signature, no `None` path. |
 | `pipeline-app/tests/test_routes_approve_edit.py:50-110` | `test_hand_edit_flips_stage_to_awaiting_review_and_dependent_to_stale` | **Amended.** It hand-writes `depends_on` into scripting's frontmatter to make the cascade fire — a workaround for A-60 that T3 removes the need for. | Drop the hand-written `depends_on` block and let the edit route compute it; the assertion (`scripting` → `stale`) is unchanged and now proves the real path. |
