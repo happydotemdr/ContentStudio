@@ -6633,6 +6633,61 @@ either form, mirroring `verify_locked()`'s own pre-existing dual-form logic. Cau
 and fixed before committing, not a review finding; unrelated to the flagged empirical
 unknown itself.
 
+**Task 15 (`worker.py`) — a dedicated integration review (Opus) found two Important,
+plan-mandated findings, both robustness gaps at the module's exception boundaries.**
+1. `process_job` (originally this plan's own Step 3 code) had NO exception handling
+anywhere in its pre-write section (staging, `_convert`, independent metadata, Gate 2,
+frontmatter build, Gate 1) — only the outer `finally` (heartbeat stop, tmp_dir
+cleanup) wrapped it, with no `except`. Any uncaught exception there (a corrupt/
+encrypted source file that `metadata_readers` can't parse, an unmapped extension's
+`KeyError`, a staging I/O error) left the job stuck at `'converting'` forever:
+`reclaim_stale_jobs` resets it to `'pending'`, it's re-claimed, crashes identically —
+an unbounded poison-pill loop that burns a real, billed firecrawl `.parse()` call
+every iteration (since `_convert` runs before the failure point in most triggers),
+and the job never reaches `'failed'`, so `enqueue_pending_jobs`'s already-failed-at-
+this-version guard — the only backstop against retry loops in the whole design —
+never engages.
+2. `resume_unlocked_conversions` had no per-row error isolation — `lock.
+apply_readonly_lock`'s `check=True` means any icacls failure raises `CalledProcessError`,
+which escaped the `for` loop entirely, aborting the whole sweep and permanently
+disabling crash-recovery for every OTHER unlocked conversion (not just the failing
+one) until manual intervention. This is the module that exists specifically to BE
+the crash-recovery mechanism, so one poisoned row taking down recovery for
+everything else was disproportionate to the mandate.
+
+**Resolved, both scoped carefully to preserve existing test semantics:** (1) a new
+inner `try/except Exception` wraps ONLY the pre-write section (from source-type
+resolution through Gate 1), converting any unexpected exception to a clean
+`_fail_job(conn, job_id, f"unexpected_error: {exc}")` call — the post-write (write →
+commit → lock → verify) section's behavior is UNCHANGED: an exception from `lock.
+apply_readonly_lock` still propagates out of `process_job` uncaught, exactly as
+`test_process_job_resumes_lock_only_after_a_simulated_crash` already required and
+continues to require (a regression tripwire duplicating this assertion was also
+added). (2) each row's lock attempt in `resume_unlocked_conversions` is now isolated
+in its own `try/except`, logging an `events` row (`event_type='resume_lock_failed'`)
+on failure and continuing to the next row rather than aborting the sweep. Fix commit:
+`c41506e`. Reviewed clean in the scoped re-review (both findings ADDRESSED — the
+re-review specifically hand-traced the exception-boundary indentation to confirm the
+post-write section is genuinely outside the new handler, and confirmed a second row
+genuinely succeeds after the first raises — no new Critical/Important breakage).
+
+Two Low/non-blocking notes from the re-review, both inherent trade-offs of the
+mandated fix shape rather than defects, deferred to the ledger for final-review
+triage: (a) a *transient* pre-write error (e.g. a momentary `database is locked` past
+the busy_timeout under concurrent workers) is now also permanently marked `'failed'`
+at that source-file version rather than being retried on the next wake — this
+trade is inherent to closing the unbounded-retry hole, and a future refinement could
+carve out known-retryable exception types; (b) `resume_lock_failed` events accrue
+unboundedly on a persistently-broken lock (one row per wake, no backoff/dedup) — this
+is exactly what the finding specified ("log and continue"), noted only as an
+operational consequence for whoever eventually owns events-table retention. The
+re-review also flagged one out-of-scope observation for Task 22, not a defect in this
+fix: `.gdoc`/`.gsheet` files still get a fresh `'failed'` `conversion_jobs` row every
+30-minute wake until Task 22 wires Drive metadata sync (since `drive_modified_time`
+stays NULL until then, so the already-failed-this-version guard's gdoc branch never
+matches) — costly in DB-row accumulation but NOT in billed API calls, since
+`_source_type_for` raises before `_convert` is ever reached.
+
 **Task 13 (`lock.py`) — a dedicated security-focused review (Opus) found two Important,
 plan-mandated findings in `verify_locked()` (originally this plan's own Step 5 code).**
 1. `verify_locked()` scanned the WHOLE icacls stdout — including the echoed file path
