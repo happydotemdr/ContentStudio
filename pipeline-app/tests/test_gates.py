@@ -663,3 +663,36 @@ def test_a_stray_sheet_world_lock_alongside_a_styleboard_is_flagged_identically(
             if check == "PARSE" and shot_index is None and "own WORLD LOCK block" in message
         ]
         assert len(stray) == 1, findings
+
+
+def test_a_styleboard_with_no_world_lock_fails_its_own_gate(tmp_path):
+    """A-33: styleboard is the artifact C8/C18/C20 READ FROM, and it was the
+    least validated artifact in the system. A malformed one surfaced one stage
+    later as a wall of findings blaming the sheet."""
+    path = tmp_path / "artifact.v1.md"
+    path.write_text("=== STYLEBOARD ===\n\nBINDINGS\n  none\n", encoding="utf-8")
+    result = gates.run_gates_for_stage(REPO_ROOT, "styleboard", path, {})[0]
+    assert result["name"] == "gate_s_styleboard"
+    assert result["status"] == "fail"
+    assert "S1" in {f["check"] for f in result["findings"]}
+
+
+def test_a_styleboard_missing_a_key_gate_c_reads_fails_its_own_gate(tmp_path):
+    path = tmp_path / "artifact.v1.md"
+    path.write_text(
+        "WORLD LOCK\n  register_a_venue: a pitch\n  register_b_thinker: Plutarch\n",
+        encoding="utf-8",
+    )
+    result = gates.run_gates_for_stage(REPO_ROOT, "styleboard", path, {})[0]
+    s2 = [f for f in result["findings"] if f["check"] == "S2"]
+    assert {"register_a_sport", "register_a_signature_objects"} <= {
+        m for f in s2 for m in ("register_a_sport", "register_a_signature_objects")
+        if m in f["message"]
+    }
+
+
+def test_the_passing_styleboard_fixture_passes_its_own_gate():
+    result = gates.run_gates_for_stage(
+        REPO_ROOT, "styleboard", FIXTURES / "passing_styleboard.md", {}
+    )[0]
+    assert result["status"] == "pass", result["findings"]

@@ -243,9 +243,54 @@ def run_prompt_sheet_gate(
     return _as_dicts(findings)
 
 
+# The world-lock keys Gate C actually reads, each traced to the function that
+# reads it, so this list cannot drift from the gate it exists to feed:
+#   register_a_sport             -> lint_prompt_sheet.check_world_lock (C8)
+#   register_a_signature_objects -> lint_prompt_sheet.signature_objects (C8)
+#   register_a_venue             -> named by C9's banned-generic-venue message
+#   register_b_thinker           -> the Register B world the sheet is held to
+REQUIRED_WORLD_KEYS = (
+    "register_a_sport",
+    "register_a_venue",
+    "register_a_signature_objects",
+    "register_b_thinker",
+)
+
+
+def run_styleboard_gate(
+    repo_root: Path, artifact_path: Path, upstream: Mapping[str, Path]
+) -> list[dict]:
+    """Gate S: check the styleboard as the INPUT Gate C will later read from it.
+
+    A-33: C8, C18 and C20 all resolve their world from this artifact, and until
+    this gate existed nothing checked it. A mistyped slot label here failed the
+    NEXT stage, once per affected shot, pointing the operator at a sheet they
+    could not fix. This gate has no CLI twin -- there is exactly one
+    implementation, so the equivalence promise in run_prompt_sheet_gate's
+    docstring does not apply to it."""
+    linter = _load_linter(repo_root, "lint_prompt_sheet")
+    text = artifact_path.read_text(encoding="utf-8")
+    world = linter.parse_world_lock(text)
+    if not world:
+        return [{
+            "check": "S1", "beat": None, "shot_index": None, "kind": "fail",
+            "message": (
+                f"{artifact_path.name} has no parseable WORLD LOCK block. Gate C reads "
+                "the world from this artifact, so an empty block blocks the visual stage "
+                "with findings that name the wrong file."
+            ),
+        }]
+    findings = [{
+        "check": "S2", "beat": None, "shot_index": None, "kind": "fail",
+        "message": f"WORLD LOCK is missing {key!r}, which Gate C reads.",
+    } for key in REQUIRED_WORLD_KEYS if not world.get(key, "").strip()]
+    return findings
+
+
 GATE_REGISTRY: dict[str, list[tuple[str, GateRunner]]] = {
     "scripting": [("gate_d_script_language", run_script_language_gate)],
     "visual": [("gate_c_prompt_sheet", run_prompt_sheet_gate)],
+    "styleboard": [("gate_s_styleboard", run_styleboard_gate)],
 }
 
 
