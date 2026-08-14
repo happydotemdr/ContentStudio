@@ -6633,6 +6633,22 @@ either form, mirroring `verify_locked()`'s own pre-existing dual-form logic. Cau
 and fixed before committing, not a review finding; unrelated to the flagged empirical
 unknown itself.
 
+**Task 18 (`query.py`) — an environment-dependent SQL bug in the brief's own code.**
+`query.search`'s text-search branch used `WHERE f MATCH ?`, referencing the
+`conversions_fts` table's FROM-clause alias `f` inside the `MATCH` clause. On this
+environment's SQLite (3.50.4), that raises `sqlite3.OperationalError: no such column:
+f` — FTS5's `MATCH` operator needs the real (unaliased) virtual-table name in this
+version, not an alias assigned elsewhere in the same query. Caught by the implementer
+before committing, not by review. **Resolved:** changed to `WHERE conversions_fts
+MATCH ?` (the real table name). Independently reproduced and verified correct by the
+task reviewer using a throwaway in-memory SQLite DB with the exact join shape:
+`EXPLAIN QUERY PLAN` confirmed the fixed query still resolves against the same
+FROM-clause table instance (aliased `f` elsewhere in the query) via the FTS index —
+correct join selectivity, no cartesian-product risk, no silent wrong-result behavior.
+Also consistent with the bare-`conversions_fts MATCH` idiom already used elsewhere in
+this codebase (`tests/test_db.py`, `tests/test_worker.py`). Same commit as Task 18's
+implementation (`4fd96f7`), since the bug was caught before the first commit.
+
 **Task 15 (`worker.py`) — a dedicated integration review (Opus) found two Important,
 plan-mandated findings, both robustness gaps at the module's exception boundaries.**
 1. `process_job` (originally this plan's own Step 3 code) had NO exception handling
