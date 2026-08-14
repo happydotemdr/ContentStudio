@@ -6613,6 +6613,26 @@ fix — the bug was entirely in the brief's own test fixture. Same commit as Tas
 implementation (`7a5ee5f`), since the bug was caught before the first commit, not in
 a post-review fix round.
 
+**Task 13 (`lock.py`) — the plan's own flagged empirical unknown resolved cleanly.**
+Task 13's Step 6 explicitly flagged that the OWNER RIGHTS (`S-1-3-4`) deny-ACE
+mechanism (denying `WRITE_DAC` to the well-known OWNER RIGHTS SID, closing the
+"same account resets its own lock via `icacls /reset`" hole) was unverified on a real
+machine — Microsoft's own documentation describes `S-1-3-4` as a target for an
+**allow** ACE with restricted rights, not an explicit **deny**, so it was genuinely
+uncertain whether the deny form would actually hold. Verified empirically during this
+task's execution: it does. `test_owner_rights_deny_actually_closes_the_self_reset_hole`
+passed on the first run — `icacls /reset` against a fully-locked file returns exit
+code 5 ("Access is denied"), the ACL is left unchanged, and a direct write attempt
+raises `PermissionError`, confirmed both via pytest and by hand. The documented
+fallback (`icacls <path> /grant *S-1-3-4:(RX)`) was NOT needed — the deny-form
+mechanism as originally specified in Task 13's Step 5 code shipped unchanged.
+Separately, one test's assertion (`test_icacls_output_shows_the_owner_rights_deny_entry`)
+hardcoded a literal `"S-1-3-4"` string match, but this Windows build's `icacls` output
+resolves that SID to its display name `"OWNER RIGHTS"` instead — widened to accept
+either form, mirroring `verify_locked()`'s own pre-existing dual-form logic. Caught
+and fixed before committing, not a review finding; unrelated to the flagged empirical
+unknown itself.
+
 ---
 
 ## Execution Handoff
