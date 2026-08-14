@@ -455,3 +455,69 @@ def test_an_unapproved_styleboard_makes_gate_c_error_rather_than_use_the_sheets_
     assert "styleboard" in finding["message"]
     assert "not approved" in finding["message"]
     assert "own world lock" in finding["message"]
+
+
+# --- F-19: the CLI and the app must agree on Gate C -------------------------
+
+
+def _cli_findings(sheet: Path, styleboard: Path | None, library: Path) -> set[tuple]:
+    """Reproduce lint_prompt_sheet.main's own pipeline (not its printing), so the
+    comparison is against the CLI's decisions rather than a paraphrase of them."""
+    linter = gates._load_linter(REPO_ROOT, "lint_prompt_sheet")
+    sheet_text = sheet.read_text(encoding="utf-8")
+    shots, sheet_world = linter.parse_sheet(sheet_text)
+    world = (
+        linter.parse_world_lock(styleboard.read_text(encoding="utf-8"))
+        if styleboard is not None else sheet_world
+    )
+    cover = linter.parse_cover(sheet_text)
+    lib = (
+        linter.parse_style_library(library.read_text(encoding="utf-8"))
+        if linter.sheet_declares_slots(shots, cover) else None
+    )
+    findings = [
+        *linter.check_cover_present(sheet_text),
+        *linter.lint(shots, world, cover=cover, library=lib),
+    ]
+    return {(f.check, f.shot_index, f.message) for f in findings}
+
+
+def _app_findings(sheet: Path, styleboard: Path | None) -> set[tuple]:
+    upstream = {"styleboard": styleboard} if styleboard is not None else {}
+    result = gates.run_gates_for_stage(REPO_ROOT, "visual", sheet, upstream)[0]
+    return {(f["check"], f.get("shot_index"), f["message"]) for f in result["findings"]}
+
+
+DIFFERENTIAL_CASES = [
+    ("passing", FIXTURES / "passing_sheet.md", FIXTURES / "passing_styleboard.md"),
+    ("failing", FIXTURES / "failing_sheet.md", FIXTURES / "passing_styleboard.md"),
+    ("legacy",  FIXTURES / "legacy_do_less_sheet.md", None),
+    ("worked",  FIXTURES / "worked_example_sheet.md", FIXTURES / "worked_example_styleboard.md"),
+]
+
+
+@pytest.mark.parametrize("label,sheet,styleboard", DIFFERENTIAL_CASES,
+                         ids=[c[0] for c in DIFFERENTIAL_CASES])
+def test_app_and_cli_gate_c_report_identical_findings(label, sheet, styleboard):
+    """F-19: gates.py's docstring promises one gate, not a stricter CLI and a
+    laxer app -- and nothing tested it. C-74, C-75 and A-31 are all divergences
+    the two suites could not see because each tested its own side."""
+    library = REPO_ROOT / "docs" / "style-library.md"
+    assert _app_findings(sheet, styleboard) == _cli_findings(sheet, styleboard, library)
+
+
+def test_the_only_gate_c_divergence_is_the_empty_world_lock_input_error(tmp_path):
+    """The enumerated exception to the test above, and the ledger that bounds it.
+
+    The app raises GateInputError on an unparseable styleboard WORLD LOCK; the
+    CLI has no such guard and lints against world={} (A-31). The root fix moves
+    the guard into lint_prompt_sheet -- P11's file, not this package's. When P11
+    lands it, THIS TEST FAILS and the ledger entry must be deleted. It is a
+    tripwire on a known gap, not a licence for it."""
+    styleboard = tmp_path / "artifact.v1.md"
+    styleboard.write_text("WORLD LOCK\n  not recoverable\n", encoding="utf-8")
+    app = _app_findings(FIXTURES / "passing_sheet.md", styleboard)
+    cli = _cli_findings(FIXTURES / "passing_sheet.md", styleboard,
+                        REPO_ROOT / "docs" / "style-library.md")
+    assert {c for c, _i, _m in app} == {"C0"}
+    assert {c for c, _i, _m in cli} <= {"C8", "C18"}
