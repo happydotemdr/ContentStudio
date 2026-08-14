@@ -6581,6 +6581,24 @@ radius stays contained to `doc-ingest-app` in practice, even without an isolated
 The "own venv" gap itself remains open — noted here rather than silently left
 undiscovered, but out of scope to retroactively fix under this decision.
 
+**Task 11 (`gauntlet.py` Gate 1) — the word-count-parity and row-count-parity checks
+(originally this plan's own Step 3 code) used truthy guards (`if source_wc:`,
+`if source_rows:`) instead of `is not None`,** silently SKIPPING the check whenever
+the source-side value from `independent_metadata` is legitimately `0` — a docx with
+`source_word_count: 0` or an xlsx with `source_row_count: 0` would pass Gate 1's
+parity check as a no-op rather than being evaluated. `source_table_count`/
+`source_sheet_count` in the same function already used `is not None` correctly, so
+this was an inconsistency within the brief's own code, not a wholesale design choice.
+`page_count`'s truthy guard was deliberately left unchanged — it gates a division
+(`len(body.split()) / page_count`), so a legitimate `page_count == 0` would raise
+`ZeroDivisionError` if the guard were simply widened; that guard was already correct
+for its own reason. **Resolved:** `source_wc`'s and `source_rows`'s guards changed to
+`is not None`; two new tests added proving a literal `0` source value now correctly
+triggers `word_count_parity_failed`/`row_count_mismatch` instead of silently passing.
+Fix commit: `df862a1`. Reviewed clean in the scoped re-review (finding ADDRESSED,
+`page_count` confirmed untouched, no new breakage; 19/19 gate1 tests, 112/112 full
+suite).
+
 ---
 
 ## Execution Handoff
