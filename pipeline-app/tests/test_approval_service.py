@@ -552,3 +552,42 @@ def test_reapproving_an_already_final_artifact_with_blank_override_does_not_reco
     meta_after, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
     assert "gate_override_reason" not in meta_after
     assert meta_after["finalized_at"] == "2026-08-01T00:00:00+00:00"
+
+
+@pytest.mark.parametrize("reason", ["   ", "\t", "\n", ""])
+def test_a_blank_override_reason_does_not_release_a_failing_gate(conn, tmp_path, reason):
+    """A-39 FAULT: the stripping that makes an empty reason falsy lived in the
+    ROUTE, not in approve_stage. approve_stage(..., override_reason=" ") is
+    truthy, so it cleared the block AND recorded a blank reason. Any second
+    caller -- a script, a future API, a test -- reintroduces the hole."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    _write_artifact_with_gates(stage_dir, "fail")
+    with pytest.raises(ValueError, match="gate"):
+        approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+                      override_reason=reason)
+
+
+def test_a_blank_override_reason_is_never_recorded_on_the_artifact(conn, tmp_path):
+    """A-39 DISTINGUISHABILITY: a blank reason must be indistinguishable from no
+    reason at all on disk -- not an override entry that reads as a decision
+    someone made. A passing gate is used here (not a failing one) because
+    stamp_final is called -- and its gate_override_reason parameter consulted
+    -- on every approval, blocking or not; the pre-fix bug pollutes even a
+    clean approval's record with a blank-reason override entry."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "pass")
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+                  override_reason="   ")
+    meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert "gate_overrides" not in meta
+
+
+def test_an_override_reason_is_stored_stripped(conn, tmp_path):
+    """A-39 SURFACING: the recorded reason is the audit trail; leading and
+    trailing whitespace in it is noise the reviewer has to see through."""
+    project_id, run_dir, stage_dir = _seed_scripting_awaiting_review(conn, tmp_path)
+    path = _write_artifact_with_gates(stage_dir, "fail")
+    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "scripting",
+                  override_reason="  dash is inside a verbatim 1886 quote  ")
+    meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    assert meta["gate_overrides"][0]["reason"] == "dash is inside a verbatim 1886 quote"

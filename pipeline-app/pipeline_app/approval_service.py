@@ -46,6 +46,9 @@ def approve_stage(
     stage_id: str,
     override_reason: str | None = None,
 ) -> list[str]:
+    # The invariant belongs to the service that owns the decision, not to one of
+    # its callers (A-39). The route now passes the raw form value through.
+    override_reason = (override_reason or "").strip() or None
     stage_row = db_mod.get_stage(conn, project_id, stage_id)
     if is_locked_or_running(stage_row["status"]):
         raise ValueError(

@@ -224,7 +224,7 @@ def approve_stage_route(
     try:
         approval_service.approve_stage(
             conn, repo_root, run_dir, project_id, stage_defs, stage_id,
-            override_reason=override_reason.strip() or None,
+            override_reason=override_reason,
         )
     except ValueError as exc:
         # Nothing to approve yet, the locked/running invariant, or a failing
