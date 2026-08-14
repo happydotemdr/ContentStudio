@@ -6649,6 +6649,48 @@ Also consistent with the bare-`conversions_fts MATCH` idiom already used elsewhe
 this codebase (`tests/test_db.py`, `tests/test_worker.py`). Same commit as Task 18's
 implementation (`4fd96f7`), since the bug was caught before the first commit.
 
+**Task 19 (Claude Code `PreToolUse` hook) — two rounds of findings, both plan-mandated,
+both traced to the brief's own verbatim `.claude/hooks/protect_freedom2beu_output.py`.**
+
+*Caught by the implementer before the first commit:* `_WRITE_VERB_RE`'s trailing `\b`
+never matches immediately after the symbolic operators `>`/`>>`, since both the
+operator and what follows (whitespace or end-of-string) are non-word characters —
+there's no word/non-word transition for `\b` to anchor on. `test_looks_like_a_write_
+command_flags_redirection_into_converted`'s `>` case failed. Fixed to a trailing
+`(\s|$)` boundary (works uniformly for symbolic and word-like verbs), `>>` reordered
+before `>` in the alternation, and a regression test for the `>>` (append) case added.
+
+*Found by the task reviewer:* three further Important gaps in the same file.
+1. NotebookEdit protection was dead code — `main()` only ever read `tool_input.
+file_path`, but the real `NotebookEdit` tool's payload uses `notebook_path`, so the
+check always saw `None` and silently allowed every NotebookEdit call regardless of
+path, even though `decide()` and the `.claude/settings.json` matcher both name
+`NotebookEdit` as in scope.
+2. `decide()`'s path-prefix comparison (`rel.parts[:2] != _PROTECTED_PREFIX`) was
+case-sensitive, but `Path.relative_to()` itself is case-insensitive on this Windows
+machine — so a differently-cased path (`Freedom2BeU/CONVERTED/x.md`) resolved fine
+but then silently failed the literal tuple compare and was allowed. Inconsistent with
+the Bash/PowerShell regex path, which already correctly used `re.IGNORECASE`.
+3. `_WRITE_VERB_RE` omitted `cp`/`mv` — PowerShell's own default aliases for the
+already-in-scope `Copy-Item`/`Move-Item` — in a repo whose actual shell environment is
+PowerShell-primary.
+
+**Resolved:** (1) `file_path` resolution now falls back to `tool_input.notebook_path`
+when `file_path` is absent; verified end-to-end via two new tests that invoke the
+hook script as a real subprocess with a JSON payload piped to stdin (the hook's
+actual real-world invocation contract), asserting the correct exit code for both a
+protected and an unprotected `NotebookEdit` path. (2) the path-prefix comparison now
+lowercases both sides before comparing. (3) `cp`/`mv` added to the verb alternation,
+verified by hand-trace that the existing `(^|\s)...(\s|$)` boundary structure
+correctly rejects a substring false-positive like `cpu_report.md` (the `cp` inside it
+is preceded by no word/start boundary the pattern accepts). Fix commit: `98c16f5`
+(building on `b5de57e`). Reviewed clean in the scoped re-review — all three findings
+ADDRESSED, no new Critical/Important breakage; one Low-severity test-intent nit noted
+(a test comment claims to exercise the `mv`-substring boundary but its fixture string
+doesn't actually contain that substring — the regex logic itself was independently
+verified correct, so this is a documentation mismatch in the test, not a functional
+gap) — deferred to the ledger, non-blocking.
+
 **Task 15 (`worker.py`) — a dedicated integration review (Opus) found two Important,
 plan-mandated findings, both robustness gaps at the module's exception boundaries.**
 1. `process_job` (originally this plan's own Step 3 code) had NO exception handling
