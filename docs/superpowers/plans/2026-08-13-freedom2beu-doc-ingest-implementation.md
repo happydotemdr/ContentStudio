@@ -6493,6 +6493,48 @@ git commit -m "feat(doc-ingest): wire Drive metadata sync and gdoc/gsheet export
 
 ---
 
+## Execution Deviations (subagent-driven-development runtime)
+
+Findings surfaced by task reviewers during actual execution, where the defect traced
+back to this plan's own verbatim prescribed code (not implementer judgment). Per the
+runtime process: Critical/Important findings that conflict with plan text are fixed
+in place rather than shipped as documented, and logged here before and after
+resolution so the delivered code and this plan don't silently diverge.
+
+**Task 1 (Config module) — `load_config`'s YAML-merge line (originally this plan's
+own Step 3, line ~162: `values[key] = _coerce(key, str(value)) if not
+isinstance(value, (int, float)) or _FIELD_TYPES[key] is Path else value`) had two
+bugs:** an unknown/typo'd YAML key was silently dropped with no error, and a YAML
+numeric scalar whose native type didn't match the field's declared type (e.g.
+`worker_pool_size: 8.5` for an int field) was never coerced, leaving `Config` with a
+wrongly-typed field. Both are load-bearing since `Config` is imported by every module
+from Task 6 onward. **Resolved:** unknown keys now raise `ValueError` naming the file
+and key; every present key is routed through `_coerce()` unconditionally (dropping
+the isinstance branch that bypassed coercion for already-numeric YAML values). Fix
+commit: `846f651`. Reviewed clean in the scoped re-review (both findings ADDRESSED,
+no new Critical/Important breakage — one Minor note: `int(float(raw))` has a
+precision-loss ceiling above 2^53 that no current field's range approaches).
+
+**Task 3 (`transaction()` boundary) — the `_TXN_DEPTH` dict (originally this plan's
+own Step 3, keyed by `id(conn)`, entries reset to 0 but never deleted) has a latent
+commit-skipping hazard:** if a connection is ever abandoned mid-transaction (depth >
+0) and CPython later reuses that exact `id()` for a new `sqlite3.Connection`, the new
+connection would silently inherit the stale nonzero depth and skip `BEGIN`/`COMMIT`
+on its first `transaction()` call — writes would go through uncommitted, with no
+error. Not reachable by any call site this plan defines today, but `transaction()` is
+used by every DB-writing task from here on. **Resolved:** `sqlite3.Connection` turned out not to be weak-referenceable in Python
+3.14 (`weakref.ref()` raises `TypeError`), so the fix uses explicit `del
+_TXN_DEPTH[key]` on both the success and exception exit paths, guarded to fire only
+when nesting depth returns to 0 (nested exits still skip it, preserving the join
+behavior `test_transaction_nests_without_committing_early` checks). Fix commit:
+`0dae079`. Reviewed clean in the scoped re-review (finding ADDRESSED, no new
+Critical/Important breakage — two Low test-quality nitpicks: an unused local in the
+new regression test, and the test's "id() reuse" framing doesn't actually force a
+recycled id() since `conn1` stays in scope, though it still correctly proves the
+core defect — permanent dict-entry accumulation — is fixed).
+
+---
+
 ## Execution Handoff
 
 Plan complete and saved to `docs/superpowers/plans/2026-08-13-freedom2beu-doc-ingest-implementation.md`. Two execution options:
