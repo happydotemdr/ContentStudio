@@ -6,9 +6,11 @@ that one precedent, not as a repo-wide convention)."""
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
+import json
 import re
 
-from doc_ingest import frontmatter
+from doc_ingest import db, frontmatter, naming
 
 _CODE_FENCE_RE = re.compile(r"^```", re.MULTILINE)
 _TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$", re.MULTILINE)
@@ -113,3 +115,54 @@ def run_gate1(source_type: str, source_size_bytes: int, assembled_markdown: str,
                 return GauntletResult(False, "row_count_mismatch")
 
     return GauntletResult(True, None)
+
+
+def _is_dest_taken(conn, dest_rel_path: str, exclude_source_file_id: int) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM conversions WHERE output_path = ? AND source_file_id != ? LIMIT 1",
+        (dest_rel_path, exclude_source_file_id),
+    ).fetchone()
+    return row is not None
+
+
+def run_gate2(conn, source_rel_path: str, source_file_id: int, version: int, cfg):
+    # +1 for the path separator between converted_root and the relative path
+    # this returns -- naming.build_dest_rel_path (Task 4) needs this to
+    # shorten against the FULL destination path, not just the relative
+    # portion (spec §6).
+    prefix_len = len(str(cfg.converted_root)) + 1
+    dest = naming.build_dest_rel_path(source_rel_path, version, cfg, prefix_len=prefix_len)
+
+    normalized = dest.replace("\\", "/")
+    if ".." in normalized.split("/") or normalized.startswith("/"):
+        return GauntletResult(False, "path_traversal_rejected"), None
+
+    if prefix_len + len(dest) > cfg.long_path_threshold_chars:
+        return GauntletResult(False, "path_still_over_threshold_after_shortening"), None
+
+    resolved_dest, collided = naming.resolve_collision(
+        dest, is_taken=lambda p: _is_dest_taken(conn, p, source_file_id)
+    )
+    if collided:
+        # resolve_collision appends a ~8-char hash suffix, which can push a
+        # dest that was exactly at budget over cfg.long_path_threshold_chars
+        # -- the length check above ran BEFORE this suffix existed, so it
+        # can't have caught this. Trim the overage off the end of the stem,
+        # immediately before the collision suffix, rather than failing a job
+        # whose only real problem was a naming collision that got resolved.
+        overage = prefix_len + len(resolved_dest) - cfg.long_path_threshold_chars
+        if overage > 0:
+            stem, sep, suffix = resolved_dest.rpartition("~")
+            resolved_dest = f"{stem[:-overage] if overage < len(stem) else ''}{sep}{suffix}"
+        with db.transaction(conn):
+            conn.execute(
+                "INSERT INTO events (ts, event_type, source_file_id, details_json) VALUES (?, ?, ?, ?)",
+                (
+                    dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "naming_collision_resolved",
+                    source_file_id,
+                    json.dumps({"original_dest": dest, "resolved_dest": resolved_dest}),
+                ),
+            )
+
+    return GauntletResult(True, None), resolved_dest
