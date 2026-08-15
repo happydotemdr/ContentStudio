@@ -42,6 +42,10 @@ QUOTED_RE = re.compile(r'"([^"]+)"|“([^”]+)”')
 # Every beat heading states its own budget as `| N words`. That declaration is
 # the only independent witness to how much spoken text the line is supposed to
 # contain, and it is what the dropped-text detector below measures against.
+# Because it is the detector's only witness, it is required, not optional: a
+# top-level heading, or any sub-beat heading that carries a time range, must
+# declare it or the parse blocks (C-89) -- a witness the author can omit is no
+# witness at all.
 DECLARED_WORDS_RE = re.compile(r"\|\s*(\d+)\s*words")
 # A refused sub-beat's tell: a `(start-end)` range that does not start the
 # line -- e.g. `mechanism (11-18s | 19 words):` -- fails SUBRANGE_RE (which
@@ -251,6 +255,19 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
             label_covered = False
             group_declared = declared
             group_counted = 0
+
+        carries_range = RANGE_RE.search(stripped) is not None
+        if declared is None and (is_top_level or carries_range):
+            findings.append(
+                Finding(
+                    "PARSE",
+                    beat if is_top_level else (current_label or beat),
+                    f"beat heading at line {number} declares no `| N words` budget -- the "
+                    "dropped-text detector has no independent witness to measure the "
+                    "extracted text against, so this beat would be linted on trust",
+                    kind="fail",
+                )
+            )
 
         spans = _quoted_spans(stripped)
         counted = sum(word_count(span) for span in spans)

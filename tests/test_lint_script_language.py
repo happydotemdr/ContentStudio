@@ -317,6 +317,50 @@ def test_an_over_count_is_not_a_dropped_text_finding():
     assert findings == []
 
 
+def test_a_top_level_heading_with_no_word_budget_blocks():
+    """C-89 fault test. The dropped-text detector's only witness is the
+    heading's own declaration. A heading that omits it disables the detector
+    for that beat, so the omission itself must block."""
+    text = 'HOOK (0–3s): "Best part was the mud today, honestly."\n'
+    _, findings = parse_script(text)
+    assert [(f.check, f.beat, f.kind) for f in findings] == [("PARSE", "HOOK", "fail")]
+    assert "| N words" in findings[0].message
+
+
+def test_a_sub_beat_with_a_range_but_no_budget_blocks():
+    """The same hole one level down: a sub-beat carrying a time range is
+    new-format and must declare its budget."""
+    text = (
+        "BUILD/VALUE (8–28s | 16 words):\n"
+        '  (8–18s): "A position stand reports that samplers reach elite level."\n'
+    )
+    _, findings = parse_script(text)
+    assert any(f.kind == "fail" and "| N words" in f.message for f in findings)
+
+
+def test_the_old_format_rehook_without_a_range_is_still_exempt():
+    """Calibration. `script_let_kids_play_act.md:14` is an old-format re-hook
+    with neither a range nor a budget; it is a known, shipped shape and must not
+    be broken by this rule. The rule is: a beat line that declares a TIME RANGE
+    must also declare a WORD BUDGET."""
+    text = (
+        'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
+    )
+    _, findings = parse_script(text)
+    assert findings == []
+
+
+def test_a_declared_zero_budget_is_distinguishable_from_no_declaration():
+    """C-89 distinguishability test. `| 0 words` is an author saying "this beat
+    speaks nothing"; omitting the annotation is the detector being switched off.
+    They are different states and must produce different results."""
+    declared = 'HOOK (0–3s | 0 words): "Mud."\n'
+    omitted = 'HOOK (0–3s): "Mud."\n'
+    assert parse_script(declared)[1] != parse_script(omitted)[1]
+    assert parse_script(declared)[1] == []
+
+
 def test_authorial_rounding_on_the_shipped_fixtures_never_fires_the_detector():
     """The threshold's calibration case. The four shipped scripts declare word
     counts that differ from their extracted text by up to 2 words absolute and
