@@ -26,8 +26,18 @@ def _install_real_script_linter(tmp_path: Path) -> None:
     )
 
 
+# Genuinely five-beat, fully-compliant (T2 requires all five top-level beats;
+# T4 requires a >50%-ratable pace floor) -- mirrors
+# pipeline-app/tests/test_gates.py's CLEAN_SCRIPT of the same name and for the
+# same reason: the old HOOK-only fixture predates Gate D's T1-T6 hardening and
+# now fails `gate_d_script_language` for real, which this file's own
+# hand-edit tests below depend on passing.
 CLEAN_SCRIPT = (
     'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+    'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+    'BUILD/VALUE (8–18s | 10 words): "A position stand reports that kids still reach elite level."\n'
+    'PAYOFF (18–28s | 10 words): "The next tier exists because someone needs it sold now."\n'
+    'LOOP/CTA (28–33s | 5 words): "Best part was the mud."\n'
     "GATES\n  Gate E (fresh Opus critic): pass\n"
 )
 
@@ -217,12 +227,8 @@ def test_hand_edit_runs_gate_d_and_records_real_results(two_stage_client):
         f"/projects/{project_id}/stages/ideation/approve"
     ).status_code in (200, 303, 307)
 
-    clean_script = (
-        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
-        "GATES\n  Gate E (fresh Opus critic): pass\n"
-    )
     edit_resp = test_client.post(
-        f"/projects/{project_id}/stages/scripting/edit", data={"body": clean_script}
+        f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT}
     )
     assert edit_resp.status_code in (200, 303, 307)
 

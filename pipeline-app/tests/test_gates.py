@@ -11,15 +11,31 @@ from pipeline_app.pipeline_config import StageDef
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# Genuinely five-beat, fully-compliant scripts (T2 requires all five top-level
+# beats; T4 requires a >50%-ratable pace floor). Both are reused unmodified by
+# three other tests below (test_a_linter_that_raises_is_an_error_not_a_pass,
+# test_a_linter_calling_sys_exit_is_an_error_not_an_escape,
+# test_genuine_cancellation_is_re_raised_not_swallowed) that never actually
+# parse CLEAN_SCRIPT's content -- only that it is valid UTF-8 text.
 CLEAN_SCRIPT = (
     'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+    'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+    'BUILD/VALUE (8–18s | 10 words): "A position stand reports that kids still reach elite level."\n'
+    'PAYOFF (18–28s | 10 words): "The next tier exists because someone needs it sold now."\n'
+    'LOOP/CTA (28–33s | 5 words): "Best part was the mud."\n'
     "GATES\n  Gate E (fresh Opus critic): pass\n"
 )
 DASHED_SCRIPT = (
     # 0-5s (not 0-3s): the beat needs enough runway that the em-dash trips D1
     # without also tripping D5's wpm ceiling on this line's 9 spoken words --
-    # this test isolates D1, not D5.
+    # this test isolates D1, not D5. The other four beats are otherwise
+    # identical to CLEAN_SCRIPT's, so this script's only defect is the
+    # HOOK line's em-dash.
     'HOOK (0–5s | 8 words): "It is not more serious play — it is labor."\n'
+    'SETUP (5–10s | 6 words): "Kids do that every single time."\n'
+    'BUILD/VALUE (10–20s | 10 words): "A position stand reports that kids still reach elite level."\n'
+    'PAYOFF (20–30s | 10 words): "The next tier exists because someone needs it sold now."\n'
+    'LOOP/CTA (30–35s | 5 words): "Best part was the mud."\n'
     "GATES\n  Gate E (fresh Opus critic): pass\n"
 )
 
@@ -37,20 +53,79 @@ def test_scripting_stage_fails_a_dashed_script(tmp_path):
     path.write_text(DASHED_SCRIPT, encoding="utf-8")
     results = gates.run_gates_for_stage(REPO_ROOT, "scripting", path, {})
     assert results[0]["status"] == "fail"
-    assert [f["check"] for f in results[0]["findings"]] == ["D1"]
+    # D1 is the script's only defect; D3/D4 also always reports its scope-disclosure
+    # `info` finding (see check_vocabulary), which is non-blocking and must not be
+    # mistaken for a second real violation.
+    assert [f["check"] for f in results[0]["findings"]] == ["D1", "D3/D4"]
+    assert [f["check"] for f in results[0]["findings"] if f["kind"] not in ("skipped", "info")] == ["D1"]
 
 
 def test_skipped_findings_are_recorded_but_do_not_fail(tmp_path):
     path = tmp_path / "raw_output.md"
     path.write_text(
+        # Five real, budgeted beats (clears T2's beat-set requirement and T4's
+        # >50%-ratable floor: 5 of 6 VO lines carry a computable range) plus one
+        # still-unratable old-format re-hook line, mirroring
+        # tests/test_lint_script_language.py's test_d5_skips_a_beat_with_no_range_and_says_so.
         'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+        'BUILD/VALUE (8–18s | 10 words): "A position stand reports that kids still reach elite level."\n'
         '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
+        'PAYOFF (18–28s | 10 words): "The next tier exists because someone needs it sold now."\n'
+        'LOOP/CTA (28–33s | 5 words): "Best part was the mud."\n'
         "GATES\n  Gate E (fresh Opus critic): pass\n",
         encoding="utf-8",
     )
     results = gates.run_gates_for_stage(REPO_ROOT, "scripting", path, {})
     assert results[0]["status"] == "pass"
     assert any(f["kind"] == "skipped" for f in results[0]["findings"])
+
+
+# P3's §6.2 contract: run_script_language_gate's findings must be exactly what
+# the CLI linter itself produces for the same text, and the gate's overall
+# blocking judgement must agree with what the CLI's main() would return. A
+# hardcoded literal in run_gates_for_stage (Part 1's bug) does not show up as a
+# wrong finding -- the findings list is identical either way -- it shows up
+# only as a status/exit-code disagreement, which is what this test's second
+# assertion catches.
+MISSING_BEAT_SCRIPT = (
+    'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+    'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+    'BUILD/VALUE (8–18s | 10 words): "A position stand reports that kids still reach elite level."\n'
+    'PAYOFF (18–28s | 10 words): "The next tier exists because someone needs it sold now."\n'
+    "GATES\n  Gate E (fresh Opus critic): pass\n"
+)
+MALFORMED_RANGE_SCRIPT = (
+    'HOOK (8–3s | 6 words): "Best part was the mud today."\n'
+    'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+    'BUILD/VALUE (8–18s | 10 words): "A position stand reports that kids still reach elite level."\n'
+    'PAYOFF (18–28s | 10 words): "The next tier exists because someone needs it sold now."\n'
+    'LOOP/CTA (28–33s | 5 words): "Best part was the mud."\n'
+    "GATES\n  Gate E (fresh Opus critic): pass\n"
+)
+
+
+def test_gates_py_mirrors_the_cli_linter(tmp_path):
+    scripts_dir = REPO_ROOT / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import lint_script_language as linter
+
+    for text in (CLEAN_SCRIPT, DASHED_SCRIPT, MISSING_BEAT_SCRIPT, MALFORMED_RANGE_SCRIPT):
+        path = tmp_path / "raw_output.md"
+        path.write_text(text, encoding="utf-8")
+
+        gate_findings = gates.run_script_language_gate(REPO_ROOT, path, {})
+        vo_lines, parse_findings = linter.parse_script(text)
+        expected_findings = [
+            {"check": f.check, "beat": f.beat, "message": f.message, "kind": f.kind}
+            for f in linter.lint(vo_lines, text, parse_findings)
+        ]
+        assert gate_findings == expected_findings
+
+        cli_rc = linter.main([str(path)])
+        results = gates.run_gates_for_stage(REPO_ROOT, "scripting", path, {})
+        assert (results[0]["status"] == "fail") == (cli_rc == 1)
 
 
 def test_a_script_whose_timings_are_all_unreadable_fails_the_gate(tmp_path):
