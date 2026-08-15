@@ -137,6 +137,98 @@ def test_prose_that_merely_mentions_a_beat_label_is_not_a_disguised_heading():
     assert findings == []
 
 
+def test_a_label_first_sub_beat_is_a_blocking_parse_finding():
+    """C-88b fault test. `mechanism (18-28s | 19 words)` is a label-first
+    sub-beat: SUBRANGE_RE requires the range to start the line, so this line
+    falls through `_beat_name` unrecognised -- and unlike T1's disguised
+    top-level headings, it names no BEAT_LABEL either, so `_disguised_beat_label`
+    does not catch it. It carries its own `| N words` budget group, the
+    author's own assertion that this is a beat line -- so refusing it must be
+    a loud finding, not a silent deletion."""
+    text = (
+        "BUILD/VALUE (8–28s | 20 words):\n"
+        '  (8–18s | 20 words): "A position stand reports that kids who sample many sports '
+        'still tend to reach the elite level in the end."\n'
+        '  mechanism (18–28s | 19 words): "Kids hand over control and something shifts fast today for them."\n'
+    )
+    _, findings = parse_script(text)
+    assert [(f.check, f.beat, f.kind) for f in findings] == [("PARSE", "BUILD/VALUE", "fail")]
+    assert "line 3" in findings[0].message
+
+
+def test_a_refused_sub_beat_is_distinguishable_from_a_beat_that_has_none():
+    """C-88b distinguishability test. Both scripts have a heading already
+    covered by a sibling sub-beat whose own declared/counted words match
+    exactly, so neither the coverage check nor the dropped-text check fires
+    either way -- isolating the one real difference: one script's second
+    sub-beat is label-first and silently refused ('the parser ate what the
+    author wrote'), the other simply has no second sub-beat at all ('the
+    author wrote nothing'). Those must not collapse into the same empty
+    finding list -- that collapse is the defect itself."""
+    with_refused = (
+        "BUILD/VALUE (8–28s | 20 words):\n"
+        '  (8–18s | 20 words): "A position stand reports that kids who sample many sports '
+        'still tend to reach the elite level in the end."\n'
+        '  mechanism (18–28s | 19 words): "Kids hand over control and something shifts fast today for them."\n'
+    )
+    with_none = (
+        "BUILD/VALUE (8–28s | 20 words):\n"
+        '  (8–18s | 20 words): "A position stand reports that kids who sample many sports '
+        'still tend to reach the elite level in the end."\n'
+    )
+    _, refused_findings = parse_script(with_refused)
+    _, none_findings = parse_script(with_none)
+    assert refused_findings != none_findings
+    assert none_findings == []
+
+
+def test_a_refused_sub_beat_reaches_the_shell_as_exit_1(tmp_path):
+    """C-88b surfacing test. The parent heading's own `| N words` is stripped
+    so the group-level dropped-text check (declared vs counted) has nothing to
+    fire on, and a sibling sub-beat already covers the heading so the
+    no-voiceover-line coverage check has nothing to fire on either -- the exit
+    code must still be 1, proving the new sub-beat detector fired, not some
+    other check riding along."""
+    text = (
+        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        "BUILD/VALUE (8–28s):\n"
+        '  (11–18s | 8 words): "Kids hand over control and something shifts fast."\n'
+        '  mechanism (18–24s | 6 words): "Extra words that never surfaced today somehow."\n'
+        "GATES\n  Gate E (fresh Opus critic): pass\n"
+    )
+    path = tmp_path / "refused_subbeat.md"
+    path.write_text(text, encoding="utf-8")
+    assert main([str(path)]) == 1
+
+
+def test_a_visual_note_line_carrying_a_time_range_is_not_a_refused_sub_beat():
+    """Calibration: `tests/fixtures/script_decline.md:189`'s visual note line
+    carries a time range but no `| N words` budget group -- the signal that
+    separates a refused sub-beat from ordinary shot-list prose describing a
+    beat's visuals. Taken verbatim from the shipped fixture."""
+    text = (
+        'BUILD/VALUE (8–28s | 8 words): "Kids hand over control and something shifts fast."\n'
+        "  Hook (0–3s): The club registration form already mid-slide back across a table, adult hand and\n"
+    )
+    _, findings = parse_script(text)
+    assert findings == []
+
+
+def test_the_shipped_fixtures_produce_no_refused_sub_beat_finding():
+    """Calibration: 0 hits across the 4 shipped fixtures, honouring §1's
+    'fixtures stay byte-identical' guarantee -- the new detector must not
+    retroactively invalidate any real artifact."""
+    for name in (
+        "script_let_kids_play_act.md",
+        "script_specialization.md",
+        "script_decline.md",
+        "script_nobody_asked.md",
+    ):
+        _, findings = parse_script(_read(name))
+        hits = [f for f in findings if "parseable sub-beat line" in f.message]
+        assert hits == [], f"{name}: {hits}"
+
+
 def test_beat_heading_with_no_quoted_line_anywhere_is_partial_parse():
     text = 'HOOK        (0–3s  | 7 words):\nSETUP (3–8s | 4 words): "A real spoken line."\n'
     _, findings = parse_script(text)

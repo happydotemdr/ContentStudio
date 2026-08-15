@@ -43,6 +43,16 @@ QUOTED_RE = re.compile(r'"([^"]+)"|“([^”]+)”')
 # the only independent witness to how much spoken text the line is supposed to
 # contain, and it is what the dropped-text detector below measures against.
 DECLARED_WORDS_RE = re.compile(r"\|\s*(\d+)\s*words")
+# A refused sub-beat's tell: a `(start-end)` range that does not start the
+# line -- e.g. `mechanism (11-18s | 19 words):` -- fails SUBRANGE_RE (which
+# requires the range to open the line) and names no BEAT_LABEL either, so it
+# falls through both `_beat_name` and `_disguised_beat_label` unrecognised.
+# The anchor here is the budget group, not the range: measured identical
+# precision against the 4 shipped fixtures (2/2 true positives, 0 false
+# positives) to a `RANGE_RE and DECLARED_WORDS_RE` anchor, and it additionally
+# catches `mechanism (11-18 sec | 19 words):`, whose non-standard range suffix
+# a RANGE_RE anchor misses outright.
+BUDGET_GROUP_RE = re.compile(r"\([^)\n]*\|\s*\d+\s*words[^)\n]*\)")
 
 
 @dataclass(frozen=True)
@@ -156,7 +166,17 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
     budget is the sum across its sub-beats), and per line for a sub-beat that
     declares its own. A material shortfall is a `partial-parse` finding: the
     parser saying out loud that it is linting less text than the script
-    contains."""
+    contains.
+
+    A sub-beat line SUBRANGE_RE refuses (its range does not start the line,
+    e.g. a label-first `mechanism (11-18s | 19 words):`) is also refused loud
+    rather than deleted silent, on the same principle as a disguised top-level
+    heading -- but only when it carries its own `| N words` budget group,
+    the author's own assertion that the line is a beat line. Known limit,
+    stated rather than papered over: a refused sub-beat line carrying no
+    budget group is not detected here. The dropped-text check above is the
+    independent second detector for that case, when the sub-beat's own
+    budget or its parent group's budget survives on a nearby line."""
     vo_lines: list[VOLine] = []
     findings: list[Finding] = []
 
@@ -204,6 +224,17 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
                         f"line {number}: {stripped[:70]!r} names beat {disguised} but is "
                         "not a parseable beat heading -- strip the markdown styling so the "
                         "line begins with the bare label",
+                        kind="fail",
+                    )
+                )
+            elif current_label is not None and BUDGET_GROUP_RE.search(stripped):
+                findings.append(
+                    Finding(
+                        "PARSE",
+                        current_label,
+                        f"line {number}: {stripped[:70]!r} carries a word budget but is not "
+                        "a parseable sub-beat line -- SUBRANGE_RE requires the range to "
+                        "start the line; move the label after the colon or drop it",
                         kind="fail",
                     )
                 )
