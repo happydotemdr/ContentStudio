@@ -100,6 +100,43 @@ def test_zero_vo_lines_yields_no_lines():
     assert findings == []
 
 
+def test_a_bolded_beat_label_is_a_blocking_parse_finding():
+    """C-88 fault test. `**HOOK**` is a heading to every human who reads the
+    script and to nobody in the parser. It used to delete the beat and every
+    check over it, silently. It must now block."""
+    text = (
+        '**HOOK**   (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP      (3–8s | 6 words): "Kids do that every single time."\n'
+    )
+    lines, findings = parse_script(text)
+    assert [vo.beat for vo in lines] == ["SETUP"]
+    assert [(f.check, f.beat, f.kind) for f in findings] == [("PARSE", "HOOK", "fail")]
+    assert "not a parseable beat heading" in findings[0].message
+
+
+def test_a_disguised_heading_is_distinguishable_from_a_script_that_omits_it():
+    """C-88 distinguishability test. A script that never had a HOOK and a script
+    whose HOOK the parser refused must not produce the same finding set."""
+    disguised = '## HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+    absent = 'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+    _, disguised_findings = parse_script(disguised)
+    _, absent_findings = parse_script(absent)
+    assert disguised_findings != absent_findings
+    assert [f.beat for f in disguised_findings] == ["HOOK"]
+    assert absent_findings == []
+
+
+def test_prose_that_merely_mentions_a_beat_label_is_not_a_disguised_heading():
+    """The heuristic's guard rail: a notes line reading `- LOOP/CTA mirrors the
+    hook` carries no range and no colon, so it is prose, not a refused heading."""
+    text = (
+        'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        "- LOOP/CTA mirrors the hook by design\n"
+    )
+    _, findings = parse_script(text)
+    assert findings == []
+
+
 def test_beat_heading_with_no_quoted_line_anywhere_is_partial_parse():
     text = 'HOOK        (0–3s  | 7 words):\nSETUP (3–8s | 4 words): "A real spoken line."\n'
     _, findings = parse_script(text)

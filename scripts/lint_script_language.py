@@ -21,7 +21,17 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+BEAT_LABELS = ("HOOK", "SETUP", "BUILD/VALUE", "PAYOFF", "LOOP/CTA")
 BEAT_LABEL_RE = re.compile(r"^(HOOK|SETUP|BUILD/VALUE|PAYOFF|LOOP/CTA)\b")
+# Leading markdown furniture a heading can hide behind: blockquote, ATX heading,
+# list bullet, bold/italic/underscore emphasis, inline code.
+_MARKDOWN_LEAD_RE = re.compile(r"^[\s>#*_+`~-]+")
+# After the furniture is stripped, a genuine heading still carries its range or
+# its colon. Requiring one of those is what keeps a prose line that merely names
+# a beat ("- LOOP/CTA mirrors the hook") from false-failing.
+_SUSPECT_HEADING_RE = re.compile(
+    r"^(HOOK|SETUP|BUILD/VALUE|PAYOFF|LOOP/CTA)\b[^\n]*[(:]"
+)
 REHOOK_RE = re.compile(r"^\[re-hook\b")
 SUBRANGE_RE = re.compile(r"^\(\d+")
 RANGE_RE = re.compile(r"\((\d+)\s*[–—-]\s*(\d+)s")
@@ -70,6 +80,23 @@ def _beat_name(stripped: str) -> str | None:
     if SUBRANGE_RE.match(stripped):
         return "sub-beat"
     return None
+
+
+def _disguised_beat_label(stripped: str) -> str | None:
+    """The beat a line NAMES if it is a heading the parser refused, else None.
+
+    This is the fail-closed half of the parser. `_beat_name` answers "is this a
+    beat?"; this answers "did something that looks exactly like a beat just fall
+    through?". A heading the parser cannot read must be a finding, never a
+    deletion -- a deleted beat takes every D-check over it with it, and the
+    coverage machinery below can only fire for headings it already recognised.
+
+    Known limit, stated rather than papered over: a disguised heading carrying
+    neither a `(` nor a `:` is not detected here. The five-label cross-check in
+    `check_beat_set` is the independent second detector for that case."""
+    unstyled = _MARKDOWN_LEAD_RE.sub("", stripped).replace("**", "").replace("__", "").lstrip()
+    match = _SUSPECT_HEADING_RE.match(unstyled)
+    return match.group(1) if match else None
 
 
 # The dropped-text threshold. Calibrated against the declared-vs-counted spread
@@ -168,6 +195,18 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
         stripped = raw.strip()
         beat = _beat_name(stripped)
         if beat is None:
+            disguised = _disguised_beat_label(stripped)
+            if disguised is not None:
+                findings.append(
+                    Finding(
+                        "PARSE",
+                        disguised,
+                        f"line {number}: {stripped[:70]!r} names beat {disguised} but is "
+                        "not a parseable beat heading -- strip the markdown styling so the "
+                        "line begins with the bare label",
+                        kind="fail",
+                    )
+                )
             continue
 
         declared_match = DECLARED_WORDS_RE.search(stripped)
