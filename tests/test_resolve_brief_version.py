@@ -82,6 +82,17 @@ def test_next_filename_grounding_brief_has_no_kind_suffix(tmp_path: Path):
     assert version == 1
 
 
+def _cli(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "scripts.resolve_brief_version", *args],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+@pytest.mark.allow_subprocess
 def test_cli_prints_forward_slash_path(tmp_path: Path):
     """The CLI must print a forward-slash path even on Windows, since every skill
     copies this value verbatim into frontmatter pointer fields (script:,
@@ -102,13 +113,37 @@ def test_cli_prints_forward_slash_path(tmp_path: Path):
         ],
         cwd=Path(__file__).resolve().parent.parent,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     )
     assert "\\" not in result.stdout
     printed_path, printed_version = result.stdout.strip().split("\t")
     assert printed_path.endswith("2026-07-28-my-short-script.md")
     assert printed_version == "1"
+
+
+@pytest.mark.allow_subprocess
+def test_cli_exit_codes_reach_the_shell(tmp_path: Path):
+    """F-23 surfacing test. The skills read $? , not a Python return value."""
+    _write(tmp_path, "2026-07-28-my-short-script.md", 1)
+    ok = _cli(tmp_path, "--dir", str(tmp_path), "--slug", "my-short", "--kind", "script")
+    none = _cli(tmp_path, "--dir", str(tmp_path), "--slug", "absent", "--kind", "script")
+    gone = _cli(tmp_path, "--dir", str(tmp_path / "gone"), "--slug", "absent", "--kind", "script")
+    assert (ok.returncode, none.returncode, gone.returncode) == (0, 3, 2)
+    assert none.stdout.strip() == "NONE\t0"
+    assert gone.stdout.strip() == ""
+    assert "does not exist" in gone.stderr
+
+
+@pytest.mark.allow_subprocess
+def test_cli_reports_a_corrupt_brief_on_stderr_without_a_traceback(tmp_path: Path):
+    """C-100's other half: exit 1 used to carry a raw traceback and no stdout."""
+    (tmp_path / "2026-07-28-my-short-script.md").write_text("no frontmatter\n", encoding="utf-8")
+    result = _cli(tmp_path, "--dir", str(tmp_path), "--slug", "my-short", "--kind", "script")
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "no frontmatter block found" in result.stderr
 
 
 def test_find_latest_raises_on_a_directory_that_does_not_exist(tmp_path: Path):
