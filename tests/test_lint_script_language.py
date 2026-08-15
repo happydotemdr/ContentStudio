@@ -1040,3 +1040,41 @@ def test_each_single_edit_evasion_still_fails_the_gate(
     assert findings, mutation_id
     assert expected_check in {f.check for f in findings}, (mutation_id, findings)
     assert _run(tmp_path, mutated) == 1, mutation_id
+
+
+GATES_PY = (
+    Path(__file__).resolve().parents[1]
+    / "pipeline-app" / "pipeline_app" / "gates.py"
+)
+
+
+def test_the_cli_exit_code_is_exactly_the_blocking_predicate(tmp_path):
+    """Parity, CLI half. main()'s exit code is a pure function of
+    is_blocking() over lint()'s output -- no second opinion, no extra rule that
+    the app-mode caller would not also apply."""
+    cases = [
+        CLEAN_SCRIPT,
+        CLEAN_SCRIPT.replace("you get him.", "you get him (again)."),
+        CLEAN_SCRIPT.replace("HOOK        (0–4s  | 9 words)", "HOOK        (0–4s)"),
+        _read("script_decline.md"),
+        _read("script_nobody_asked.md"),
+    ]
+    for i, text in enumerate(cases):
+        lines, parse_findings = parse_script(text)
+        expected_blocking = [f for f in lint(lines, text, parse_findings) if is_blocking(f)]
+        assert _run(tmp_path, text, name=f"case{i}.md") == (1 if expected_blocking else 0), i
+
+
+def test_gates_py_does_not_hardcode_the_blocking_kind():
+    """Parity drift guard. pipeline_app/gates.py (P3's file, fixed in this
+    package's own gates.py mini-fix task, commit 25e640d) must derive blocking
+    from the linter's own is_blocking()/NON_BLOCKING_KINDS-equivalent, not from
+    a literal `!= "skipped"`. A literal there would silently diverge the moment
+    this module adds a kind -- which T6 already did (the "info" kind). This
+    test is read-only over gates.py; it does not import or execute it."""
+    source = GATES_PY.read_text(encoding="utf-8")
+    assert '!= "skipped"' not in source, (
+        'gates.py still tests a kind literal -- it must derive blocking from a '
+        "closed set (mirroring this module's NON_BLOCKING_KINDS/is_blocking()) so "
+        "the CLI and app gates cannot diverge"
+    )
