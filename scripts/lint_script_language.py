@@ -547,13 +547,18 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
                 )
             )
     if vo_lines and rated * 2 <= len(vo_lines):
+        # A script whose one beat is malformed trips both this backstop and the
+        # malformed-range-specific `fail` above (0 of 1 rated is also "at or
+        # below the floor") -- that is two independently true diagnostics, not
+        # a bug to dedupe: one names the floor breach, the other names the
+        # specific defect.
         findings.append(
             Finding(
                 "D5",
                 None,
                 f"only {rated} of {len(vo_lines)} voiceover lines carry a readable time "
                 f"range, at or below the {RATABLE_MIN_FRACTION:.0%} floor -- the wpm "
-                "ceiling was not checked on this script -- every beat heading needs a "
+                "ceiling was never checked on this script -- every beat heading needs a "
                 "`(<start>–<end>s | N words)` range, e.g. `(0–3s | 8 words)`. A gate "
                 "that rated a minority is not a gate that passed",
             )
