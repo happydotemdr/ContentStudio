@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -90,8 +91,14 @@ def test_the_written_manifest_is_validated_as_json():
 @pytest.mark.allow_subprocess
 def test_the_build_produces_a_valid_manifest_and_the_expected_roster(tmp_path):
     """C-102 surfacing test: run the actual script and inspect what it wrote."""
+    # Never invoke bash/sh by bare name in a subprocess -- resolve with
+    # shutil.which() first (documented project trap: a bare "bash" can
+    # resolve to an unrelated launcher stub ahead of the real shell on
+    # some platforms/PATH configurations).
+    bash_path = shutil.which("bash")
+    assert bash_path is not None, "bash not found on PATH (expected on this project's target platform)"
     result = subprocess.run(
-        ["bash", str(SCRIPT)], cwd=REPO, capture_output=True,
+        [bash_path, str(SCRIPT)], cwd=REPO, capture_output=True,
         encoding="utf-8", errors="replace",
     )
     assert result.returncode == 0, result.stderr
