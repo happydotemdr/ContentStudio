@@ -571,7 +571,7 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
                     f"(+{WPM_TOLERANCE} tolerance) -- more words than fit in the beat",
                 )
             )
-    if vo_lines and rated * 2 <= len(vo_lines):
+    if vo_lines and rated <= RATABLE_MIN_FRACTION * len(vo_lines):
         # A script whose one beat is malformed trips both this backstop and the
         # malformed-range-specific `fail` above (0 of 1 rated is also "at or
         # below the floor") -- that is two independently true diagnostics, not

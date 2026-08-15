@@ -5,6 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+import lint_script_language  # noqa: E402
 from lint_script_language import (  # noqa: E402
     VOLine,
     Finding,
@@ -709,6 +710,32 @@ def test_d5_distinguishes_mostly_unratable_from_fully_rated():
     )
     assert [f for f in check_pace(unratable_lines) if f.kind == "fail"] != []
     assert [f for f in check_pace(rated_lines) if f.kind == "fail"] == []
+
+
+def test_ratable_min_fraction_is_load_bearing_not_decorative(monkeypatch):
+    """Final-review finding #4. `rated * 2 <= len(vo_lines)` used to encode
+    50% as a separate literal `2`, independent of RATABLE_MIN_FRACTION --
+    changing the constant changed only the printed message, never the actual
+    threshold enforced. This script has 3 of 4 VO lines ratable (75%): at the
+    shipped 0.5 floor that clears comfortably (no block), but at a
+    monkeypatched 0.75 floor it lands exactly on the line and must block --
+    proving the comparison actually reads the constant now."""
+    lines, _ = parse_script(
+        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+        'BUILD/VALUE (8–13s | 6 words): "They hand over the account today."\n'
+        '[re-hook beat @ ~15s]: "His proof, a trader who bought it."\n'
+    )
+    assert len(lines) == 4
+
+    findings = check_pace(lines)
+    assert [f for f in findings if f.kind == "fail"] == []
+
+    monkeypatch.setattr(lint_script_language, "RATABLE_MIN_FRACTION", 0.75)
+    findings = check_pace(lines)
+    fails = [f for f in findings if f.kind == "fail"]
+    assert len(fails) == 1
+    assert "75%" in fails[0].message
 
 
 def test_d5_blocks_when_no_beat_at_all_is_ratable():
