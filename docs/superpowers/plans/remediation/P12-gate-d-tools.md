@@ -1480,6 +1480,23 @@ shorts-ideation -> shorts-scripting -> shorts-styleboard -> {voiceover-brief, vi
 
 ### T16 — Derive the version, assert the roster, validate the JSON, fail loud on a bad copy
 
+> **Plan amendment, added during this package's own SDD run (2026-08-15).** T16's own
+> implementation snippet below calls `python scripts/cowork_plugin_lock.py --write --plugin-dir
+> "$PLUGIN_DIR"`, and its own test asserts `"cowork_plugin_lock.py" in source`. That file does not
+> exist yet at this point in the plan's numeric order — **T17, which comes AFTER T16 in this
+> document, is the task that creates it.** Confirmed empirically this session:
+> `scripts/cowork_plugin_lock.py` does not exist in the repo as of T15 landing. Executing T16
+> literally, in order, would either fail its own behavioral test (the build script would error
+> calling a nonexistent Python module) or force T16's implementer to invent a throwaway version of
+> `cowork_plugin_lock.py` that T17 then has to reconcile with or replace — the same "recurring bug
+> class" this whole programme has hit repeatedly. **The two tasks are executed in swapped order in
+> this session: T17 first (creates `scripts/cowork_plugin_lock.py` and the tracked lock file), then
+> T16 (wires the already-existing module into the build script).** Both tasks' own text is
+> otherwise unchanged and still individually correct — only the ORDER differs from the document's
+> numbering. If you are reading this while executing T16, confirm `scripts/cowork_plugin_lock.py`
+> already exists and exposes `compute_stamp`/`shipped_skills`/`main` with `--write`/`--check`
+> before writing anything; if it doesn't, stop and dispatch T17 first.
+
 **Finding:** C-102. Every build writes `"version": "0.1.0"`, so an installed plugin cannot be told
 from one made months and many skill edits ago. Nothing validates the manifest, and the only
 post-copy verification is a skill count printed in the closing `echo` and never compared to
