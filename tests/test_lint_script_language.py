@@ -190,17 +190,23 @@ def test_a_refused_sub_beat_is_distinguishable_from_a_beat_that_has_none():
 
 
 def test_a_refused_sub_beat_reaches_the_shell_as_exit_1(tmp_path):
-    """C-88b surfacing test. The parent heading's own `| N words` is stripped
-    so the group-level dropped-text check (declared vs counted) has nothing to
-    fire on, and a sibling sub-beat already covers the heading so the
-    no-voiceover-line coverage check has nothing to fire on either -- the exit
-    code must still be 1, proving the new sub-beat detector fired, not some
-    other check riding along."""
+    """C-88b surfacing test. The script's ONLY defect is the refused sub-beat:
+    the BUILD/VALUE parent carries a valid `| N words` budget that exactly
+    matches what its surviving sibling sub-beat provides (so neither T3's
+    missing-budget check nor the group-level dropped-text check has anything
+    to fire on), and all five top-level beats are present with clean,
+    in-tolerance lines (so T2's `check_beat_set` and every other D-check stay
+    silent too). The exit code must still be 1, proving the new sub-beat
+    detector fired on its own -- not some other check riding along. Verified
+    by hand: with `BUDGET_GROUP_RE` disabled, this script now exits 0."""
     text = (
         'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
-        "BUILD/VALUE (8–28s):\n"
+        'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+        "BUILD/VALUE (8–28s | 8 words):\n"
         '  (11–18s | 8 words): "Kids hand over control and something shifts fast."\n'
         '  mechanism (18–24s | 6 words): "Extra words that never surfaced today somehow."\n'
+        'PAYOFF (28–35s | 6 words): "His proof came from a trader."\n'
+        'LOOP/CTA (38–45s | 6 words): "It won\'t set him back today."\n'
         "GATES\n  Gate E (fresh Opus critic): pass\n"
     )
     path = tmp_path / "refused_subbeat.md"
@@ -994,8 +1000,9 @@ CLEAN_SCRIPT = """\
 
 HOOK        (0–4s  | 9 words): "Nobody asked him what the best part was."
 SETUP       (4–10s | 12 words): "He came home muddy, and the whole story arrived without a question."
-BUILD/VALUE (10–24s | 20 words):
-  (10–24s | 20 words): "Kids hand over the account when nothing is riding on the answer, and that is the entire trick."
+BUILD/VALUE (10–24s | 18 words):
+  (10–20s | 18 words): "Kids hand over the account when nothing is riding on the answer, and that is the entire trick."
+  (20–24s | 4 words): "That part never airs."
 PAYOFF      (24–34s | 18 words): "Ask about the score and you get a score. Ask about the mud and you get him."
 LOOP/CTA    (34–40s | 10 words, mirrors hook): "Ask what the best part was. Then believe it."
 
@@ -1038,9 +1045,15 @@ MUTATIONS = [
     # line) so the control stays clean. This mutation adds a "mechanism "
     # label prefix, which SUBRANGE_RE cannot match -- the exact refused-line
     # shape T1b's detector exists to catch instead of silently deleting.
+    # The heading's own budget (18 words) exactly matches what the surviving
+    # first sub-beat alone provides, so refusing the second sub-beat below
+    # does not also trip the group-level dropped-text check or T2's
+    # check_beat_set -- isolating the row to the label-first sub-beat
+    # detector alone. Verified by hand: with `BUDGET_GROUP_RE` disabled, this
+    # mutation no longer fails the gate.
     ("C88b-label-first-subbeat",
-     '  (10–24s | 20 words): "Kids hand over the account when nothing is riding on the answer, and that is the entire trick."',
-     '  mechanism (10–24s | 20 words): "Kids hand over the account when nothing is riding on the answer, and that is the entire trick."',
+     '  (20–24s | 4 words): "That part never airs."',
+     '  aside (20–24s | 4 words): "That part never airs."',
      "PARSE"),
 ]
 
