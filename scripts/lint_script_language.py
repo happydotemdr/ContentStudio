@@ -477,6 +477,12 @@ def check_beat_set(vo_lines: list[VOLine]) -> list[Finding]:
 WPM_CEILING = 170
 WPM_TOLERANCE = 2
 
+# More than half of the voiceover lines must carry a readable range. The
+# four shipped scripts run 5/6, 5/6, 7/7 and 8/8, so this floor clears
+# every real artifact with margin while refusing the "delete the ranges
+# you cannot meet" evasion: 1 of 6 ratable is not a gate that checked pace.
+RATABLE_MIN_FRACTION = 0.5
+
 
 def beat_wpm(vo: VOLine) -> float | None:
     """Words per minute implied by this beat, or None if it carries no range."""
@@ -507,26 +513,28 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
     for vo in vo_lines:
         wpm = beat_wpm(vo)
         if wpm is None:
-            # Same `skipped` kind either way -- only the message text
-            # distinguishes a range that was never parsed (old-format
-            # re-hook line) from one that parsed but is malformed (start >=
-            # end), so a reader isn't told "missing" when the beat actually
-            # carries a nonsensical range.
+            # A malformed range (start >= end) is a defect, not a known
+            # unknown -- it blocks. A genuinely absent/unparsed range stays
+            # `skipped`, non-blocking.
             if vo.start_s is not None and vo.end_s is not None and vo.end_s <= vo.start_s:
-                reason = (
-                    f"malformed time range ({vo.start_s}–{vo.end_s}s, start >= end); "
-                    "pace unchecked"
+                findings.append(
+                    Finding(
+                        "D5",
+                        vo.beat,
+                        f"line {vo.line_number}: malformed time range "
+                        f"({vo.start_s}–{vo.end_s}s, start >= end); pace unchecked",
+                        kind="fail",
+                    )
                 )
             else:
-                reason = "no computable time range; pace unchecked"
-            findings.append(
-                Finding(
-                    "D5",
-                    vo.beat,
-                    f"line {vo.line_number}: {reason}",
-                    kind="skipped",
+                findings.append(
+                    Finding(
+                        "D5",
+                        vo.beat,
+                        f"line {vo.line_number}: no computable time range; pace unchecked",
+                        kind="skipped",
+                    )
                 )
-            )
             continue
         rated += 1
         if wpm > limit:
@@ -538,15 +546,16 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
                     f"(+{WPM_TOLERANCE} tolerance) -- more words than fit in the beat",
                 )
             )
-    if vo_lines and rated == 0:
+    if vo_lines and rated * 2 <= len(vo_lines):
         findings.append(
             Finding(
                 "D5",
                 None,
-                f"not one of the {len(vo_lines)} voiceover lines carries a readable time "
-                "range, so the wpm ceiling was never checked on this script -- every beat "
-                "heading needs a `(<start>–<end>s | N words)` range, e.g. "
-                "`(0–3s | 8 words)`. A gate that rated nothing is not a gate that passed",
+                f"only {rated} of {len(vo_lines)} voiceover lines carry a readable time "
+                f"range, at or below the {RATABLE_MIN_FRACTION:.0%} floor -- the wpm "
+                "ceiling was not checked on this script -- every beat heading needs a "
+                "`(<start>–<end>s | N words)` range, e.g. `(0–3s | 8 words)`. A gate "
+                "that rated a minority is not a gate that passed",
             )
         )
     return findings

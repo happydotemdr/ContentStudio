@@ -606,17 +606,66 @@ def test_d5_tolerance_passes_a_beat_at_171_wpm():
 
 
 def test_d5_skips_a_beat_with_no_range_and_says_so():
-    # A ratable HOOK sits alongside the old-format re-hook on purpose: with the
-    # re-hook alone this script would be 100% unratable, which is now its own
-    # blocking finding (see test_d5_blocks_when_no_beat_at_all_is_ratable).
-    # This test is about the per-beat `skipped` semantics, which are unchanged.
+    # Two ratable beats (HOOK, SETUP) sit alongside the old-format re-hook on
+    # purpose: 2 of 3 beats ratable clears the 50% floor (see
+    # test_d5_blocks_when_most_beats_are_unratable for the case where it
+    # doesn't), so the only finding here is the per-beat `skipped` semantics
+    # on the one still-unratable line, which are unchanged.
     lines, _ = parse_script(
         'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
         '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
     )
     findings = check_pace(lines)
     assert [f.kind for f in findings] == ["skipped"]
     assert findings[0].check == "D5"
+
+
+def test_d5_blocks_when_most_beats_are_unratable():
+    """Finding 1 (the floor). Deleting the ranges from most-but-not-all beats
+    used to leave a minority rated and no pace check on the majority, with the
+    all-unratable backstop staying silent because it wasn't literally zero.
+    1 of 3 ratable must now block, and the message must name both counts."""
+    lines, _ = parse_script(
+        'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP (0:03–0:08 | 6 words): "Kids do that every single time."\n'
+        '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
+    )
+    findings = [f for f in check_pace(lines) if f.kind == "fail"]
+    assert len(findings) == 1
+    assert findings[0].check == "D5"
+    assert "1 of 3" in findings[0].message
+
+
+def test_d5_treats_a_malformed_range_as_blocking_not_skipped():
+    """Finding 2's other half. A malformed range (start >= end) is a defect,
+    not a known unknown -- it must not be reported inside a non-blocking
+    `skipped` finding, distinguishable from a merely-absent range only by
+    message text."""
+    lines, _ = parse_script(
+        'HOOK (8–3s | 8 words): "Best part was the mud today, honestly."\n'
+    )
+    findings = check_pace(lines)
+    fails = [f for f in findings if f.kind == "fail"]
+    assert any("start >= end" in f.message for f in fails)
+    assert all(f.kind != "skipped" for f in findings if "start >= end" in f.message)
+
+
+def test_d5_distinguishes_mostly_unratable_from_fully_rated():
+    """The two states this task tells apart must actually differ: a script
+    where every beat is ratable produces no blocking finding at all, unlike
+    the mostly-unratable case above."""
+    unratable_lines, _ = parse_script(
+        'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP (0:03–0:08 | 6 words): "Kids do that every single time."\n'
+        '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
+    )
+    rated_lines, _ = parse_script(
+        'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+    )
+    assert [f for f in check_pace(unratable_lines) if f.kind == "fail"] != []
+    assert [f for f in check_pace(rated_lines) if f.kind == "fail"] == []
 
 
 def test_d5_blocks_when_no_beat_at_all_is_ratable():
