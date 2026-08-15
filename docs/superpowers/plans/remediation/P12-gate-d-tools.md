@@ -360,6 +360,23 @@ and add `*check_beat_set(vo_lines),` to `lint()` immediately after the parse fin
       (`tests/test_lint_script_language.py:611-618`) now fails — it is a one-beat script. That is
       expected and is amended in T7; leave it red for exactly one task and note it in the commit
       body, or amend it now to use `CLEAN_SCRIPT` from T7 if you sequence T7 first.
+
+      > **P12 execution-order amendment, added during this package's own SDD run (2026-08-15).**
+      > This package is being executed in strict numeric task order (T1, T1b, T2, T3, T4, T5, T6,
+      > then a gates.py mini-fix, then T7, T8, ...) rather than reordering T7 to run immediately
+      > after T2. Under that order, "leave it red for exactly one task" is false — the test would
+      > stay red across T3, T4, T5 and T6 as well, four tasks, not one, since none of them touch
+      > this test either. The plan's own second option applies instead: **amend it now, in T2's own
+      > commit** — but using a small inline fix, not the shared `CLEAN_SCRIPT` module constant,
+      > because `CLEAN_SCRIPT` does not exist yet (T7 is the task that introduces it) and defining
+      > it early would collide with T7 adding the same name later. T2 should replace the test's
+      > one-beat script with a minimal five-beat script (all five `BEAT_LABELS`, each with a valid
+      > `| N words` budget so T3's not-yet-landed mandatory-budget rule is moot either way) so the
+      > test passes standalone under T2's own change, and rename it to
+      > `test_main_returns_0_on_a_clean_five_beat_script` so its name matches what it actually
+      > asserts. When T7 lands its shared `CLEAN_SCRIPT` constant, T7's implementer should replace
+      > this test's inline script with `CLEAN_SCRIPT` (per the plan's original intent) and may
+      > rename it back if desired — that is T7's call, not a re-opening of this amendment.
 - [ ] **Commit:** `fix(gate-d): cross-check the parsed beat set against the five labels (C-88)`
 
 ---
