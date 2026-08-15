@@ -156,9 +156,11 @@ def run_script_language_gate(
     text = artifact_path.read_text(encoding="utf-8")
     vo_lines, parse_findings = linter.parse_script(text)
     if not vo_lines:
-        raise ValueError(
-            f"no voiceover lines parsed from {artifact_path.name} -- check the script format"
-        )
+        detail = "; ".join(f"[{f.check}] {f.beat or 'script'}: {f.message}" for f in parse_findings)
+        message = f"no voiceover lines parsed from {artifact_path.name} -- check the script format"
+        if detail:
+            message = f"{message}: {detail}"
+        raise ValueError(message)
     return _as_dicts(linter.lint(vo_lines, text, parse_findings))
 
 

@@ -685,6 +685,8 @@ def main(argv: list[str] | None = None) -> int:
     vo_lines, parse_findings = parse_script(text)
     if not vo_lines:
         print(f"Gate D: no voiceover lines parsed from {args.script}. Check the script format.")
+        for finding in parse_findings:
+            print(f"  [{finding.check}] {finding.beat or 'script'}: {finding.message}")
         return 2
 
     findings = lint(vo_lines, text, parse_findings)

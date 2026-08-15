@@ -916,6 +916,29 @@ def test_main_returns_2_on_a_file_with_no_vo_lines(tmp_path):
     assert main([str(path)]) == 2
 
 
+def test_main_surfaces_parse_findings_when_every_heading_is_disguised(tmp_path, capsys):
+    """Final-review finding #1. `parse_script` already computes precise PARSE
+    findings -- naming the exact line and what is wrong -- before concluding
+    there are zero VO lines. The zero-VO-lines early return in `main()` used
+    to discard them, leaving the operator with only the generic "no
+    voiceover lines parsed" sentence even though every beat heading here is
+    disguised (bolded) and the parser said exactly why it refused each one."""
+    text = (
+        '**HOOK** (0–3s | 6 words): "Best part was the mud today."\n'
+        '**SETUP** (3–8s | 6 words): "Kids do that every single time."\n'
+    )
+    path = tmp_path / "all_disguised.md"
+    path.write_text(text, encoding="utf-8")
+    assert main([str(path)]) == 2
+    output = capsys.readouterr().out
+    assert "no voiceover lines parsed" in output
+    # The precise PARSE findings must be surfaced too, not just the generic
+    # sentence -- same format main() uses for blocking findings elsewhere.
+    assert "[PARSE] HOOK:" in output
+    assert "[PARSE] SETUP:" in output
+    assert "not a parseable beat heading" in output
+
+
 def test_main_returns_1_on_a_failing_fixture(tmp_path):
     path = tmp_path / "bad.md"
     path.write_text(_read("script_decline.md"), encoding="utf-8")

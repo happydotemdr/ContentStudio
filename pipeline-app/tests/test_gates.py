@@ -157,6 +157,29 @@ def test_unparseable_script_is_an_error_not_a_pass(tmp_path):
     assert results[0]["status"] == "error"
 
 
+def test_the_zero_vo_lines_error_names_the_specific_parse_findings(tmp_path):
+    """Final-review finding #1, app-side half. When every beat heading is
+    disguised, `parse_script` already worked out precisely why -- naming the
+    line and the defect -- before concluding there were zero VO lines. The
+    ValueError run_script_language_gate raises on that path used to carry
+    only the generic "no voiceover lines parsed" sentence; it must now also
+    carry the specific parse-finding text, since that message becomes the
+    lone finding on the `status: "error"` result (run_gates_for_stage's
+    existing exception handler, unchanged by this fix)."""
+    path = tmp_path / "raw_output.md"
+    path.write_text(
+        '**HOOK** (0–3s | 6 words): "Best part was the mud today."\n'
+        '**SETUP** (3–8s | 6 words): "Kids do that every single time."\n',
+        encoding="utf-8",
+    )
+    results = gates.run_gates_for_stage(REPO_ROOT, "scripting", path, {})
+    assert results[0]["status"] == "error"
+    message = results[0]["findings"][0]["message"]
+    assert "no voiceover lines parsed" in message
+    assert "not a parseable beat heading" in message
+    assert "HOOK" in message and "SETUP" in message
+
+
 def test_a_linter_that_raises_is_an_error_not_a_pass(tmp_path, monkeypatch):
     def boom(_repo_root, _path, _upstream):
         raise RuntimeError("linter exploded")
