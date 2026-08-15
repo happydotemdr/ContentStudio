@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from scripts.resolve_brief_version import find_latest, next_filename, parse_frontmatter
+from scripts.resolve_brief_version import (
+    EXIT_ERROR, EXIT_NONE, EXIT_OK, find_latest, main, next_filename, parse_frontmatter,
+)
 
 
 def _write(dir_: Path, name: str, version: int, extra: str = "") -> Path:
@@ -107,3 +109,65 @@ def test_cli_prints_forward_slash_path(tmp_path: Path):
     printed_path, printed_version = result.stdout.strip().split("\t")
     assert printed_path.endswith("2026-07-28-my-short-script.md")
     assert printed_version == "1"
+
+
+def test_find_latest_raises_on_a_directory_that_does_not_exist(tmp_path: Path):
+    """C-96 fault test. The wrong CWD used to look exactly like an empty repo."""
+    missing = tmp_path / "not-here"
+    with pytest.raises(FileNotFoundError) as exc:
+        find_latest(missing, "my-short", "script")
+    assert str(missing) in str(exc.value)
+
+
+def test_a_missing_dir_is_distinguishable_from_an_empty_one(tmp_path: Path, capsys):
+    """C-96 distinguishability test. This is the whole finding: "no briefs here"
+    and "I am looking in the wrong place" must not be the same answer."""
+    empty = tmp_path / "rgs-briefs"
+    empty.mkdir()
+    assert main(["--dir", str(empty), "--slug", "s", "--kind", "script"]) == EXIT_NONE
+    assert main(["--dir", str(tmp_path / "gone"), "--slug", "s", "--kind", "script"]) == EXIT_ERROR
+
+
+def test_a_missing_dir_never_proposes_a_next_filename(tmp_path: Path):
+    """The S1 half: `--next` against a missing directory used to return
+    `<date>-<slug>-<kind>.md`, version 1 -- the exact name of a live v1 brief."""
+    rc = main([
+        "--dir", str(tmp_path / "gone"), "--slug", "s", "--kind", "script",
+        "--next", "--date", "2026-08-08",
+    ])
+    assert rc == EXIT_ERROR
+
+
+def test_the_resolved_absolute_directory_is_echoed_on_every_run(tmp_path: Path, capsys):
+    """C-96 surfacing test. The operator can see which directory answered."""
+    _write(tmp_path, "2026-07-28-my-short-script.md", 1)
+    assert main(["--dir", str(tmp_path), "--slug", "my-short", "--kind", "script"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert str(tmp_path.resolve()) in err
+
+
+def test_a_corrupt_brief_and_no_brief_return_different_codes(tmp_path: Path):
+    """C-100 distinguishability test. Both used to exit 1, so a caller that read
+    exit 1 as "start at v1" turned a corrupt brief into an overwrite."""
+    (tmp_path / "2026-07-28-my-short-script.md").write_text("no frontmatter\n", encoding="utf-8")
+    corrupt = main(["--dir", str(tmp_path), "--slug", "my-short", "--kind", "script"])
+    empty = main(["--dir", str(tmp_path), "--slug", "other-short", "--kind", "script"])
+    assert (corrupt, empty) == (EXIT_ERROR, EXIT_NONE)
+
+
+def test_exit_code_1_is_never_returned(tmp_path: Path):
+    """The retired code. A stale caller testing `rc == 1` must find a condition
+    that never fires rather than one that quietly means the wrong thing."""
+    (tmp_path / "2026-07-28-bad-script.md").write_text("no frontmatter\n", encoding="utf-8")
+    codes = {
+        main(["--dir", str(tmp_path), "--slug", "bad", "--kind", "script"]),
+        main(["--dir", str(tmp_path), "--slug", "absent", "--kind", "script"]),
+        main(["--dir", str(tmp_path / "gone"), "--slug", "absent", "--kind", "script"]),
+    }
+    assert 1 not in codes
+
+
+def test_none_still_prints_the_documented_stdout_contract(tmp_path: Path, capsys):
+    """Ten skills branch on the printed text, not the code. That contract holds."""
+    assert main(["--dir", str(tmp_path), "--slug", "absent", "--kind", "script"]) == EXIT_NONE
+    assert capsys.readouterr().out.strip() == "NONE\t0"

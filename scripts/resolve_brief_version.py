@@ -9,6 +9,12 @@ Usage:
   resolve_brief_version.py --slug <slug> --kind <kind>            # stage artifact
   resolve_brief_version.py --slug <topic-slug>                    # grounding brief (no --kind)
   resolve_brief_version.py --slug <slug> --kind <kind> --next --date YYYY-MM-DD
+
+Exit codes:
+  0  Resolved, or a next filename proposed -- <path>\t<version> or <filename>\t<version>
+  3  NONE -- no prior version exists (the expected empty case) -- NONE\t0
+  2  Error -- unusable input or an unresolvable state (nothing on stdout; message on stderr)
+  1  Retired. Never returned.
 """
 import argparse
 import re
@@ -18,6 +24,13 @@ from pathlib import Path
 import yaml
 
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+
+EXIT_OK = 0      # a usable answer was printed
+EXIT_ERROR = 2   # unusable input or an unresolvable state (argparse also uses 2)
+EXIT_NONE = 3    # the expected empty case: no prior version exists
+# Exit 1 is deliberately retired. It used to mean BOTH "no prior version" and
+# "a brief is malformed", and callers read it as the former -- which turned a
+# corrupt brief into "start at v1". Nothing returns 1 now.
 
 
 def parse_frontmatter(text: str) -> dict:
@@ -36,8 +49,12 @@ def _pattern(slug: str, kind: str | None) -> re.Pattern:
 
 
 def find_latest(directory: Path, slug: str, kind: str | None) -> tuple[Path | None, int]:
-    if not directory.exists():
-        return None, 0
+    if not directory.is_dir():
+        raise FileNotFoundError(
+            f"{directory} does not exist or is not a directory -- resolve_brief_version "
+            "must be run from the repo root, or given an explicit --dir. Returning "
+            '"no prior version" here would propose v1 over a live brief.'
+        )
     pattern = _pattern(slug, kind)
     best_path: Path | None = None
     best_version = 0
@@ -75,20 +92,29 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     directory = Path(args.dir)
+    print(f"resolve_brief_version: reading {directory.resolve()}", file=sys.stderr)
 
-    if args.next:
-        if not args.date:
-            parser.error("--next requires --date YYYY-MM-DD")
-        filename, version = next_filename(directory, args.slug, args.kind, args.date)
-        print(f"{filename}\t{version}")
-        return 0
+    try:
+        if args.next:
+            if not args.date:
+                parser.error("--next requires --date YYYY-MM-DD")
+            filename, version = next_filename(directory, args.slug, args.kind, args.date)
+            print(f"{filename}\t{version}")
+            return EXIT_OK
 
-    path, version = find_latest(directory, args.slug, args.kind)
+        path, version = find_latest(directory, args.slug, args.kind)
+    except (FileNotFoundError, ValueError) as exc:
+        # Deliberately NOT a bare except: these are the two failure classes this
+        # resolver can produce, and each is reported with its own message rather
+        # than collapsed into the "nothing found" answer.
+        print(f"resolve_brief_version: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
     if path is None:
         print("NONE\t0")
-        return 1
+        return EXIT_NONE
     print(f"{path.as_posix()}\t{version}")
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":
