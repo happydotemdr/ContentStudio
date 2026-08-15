@@ -2,6 +2,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "build-cowork-plugin.sh"
 EXCLUDED = {"rgs-grounding", "rgs-pairing-review"}
@@ -33,3 +35,45 @@ def test_the_expected_shipped_roster_is_exactly_the_tree_minus_the_rgs_skills():
     assert len(shipped) == 11
     assert "shorts-styleboard" in shipped
     assert EXCLUDED & shipped == set()
+
+
+LOCK = REPO / "scripts" / "cowork-plugin.lock.json"
+
+
+def test_the_lock_file_matches_the_current_skills_tree():
+    """C-103 fault test. Editing a skill without rebuilding the plugin used to
+    be undetectable. Now it fails here, with the one command that fixes it."""
+    from scripts.cowork_plugin_lock import compute_stamp
+
+    assert LOCK.exists(), "run: bash scripts/build-cowork-plugin.sh"
+    recorded = json.loads(LOCK.read_text(encoding="utf-8"))
+    assert recorded == compute_stamp(REPO), (
+        "the shipped plugin is stale relative to .claude/skills/ -- "
+        "run: bash scripts/build-cowork-plugin.sh"
+    )
+
+
+def test_a_changed_skill_changes_the_stamp(tmp_path):
+    """C-103 distinguishability test. A stamp that did not move when a skill
+    moved would be a stamp that certifies nothing."""
+    from scripts.cowork_plugin_lock import compute_stamp
+
+    fake = tmp_path / ".claude" / "skills" / "demo"
+    fake.mkdir(parents=True)
+    (fake / "SKILL.md").write_text("one\n", encoding="utf-8")
+    before = compute_stamp(tmp_path)
+    (fake / "SKILL.md").write_text("two\n", encoding="utf-8")
+    assert compute_stamp(tmp_path) != before
+
+
+def test_a_locally_built_artifact_is_not_older_than_the_skills_it_ships():
+    """The mtime half, for the machine that actually has the artifact. dist/ is
+    git-ignored, so this is a no-op in CI and a real check locally -- stated
+    plainly rather than dressed up as universal coverage."""
+    artifact = REPO / "dist" / "content-studio.plugin"
+    if not artifact.exists():
+        pytest.skip("no local build artifact; the lock-file check above is the CI gate")
+    newest = max(
+        p.stat().st_mtime for p in (REPO / ".claude" / "skills").rglob("*") if p.is_file()
+    )
+    assert artifact.stat().st_mtime >= newest, "run: bash scripts/build-cowork-plugin.sh"

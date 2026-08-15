@@ -1,0 +1,20 @@
+{
+  "skills": [
+    "elevenlabs-audio",
+    "elevenlabs-music",
+    "midjourney-prompting",
+    "music-brief",
+    "shorts-assembly",
+    "shorts-ideation",
+    "shorts-scripting",
+    "shorts-styleboard",
+    "social-repurpose",
+    "visual-prompts",
+    "voiceover-brief"
+  ],
+  "excluded": [
+    "rgs-grounding",
+    "rgs-pairing-review"
+  ],
+  "sha256": "9aaeb28a290f095a0d1e2df06c84e64163b8aa5f67811ebca248975b927208be"
+}
