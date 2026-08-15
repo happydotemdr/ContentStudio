@@ -568,14 +568,37 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
 
 GATE_E_RE = re.compile(r"^\s*Gate E\b[^:]*:\s*(\S.*)$", re.MULTILINE)
 # A value still wrapped in <…> or […] is the output contract's own slot, not a
-# result. So is one that still carries the template's `|` alternation bars --
+# result. So is one that still carries the template's own text unchanged --
 # no genuine result ("pass", "3 findings", "2 findings, 1 defended",
-# "overridden: <why>") contains one.
+# "overridden: <why>") reproduces that exact alternation.
 PLACEHOLDER_WRAPPED_RE = re.compile(r"^<.*>$|^\[.*\]$", re.DOTALL)
+# The output contract's own alternation, matched as text rather than inferred
+# from the presence of a `|`. A genuine result ("2 findings | 1 defended") may
+# contain a pipe; only the template contains this sequence.
+TEMPLATE_VALUE_RE = re.compile(
+    r"^[<\[]?\s*pass\s*\|\s*N\s+findings\s*\|\s*N\s+defended\s*\|\s*overridden\s*:",
+    re.IGNORECASE,
+)
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def _unfenced(text: str) -> str:
+    """`text` with every fenced line blanked, line numbering preserved.
+
+    A `Gate E:` line inside an example fence is documentation, not a report."""
+    out: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append("")
+            continue
+        out.append("" if in_fence else line)
+    return "\n".join(out)
 
 
 def _is_unfilled_placeholder(value: str) -> bool:
-    return bool(PLACEHOLDER_WRAPPED_RE.match(value)) or "|" in value
+    return bool(PLACEHOLDER_WRAPPED_RE.match(value)) or bool(TEMPLATE_VALUE_RE.match(value))
 
 
 def check_gate_e_reported(text: str) -> list[Finding]:
@@ -590,7 +613,7 @@ def check_gate_e_reported(text: str) -> list[Finding]:
     reason>` is a slot, not a result, and accepting it would let a skill
     satisfy the lock without deciding anything at all -- weaker even than
     "silent to deliberate"."""
-    values = [m.group(1).strip() for m in GATE_E_RE.finditer(text)]
+    values = [m.group(1).strip() for m in GATE_E_RE.finditer(_unfenced(text))]
     if any(not _is_unfilled_placeholder(value) for value in values):
         return []
     if values:

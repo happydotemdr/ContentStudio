@@ -822,6 +822,32 @@ def test_d6_fails_on_every_shipped_fixture_because_they_predate_the_gate():
         assert [f.check for f in check_gate_e_reported(_read(name))] == ["D6"], name
 
 
+def test_d6_accepts_a_pipe_separated_genuine_result():
+    """C-91. A result written in the contract's own vocabulary, separated with a
+    pipe, is a result. The old heuristic called it a template."""
+    assert check_gate_e_reported("  Gate E (critic): 2 findings | 1 defended\n") == []
+
+
+def test_d6_still_rejects_the_unwrapped_template_text():
+    """The heuristic the pipe rule was standing in for: the actual template
+    alternation, pasted without its angle brackets."""
+    text = "  Gate E (critic): pass | N findings | N defended | overridden: reason\n"
+    assert [f.check for f in check_gate_e_reported(text)] == ["D6"]
+
+
+def test_d6_ignores_a_gate_e_line_inside_a_code_fence():
+    """A script quoting the output contract in an example must not thereby
+    satisfy the lock -- that is a zero-cost defeat, and the sibling linter
+    already scopes its equivalent check to unfenced lines."""
+    text = "```\nGate E (critic): pass\n```\n\nsome prose\n"
+    assert [f.check for f in check_gate_e_reported(text)] == ["D6"]
+
+
+def test_d6_accepts_a_real_line_outside_a_fence_alongside_a_fenced_example():
+    text = "```\nGate E (critic): <pass | N findings>\n```\n  Gate E (critic): pass\n"
+    assert check_gate_e_reported(text) == []
+
+
 def test_decline_hook_loop_mirror_produces_no_gate_d_finding():
     """SKILL.md:108 requires the Loop/CTA to mirror the Hook, and the corpus
     cites it [C] (Jenny Hoyos, mhVDcqnxxaY). A gate that blocks a mandated
