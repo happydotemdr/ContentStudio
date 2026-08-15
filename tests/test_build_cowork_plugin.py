@@ -111,6 +111,38 @@ def test_the_build_produces_a_valid_manifest_and_the_expected_roster(tmp_path):
     assert shipped == _skill_dirs() - EXCLUDED
 
 
+def test_junk_is_pruned_before_packaging_not_during():
+    """C-104. Two branches with two different exclusion rules produce two
+    different artifacts from one tree. Prune once, up front, and both branches
+    archive the same thing."""
+    source = SCRIPT.read_text(encoding="utf-8")
+    prune_at = source.index("find") if "find" in source else -1
+    zip_at = source.index("Compress-Archive")
+    assert re.search(r'-name\s+["\']?\.DS_Store', source), (
+        "no pre-packaging prune step; the two archive branches still disagree"
+    )
+    assert 0 < prune_at < zip_at
+    assert '-x "*.DS_Store"' not in source, (
+        "the zip branch still carries a branch-local exclusion -- the rule must "
+        "live in one place, before either branch runs"
+    )
+
+
+@pytest.mark.allow_subprocess
+def test_the_packaged_tree_contains_no_junk_files(tmp_path):
+    # Never invoke bash/sh by bare name in a subprocess -- resolve with
+    # shutil.which() first (documented project trap: a bare "bash" can
+    # resolve to an unrelated launcher stub ahead of the real shell on
+    # some platforms/PATH configurations).
+    bash_path = shutil.which("bash")
+    assert bash_path is not None, "bash not found on PATH (expected on this project's target platform)"
+    subprocess.run([bash_path, str(SCRIPT)], cwd=REPO, check=True,
+                   capture_output=True, encoding="utf-8", errors="replace")
+    junk = [p for p in (REPO / "cowork-plugin").rglob("*")
+            if p.name in (".DS_Store", "Thumbs.db") or p.suffix == ".pyc"]
+    assert junk == []
+
+
 def test_a_locally_built_artifact_is_not_older_than_the_skills_it_ships():
     """The mtime half, for the machine that actually has the artifact. dist/ is
     git-ignored, so this is a no-op in CI and a real check locally -- stated

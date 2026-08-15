@@ -29,6 +29,13 @@ mkdir -p "$PLUGIN_DIR/.claude-plugin" "$PLUGIN_DIR/skills"
 cp -R .claude/skills/. "$PLUGIN_DIR/skills/"
 rm -rf "$PLUGIN_DIR/skills/rgs-grounding" "$PLUGIN_DIR/skills/rgs-pairing-review"
 
+# Prune junk from the copied tree once, so both archive branches package an
+# identical, already-clean directory. Putting the rule in the `zip` branch alone
+# meant the same source produced two different artifacts depending on which
+# packaging tool the machine happened to have.
+find "$PLUGIN_DIR" \( -name '.DS_Store' -o -name 'Thumbs.db' -o -name '__pycache__' \) \
+  -prune -exec rm -rf {} +
+
 # The version must distinguish today's build from one made months and many skill
 # edits ago. Commit count is monotonic and needs no tag discipline; the short sha
 # makes the build identifiable in a bug report.
@@ -77,7 +84,7 @@ mkdir -p dist
 rm -f "dist/${PLUGIN_NAME}.plugin"
 
 if command -v zip >/dev/null 2>&1; then
-  ( cd "$PLUGIN_DIR" && zip -r "../dist/${PLUGIN_NAME}.plugin" . -x "*.DS_Store" >/dev/null )
+  ( cd "$PLUGIN_DIR" && zip -r "../dist/${PLUGIN_NAME}.plugin" . >/dev/null )
 elif command -v powershell >/dev/null 2>&1 || command -v powershell.exe >/dev/null 2>&1; then
   # No `zip` on this machine (common on plain Windows) — use PowerShell's
   # Compress-Archive instead, then rename .zip -> .plugin.
