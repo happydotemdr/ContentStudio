@@ -817,6 +817,61 @@ def test_stage_page_renders_gate_results_and_override_field(tmp_path: Path, monk
     assert "gate-finding-blocking" not in li_tag
 
 
+def test_stage_page_finding_styling_tracks_gates_non_blocking_kinds(tmp_path: Path, monkeypatch):
+    """Final-review finding #3. The closed `kind` vocabulary now spans THREE
+    sites: scripts/lint_script_language.py's NON_BLOCKING_KINDS,
+    gates._NON_BLOCKING_KINDS, and (until this fix) stage.html's own
+    hardcoded `("skipped", "info")` tuple. A third, undocumented, unguarded
+    copy would silently mis-style a future kind if it ever diverged from the
+    other two.
+
+    stage.html now reads `non_blocking_kinds` from the render context (routes
+    -- pipeline_app/pipeline_app/routes/stages.py -- passes
+    `gates._NON_BLOCKING_KINDS` straight through) instead of hardcoding its
+    own tuple. Proof: monkeypatching `gates._NON_BLOCKING_KINDS` to a
+    different set changes which CSS class a given `kind` gets, which could
+    not happen if the template still hardcoded `("skipped", "info")`."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n"
+        "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n",
+        encoding="utf-8",
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    test_client = TestClient(app, follow_redirects=False)
+    resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    run_dir = tmp_path / "runs" / project["run_id"]
+    stage_dir = run_dir / "02-scripting"
+
+    meta = {
+        "schema_version": 1, "stage": "shorts-scripting", "version": 1, "status": "draft",
+        "gates": [{
+            "name": "gate_d_script_language", "status": "fail",
+            "findings": [
+                {"check": "D1", "beat": "HOOK", "message": "em-dash in VO line", "kind": "fail"},
+            ],
+        }],
+    }
+    artifacts.write_artifact(stage_dir, 1, meta, "script body")
+
+    from pipeline_app import gates as gates_mod
+
+    # Ordinarily "fail" is blocking. Redefine the non-blocking set to include
+    # it and confirm the template's styling follows -- proof it reads the
+    # context value rather than a literal ("skipped", "info") baked into the
+    # template.
+    monkeypatch.setattr(gates_mod, "_NON_BLOCKING_KINDS", frozenset({"fail"}))
+    page = test_client.get(f"/projects/{project_id}/stages/scripting")
+    assert page.status_code == 200
+    li_start = page.text.index("em-dash in VO line")
+    li_open = page.text.rindex("<li", 0, li_start)
+    li_tag = page.text[li_open : page.text.index(">", li_open)]
+    assert "gate-finding-skipped" in li_tag
+    assert "gate-finding-blocking" not in li_tag
+
+
 def test_approve_route_blank_override_field_does_not_count_as_override(tmp_path: Path, monkeypatch):
     """Finding 2b: the approve form's override_reason field is optional, and
     the route already does `override_reason.strip() or None` -- a blank or

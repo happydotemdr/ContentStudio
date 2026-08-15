@@ -338,6 +338,12 @@ def _stage_context(request: Request, project_id: int, stage_id: str, *, error_ba
         "output_body": output_body, "output_html": output_html,
         "output_gates": output_gates, "gate_view": gate_view,
         "has_blocking_gate": has_blocking_gate,
+        # stage.html's finding-styling block reads this rather than hardcoding
+        # its own tuple, so the closed `kind` vocabulary has exactly two
+        # guarded copies (this constant and scripts/lint_script_language.py's
+        # NON_BLOCKING_KINDS) instead of a third, undocumented one drifting
+        # silently in the template.
+        "non_blocking_kinds": gates._NON_BLOCKING_KINDS,
         "edit_allowed": edit_blocked_reason is None and output_body is not None,
         "edit_blocked_reason": edit_blocked_reason,
         "edit_action": f"/projects/{project_id}/stages/{stage_id}/edit",
