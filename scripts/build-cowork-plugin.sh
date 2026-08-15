@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package the .claude/skills/* skills as a Cowork plugin: the seven pipeline
+# Package the .claude/skills/* skills as a Cowork plugin: the eight pipeline
 # skills plus the three tool-specialist skills (elevenlabs-audio, midjourney-prompting,
 # elevenlabs-music).
 #
@@ -31,7 +31,7 @@ cat > "$PLUGIN_DIR/.claude-plugin/plugin.json" <<'JSON'
 {
   "name": "content-studio",
   "version": "0.1.0",
-  "description": "Seven atomic, corpus-grounded skills taking a faceless-YouTube-Shorts idea from concept through a produced Short to multi-surface post copy, plus three tool-specialist skills (Midjourney V8.2 prompting, ElevenLabs audio, ElevenLabs Music) usable standalone or as pipeline downstreams.",
+  "description": "Eight atomic, corpus-grounded skills taking a faceless-YouTube-Shorts idea from concept through a produced Short to multi-surface post copy, plus three tool-specialist skills (Midjourney V8.2 prompting, ElevenLabs audio, ElevenLabs Music) usable standalone or as pipeline downstreams.",
   "author": { "name": "ContentStudio" }
 }
 JSON
@@ -39,8 +39,9 @@ JSON
 cat > "$PLUGIN_DIR/README.md" <<'MD'
 # ContentStudio (Cowork plugin)
 
-Seven atomic skills for producing faceless YouTube Shorts, chained by hand:
-shorts-ideation -> shorts-scripting -> {voiceover-brief, visual-prompts} -> music-brief -> shorts-assembly -> social-repurpose.
+Eight atomic skills for producing faceless YouTube Shorts, chained by hand:
+shorts-ideation -> shorts-scripting -> shorts-styleboard -> {voiceover-brief, visual-prompts}
+  -> music-brief -> shorts-assembly -> social-repurpose.
 
 Plus three tool-specialist skills, each usable standalone for any job in its tool
 and also the downstream specialist for one pipeline stage:
