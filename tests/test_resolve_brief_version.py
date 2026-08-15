@@ -229,6 +229,33 @@ def test_next_filename_refuses_a_proposal_that_already_exists(tmp_path: Path, mo
     assert "v5" in str(exc.value) or "already exists" in str(exc.value)
 
 
+def test_a_malformed_date_is_rejected(tmp_path: Path):
+    """C-99 fault test. The resolver's own _pattern requires \\d{4}-\\d{2}-\\d{2};
+    next_filename used to interpolate whatever it was handed."""
+    rc = main(["--dir", str(tmp_path), "--slug", "s", "--kind", "script",
+               "--next", "--date", "banana"])
+    assert rc == EXIT_ERROR
+
+
+def test_a_malformed_date_is_distinguishable_from_a_valid_one(tmp_path: Path, capsys):
+    """C-99 distinguishability test."""
+    ok = main(["--dir", str(tmp_path), "--slug", "s", "--kind", "script",
+               "--next", "--date", "2026-08-08"])
+    out = capsys.readouterr().out
+    assert (ok, out.strip()) == (EXIT_OK, "2026-08-08-s-script.md\t1")
+    bad = main(["--dir", str(tmp_path), "--slug", "s", "--kind", "script",
+                "--next", "--date", "08/08/2026"])
+    assert bad == EXIT_ERROR
+
+
+def test_a_proposed_filename_always_matches_the_pattern_that_finds_it(tmp_path: Path):
+    """The invariant behind C-99: anything --next proposes must be findable by
+    find_latest afterwards, or the chain breaks permanently."""
+    filename, _ = next_filename(tmp_path, "my-short", "script", "2026-08-08")
+    from scripts.resolve_brief_version import _pattern
+    assert _pattern("my-short", "script").match(filename)
+
+
 def test_a_collision_and_a_clean_proposal_are_distinguishable(tmp_path: Path, monkeypatch):
     """C-98 distinguishability + surfacing test: the collision exits 2 where the
     clean proposal exits 0.

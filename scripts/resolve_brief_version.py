@@ -28,6 +28,8 @@ FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 EXIT_OK = 0      # a usable answer was printed
 EXIT_ERROR = 2   # unusable input or an unresolvable state (argparse also uses 2)
 EXIT_NONE = 3    # the expected empty case: no prior version exists
+
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # Exit 1 is deliberately retired. It used to mean BOTH "no prior version" and
 # "a brief is malformed", and callers read it as the former -- which turned a
 # corrupt brief into "start at v1". Nothing returns 1 now.
@@ -89,6 +91,11 @@ def find_latest(directory: Path, slug: str, kind: str | None) -> tuple[Path | No
 
 
 def next_filename(directory: Path, slug: str, kind: str | None, date: str) -> tuple[str, int]:
+    if not DATE_RE.match(date):
+        raise ValueError(
+            f"--date {date!r} is not YYYY-MM-DD. A brief named with anything else can "
+            "never be found by find_latest again -- it leaves the version chain for good."
+        )
     _, best_version = find_latest(directory, slug, kind)
     next_version = best_version + 1
     suffix = f"-{kind}" if kind else ""
