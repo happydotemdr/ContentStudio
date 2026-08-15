@@ -189,3 +189,63 @@ def test_a_tie_is_distinguishable_from_a_clean_resolution(tmp_path: Path):
     assert main(["--dir", str(tmp_path), "--slug", "my-short", "--kind", "script"]) == EXIT_OK
     _write(tmp_path, "2026-07-28-my-short-script-v3.md", 2)
     assert main(["--dir", str(tmp_path), "--slug", "my-short", "--kind", "script"]) == EXIT_ERROR
+
+
+def test_a_filename_suffix_that_contradicts_frontmatter_raises(tmp_path: Path):
+    """C-98 fault test."""
+    _write(tmp_path, "2026-07-28-my-short-script-v3.md", 1)
+    with pytest.raises(ValueError) as exc:
+        find_latest(tmp_path, "my-short", "script")
+    assert "-v3" in str(exc.value) and "version: 1" in str(exc.value)
+
+
+def test_the_unsuffixed_name_means_version_1(tmp_path: Path):
+    """Calibration: `<date>-<slug>-<kind>.md` with no suffix is v1 by contract,
+    which is what every shipped brief and every existing test relies on."""
+    p = _write(tmp_path, "2026-07-28-my-short-script.md", 1)
+    assert find_latest(tmp_path, "my-short", "script") == (p, 1)
+
+
+def test_next_filename_refuses_a_proposal_that_already_exists(tmp_path: Path, monkeypatch):
+    """C-98's second half. Proposing an existing brief's name is one careless
+    Write away from destroying it.
+
+    Given find_latest's own -vN/frontmatter cross-check (this same task, above),
+    a proposal computed from a fully-scanned, self-consistent directory can never
+    collide with a file already on disk: any file sitting at the target path
+    would itself have been counted by find_latest and pushed the proposal past
+    it. The guard this exercises is therefore for the real hazard -- a write
+    landing between find_latest's scan and this function's own directory read --
+    which a synchronous test can only reproduce by stubbing find_latest's answer
+    and then planting the file its stale answer would collide with.
+    """
+    monkeypatch.setattr(
+        "scripts.resolve_brief_version.find_latest",
+        lambda *a, **k: (tmp_path / "2026-07-28-my-short-script-v4.md", 4),
+    )
+    _write(tmp_path, "2026-07-28-my-short-script-v5.md", 5)
+    with pytest.raises(FileExistsError) as exc:
+        next_filename(tmp_path, "my-short", "script", "2026-07-28")
+    assert "v5" in str(exc.value) or "already exists" in str(exc.value)
+
+
+def test_a_collision_and_a_clean_proposal_are_distinguishable(tmp_path: Path, monkeypatch):
+    """C-98 distinguishability + surfacing test: the collision exits 2 where the
+    clean proposal exits 0.
+
+    See test_next_filename_refuses_a_proposal_that_already_exists above for why
+    the second call must stub find_latest's answer to force the collision: a
+    freshly-planted, self-consistent file is picked up by a real scan and simply
+    advances the proposal past itself rather than colliding with it.
+    """
+    _write(tmp_path, "2026-07-28-my-short-script.md", 1)
+    args = ["--dir", str(tmp_path), "--slug", "my-short", "--kind", "script",
+            "--next", "--date", "2026-07-28"]
+    assert main(args) == EXIT_OK
+    (tmp_path / "2026-07-28-my-short-script-v2.md").write_text(
+        "---\nversion: 2\n---\n\nbody\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "scripts.resolve_brief_version.find_latest",
+        lambda *a, **k: (tmp_path / "2026-07-28-my-short-script.md", 1),
+    )
+    assert main(args) == EXIT_ERROR

@@ -59,7 +59,8 @@ def find_latest(directory: Path, slug: str, kind: str | None) -> tuple[Path | No
     best_path: Path | None = None
     best_version = 0
     for path in sorted(directory.glob("*.md")):
-        if not pattern.match(path.name):
+        match = pattern.match(path.name)
+        if not match:
             continue
         try:
             meta = parse_frontmatter(path.read_text(encoding="utf-8"))
@@ -74,6 +75,13 @@ def find_latest(directory: Path, slug: str, kind: str | None) -> tuple[Path | No
                 "it. The resolver cannot choose correctly and will not guess -- renumber "
                 "one of them."
             )
+        suffix_version = int(match.group(2)) if match.group(2) else 1
+        if suffix_version != version:
+            raise ValueError(
+                f"{path}: filename says -v{suffix_version} but frontmatter says "
+                f"version: {version}. The version chain is what every stage's "
+                "`supersedes:` line depends on; it cannot be two numbers."
+            )
         if version > best_version:
             best_version = version
             best_path = path
@@ -85,7 +93,14 @@ def next_filename(directory: Path, slug: str, kind: str | None, date: str) -> tu
     next_version = best_version + 1
     suffix = f"-{kind}" if kind else ""
     version_suffix = "" if next_version == 1 else f"-v{next_version}"
-    return f"{date}-{slug}{suffix}{version_suffix}.md", next_version
+    filename = f"{date}-{slug}{suffix}{version_suffix}.md"
+    proposed = directory / filename
+    if proposed.exists():
+        raise FileExistsError(
+            f"{proposed} already exists -- refusing to propose a name that would "
+            "overwrite a brief. The version chain has drifted; resolve it by hand."
+        )
+    return filename, next_version
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -109,8 +124,8 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_OK
 
         path, version = find_latest(directory, args.slug, args.kind)
-    except (FileNotFoundError, ValueError) as exc:
-        # Deliberately NOT a bare except: these are the two failure classes this
+    except (FileNotFoundError, ValueError, FileExistsError) as exc:
+        # Deliberately NOT a bare except: these are the failure classes this
         # resolver can produce, and each is reported with its own message rather
         # than collapsed into the "nothing found" answer.
         print(f"resolve_brief_version: {exc}", file=sys.stderr)
