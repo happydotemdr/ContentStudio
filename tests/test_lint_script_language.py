@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from lint_script_language import (  # noqa: E402
@@ -962,3 +964,79 @@ def test_main_returns_0_when_only_finding_is_skipped(tmp_path):
         encoding="utf-8",
     )
     assert main([str(path)]) == 0
+
+
+CLEAN_SCRIPT = """\
+=== SHORT SCRIPT — Gate D mutation base ===
+
+HOOK        (0–4s  | 9 words): "Nobody asked him what the best part was."
+SETUP       (4–10s | 12 words): "He came home muddy, and the whole story arrived without a question."
+BUILD/VALUE (10–24s | 20 words):
+  (10–24s | 20 words): "Kids hand over the account when nothing is riding on the answer, and that is the entire trick."
+PAYOFF      (24–34s | 18 words): "Ask about the score and you get a score. Ask about the mud and you get him."
+LOOP/CTA    (34–40s | 10 words, mirrors hook): "Ask what the best part was. Then believe it."
+
+GATES
+  Gate E (fresh Opus critic): 2 findings, 1 defended
+"""
+
+
+def _run(tmp_path, text, name="script.md"):
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return main([str(path)])
+
+
+def test_the_mutation_base_passes_gate_d(tmp_path):
+    """The control. If this ever fails, every row below is meaningless."""
+    assert _run(tmp_path, CLEAN_SCRIPT) == 0
+
+
+MUTATIONS = [
+    # (id, target substring, replacement, the check that must fire)
+    ("D1-em-dash", "arrived without a question.",
+     "arrived — without a question.", "D1"),
+    ("D2-parenthetical", "you get him.", "you get him (again).", "D2"),
+    ("D3-buzzword", "Kids hand over", "Kids leveraged and hand over", "D3"),
+    ("D4-inline-stat", "you get a score.", "you get n=142 back.", "D4"),
+    ("D5-over-stuffed", "HOOK        (0–4s  | 9 words)",
+     "HOOK        (0–1s  | 9 words)", "D5"),
+    ("D5-malformed-range", "SETUP       (4–10s | 12 words)",
+     "SETUP       (10–4s | 12 words)", "D5"),
+    ("D6-deleted", "  Gate E (fresh Opus critic): 2 findings, 1 defended\n", "", "D6"),
+    ("D6-fenced", "GATES\n", "GATES\n```\n", "D6"),
+    ("C88-bolded-label", "HOOK        (0–4s", "**HOOK**    (0–4s", "PARSE"),
+    ("C88-deleted-beat",
+     'LOOP/CTA    (34–40s | 10 words, mirrors hook): "Ask what the best part was. Then believe it."\n',
+     "", "PARSE"),
+    ("C89-stripped-budget", "HOOK        (0–4s  | 9 words)", "HOOK        (0–4s)", "PARSE"),
+    # C88b (T1b, already merged): CLEAN_SCRIPT's BUILD/VALUE sub-beat is
+    # deliberately the BARE, parseable form (a parenthesis starting the
+    # line) so the control stays clean. This mutation adds a "mechanism "
+    # label prefix, which SUBRANGE_RE cannot match -- the exact refused-line
+    # shape T1b's detector exists to catch instead of silently deleting.
+    ("C88b-label-first-subbeat",
+     '  (10–24s | 20 words): "Kids hand over the account when nothing is riding on the answer, and that is the entire trick."',
+     '  mechanism (10–24s | 20 words): "Kids hand over the account when nothing is riding on the answer, and that is the entire trick."',
+     "PARSE"),
+]
+
+
+@pytest.mark.parametrize("mutation_id,target,replacement,expected_check", MUTATIONS,
+                         ids=[m[0] for m in MUTATIONS])
+def test_each_single_edit_evasion_still_fails_the_gate(
+    tmp_path, mutation_id, target, replacement, expected_check
+):
+    """The whole point of Gate D. Each row is ONE edit to a passing script, of
+    the kind a model actually emits. Every one must block, and must block for
+    the named reason -- a gate that fails for the wrong reason is a gate that
+    will be 'fixed' into passing."""
+    assert target in CLEAN_SCRIPT, mutation_id
+    mutated = CLEAN_SCRIPT.replace(target, replacement, 1)
+    assert mutated != CLEAN_SCRIPT, mutation_id
+
+    lines, parse_findings = parse_script(mutated)
+    findings = [f for f in lint(lines, mutated, parse_findings) if is_blocking(f)]
+    assert findings, mutation_id
+    assert expected_check in {f.check for f in findings}, (mutation_id, findings)
+    assert _run(tmp_path, mutated) == 1, mutation_id
