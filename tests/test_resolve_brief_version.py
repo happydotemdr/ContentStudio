@@ -171,3 +171,21 @@ def test_none_still_prints_the_documented_stdout_contract(tmp_path: Path, capsys
     """Ten skills branch on the printed text, not the code. That contract holds."""
     assert main(["--dir", str(tmp_path), "--slug", "absent", "--kind", "script"]) == EXIT_NONE
     assert capsys.readouterr().out.strip() == "NONE\t0"
+
+
+def test_a_version_tie_raises_and_names_both_paths(tmp_path: Path):
+    """C-97 fault test."""
+    a = _write(tmp_path, "2026-07-01-my-short-script-v2.md", 2)
+    b = _write(tmp_path, "2026-07-28-my-short-script-v3.md", 2)
+    with pytest.raises(ValueError) as exc:
+        find_latest(tmp_path, "my-short", "script")
+    assert a.name in str(exc.value) and b.name in str(exc.value)
+
+
+def test_a_tie_is_distinguishable_from_a_clean_resolution(tmp_path: Path):
+    """C-97 distinguishability test: the tie used to resolve to the earlier
+    date and report success, identical in shape to a correct answer."""
+    _write(tmp_path, "2026-07-01-my-short-script-v2.md", 2)
+    assert main(["--dir", str(tmp_path), "--slug", "my-short", "--kind", "script"]) == EXIT_OK
+    _write(tmp_path, "2026-07-28-my-short-script-v3.md", 2)
+    assert main(["--dir", str(tmp_path), "--slug", "my-short", "--kind", "script"]) == EXIT_ERROR

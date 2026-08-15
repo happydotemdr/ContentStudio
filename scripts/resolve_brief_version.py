@@ -68,6 +68,12 @@ def find_latest(directory: Path, slug: str, kind: str | None) -> tuple[Path | No
         version = meta.get("version")
         if not isinstance(version, int):
             raise ValueError(f"{path}: frontmatter missing an integer 'version' field")
+        if version == best_version and best_path is not None:
+            raise ValueError(
+                f"version tie at {version}: {best_path.name} and {path.name} both declare "
+                "it. The resolver cannot choose correctly and will not guess -- renumber "
+                "one of them."
+            )
         if version > best_version:
             best_version = version
             best_path = path
