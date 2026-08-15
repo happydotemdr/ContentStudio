@@ -434,6 +434,29 @@ def check_vocabulary(vo_lines: list[VOLine]) -> list[Finding]:
     return findings
 
 
+def check_beat_set(vo_lines: list[VOLine]) -> list[Finding]:
+    """Every one of the five top-level beats must have produced a spoken line.
+
+    Independent of `_disguised_beat_label`, deliberately: two detectors with
+    different failure modes means an evasion has to beat both. All four shipped
+    scripts carry all five labels, so this is calibrated on real artifacts, not
+    invented."""
+    seen = {vo.beat for vo in vo_lines}
+    missing = [label for label in BEAT_LABELS if label not in seen]
+    if not missing:
+        return []
+    return [
+        Finding(
+            "PARSE",
+            None,
+            f"no voiceover line parsed for beat(s) {', '.join(missing)} -- either the "
+            "script is missing them or their headings did not parse; a gate that never "
+            "saw a beat did not check it",
+            kind="fail",
+        )
+    ]
+
+
 WPM_CEILING = 170
 WPM_TOLERANCE = 2
 
@@ -563,6 +586,7 @@ def lint(vo_lines: list[VOLine], text: str, parse_findings: list[Finding] | None
     """Run every Gate D check, in check order."""
     return [
         *(parse_findings or []),
+        *check_beat_set(vo_lines),
         *check_punctuation(vo_lines),
         *check_vocabulary(vo_lines),
         *check_pace(vo_lines),

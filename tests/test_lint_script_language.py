@@ -11,6 +11,7 @@ from lint_script_language import (  # noqa: E402
     check_punctuation,
     check_vocabulary,
     check_pace,
+    check_beat_set,
     beat_wpm,
     WPM_CEILING,
     check_gate_e_reported,
@@ -616,6 +617,34 @@ def test_d5_counts_on_shipped_fixtures():
         assert len(fails) == count, f"{name}: got {len(fails)}"
 
 
+def test_a_missing_top_level_beat_blocks_the_lint():
+    """C-88 surfacing test. The second, independent detector: whatever styling
+    trick hid the heading, the label is absent from the parsed set and that is
+    reported at the gate boundary."""
+    text = (
+        'HOOK        (0–3s  | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP       (3–8s  | 6 words): "Kids do that every single time."\n'
+        'BUILD/VALUE (8–20s | 9 words): "They hand over the whole account without a question."\n'
+        'PAYOFF      (20–30s| 9 words): "Ask about the mud and you get him back."\n'
+    )
+    lines, _ = parse_script(text)
+    findings = check_beat_set(lines)
+    assert [(f.check, f.kind) for f in findings] == [("PARSE", "fail")]
+    assert "LOOP/CTA" in findings[0].message
+
+
+def test_the_shipped_fixtures_all_carry_the_five_beats():
+    """Calibration: the check is pinned to what real scripts actually do."""
+    for name in (
+        "script_let_kids_play_act.md",
+        "script_specialization.md",
+        "script_decline.md",
+        "script_nobody_asked.md",
+    ):
+        lines, _ = parse_script(_read(name))
+        assert check_beat_set(lines) == [], name
+
+
 def test_d6_passes_a_well_formed_gate_e_line():
     text = "GATES\n  Gate E (fresh Opus critic):               pass\n"
     assert check_gate_e_reported(text) == []
@@ -737,10 +766,20 @@ def test_main_returns_1_on_a_failing_fixture(tmp_path):
     assert main([str(path)]) == 1
 
 
-def test_main_returns_0_on_a_clean_script(tmp_path):
+def test_main_returns_0_on_a_clean_five_beat_script(tmp_path):
+    """Renamed from test_main_returns_0_on_a_clean_script (C-88 / T2): the
+    fixture was a one-beat script, and check_beat_set now blocks any script
+    missing a top-level label, so a "clean" script must carry all five. Not
+    built on a shared CLEAN_SCRIPT constant -- that name belongs to T7, which
+    lands its own module-level constant later in this package's task order;
+    defining it here would collide with T7's addition."""
     path = tmp_path / "clean.md"
     path.write_text(
-        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        'HOOK        (0–3s   | 6 words): "Best part was the mud today."\n'
+        'SETUP       (3–8s   | 6 words): "Kids do that every single time."\n'
+        'BUILD/VALUE (8–20s  | 9 words): "They hand over the whole account without a question."\n'
+        'PAYOFF      (20–30s | 9 words): "Ask about the mud and you get him back."\n'
+        'LOOP/CTA    (30–35s | 6 words): "Best part was the mud today."\n'
         "GATES\n  Gate E (fresh Opus critic): pass\n",
         encoding="utf-8",
     )
@@ -751,11 +790,20 @@ def test_main_returns_0_when_only_finding_is_skipped(tmp_path):
     """Carried forward from Task 4's review: a kind="skipped" finding (e.g. D5
     on a beat with no computable time range) must never contribute to a
     non-zero exit. This script has a re-hook beat with no range (skipped D5)
-    plus a well-formed Gate E line, so the only findings are non-blocking."""
+    plus a well-formed Gate E line, so the only findings are non-blocking.
+
+    Widened to all five top-level beats for the same reason as
+    test_main_returns_0_on_a_clean_five_beat_script above: check_beat_set
+    (C-88 / T2) now blocks a script missing a label, and this fixture was
+    previously HOOK-only."""
     path = tmp_path / "skipped_only.md"
     path.write_text(
-        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        'HOOK        (0–3s   | 6 words): "Best part was the mud today."\n'
         '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
+        'SETUP       (3–8s   | 6 words): "Kids do that every single time."\n'
+        'BUILD/VALUE (8–20s  | 9 words): "They hand over the whole account without a question."\n'
+        'PAYOFF      (20–30s | 9 words): "Ask about the mud and you get him back."\n'
+        'LOOP/CTA    (30–35s | 6 words): "Best part was the mud today."\n'
         "GATES\n  Gate E (fresh Opus critic): pass\n",
         encoding="utf-8",
     )
