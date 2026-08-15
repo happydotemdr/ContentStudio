@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -13,6 +14,62 @@ EXCLUDED = {"rgs-grounding", "rgs-pairing-review"}
 
 def _skill_dirs() -> set[str]:
     return {p.name for p in (REPO / ".claude" / "skills").iterdir() if p.is_dir()}
+
+
+# Final-review finding #5. The build script's `HERE` resolves from the
+# SCRIPT's own on-disk location (`$(dirname "${BASH_SOURCE[0]}")/..`), not
+# from `cwd` -- so copying the whole relevant subtree (`.claude/skills/` and
+# `scripts/`, including the build script and cowork_plugin_lock.py
+# themselves) into an isolated `tmp_path` and invoking the COPIED script
+# works correctly without any `cwd` trick, and never touches the real repo's
+# git-tracked scripts/cowork-plugin.lock.json -- the file
+# test_the_lock_file_matches_the_current_skills_tree exists to guard.
+#
+# The build script also shells out to `git rev-list --count HEAD` and
+# `git rev-parse --short HEAD` to derive the plugin version; `tmp_path` is
+# not a git repo, so a stub `git` shim (prepended onto PATH for the
+# subprocess only) answers those two calls without needing a real repo.
+_FAKE_GIT_SH = """#!/usr/bin/env bash
+case "$1" in
+  rev-list) echo 42 ;;
+  rev-parse) echo abc1234 ;;
+  *) exit 1 ;;
+esac
+"""
+
+
+def _isolated_repo_copy(tmp_path: Path) -> Path:
+    """A tmp_path tree carrying only what build-cowork-plugin.sh reads:
+    .claude/skills/ and scripts/ (script + lock helper). Running the build
+    against this copy, with cwd=this copy, can never write to the real
+    repo's tracked lock file."""
+    root = tmp_path / "repo_copy"
+    shutil.copytree(REPO / ".claude" / "skills", root / ".claude" / "skills")
+    shutil.copytree(REPO / "scripts", root / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
+    return root
+
+
+def _fake_git_path(tmp_path: Path) -> Path:
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir(exist_ok=True)
+    git_stub = bin_dir / "git"
+    git_stub.write_text(_FAKE_GIT_SH, encoding="utf-8")
+    git_stub.chmod(0o755)
+    return bin_dir
+
+
+def _run_isolated_build(tmp_path: Path) -> tuple[subprocess.CompletedProcess, Path]:
+    bash_path = shutil.which("bash")
+    assert bash_path is not None, "bash not found on PATH (expected on this project's target platform)"
+    repo_copy = _isolated_repo_copy(tmp_path)
+    fakebin = _fake_git_path(tmp_path)
+    env = dict(os.environ)
+    env["PATH"] = f"{fakebin}{os.pathsep}{env.get('PATH', '')}"
+    result = subprocess.run(
+        [bash_path, str(repo_copy / "scripts" / "build-cowork-plugin.sh")],
+        cwd=repo_copy, capture_output=True, encoding="utf-8", errors="replace", env=env,
+    )
+    return result, repo_copy
 
 
 def test_the_script_never_calls_the_pipeline_seven_skills():
@@ -90,24 +147,21 @@ def test_the_written_manifest_is_validated_as_json():
 
 @pytest.mark.allow_subprocess
 def test_the_build_produces_a_valid_manifest_and_the_expected_roster(tmp_path):
-    """C-102 surfacing test: run the actual script and inspect what it wrote."""
-    # Never invoke bash/sh by bare name in a subprocess -- resolve with
-    # shutil.which() first (documented project trap: a bare "bash" can
-    # resolve to an unrelated launcher stub ahead of the real shell on
-    # some platforms/PATH configurations).
-    bash_path = shutil.which("bash")
-    assert bash_path is not None, "bash not found on PATH (expected on this project's target platform)"
-    result = subprocess.run(
-        [bash_path, str(SCRIPT)], cwd=REPO, capture_output=True,
-        encoding="utf-8", errors="replace",
-    )
+    """C-102 surfacing test: run the actual script and inspect what it wrote.
+
+    Runs against an isolated copy (see _run_isolated_build), not the real
+    repo -- the build script's `cowork_plugin_lock.py --write` step rewrites
+    scripts/cowork-plugin.lock.json as a side effect, and running it against
+    the real repo would silently "heal" that git-tracked staleness stamp,
+    defeating test_the_lock_file_matches_the_current_skills_tree."""
+    result, repo_copy = _run_isolated_build(tmp_path)
     assert result.returncode == 0, result.stderr
     manifest = json.loads(
-        (REPO / "cowork-plugin" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+        (repo_copy / "cowork-plugin" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
     assert manifest["name"] == "content-studio"
     assert manifest["version"] != "0.1.0"
-    shipped = {p.name for p in (REPO / "cowork-plugin" / "skills").iterdir() if p.is_dir()}
+    shipped = {p.name for p in (repo_copy / "cowork-plugin" / "skills").iterdir() if p.is_dir()}
     assert shipped == _skill_dirs() - EXCLUDED
 
 
@@ -130,15 +184,12 @@ def test_junk_is_pruned_before_packaging_not_during():
 
 @pytest.mark.allow_subprocess
 def test_the_packaged_tree_contains_no_junk_files(tmp_path):
-    # Never invoke bash/sh by bare name in a subprocess -- resolve with
-    # shutil.which() first (documented project trap: a bare "bash" can
-    # resolve to an unrelated launcher stub ahead of the real shell on
-    # some platforms/PATH configurations).
-    bash_path = shutil.which("bash")
-    assert bash_path is not None, "bash not found on PATH (expected on this project's target platform)"
-    subprocess.run([bash_path, str(SCRIPT)], cwd=REPO, check=True,
-                   capture_output=True, encoding="utf-8", errors="replace")
-    junk = [p for p in (REPO / "cowork-plugin").rglob("*")
+    """Runs against an isolated copy for the same reason as
+    test_the_build_produces_a_valid_manifest_and_the_expected_roster above --
+    see _run_isolated_build's docstring/comment."""
+    result, repo_copy = _run_isolated_build(tmp_path)
+    assert result.returncode == 0, result.stderr
+    junk = [p for p in (repo_copy / "cowork-plugin").rglob("*")
             if p.name in (".DS_Store", "Thumbs.db") or p.suffix == ".pyc"]
     assert junk == []
 
