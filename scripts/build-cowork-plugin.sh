@@ -24,17 +24,35 @@ PLUGIN_NAME="content-studio"
 rm -rf "$PLUGIN_DIR"
 mkdir -p "$PLUGIN_DIR/.claude-plugin" "$PLUGIN_DIR/skills"
 
+# cp -R failure is already fatal under `set -euo pipefail` above; no separate
+# check is needed for a short copy.
 cp -R .claude/skills/. "$PLUGIN_DIR/skills/"
 rm -rf "$PLUGIN_DIR/skills/rgs-grounding" "$PLUGIN_DIR/skills/rgs-pairing-review"
 
-cat > "$PLUGIN_DIR/.claude-plugin/plugin.json" <<'JSON'
+# The version must distinguish today's build from one made months and many skill
+# edits ago. Commit count is monotonic and needs no tag discipline; the short sha
+# makes the build identifiable in a bug report.
+COMMIT_COUNT="$(git rev-list --count HEAD)"
+SHORT_SHA="$(git rev-parse --short HEAD)"
+VERSION="0.1.${COMMIT_COUNT}+g${SHORT_SHA}"
+
+cat > "$PLUGIN_DIR/.claude-plugin/plugin.json" <<JSON
 {
   "name": "content-studio",
-  "version": "0.1.0",
+  "version": "${VERSION}",
   "description": "Eight atomic, corpus-grounded skills taking a faceless-YouTube-Shorts idea from concept through a produced Short to multi-surface post copy, plus three tool-specialist skills (Midjourney V8.2 prompting, ElevenLabs audio, ElevenLabs Music) usable standalone or as pipeline downstreams.",
   "author": { "name": "ContentStudio" }
 }
 JSON
+
+# The heredoc above is no longer quoted (it interpolates $VERSION), so it can
+# no longer be assumed well-formed. Validate before anything is packaged.
+python -c "import json,sys; json.load(open(sys.argv[1], encoding='utf-8'))" \
+  "$PLUGIN_DIR/.claude-plugin/plugin.json"
+
+# Assert what was actually copied against .claude/skills/ minus the two
+# deliberately-excluded RGS skills, and write the tracked build stamp.
+python scripts/cowork_plugin_lock.py --write --plugin-dir "$PLUGIN_DIR"
 
 cat > "$PLUGIN_DIR/README.md" <<'MD'
 # ContentStudio (Cowork plugin)
@@ -71,4 +89,8 @@ else
   exit 1
 fi
 
-echo "Built dist/${PLUGIN_NAME}.plugin from $(find "$PLUGIN_DIR/skills" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ') skills."
+# The roster is no longer worth re-deriving here for the echo: it was just
+# asserted and recorded by cowork_plugin_lock.py above, in
+# scripts/cowork-plugin.lock.json -- that file is the source of truth for
+# which skills shipped, not a count printed and never checked.
+echo "Built dist/${PLUGIN_NAME}.plugin (version ${VERSION}); roster recorded in scripts/cowork-plugin.lock.json."
