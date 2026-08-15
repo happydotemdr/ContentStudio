@@ -17,6 +17,10 @@ from lint_script_language import (  # noqa: E402
     check_gate_e_reported,
     lint,
     main,
+    is_blocking,
+    NON_BLOCKING_KINDS,
+    BUZZWORD_LEMMAS,
+    BUZZWORDS,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -504,7 +508,7 @@ def test_d3_flags_fingerprint_phrases():
     lines, _ = parse_script(
         'HOOK (0–3s | 9 words): "It\'s important to note that some may argue otherwise."\n'
     )
-    assert sorted(f.check for f in check_vocabulary(lines)) == ["D3", "D3"]
+    assert sorted(f.check for f in check_vocabulary(lines) if is_blocking(f)) == ["D3", "D3"]
 
 
 def test_d3_flags_buzzwords_and_their_inflections():
@@ -520,7 +524,9 @@ def test_d3_inflections_are_complete_for_every_corpus_lemma():
     findings. The five lemmas are the corpus's own and are not extended here;
     only their inflections are completed."""
     lines, _ = parse_script('HOOK (0–8s | 5 words): "We delved into robustness levers."\n')
-    found = sorted(f.message.rsplit(" ", 1)[-1] for f in check_vocabulary(lines))
+    found = sorted(
+        f.message.rsplit(" ", 1)[-1] for f in check_vocabulary(lines) if is_blocking(f)
+    )
     assert found == ["'delved'", "'robustness'"]
 
 
@@ -534,12 +540,41 @@ def test_d3_flags_the_remaining_new_inflections():
 def test_d3_does_not_flag_a_word_that_merely_contains_a_lemma():
     """`levers` and `lever` are not `leverage`; the word boundaries hold."""
     lines, _ = parse_script('HOOK (0–8s | 6 words): "He pulled the levers, every lever."\n')
-    assert check_vocabulary(lines) == []
+    assert [f for f in check_vocabulary(lines) if is_blocking(f)] == []
 
 
 def test_d3_does_not_flag_hackfort_the_surname():
     lines, _ = parse_script('HOOK (0–3s | 5 words): "Côté, Lidor and Hackfort reported."\n')
-    assert check_vocabulary(lines) == []
+    assert [f for f in check_vocabulary(lines) if is_blocking(f)] == []
+
+
+def test_d3_d4_coverage_scope_is_reported_as_a_non_blocking_finding():
+    """C-92. A clean D3/D4 means "none of these eight things", not "no AI
+    tells". The gate now says which eight, in a finding both callers render."""
+    lines, _ = parse_script('HOOK (0–3s | 6 words): "Best part was the mud today."\n')
+    scope = [f for f in check_vocabulary(lines) if f.kind == "info"]
+    assert len(scope) == 1
+    assert scope[0].check == "D3/D4"
+    assert "3 fingerprint phrases" in scope[0].message
+    assert "5 corpus lemmas" in scope[0].message
+    assert "4 unspeakable token classes" in scope[0].message
+    assert not is_blocking(scope[0])
+
+
+def test_the_non_blocking_kinds_are_a_closed_declared_set():
+    """The contract pipeline_app/gates.py binds to. A new kind must be a
+    deliberate edit here, not an accident downstream."""
+    assert NON_BLOCKING_KINDS == frozenset({"skipped", "info"})
+    assert is_blocking(Finding("D1", "HOOK", "x")) is True
+    assert is_blocking(Finding("D5", "HOOK", "x", kind="skipped")) is False
+    assert is_blocking(Finding("PARSE", "HOOK", "x", kind="partial-parse")) is True
+
+
+def test_buzzword_inflections_are_derived_from_the_five_corpus_lemmas():
+    """The lemma count in the scope message must be the real one, not a literal
+    typed beside it -- anti-tautology rule: assert on effect, not on echo."""
+    assert len(BUZZWORD_LEMMAS) == 5
+    assert set(BUZZWORDS) == {form for forms in BUZZWORD_LEMMAS.values() for form in forms}
 
 
 def test_d4_flags_unspeakable_tokens():
@@ -562,7 +597,7 @@ def test_d3_and_d4_are_clean_on_every_shipped_fixture():
         "script_nobody_asked.md",
     ):
         lines, _ = parse_script(_read(name))
-        assert check_vocabulary(lines) == [], name
+        assert [f for f in check_vocabulary(lines) if is_blocking(f)] == [], name
 
 
 def test_d5_flags_an_over_stuffed_beat():

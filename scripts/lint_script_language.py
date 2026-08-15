@@ -76,6 +76,17 @@ class Finding:
     kind: str = "fail"
 
 
+# `kind` is a closed set. Blocking is the default; a kind is non-blocking only
+# by being named here. Both callers (this module's main() and
+# pipeline_app.gates.run_script_language_gate) MUST derive blocking from
+# is_blocking() rather than testing a literal, so the two cannot drift.
+NON_BLOCKING_KINDS = frozenset({"skipped", "info"})
+
+
+def is_blocking(finding: Finding) -> bool:
+    return finding.kind not in NON_BLOCKING_KINDS
+
+
 def word_count(text: str) -> int:
     """Whitespace tokens carrying at least one alphanumeric character.
 
@@ -405,13 +416,14 @@ FINGERPRINT_PHRASES = (
 # "robustness" via backtracking, but ordering the alternation by descending
 # length makes the intended match obvious instead of load-bearing on regex
 # engine behaviour.
-BUZZWORDS = (
-    "delving", "delved", "delves", "delve",
-    "leveraging", "leveraged", "leverages", "leverage",
-    "comprehensiveness", "comprehensively", "comprehensive",
-    "robustness", "robustly", "robust",
-    "holistically", "holistic",
-)
+BUZZWORD_LEMMAS = {
+    "delve": ("delving", "delved", "delves", "delve"),
+    "leverage": ("leveraging", "leveraged", "leverages", "leverage"),
+    "comprehensive": ("comprehensiveness", "comprehensively", "comprehensive"),
+    "robust": ("robustness", "robustly", "robust"),
+    "holistic": ("holistically", "holistic"),
+}
+BUZZWORDS = tuple(form for forms in BUZZWORD_LEMMAS.values() for form in forms)
 BUZZWORD_RE = re.compile(r"\b(" + "|".join(BUZZWORDS) + r")\b", re.IGNORECASE)
 
 # Tokens a text-to-speech voice cannot render as speech. These belong on an
@@ -448,6 +460,19 @@ def check_vocabulary(vo_lines: list[VOLine]) -> list[Finding]:
                         "belongs on an on-screen plate",
                     )
                 )
+    findings.append(
+        Finding(
+            "D3/D4",
+            None,
+            f"scope: checked {len(FINGERPRINT_PHRASES)} fingerprint phrases, "
+            f"{len(BUZZWORD_LEMMAS)} corpus lemmas "
+            f"({', '.join(sorted(BUZZWORD_LEMMAS))}) and "
+            f"{len(UNSPEAKABLE)} unspeakable token classes. A clean D3/D4 means none of "
+            "these, not 'no AI tells' -- the no-lists are the corpus's own and are not "
+            "extended by guesswork",
+            kind="info",
+        )
+    )
     return findings
 
 
@@ -663,11 +688,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     findings = lint(vo_lines, text, parse_findings)
-    blocking = [f for f in findings if f.kind != "skipped"]
-    skipped = [f for f in findings if f.kind == "skipped"]
+    blocking = [f for f in findings if is_blocking(f)]
+    notes = [f for f in findings if not is_blocking(f)]
 
-    for finding in skipped:
-        print(f"  [skipped] {finding.beat or 'script'}: {finding.message}")
+    for finding in notes:
+        marker = "skipped" if finding.kind == "skipped" else "info"
+        print(f"  [{marker}] {finding.beat or 'script'}: {finding.message}")
 
     if not blocking:
         print(f"Gate D: PASS -- {len(vo_lines)} voiceover lines, 0 findings.")
