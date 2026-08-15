@@ -1176,6 +1176,35 @@ Note the collision path in the last test arises because v2 now resolves and the 
 v3 — adjust the planted file to `-v3.md` with `version: 2` frontmatter if you want the pure
 collision; either way the assertion is *clean → 0, colliding → 2*.
 
+> **Plan amendment, added during this package's own SDD run (2026-08-15).**
+> `test_next_filename_refuses_a_proposal_that_already_exists` and
+> `test_a_collision_and_a_clean_proposal_are_distinguishable`, as literally specified above, turn
+> out to be UNREACHABLE via sequential writes within a single test — verified independently by
+> both T11's implementer and its reviewer, tracing `find_latest`'s actual behavior by hand. The
+> cause predates T11 and is unrelated to any check this package adds: `find_latest` performs an
+> **unconditional full rescan of every matching file in the directory on every call**, so ANY
+> well-formed file planted at the "colliding" target path is simply absorbed into `best_version`
+> by `find_latest` itself before `next_filename`'s own `.exists()` guard ever gets a chance to see
+> it as a collision — the proposal just becomes one version higher and no collision occurs. This
+> means `next_filename`'s `.exists()` guard (which this task, T11, adds) cannot actually be
+> defeated by ordinary sequential use; it exists purely as a defense against a genuine **race
+> condition** — e.g. two concurrent CLI invocations (or a CLI run mid-write from another process)
+> both computing "next is vN" from the same `find_latest` scan before either writes, where the
+> file appears on disk between the read and the write. That is real and worth guarding against in
+> a pipeline where multiple skills or automation processes could invoke this resolver, but it is a
+> **narrower property** than this task's own C-98 narrative ("verified proposing `-v2` while `-v3`
+> sat on disk") and the literal fixtures above originally assumed (state drift reachable via
+> ordinary, non-concurrent use).
+>
+> **Correct test strategy, used by T11's actual implementation:** simulate the race directly —
+> `monkeypatch` `find_latest` to return a stale `(path, version)` answer, then confirm
+> `next_filename` still refuses to write over a file that has since appeared at the computed
+> target path. This is a legitimate, non-tautological test of real `.exists()` behavior (not "was
+> a mock called"), and the race it simulates is a real, reachable scenario for this resolver's
+> actual deployment, not a contrived one. Anyone reading this task later: the `.exists()` guard is
+> real and load-bearing, but do not expect a sequential-write test fixture to ever exercise it; it
+> cannot.
+
 - [ ] **Run**, see the first return `(path, 1)` and the third return a filename.
 - [ ] **Implement** in `find_latest`, using the pattern's already-captured group:
 
