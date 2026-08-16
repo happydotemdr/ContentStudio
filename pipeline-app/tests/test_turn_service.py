@@ -1,4 +1,5 @@
 import datetime
+import json
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -267,6 +268,7 @@ CHAIN_STAGES = [
     StageDef(id="styleboard", skill="shorts-styleboard", dir_prefix="02b", depends_on=["scripting"]),
     StageDef(id="voiceover", skill="voiceover-brief", dir_prefix="03", depends_on=["scripting"]),
     StageDef(id="visual", skill="visual-prompts", dir_prefix="03", depends_on=["scripting", "styleboard"]),
+    StageDef(id="music", skill="music-brief", dir_prefix="03", depends_on=["scripting", "voiceover"]),
     StageDef(
         id="assembly", skill="shorts-assembly", dir_prefix="04",
         depends_on=["scripting", "styleboard", "voiceover", "visual"],
@@ -295,11 +297,15 @@ def _dep(run_dir: Path, relpath: str) -> dict:
     return {"path": relpath, "sha256": artifacts.compute_sha256(path)}
 
 
-def _build_approved_chain(conn, tmp_path: Path, downstream_statuses: dict[str, str] | None = None):
+def _build_approved_chain(
+    conn, tmp_path: Path, downstream_statuses: dict[str, str] | None = None, with_music: bool = False
+):
     """Full scripting -> styleboard -> {voiceover, visual} -> assembly -> repurpose
     chain, every stage approved and every artifact's frontmatter recording the
     real hashes of the upstream artifacts it was built on. downstream_statuses
-    overrides individual stage statuses."""
+    overrides individual stage statuses. with_music additionally writes an
+    approved 03-music bed-arc artifact and folds its dep into assembly's
+    recorded depends_on, exercising the optional music->assembly edge."""
     statuses = {s.id: StageStatus.APPROVED.value for s in CHAIN_STAGES}
     statuses.update(downstream_statuses or {})
     project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-07-25T12:00:00Z")
@@ -321,6 +327,11 @@ def _build_approved_chain(conn, tmp_path: Path, downstream_statuses: dict[str, s
         _dep(run_dir, "03-voiceover/artifact.v1.md"),
         _dep(run_dir, "03-visual/artifact.v1.md"),
     ]
+    if with_music:
+        music_dep = script_dep + [_dep(run_dir, "03-voiceover/artifact.v1.md")]
+        _stamp(artifacts.write_artifact(run_dir / "03-music", 1,
+                                        {"stage": "music-brief", "depends_on": music_dep}, "bed v1"))
+        assembly_dep = [*assembly_dep, _dep(run_dir, "03-music/artifact.v1.md")]
     _stamp(artifacts.write_artifact(run_dir / "04-assembly", 1, {"stage": "shorts-assembly", "depends_on": assembly_dep}, "asm v1"))
     _stamp(artifacts.write_artifact(
         run_dir / "05-repurpose", 1,
@@ -394,21 +405,49 @@ def test_propagate_staleness_cascades_past_direct_dependents(conn, tmp_path: Pat
         assert db.get_stage(conn, project_id, stage_id)["status"] == StageStatus.STALE.value, stage_id
 
 
-def test_propagate_staleness_cascade_stops_at_a_non_approved_stage(conn, tmp_path: Path):
-    """The cascade only invalidates APPROVED work. assembly sitting at
-    awaiting_review has nothing approved to invalidate, and repurpose is
-    still built on assembly's unchanged v1 -- so repurpose stays approved."""
+def test_propagate_staleness_marks_an_unapproved_draft_stale_too(conn, tmp_path):
+    """A-44: propagate_staleness skipped any dependent not `approved`, so a draft
+    sitting at awaiting_review whose upstream had since been regenerated was never
+    flagged -- and approving it recorded the draft's original hashes as current.
+    A Short could ship built on a script replaced before the draft was approved."""
     project_id, run_dir = _build_approved_chain(
-        conn, tmp_path, downstream_statuses={"assembly": StageStatus.AWAITING_REVIEW.value}
-    )
+        conn, tmp_path, downstream_statuses={"assembly": StageStatus.AWAITING_REVIEW.value})
     artifacts.write_artifact(run_dir / "02-scripting", 2, {"stage": "shorts-scripting"}, "script v2")
 
     turn_service.propagate_staleness(conn, run_dir, CHAIN_STAGES, project_id, "scripting")
 
-    assert db.get_stage(conn, project_id, "voiceover")["status"] == StageStatus.STALE.value
-    assert db.get_stage(conn, project_id, "visual")["status"] == StageStatus.STALE.value
-    assert db.get_stage(conn, project_id, "assembly")["status"] == StageStatus.AWAITING_REVIEW.value
-    assert db.get_stage(conn, project_id, "repurpose")["status"] == StageStatus.APPROVED.value
+    assert db.get_stage(conn, project_id, "assembly")["status"] == StageStatus.STALE.value
+    assert db.get_stage(conn, project_id, "repurpose")["status"] == StageStatus.STALE.value
+
+
+def test_a_locked_dependent_is_not_marked_stale(conn, tmp_path):
+    """Distinguishability: `locked` (never run) is not `stale` (run on stale
+    input). Widening past approved must not swallow the never-started case."""
+    project_id, run_dir = _build_approved_chain(
+        conn, tmp_path, downstream_statuses={"assembly": StageStatus.LOCKED.value})
+    artifacts.write_artifact(run_dir / "02-scripting", 2, {"stage": "shorts-scripting"}, "script v2")
+    turn_service.propagate_staleness(conn, run_dir, CHAIN_STAGES, project_id, "scripting")
+    assert db.get_stage(conn, project_id, "assembly")["status"] == StageStatus.LOCKED.value
+
+
+def test_regenerating_the_bed_arc_marks_assembly_stale(conn, tmp_path):
+    """A-02's other half: `music` was a graph leaf, so _dependents_of returned
+    empty for it and a regenerated bed arc never invalidated the edit plan."""
+    project_id, run_dir = _build_approved_chain(conn, tmp_path, with_music=True)
+    artifacts.write_artifact(run_dir / "03-music", 2, {"stage": "music-brief"}, "bed v2")
+    turn_service.propagate_staleness(conn, run_dir, CHAIN_STAGES, project_id, "music")
+    assert db.get_stage(conn, project_id, "assembly")["status"] == StageStatus.STALE.value
+
+
+def test_staleness_hashing_without_a_repo_root_says_so_for_a_pointer_backed_upstream(tmp_path, capsys):
+    """A-14: latest_artifact_path cannot see grounding's pointer indirection, so
+    a depends_on edge onto grounding would silently drop it from BOTH input
+    collection and staleness hashing. It must warn, not shrug."""
+    grounding = StageDef(id="grounding", skill="rgs-grounding", dir_prefix="00", depends_on=[])
+    hashes = turn_service._current_upstream_hashes(tmp_path, [grounding], repo_root=None)
+    assert hashes == {}
+    events = [json.loads(line) for line in capsys.readouterr().err.strip().splitlines() if line.strip()]
+    assert any(e.get("event") == "staleness.pointer_upstream_unresolvable" for e in events)
 
 
 @pytest.mark.asyncio

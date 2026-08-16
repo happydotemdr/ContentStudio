@@ -38,7 +38,9 @@ def _relpath(path: Path, run_dir: Path) -> str:
     return str(path.relative_to(run_dir)).replace("\\", "/")
 
 
-def _current_upstream_hashes(run_dir: Path, upstream_defs: list[StageDef]) -> dict[str, str]:
+def _current_upstream_hashes(
+    run_dir: Path, upstream_defs: list[StageDef], repo_root: Path | None = None
+) -> dict[str, str]:
     """Hashes keyed by the CURRENT latest artifact path per upstream stage —
     not the exact path recorded in some dependent's frontmatter. Artifacts are
     never mutated in place (regenerating writes artifact.v2.md, v1 is left
@@ -50,10 +52,23 @@ def _current_upstream_hashes(run_dir: Path, upstream_defs: list[StageDef]) -> di
     hashes: dict[str, str] = {}
     for up in upstream_defs:
         up_dir = run_dir / stage_dir_name(up)
-        up_latest = artifacts.latest_artifact_path(up_dir)
+        if up.id == "grounding":
+            if repo_root is None:
+                # Never silent: without a root the pointer cannot be followed, so
+                # this upstream would simply vanish from the hash set and its
+                # dependents would look permanently fresh (A-14).
+                obs.log("staleness.pointer_upstream_unresolvable", level="warning",
+                        upstream=up.id, run_dir=str(run_dir))
+                continue
+            up_latest = artifacts.resolve_latest_artifact(repo_root, up.id, up_dir)
+        else:
+            up_latest = artifacts.latest_artifact_path(up_dir)
         if up_latest is not None:
             hashes[_relpath(up_latest, run_dir)] = artifacts.compute_sha256(up_latest)
     return hashes
+
+
+_INVALIDATABLE = (StageStatus.APPROVED.value, StageStatus.AWAITING_REVIEW.value)
 
 
 def propagate_staleness(
@@ -62,17 +77,23 @@ def propagate_staleness(
     all_stage_defs: list[StageDef],
     project_id: int,
     changed_stage_id: str,
+    repo_root: Path | None = None,
 ) -> None:
-    """Flip approved downstream stages to stale when changed_stage_id's latest
-    artifact no longer matches the hash they recorded, then cascade: anything
-    approved that was built on a stage this call just made stale is stale too.
+    """Flip approved (or awaiting-review) downstream stages to stale when
+    changed_stage_id's latest artifact no longer matches the hash they
+    recorded, then cascade: anything invalidatable that was built on a stage
+    this call just made stale is stale too. A draft sitting at
+    awaiting_review is included -- it was built on the old upstream just as
+    much as an approved artifact was, and approving it must not silently
+    launder in the stale input (A-44). `locked` stages are never included:
+    they have not run yet, so there is nothing built on stale input to flag.
     Public because both paths that mint a new artifact version call it:
     run_stage_turn (chat / regenerate) and
     routes.stages.edit_stage_output_route (hand edit)."""
     newly_stale: list[str] = []
     for dep_stage in _dependents_of(all_stage_defs, changed_stage_id):
         row = db_mod.get_stage(conn, project_id, dep_stage.id)
-        if row is None or row["status"] != StageStatus.APPROVED.value:
+        if row is None or row["status"] not in _INVALIDATABLE:
             continue
         stage_dir = run_dir / stage_dir_name(dep_stage)
         latest = artifacts.latest_artifact_path(stage_dir)
@@ -80,8 +101,8 @@ def propagate_staleness(
             continue
         meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
         recorded = meta.get("depends_on") or []
-        dep_upstream_defs = [s for s in all_stage_defs if s.id in dep_stage.depends_on]
-        current_hashes = _current_upstream_hashes(run_dir, dep_upstream_defs)
+        dep_upstream_defs = [s for s in all_stage_defs if s.id in dep_stage.all_depends_on]
+        current_hashes = _current_upstream_hashes(run_dir, dep_upstream_defs, repo_root=repo_root)
         if is_stale(recorded, current_hashes):
             db_mod.update_stage_status(conn, row["id"], StageStatus.STALE.value)
             newly_stale.append(dep_stage.id)
@@ -91,20 +112,20 @@ def propagate_staleness(
     # so its dependents' recorded hashes still match and is_stale would say
     # False. Being built on a stage that is itself stale is what makes them
     # stale. Terminates regardless of topology because a stage is enqueued
-    # only at the moment it leaves `approved`, so at most once.
+    # only at the moment it leaves the invalidatable set, so at most once.
     queue = list(newly_stale)
     while queue:
         stale_stage_id = queue.pop()
         for dep_stage in _dependents_of(all_stage_defs, stale_stage_id):
             row = db_mod.get_stage(conn, project_id, dep_stage.id)
-            if row is None or row["status"] != StageStatus.APPROVED.value:
+            if row is None or row["status"] not in _INVALIDATABLE:
                 continue
             db_mod.update_stage_status(conn, row["id"], StageStatus.STALE.value)
             queue.append(dep_stage.id)
 
 
 def _dependents_of(all_stage_defs: list[StageDef], stage_id: str) -> list[StageDef]:
-    return [s for s in all_stage_defs if stage_id in s.depends_on]
+    return [s for s in all_stage_defs if stage_id in s.all_depends_on]
 
 
 _VERSION_RE = re.compile(r"^artifact\.v(\d+)\.md$")
@@ -384,4 +405,4 @@ async def run_stage_turn(
     }
     artifacts.write_artifact(stage_dir, version, meta, body)
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.AWAITING_REVIEW.value)
-    propagate_staleness(conn, run_dir, all_stage_defs, project_id, stage_def.id)
+    propagate_staleness(conn, run_dir, all_stage_defs, project_id, stage_def.id, repo_root=repo_root)
