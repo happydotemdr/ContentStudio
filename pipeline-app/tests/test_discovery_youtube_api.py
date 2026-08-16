@@ -6,6 +6,22 @@ import pytest
 from pipeline_app import discovery_youtube_api as api
 
 
+@pytest.fixture
+def logged(monkeypatch):
+    """Captures every api.obs.log() call this test makes, as a list of dicts.
+
+    Each record is {"event": ..., "level": ..., **fields} -- the same shape
+    obs.log() takes, minus the timestamp obs.log() would otherwise stamp.
+    """
+    records: list[dict] = []
+
+    def fake_log(event, *, level="info", **fields):
+        records.append({"event": event, "level": level, **fields})
+
+    monkeypatch.setattr(api.obs, "log", fake_log)
+    return records
+
+
 # --------------------------------------------------------------------------- #
 # key resolution
 
@@ -212,3 +228,46 @@ def test_manual_captions_is_not_a_transcript_availability_signal():
         "no transcript is obtainable"
     )
     assert rec["manual_captions"] is False
+
+
+# --------------------------------------------------------------------------- #
+# fetch_upload_dates
+
+def test_fetch_upload_dates_reports_a_missing_key_instead_of_returning_silently(
+        monkeypatch, tmp_path, logged):
+    monkeypatch.delenv(api.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(api, "KEY_FILE", tmp_path / "absent.txt")
+    monkeypatch.setattr(api, "_NO_KEY_WARNED", False)
+    assert api.fetch_upload_dates(["v1"]) == {}
+    (record,) = [r for r in logged if r["event"] == "adapter.api_key_missing"]
+    assert record["level"] == "warning" and record["caller"] == "fetch_upload_dates"
+
+
+def test_fetch_upload_dates_maps_ids_to_dates(monkeypatch):
+    monkeypatch.setattr(api, "_http_get_json",
+                        lambda url, key=None: {"items": [_api_item(id="v1"), _api_item(id="v2")]})
+    assert api.fetch_upload_dates(["v1", "v2"], key="k") == {
+        "v1": "2025-08-16", "v2": "2025-08-16"}
+
+
+def test_fetch_upload_dates_batches_at_50(monkeypatch):
+    calls = []
+    monkeypatch.setattr(api, "_http_get_json",
+                        lambda url, key=None: calls.append(url) or {"items": []})
+    api.fetch_upload_dates([f"v{i}" for i in range(120)], key="k")
+    assert len(calls) == 3
+
+
+def test_fetch_upload_dates_omits_ids_with_a_malformed_publishedAt(monkeypatch):
+    monkeypatch.setattr(api, "_http_get_json", lambda url, key=None: {"items": [
+        {"id": "good", "snippet": {"publishedAt": "2026-07-01T00:00:00Z"}},
+        {"id": "short", "snippet": {"publishedAt": "2026"}},
+        {"id": "none", "snippet": {}},
+    ]})
+    assert api.fetch_upload_dates(["good", "short", "none"], key="k") == {"good": "2026-07-01"}
+
+
+def test_fetch_upload_dates_survives_a_failed_batch(monkeypatch):
+    responses = [None, {"items": [{"id": "v99", "snippet": {"publishedAt": "2026-07-01T00:00:00Z"}}]}]
+    monkeypatch.setattr(api, "_http_get_json", lambda url, key=None: responses.pop(0))
+    assert api.fetch_upload_dates([f"v{i}" for i in range(60)], key="k") == {"v99": "2026-07-01"}

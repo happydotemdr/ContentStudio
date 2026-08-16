@@ -208,6 +208,7 @@ def fetch_upload_dates(video_ids: list[str], key: str | None = None) -> dict[str
     """
     key = key or api_key()
     if not key:
+        _warn_no_key("fetch_upload_dates")
         return {}
 
     unique_ids = list(dict.fromkeys(v for v in video_ids if v))
