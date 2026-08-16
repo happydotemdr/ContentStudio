@@ -353,7 +353,68 @@ def test_api_metadata_alone_succeeds_when_ytdlp_is_blocked(monkeypatch, tmp_path
     assert meta["view_count"] == 12043
     assert meta["duration_s"] == 384
     assert meta["manual_captions"] is True
+    # B-12: a blocked/failed yt-dlp run is retryable, not a terminal "missing"
+    # -- see test_bot_blocked_download_with_api_metadata_is_marked_retryable.
+    assert meta["transcript_status"] == "pending_retry"
+
+
+def test_bot_blocked_download_with_api_metadata_is_marked_retryable(monkeypatch, tmp_path, logged):
+    """The B-12 configuration exactly: stale cookies.txt + a working API key."""
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_blocked)
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+    monkeypatch.setattr(yt.youtube_api, "fetch_one", lambda *a, **k: dict(_API_RECORD))
+
+    result = yt.download_item(tmp_path, "@testhandle", "v1", "T")
+    assert result["ok"] is True                       # the metadata is real and worth keeping
+    meta, _ = _written(tmp_path, "v1")
+    assert meta["transcript_status"] == "pending_retry"
+    assert meta["transcript_attempts"] == 1
+    assert [r for r in logged if r["event"] == "adapter.transcript_pending_retry"]
+
+
+def test_a_captionless_video_is_terminal_not_retryable(monkeypatch, tmp_path):
+    """The distinguishability test: yt-dlp ran clean and the video simply has
+    no captions. That is an answer, not a failure."""
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({"upload_date": "20260415"}))
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+    yt.download_item(tmp_path, "@testhandle", "v2", "T")
+    meta, _ = _written(tmp_path, "v2")
     assert meta["transcript_status"] == "missing"
+    assert meta["transcript_attempts"] == 0
+
+
+def test_a_blocked_transcript_api_also_marks_pending_retry(monkeypatch, tmp_path):
+    def blocked(*a, **k):
+        raise yt.TranscriptFetchBlocked("IpBlocked")
+
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({"upload_date": "20260415"}))
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", blocked)
+    yt.download_item(tmp_path, "@testhandle", "v3", "T")
+    meta, _ = _written(tmp_path, "v3")
+    assert meta["transcript_status"] == "pending_retry"
+
+
+def test_attempts_accumulate_and_the_status_becomes_terminal_at_the_cap(monkeypatch, tmp_path):
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_blocked)
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+    monkeypatch.setattr(yt.youtube_api, "fetch_one", lambda *a, **k: dict(_API_RECORD))
+    for _ in range(yt.MAX_TRANSCRIPT_ATTEMPTS):
+        yt.download_item(tmp_path, "@testhandle", "v4", "T")
+    meta, _ = _written(tmp_path, "v4")
+    assert meta["transcript_attempts"] == yt.MAX_TRANSCRIPT_ATTEMPTS
+    assert meta["transcript_status"] == "missing"      # bounded: never loops forever
+
+
+def test_a_recovered_transcript_clears_the_pending_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_blocked)
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+    monkeypatch.setattr(yt.youtube_api, "fetch_one", lambda *a, **k: dict(_API_RECORD))
+    yt.download_item(tmp_path, "@testhandle", "v5", "T")
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: "the real transcript")
+    yt.download_item(tmp_path, "@testhandle", "v5", "T")
+    meta, body = _written(tmp_path, "v5")
+    assert meta["transcript_status"] == "present"
+    assert "the real transcript" in body
 
 
 def test_still_fails_when_both_sources_yield_nothing(monkeypatch, tmp_path):

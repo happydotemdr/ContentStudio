@@ -277,6 +277,24 @@ def _vtt_to_text(vtt: str) -> str:
 _TRANSCRIPT_API_MISSING_WARNED = False
 
 
+MAX_TRANSCRIPT_ATTEMPTS = 3
+
+TRANSCRIPT_PRESENT = "present"
+TRANSCRIPT_MISSING = "missing"        # terminal: yt-dlp ran clean and there are no captions
+TRANSCRIPT_PENDING = "pending_retry"  # transient: the fetch was blocked, try again next run
+
+
+def _prior_transcript_attempts(dest: Path) -> int:
+    if not dest.exists():
+        return 0
+    try:
+        meta, _ = artifacts.parse_frontmatter(dest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    value = meta.get("transcript_attempts")
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
 class TranscriptFetchBlocked(RuntimeError):
     """The transcript API refused or could not be reached.
 
@@ -345,6 +363,7 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str,
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     url = f"https://www.youtube.com/watch?v={video_id}"
+    dest = out_dir / f"{video_id}__{slugify(title)}.md"
     stem = tmp_dir / video_id
     proc = _run_ytdlp(
         ["--skip-download", "--write-info-json",
@@ -373,10 +392,34 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str,
     if vtts:
         transcript = _vtt_to_text(vtts[0].read_text(encoding="utf-8", errors="replace"))
         source = "yt-dlp"
+
+    transcript_blocked = False
     if not transcript:
-        fb = _fetch_transcript_fallback(video_id)
-        if fb:
-            transcript, source = fb, "youtube-transcript-api"
+        try:
+            fb = _fetch_transcript_fallback(video_id)
+        except TranscriptFetchBlocked as exc:
+            transcript_blocked = True
+            obs.log("adapter.transcript_blocked", level="warning", platform="youtube",
+                    handle=handle, video_id=video_id, reason=str(exc))
+        else:
+            if fb:
+                transcript, source = fb, "youtube-transcript-api"
+
+    attempts = _prior_transcript_attempts(dest)
+    if transcript.strip():
+        transcript_status = TRANSCRIPT_PRESENT
+    elif transcript_blocked or not ytdlp_ok:
+        # Metadata succeeded but no transcript was OBTAINED -- not the same as
+        # a video that has none. on_disk_ids() re-offers this item so the next
+        # run tries again, bounded by MAX_TRANSCRIPT_ATTEMPTS so a genuinely
+        # transcript-less video cannot loop forever (B-12).
+        attempts += 1
+        transcript_status = (TRANSCRIPT_PENDING if attempts < MAX_TRANSCRIPT_ATTEMPTS
+                             else TRANSCRIPT_MISSING)
+        obs.log("adapter.transcript_pending_retry", level="warning", platform="youtube",
+                handle=handle, video_id=video_id, attempts=attempts, final=transcript_status)
+    else:
+        transcript_status = TRANSCRIPT_MISSING
 
     # Metadata comes from the Data API when a key is configured, and falls back
     # to yt-dlp's info.json otherwise. A run counts as successful if EITHER
@@ -403,7 +446,6 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str,
         duration_s = info.get("duration")
     fetched_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
-    dest = out_dir / f"{video_id}__{slugify(title)}.md"
     meta = {
         "video_id": video_id,
         "url": url,
@@ -425,7 +467,8 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str,
         # docstring for the corpus measurement behind that. transcript_status
         # is the field that says whether we actually hold one.
         "manual_captions": api_meta.get("manual_captions"),
-        "transcript_status": "present" if transcript.strip() else "missing",
+        "transcript_status": transcript_status,
+        "transcript_attempts": attempts,
         "transcript_source": source,
         "metadata_source": "youtube-data-api-v3" if api_meta else "yt-dlp",
         "fetched_at": fetched_at,
