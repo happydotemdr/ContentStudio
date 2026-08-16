@@ -83,7 +83,10 @@ def test_save_skill_md_writes_file_and_commits(client, monkeypatch):
     calls = []
     monkeypatch.setattr(
         git_helper, "commit_skill_edit",
-        lambda repo_root, file_path, skill_name, now=None: calls.append((file_path, skill_name)),
+        lambda repo_root, file_path, skill_name, now=None: (
+            calls.append((file_path, skill_name)),
+            git_helper.CommitResult(status="committed")
+        )[1],
     )
     edited_content = "---\nname: shorts-ideation\ndescription: edited description\n---\n\nedited body\n"
     resp = test_client.post(
@@ -356,3 +359,51 @@ def test_a_symlinked_skill_directory_is_not_discovered(client, symlink_or_skip, 
     assert detail.status_code == 404
     assert save.status_code == 404
     assert (outside / "SKILL.md").read_text(encoding="utf-8") == "victim\n"
+
+
+def test_a_failed_commit_still_saves_the_file_and_warns_rather_than_500ing(client, monkeypatch):
+    """The write happened first, then two check=True subprocesses; a failing
+    hook 500'd a save that had in fact succeeded (A-54)."""
+    from pipeline_app import git_helper
+    test_client, tmp_path = client
+    monkeypatch.setattr(
+        git_helper, "commit_skill_edit",
+        lambda *a, **k: git_helper.CommitResult(status="failed", detail="pre-commit hook failed"),
+    )
+    body = SKILL_MD.format(name="shorts-ideation")
+
+    resp = test_client.post("/skills/shorts-ideation/save",
+                            data={"target": "SKILL.md", "content": body},
+                            follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert "warning=" in resp.headers["location"]
+    assert (tmp_path / ".claude" / "skills" / "shorts-ideation" / "SKILL.md").read_text(
+        encoding="utf-8") == body
+
+
+def test_the_three_save_outcomes_are_three_different_responses(client, monkeypatch):
+    """Distinguishability, the whole point of this package: saved+committed,
+    saved-but-not-committed, and wrote-nothing were ONE 303."""
+    from pipeline_app import git_helper
+    test_client, _ = client
+    body = SKILL_MD.format(name="shorts-ideation")
+
+    committed = test_client.post("/skills/shorts-ideation/save",
+                                 data={"target": "SKILL.md", "content": body},
+                                 follow_redirects=False)
+    monkeypatch.setattr(git_helper, "commit_skill_edit",
+                        lambda *a, **k: git_helper.CommitResult(status="failed", detail="nope"))
+    uncommitted = test_client.post("/skills/shorts-ideation/save",
+                                   data={"target": "SKILL.md", "content": body + "# more\n"},
+                                   follow_redirects=False)
+    nothing = test_client.post("/skills/shorts-ideation/save",
+                               data={"target": "bogus", "content": body},
+                               follow_redirects=False)
+
+    outcomes = {
+        (committed.status_code, "warning=" in committed.headers.get("location", "")),
+        (uncommitted.status_code, "warning=" in uncommitted.headers.get("location", "")),
+        (nothing.status_code, False),
+    }
+    assert len(outcomes) == 3

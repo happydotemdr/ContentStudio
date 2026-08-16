@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pathlib import Path
+from urllib.parse import quote
 import yaml
 
 from pipeline_app import git_helper, obs
@@ -117,7 +118,7 @@ def skill_list(request: Request):
 
 
 @router.get("/skills/{skill_name}")
-def skill_detail(request: Request, skill_name: str):
+def skill_detail(request: Request, skill_name: str, warning: str | None = None):
     repo_root = request.app.state.repo_root
 
     # SECURITY: skill_name is an attacker/user-controlled URL path segment.
@@ -159,6 +160,7 @@ def skill_detail(request: Request, skill_name: str):
             "kickoff_template_content": kickoff_template_content,
             "active_nav": "skills",
             "cli_available": request.app.state.cli_available,
+            "warning": warning,
         },
     )
 
@@ -190,6 +192,12 @@ def save_skill(request: Request, skill_name: str, target: str = Form(...), conte
 
     # Commit only for SKILL.md (kickoff_template stays as-is today; A-52 fixes that).
     if target == "SKILL.md":
-        git_helper.commit_skill_edit(repo_root, path, skill_name)
+        result = git_helper.commit_skill_edit(repo_root, path, skill_name)
+        if result.ok:
+            return RedirectResponse(url=f"/skills/{skill_name}", status_code=303)
+        warning = f"Saved, but not committed: {result.detail}"
+        return RedirectResponse(
+            url=f"/skills/{skill_name}?warning={quote(warning)}", status_code=303,
+        )
 
     return RedirectResponse(url=f"/skills/{skill_name}", status_code=303)

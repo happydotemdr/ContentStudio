@@ -147,3 +147,40 @@ def test_git_missing_from_path_reports_failure_rather_than_raising(repo: Path, m
     skill_file.write_text("edited\n", encoding="utf-8")
 
     assert commit_skill_edit(repo, skill_file, "shorts-ideation").status == "failed"
+
+
+def test_refuses_to_commit_on_a_protected_branch(tmp_path: Path):
+    """No branch guard meant a web save committed straight to main (D-51)."""
+    root = tmp_path / "onmain"
+    root.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=root, check=True, capture_output=True)
+    for k, v in (("user.email", "t@e.com"), ("user.name", "T")):
+        subprocess.run(["git", "config", k, v], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=root, check=True,
+                   capture_output=True)
+    skill_file = root / ".claude" / "skills" / "shorts-ideation" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("edited\n", encoding="utf-8")
+
+    result = commit_skill_edit(root, skill_file, "shorts-ideation")
+
+    assert result.status == "refused_protected_branch"
+    assert result.branch == "main"
+    assert "main" in result.detail
+    log = subprocess.run(["git", "log", "--oneline"], cwd=root, check=True,
+                         capture_output=True, encoding="utf-8", errors="replace").stdout
+    assert "skill edit" not in log
+
+
+def test_app_commits_carry_the_pipeline_app_identity(repo: Path):
+    """Nothing distinguished app-authored history from hand-authored history
+    beyond a message suffix (D-51)."""
+    skill_file = repo / ".claude" / "skills" / "shorts-ideation" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("edited\n", encoding="utf-8")
+
+    commit_skill_edit(repo, skill_file, "shorts-ideation")
+
+    author = subprocess.run(["git", "log", "-1", "--format=%an <%ae>"], cwd=repo, check=True,
+                            capture_output=True, encoding="utf-8", errors="replace").stdout.strip()
+    assert author == "pipeline-app <noreply@localhost>"
