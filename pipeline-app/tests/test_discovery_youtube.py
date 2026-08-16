@@ -18,6 +18,22 @@ def _proc(returncode, stdout, stderr):
     return FakeProc()
 
 
+@pytest.fixture
+def logged(monkeypatch):
+    """Captures every yt.obs.log() call this test makes, as a list of dicts.
+
+    Each record is {"event": ..., "level": ..., **fields} -- the same shape
+    obs.log() takes, minus the timestamp obs.log() would otherwise stamp.
+    """
+    records: list[dict] = []
+
+    def fake_log(event, *, level="info", **fields):
+        records.append({"event": event, "level": level, **fields})
+
+    monkeypatch.setattr(yt.obs, "log", fake_log)
+    return records
+
+
 @pytest.fixture(autouse=True)
 def no_data_api_by_default(monkeypatch):
     """Keep these tests off the network.
@@ -85,20 +101,15 @@ def test_enumerate_newest_first_returns_empty_on_failure(monkeypatch):
 
 
 def test_peek_upload_date_reads_info_json(monkeypatch, tmp_path):
-    def fake_run(cmd, capture_output, text):
+    def fake_run(args, *, label, binary=None):
         # simulate yt-dlp writing the info.json next to -o's stem
-        out_flag_index = cmd.index("-o")
-        stem = Path(cmd[out_flag_index + 1].replace(".%(ext)s", ""))
+        stem = Path(args[args.index("-o") + 1].replace(".%(ext)s", ""))
         stem.with_suffix(".info.json").write_text(
             json.dumps({"upload_date": "20260415"}), encoding="utf-8"
         )
-        class FakeProc:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-        return FakeProc()
+        return _proc(0, "", "")
 
-    monkeypatch.setattr(yt.subprocess, "run", fake_run)
+    monkeypatch.setattr(yt, "_run_ytdlp", fake_run)
     monkeypatch.chdir(tmp_path)
     assert yt.peek_upload_date("v1") == "2026-04-15"
 
@@ -111,31 +122,22 @@ def test_peek_upload_date_does_not_depend_on_cwd(monkeypatch, tmp_path):
     # C:\Windows\System32). Deliberately do NOT chdir into a writable
     # tmp_path here: if the implementation regresses to a relative path, this
     # test fails wherever pytest's own CWD isn't writable.
-    def fake_run(cmd, capture_output, text):
-        out_flag_index = cmd.index("-o")
-        stem = Path(cmd[out_flag_index + 1].replace(".%(ext)s", ""))
+    def fake_run(args, *, label, binary=None):
+        stem = Path(args[args.index("-o") + 1].replace(".%(ext)s", ""))
         # Assert the temp file lives in a real temp directory, not a bare
         # relative "_peek_<id>" path resolved against the CWD.
         assert stem.is_absolute()
         stem.with_suffix(".info.json").write_text(
             json.dumps({"upload_date": "20260415"}), encoding="utf-8"
         )
-        class FakeProc:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-        return FakeProc()
+        return _proc(0, "", "")
 
-    monkeypatch.setattr(yt.subprocess, "run", fake_run)
+    monkeypatch.setattr(yt, "_run_ytdlp", fake_run)
     assert yt.peek_upload_date("v1") == "2026-04-15"
 
 
 def test_peek_upload_date_returns_none_when_no_info_json(monkeypatch, tmp_path):
-    class FakeProc:
-        returncode = 1
-        stdout = ""
-        stderr = "error"
-    monkeypatch.setattr(yt.subprocess, "run", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(yt, "_run_ytdlp", lambda *a, **k: _proc(1, "", "error"))
     monkeypatch.chdir(tmp_path)
     assert yt.peek_upload_date("v1") is None
 
@@ -144,13 +146,7 @@ def test_download_item_returns_false_when_ytdlp_fails_and_no_file_written(monkey
     """When yt-dlp fails (no info.json), download_item returns ok: False
     and does NOT write a .md file, leaving the video eligible for retry."""
 
-    # Mock yt-dlp to fail (no info.json written, no transcript found)
-    class FakeProc:
-        returncode = 1
-        stdout = ""
-        stderr = "connection error"
-
-    monkeypatch.setattr(yt.subprocess, "run", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(yt, "_run_ytdlp", lambda *a, **k: _proc(1, "", "connection error"))
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
 
     result = yt.download_item(tmp_path, "@testhandle", "vid123", "Test Video")
@@ -169,10 +165,9 @@ def test_download_item_returns_true_when_ytdlp_succeeds_even_without_transcript(
     """When yt-dlp succeeds (info.json exists), download_item returns ok: True
     and writes a .md file even if no transcript is available."""
 
-    def fake_run(cmd, capture_output, text):
+    def fake_run(args, *, label, binary=None):
         # Simulate yt-dlp writing info.json on success
-        out_flag_index = cmd.index("-o")
-        stem = Path(cmd[out_flag_index + 1].replace(".%(ext)s", ""))
+        stem = Path(args[args.index("-o") + 1].replace(".%(ext)s", ""))
         stem.with_suffix(".info.json").write_text(
             json.dumps({
                 "id": "vid456",
@@ -184,13 +179,9 @@ def test_download_item_returns_true_when_ytdlp_succeeds_even_without_transcript(
             }),
             encoding="utf-8"
         )
-        class FakeProc:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-        return FakeProc()
+        return _proc(0, "", "")
 
-    monkeypatch.setattr(yt.subprocess, "run", fake_run)
+    monkeypatch.setattr(yt, "_run_ytdlp", fake_run)
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
 
     result = yt.download_item(tmp_path, "@testhandle", "vid456", "Test Video")
@@ -212,6 +203,52 @@ def test_download_item_returns_true_when_ytdlp_succeeds_even_without_transcript(
 
 
 # --------------------------------------------------------------------------- #
+# yt-dlp return codes are read, and a truncated info.json cannot escape as an
+# unguarded JSONDecodeError (B-16)
+
+def test_peek_upload_date_reports_a_failed_ytdlp_instead_of_returning_none(monkeypatch, logged):
+    monkeypatch.setattr(yt, "_run_ytdlp", lambda *a, **k: _proc(1, "", "HTTP Error 429"))
+    assert yt.peek_upload_date("v1") is None
+    assert [r for r in logged if r["event"] == "adapter.peek_failed"
+            and r["level"] == "warning" and "429" in r["stderr"]]
+
+
+def test_peek_upload_date_survives_a_truncated_info_json(monkeypatch, logged):
+    def fake_run(args, *, label, binary=None):
+        stem = Path(args[args.index("-o") + 1].replace(".%(ext)s", ""))
+        stem.with_suffix(".info.json").write_text('{"upload_date": "2026', encoding="utf-8")
+        return _proc(0, "", "")
+
+    monkeypatch.setattr(yt, "_run_ytdlp", fake_run)
+    assert yt.peek_upload_date("v1") is None          # today: JSONDecodeError escapes
+    assert [r for r in logged if r["event"] == "adapter.info_json_unparseable"]
+
+
+def test_download_item_logs_a_nonzero_ytdlp_exit(monkeypatch, tmp_path, logged):
+    monkeypatch.setattr(yt, "_run_ytdlp", lambda *a, **k: _proc(1, "", "Sign in to confirm"))
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+    monkeypatch.setattr(yt.youtube_api, "fetch_one", lambda *a, **k: dict(_API_RECORD))
+    yt.download_item(tmp_path, "@testhandle", "v1", "T")
+    assert [r for r in logged if r["event"] == "adapter.download_tool_failed"
+            and r["level"] == "warning" and r["video_id"] == "v1"]
+
+
+def test_download_item_filename_and_h1_carry_the_original_characters(monkeypatch, tmp_path):
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({"upload_date": "20260415"}))
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+    yt.download_item(tmp_path, "@testhandle", "v1", _EMOJI_TITLE)
+
+    dest_dir = tmp_path / "output" / "brand-intel" / "youtube" / "testhandle"
+    (written,) = list(dest_dir.glob("v1__*.md"))
+    # cp1252 corruption of "naïve" is "naÃ¯ve"; slugify keeps the \w chars, so
+    # the mojibake is visible in the filename as "naÃve".
+    assert "naïve" in written.name
+    assert "Ã" not in written.name
+    body = written.read_text(encoding="utf-8")
+    assert f"# {_EMOJI_TITLE}" in body
+
+
+# --------------------------------------------------------------------------- #
 # frontmatter + transcript availability
 
 _API_RECORD = {
@@ -228,24 +265,16 @@ _API_RECORD = {
 
 
 def _ytdlp_ok(info: dict):
-    def fake_run(cmd, capture_output, text):
-        stem = Path(cmd[cmd.index("-o") + 1].replace(".%(ext)s", ""))
+    def fake_run(args, *, label, binary=None):
+        stem = Path(args[args.index("-o") + 1].replace(".%(ext)s", ""))
         stem.with_suffix(".info.json").write_text(json.dumps(info), encoding="utf-8")
-        class FakeProc:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-        return FakeProc()
+        return _proc(0, "", "")
     return fake_run
 
 
-def _ytdlp_blocked(cmd, capture_output, text):
+def _ytdlp_blocked(args, *, label, binary=None):
     """Simulates the bot-block: yt-dlp writes nothing at all."""
-    class FakeProc:
-        returncode = 1
-        stdout = ""
-        stderr = "Sign in to confirm you're not a bot"
-    return FakeProc()
+    return _proc(1, "", "Sign in to confirm you're not a bot")
 
 
 def _written(tmp_path, video_id):
@@ -256,7 +285,7 @@ def _written(tmp_path, video_id):
 
 
 def test_download_item_writes_yaml_frontmatter(monkeypatch, tmp_path):
-    monkeypatch.setattr(yt.subprocess, "run", _ytdlp_ok({"upload_date": "20260415"}))
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({"upload_date": "20260415"}))
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
     yt.download_item(tmp_path, "@testhandle", "v1", "Test Video")
     meta, body = _written(tmp_path, "v1")
@@ -266,7 +295,7 @@ def test_download_item_writes_yaml_frontmatter(monkeypatch, tmp_path):
 
 
 def test_transcript_status_missing_when_no_transcript(monkeypatch, tmp_path):
-    monkeypatch.setattr(yt.subprocess, "run", _ytdlp_ok({"upload_date": "20260415"}))
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({"upload_date": "20260415"}))
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
     yt.download_item(tmp_path, "@testhandle", "v2", "T")
     meta, _ = _written(tmp_path, "v2")
@@ -275,7 +304,7 @@ def test_transcript_status_missing_when_no_transcript(monkeypatch, tmp_path):
 
 
 def test_transcript_status_present_when_fallback_supplies_one(monkeypatch, tmp_path):
-    monkeypatch.setattr(yt.subprocess, "run", _ytdlp_ok({"upload_date": "20260415"}))
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({"upload_date": "20260415"}))
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: "real transcript text")
     yt.download_item(tmp_path, "@testhandle", "v3", "T")
     meta, body = _written(tmp_path, "v3")
@@ -289,7 +318,7 @@ def test_api_metadata_alone_succeeds_when_ytdlp_is_blocked(monkeypatch, tmp_path
 
     Must write a real file rather than failing the item forever.
     """
-    monkeypatch.setattr(yt.subprocess, "run", _ytdlp_blocked)
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_blocked)
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
     monkeypatch.setattr(yt.youtube_api, "fetch_one", lambda *a, **k: dict(_API_RECORD))
 
@@ -307,7 +336,7 @@ def test_api_metadata_alone_succeeds_when_ytdlp_is_blocked(monkeypatch, tmp_path
 
 
 def test_still_fails_when_both_sources_yield_nothing(monkeypatch, tmp_path):
-    monkeypatch.setattr(yt.subprocess, "run", _ytdlp_blocked)
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_blocked)
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
     result = yt.download_item(tmp_path, "@testhandle", "v5", "T")
     assert result["ok"] is False
@@ -316,7 +345,7 @@ def test_still_fails_when_both_sources_yield_nothing(monkeypatch, tmp_path):
 
 
 def test_metadata_source_is_ytdlp_when_no_api_key(monkeypatch, tmp_path):
-    monkeypatch.setattr(yt.subprocess, "run", _ytdlp_ok({"upload_date": "20260415", "duration": 120}))
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({"upload_date": "20260415", "duration": 120}))
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
     yt.download_item(tmp_path, "@testhandle", "v6", "T")
     meta, _ = _written(tmp_path, "v6")
@@ -329,12 +358,12 @@ def test_peek_upload_date_prefers_data_api(monkeypatch, tmp_path):
     def explode(*a, **k):
         raise AssertionError("yt-dlp must not run when the API answered")
     monkeypatch.setattr(yt.youtube_api, "fetch_one", lambda *a, **k: {"upload_date": "2026-01-02"})
-    monkeypatch.setattr(yt.subprocess, "run", explode)
+    monkeypatch.setattr(yt, "_run_ytdlp", explode)
     assert yt.peek_upload_date("v1") == "2026-01-02"
 
 
 def test_missing_transcript_ids_lists_only_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(yt.subprocess, "run", _ytdlp_ok({"upload_date": "20260415"}))
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({"upload_date": "20260415"}))
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
     yt.download_item(tmp_path, "@testhandle", "gone", "No Transcript")
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: "text")
@@ -526,7 +555,7 @@ def test_keyword_filter_applies_across_both_tabs(monkeypatch):
 
 
 def test_download_item_records_content_type(monkeypatch, tmp_path):
-    monkeypatch.setattr(yt.subprocess, "run", _ytdlp_ok({"upload_date": "20260415"}))
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({"upload_date": "20260415"}))
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
     yt.download_item(tmp_path, "@testhandle", "s9", "A Short", "short")
     meta, _ = _written(tmp_path, "s9")

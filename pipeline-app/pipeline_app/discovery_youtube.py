@@ -171,15 +171,27 @@ def peek_upload_date(video_id: str) -> str | None:
     try:
         tmp_stem = tmp_dir / f"_peek_{video_id}"
         url = f"https://www.youtube.com/watch?v={video_id}"
-        cmd = [
-            "yt-dlp", "--skip-download", "--write-info-json", "--no-warnings",
-            "--ignore-errors", *_cookie_args(), "-o", str(tmp_stem) + ".%(ext)s", url,
-        ]
-        subprocess.run(cmd, capture_output=True, text=True)
+        proc = _run_ytdlp(
+            ["--skip-download", "--write-info-json", "--no-warnings",
+             "--ignore-errors", *_cookie_args(), "-o", str(tmp_stem) + ".%(ext)s", url],
+            label=f"peek {video_id}",
+        )
+        if proc.returncode != 0:
+            obs.log("adapter.peek_failed", level="warning", platform="youtube",
+                    video_id=video_id, returncode=proc.returncode,
+                    stderr=proc.stderr.strip()[:200])
         info_path = tmp_stem.with_suffix(".info.json")
         if not info_path.exists():
             return None
-        info = json.loads(info_path.read_text(encoding="utf-8"))
+        try:
+            info = json.loads(info_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            # download_item already guards the structurally identical parse;
+            # the same corrupt file must not be fatal on one path and tolerated
+            # on the other (B-16).
+            obs.log("adapter.info_json_unparseable", level="warning",
+                    platform="youtube", video_id=video_id, error=type(exc).__name__)
+            return None
         upload_date = info.get("upload_date")
         if not upload_date or len(upload_date) != 8:
             return None
@@ -246,14 +258,19 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str,
 
     url = f"https://www.youtube.com/watch?v={video_id}"
     stem = tmp_dir / video_id
-    cmd = [
-        "yt-dlp", "--skip-download", "--write-info-json",
-        "--write-auto-subs", "--write-subs", "--sub-langs", "en.*",
-        "--sub-format", "vtt", "--ignore-errors", "--no-warnings",
-        "--retries", "5", "--sleep-requests", "2", *_cookie_args(),
-        "-o", str(stem) + ".%(ext)s", url,
-    ]
-    subprocess.run(cmd, capture_output=True, text=True)
+    proc = _run_ytdlp(
+        ["--skip-download", "--write-info-json",
+         "--write-auto-subs", "--write-subs", "--sub-langs", "en.*",
+         "--sub-format", "vtt", "--ignore-errors", "--no-warnings",
+         "--retries", "5", "--sleep-requests", "2", *_cookie_args(),
+         "-o", str(stem) + ".%(ext)s", url],
+        label=f"download {video_id}",
+    )
+    ytdlp_ok = proc.returncode == 0
+    if not ytdlp_ok:
+        obs.log("adapter.download_tool_failed", level="warning", platform="youtube",
+                handle=handle, video_id=video_id, returncode=proc.returncode,
+                stderr=proc.stderr.strip()[:200])
 
     info = {}
     info_path = stem.with_suffix(".info.json")
