@@ -345,3 +345,31 @@ def test_notify_skips_drafting_when_there_is_no_spotlight(monkeypatch, notify_db
 
     assert discovery_notify.notify(conn, repo_root, run_row_id) is True
     assert calls == []
+
+
+def test_build_summary_attaches_brand_tags_from_the_producing_handle(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn, "instagram", "aspenprojectplay", "Aspen Project Play")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports"])
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_post(repo_root, "instagram", "aspenprojectplay", "p1.md",
+                ["url: 'https://instagram.com/p/1'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A caption.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert len(summary["items"]) == 1
+    assert summary["items"][0]["brands"] == ["guru", "raisinggoodsports"]
+
+
+def test_build_summary_untagged_handle_produces_items_with_no_brands(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn)  # no set_handle_brands call -- stays untagged
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_youtube_video(repo_root, "@somechannel", "vid1", "A Video", "2026-08-01T06:01:00+00:00")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["items"][0]["brands"] == []

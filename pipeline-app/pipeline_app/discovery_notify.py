@@ -95,6 +95,11 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
     `items` is flat rather than pre-grouped -- select_spotlight needs the flat
     list, and email_render owns grouping so that adding a platform never
     requires a second place to be taught about it.
+
+    Each item also carries a `brands` list -- the tags of the handle that
+    produced it (db.get_handle_brands), attached here rather than in
+    discovery_digest.collect_new_items because that module is deliberately
+    DB-free. notify() reads this key to partition items by brand.
     """
     run_row = db_mod.get_run(conn, run_row_id)
     handle_results = db_mod.list_run_handle_results(conn, run_row_id)
@@ -105,6 +110,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
     for result in handle_results:
         handle_row = db_mod.get_handle(conn, result["handle_id"])
         label = handle_row["display_name"] or handle_row["handle"]
+        brands = db_mod.get_handle_brands(conn, handle_row["id"])
 
         if result["status"] == "error":
             errored.append(label)
@@ -114,6 +120,8 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
             print(f"discovery_notify: item count mismatch for {label}: "
                   f"db says {result['items_downloaded']}, found {len(found)} on disk",
                   file=sys.stderr)
+        for item in found:
+            item["brands"] = brands
         items.extend(found)
 
     has_issues = run_row["status"] != "completed" or bool(errored)
