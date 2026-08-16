@@ -175,7 +175,7 @@ def test_stage_page_shows_grounding_output_via_pointer(client):
     (rgs_briefs_dir / "2026-07-27-example-brief.md").write_text(
         "---\nstatus: candidate\n---\n\nBrief body text", encoding="utf-8"
     )
-    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md")
+    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md", tmp_path)
 
     page = test_client.get(f"/projects/{project_id}/stages/grounding")
     assert page.status_code == 200
@@ -201,7 +201,7 @@ def test_stage_page_shows_grounding_companion_as_input_for_downstream_stage(clie
     (rgs_briefs_dir / "2026-07-27-example-brief.md").write_text(
         "---\nstatus: candidate\n---\n\nGrounding companion body text", encoding="utf-8"
     )
-    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md")
+    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md", tmp_path)
 
     page = test_client.get(f"/projects/{project_id}/stages/ideation")
     assert page.status_code == 200
@@ -217,7 +217,12 @@ def test_stage_page_grounding_output_pointer_target_missing_shows_no_output(clie
     project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     run_dir = tmp_path / "runs" / project["run_id"]
     grounding_dir = run_dir / "00-grounding"
-    write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md")
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir(parents=True)
+    brief_path = briefs_dir / "does-not-exist.md"
+    brief_path.write_text("temporary", encoding="utf-8")
+    write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md", tmp_path)
+    brief_path.unlink()
 
     page = test_client.get(f"/projects/{project_id}/stages/grounding")
     assert page.status_code == 200

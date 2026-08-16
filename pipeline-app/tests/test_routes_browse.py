@@ -334,6 +334,7 @@ def test_browse_tree_pipeline_project_shows_grounding_folder_when_pointer_valid(
     grounding_service.write_pointer(
         tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding",
         "rgs-briefs/2026-07-28-topic.md",
+        tmp_path,
     )
     resp = test_client.get(
         "/browse/tree", params={"root": "pipeline", "path": "my-run-20260728-120000"}
@@ -361,6 +362,7 @@ def test_browse_tree_pipeline_grounding_stage_shows_synthetic_current_brief_entr
     grounding_service.write_pointer(
         tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding",
         "rgs-briefs/2026-07-28-topic.md",
+        tmp_path,
     )
     resp = test_client.get(
         "/browse/tree",
@@ -393,6 +395,7 @@ def test_browse_file_pipeline_grounding_pointer_renders_target(client):
     grounding_service.write_pointer(
         tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding",
         "rgs-briefs/2026-07-28-topic.md",
+        tmp_path,
     )
     resp = test_client.get(
         "/browse/file",
@@ -405,10 +408,16 @@ def test_browse_file_pipeline_grounding_pointer_renders_target(client):
 def test_browse_file_pipeline_grounding_pointer_missing_target_shows_error(client):
     test_client, tmp_path = client
     from pipeline_app import grounding_service
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    brief_path = briefs_dir / "does-not-exist.md"
+    brief_path.write_text("temporary", encoding="utf-8")
     grounding_service.write_pointer(
         tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding",
         "rgs-briefs/does-not-exist.md",
+        tmp_path,
     )
+    brief_path.unlink()
     resp = test_client.get(
         "/browse/file",
         params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding/pointer.yaml"},
@@ -429,6 +438,7 @@ def test_browse_file_pipeline_grounding_pointer_outside_rgs_briefs_shows_error(c
     grounding_service.write_pointer(
         tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding",
         "runs/other-run/secret.md",
+        tmp_path,
     )
     resp = test_client.get(
         "/browse/file",

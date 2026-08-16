@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import markdown
-import yaml
 
 from pipeline_app import artifacts, grounding_service
 from pipeline_app import db as db_mod
@@ -116,7 +115,7 @@ def resolve_grounding_pointer(pointer_dir: Path, repo_root: Path) -> Path | None
     rgs-briefs/ folder rather than being trusted outright."""
     try:
         target_rel = grounding_service.read_pointer(pointer_dir)
-    except (yaml.YAMLError, AttributeError, TypeError):
+    except grounding_service.InvalidPointerError:
         # Malformed or non-mapping pointer.yaml content (hand-edited or
         # truncated) -- treat the same as "no valid pointer here" rather
         # than crashing tree expansion for the whole project.
@@ -267,9 +266,9 @@ def render_md_file(path: Path) -> dict:
 
     try:
         meta, body = artifacts.parse_frontmatter(text)
-    except yaml.YAMLError:
-        return {"error": "Frontmatter is not valid YAML."}
-    if not isinstance(meta, dict):
+    except artifacts.MalformedArtifactError as exc:
+        if "not valid YAML" in exc.reason:
+            return {"error": "Frontmatter is not valid YAML."}
         return {"error": "Frontmatter is not a key/value mapping."}
 
     return {

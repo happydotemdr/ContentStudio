@@ -124,9 +124,9 @@ async def test_all_nine_stages_run_and_each_receives_its_declared_upstreams(tmp_
             # run_dir was written for it -- identify the new rgs-briefs/ file
             # and point at it exactly as that route does.
             briefs_after = grounding_service.snapshot_rgs_briefs(rgs_briefs_dir)
-            new_brief = grounding_service.identify_new_brief(briefs_before, briefs_after)
-            assert new_brief is not None, "grounding produced no new rgs-briefs/ file"
-            grounding_service.write_pointer(stage_dir, f"rgs-briefs/{new_brief}")
+            change = grounding_service.classify_brief_change(briefs_before, briefs_after)
+            assert change.brief is not None, "grounding produced no new rgs-briefs/ file"
+            grounding_service.write_pointer(stage_dir, f"rgs-briefs/{change.brief}", tmp_path)
             stage_row = db.get_stage(conn, project["project_id"], "grounding")
             db.update_stage_status(conn, stage_row["id"], "awaiting_review")
             latest = artifacts.resolve_latest_artifact(tmp_path, "grounding", stage_dir)

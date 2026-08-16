@@ -379,7 +379,7 @@ def test_a_symlinked_skill_directory_is_not_discovered(client, symlink_or_skip, 
                             data={"target": "SKILL.md", "content": "pwned\n"},
                             follow_redirects=False)
 
-    assert "escape" not in listing.text
+    assert 'href="/skills/escape"' not in listing.text
     assert detail.status_code == 404
     assert save.status_code == 404
     assert (outside / "SKILL.md").read_text(encoding="utf-8") == "victim\n"

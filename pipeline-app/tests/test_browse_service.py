@@ -276,7 +276,7 @@ def test_resolve_grounding_pointer_returns_target_when_valid(tmp_path):
     brief = tmp_path / "rgs-briefs" / "2026-07-28-topic.md"
     brief.write_text("# Brief", encoding="utf-8")
     pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
-    grounding_service.write_pointer(pointer_dir, "rgs-briefs/2026-07-28-topic.md")
+    grounding_service.write_pointer(pointer_dir, "rgs-briefs/2026-07-28-topic.md", tmp_path)
     result = browse_service.resolve_grounding_pointer(pointer_dir, tmp_path)
     assert result == brief.resolve()
 
@@ -289,7 +289,12 @@ def test_resolve_grounding_pointer_returns_none_when_no_pointer(tmp_path):
 
 def test_resolve_grounding_pointer_returns_none_when_target_missing(tmp_path):
     pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
-    grounding_service.write_pointer(pointer_dir, "rgs-briefs/does-not-exist.md")
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    brief_path = briefs_dir / "does-not-exist.md"
+    brief_path.write_text("temporary", encoding="utf-8")
+    grounding_service.write_pointer(pointer_dir, "rgs-briefs/does-not-exist.md", tmp_path)
+    brief_path.unlink()
     assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
 
 
@@ -304,13 +309,16 @@ def test_resolve_grounding_pointer_rejects_path_outside_rgs_briefs(tmp_path):
     secret.parent.mkdir(parents=True)
     secret.write_text("secret", encoding="utf-8")
     pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
-    grounding_service.write_pointer(pointer_dir, "runs/other-run/secret.md")
+    grounding_service.write_pointer(pointer_dir, "runs/other-run/secret.md", tmp_path)
     assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
 
 
 def test_resolve_grounding_pointer_rejects_traversal_outside_repo_root(tmp_path):
     pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
-    grounding_service.write_pointer(pointer_dir, "../../../etc/passwd")
+    pointer_dir.mkdir(parents=True)
+    (pointer_dir / "pointer.yaml").write_text(
+        "rgs_brief_path: '../../../etc/passwd'\n", encoding="utf-8"
+    )
     assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
 
 
@@ -334,7 +342,7 @@ def test_has_md_below_true_when_valid_grounding_pointer_present(root, tmp_path):
     briefs_dir.mkdir()
     (briefs_dir / "topic.md").write_text("# Brief", encoding="utf-8")
     grounding_dir = root / "00-grounding"
-    grounding_service.write_pointer(grounding_dir, "rgs-briefs/topic.md")
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/topic.md", tmp_path)
     assert browse_service._has_md_below(grounding_dir, tmp_path) is True
 
 
@@ -358,7 +366,12 @@ def test_has_md_below_false_when_no_pointer_and_no_md(root, tmp_path):
 
 def test_has_md_below_false_when_pointer_target_missing(root, tmp_path):
     grounding_dir = root / "00-grounding"
-    grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md")
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    brief_path = briefs_dir / "does-not-exist.md"
+    brief_path.write_text("temporary", encoding="utf-8")
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md", tmp_path)
+    brief_path.unlink()
     assert browse_service._has_md_below(grounding_dir, tmp_path) is False
 
 
@@ -369,7 +382,7 @@ def test_list_children_includes_grounding_folder_when_pointer_valid(root, tmp_pa
     briefs_dir = tmp_path / "rgs-briefs"
     briefs_dir.mkdir()
     (briefs_dir / "topic.md").write_text("# Brief", encoding="utf-8")
-    grounding_service.write_pointer(root / "00-grounding", "rgs-briefs/topic.md")
+    grounding_service.write_pointer(root / "00-grounding", "rgs-briefs/topic.md", tmp_path)
     entries = browse_service.list_children(root, root, tmp_path)
     assert [e.name for e in entries] == ["00-grounding"]
 
@@ -379,7 +392,7 @@ def test_list_children_synthesizes_current_brief_entry_for_pointer(root, tmp_pat
     briefs_dir.mkdir()
     (briefs_dir / "2026-07-28-topic.md").write_text("# Brief", encoding="utf-8")
     grounding_dir = root / "00-grounding"
-    grounding_service.write_pointer(grounding_dir, "rgs-briefs/2026-07-28-topic.md")
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/2026-07-28-topic.md", tmp_path)
     entries = browse_service.list_children(grounding_dir, root, tmp_path)
     assert len(entries) == 1
     assert entries[0].name == "current-brief.md (2026-07-28-topic.md)"
@@ -389,7 +402,12 @@ def test_list_children_synthesizes_current_brief_entry_for_pointer(root, tmp_pat
 
 def test_list_children_omits_pointer_entry_when_target_missing(root, tmp_path):
     grounding_dir = root / "00-grounding"
-    grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md")
+    briefs_dir = tmp_path / "rgs-briefs"
+    briefs_dir.mkdir()
+    brief_path = briefs_dir / "does-not-exist.md"
+    brief_path.write_text("temporary", encoding="utf-8")
+    grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md", tmp_path)
+    brief_path.unlink()
     entries = browse_service.list_children(grounding_dir, root, tmp_path)
     assert entries == []
 
