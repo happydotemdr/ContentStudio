@@ -101,7 +101,7 @@ def test_first_ever_hand_edit_records_a_real_depends_on(two_stage_client):
     test_client, tmp_path, app = two_stage_client
     project_id, run_dir = _new_project(test_client, app, tmp_path)
     ideation_dir = run_dir / "01-ideation"
-    artifacts.write_artifact(ideation_dir, 1, {"stage": "shorts-ideation"}, "concept v1")
+    artifacts.write_artifact(ideation_dir, 1, {"stage": "shorts-ideation", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1")
     _install_real_script_linter(tmp_path)
     assert test_client.post(f"/projects/{project_id}/stages/ideation/approve").status_code == 303
 
@@ -125,7 +125,7 @@ def test_a_hand_edited_stage_with_no_prior_artifact_still_goes_stale(two_stage_c
     test_client, tmp_path, app = two_stage_client
     project_id, run_dir = _new_project(test_client, app, tmp_path)
     _install_real_script_linter(tmp_path)
-    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1")
     test_client.post(f"/projects/{project_id}/stages/ideation/approve")
     test_client.post(f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT})
     test_client.post(f"/projects/{project_id}/stages/scripting/approve")
@@ -143,7 +143,7 @@ def test_a_hand_edit_after_the_upstream_advanced_records_the_current_version(two
     project_id, run_dir = _new_project(test_client, app, tmp_path)
     _install_real_script_linter(tmp_path)
     ideation_dir = run_dir / "01-ideation"
-    artifacts.write_artifact(ideation_dir, 1, {"stage": "shorts-ideation"}, "concept v1")
+    artifacts.write_artifact(ideation_dir, 1, {"stage": "shorts-ideation", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1")
     test_client.post(f"/projects/{project_id}/stages/ideation/approve")
     test_client.post(f"/projects/{project_id}/stages/scripting/edit", data={"body": CLEAN_SCRIPT})
     artifacts.write_artifact(ideation_dir, 2, {"stage": "shorts-ideation"}, "concept v2")
@@ -171,7 +171,7 @@ def test_hand_edit_flips_stage_to_awaiting_review_and_dependent_to_stale(two_sta
     scripting_dir = run_dir / "02-scripting"
 
     artifacts.write_artifact(
-        ideation_dir, 1, {"stage": "shorts-ideation", "status": "draft"}, "concept v1"
+        ideation_dir, 1, {"stage": "shorts-ideation", "status": "draft", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1"
     )
     assert test_client.post(
         f"/projects/{project_id}/stages/ideation/approve"
@@ -238,7 +238,7 @@ def test_hand_edit_runs_gate_d_and_records_real_results(two_stage_client):
     scripting_dir = run_dir / "02-scripting"
 
     artifacts.write_artifact(
-        ideation_dir, 1, {"stage": "shorts-ideation", "status": "draft"}, "concept v1"
+        ideation_dir, 1, {"stage": "shorts-ideation", "status": "draft", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1"
     )
     assert test_client.post(
         f"/projects/{project_id}/stages/ideation/approve"
@@ -273,7 +273,7 @@ def test_hand_edit_introducing_a_gate_d_failure_blocks_approval(two_stage_client
     ideation_dir = run_dir / "01-ideation"
 
     artifacts.write_artifact(
-        ideation_dir, 1, {"stage": "shorts-ideation", "status": "draft"}, "concept v1"
+        ideation_dir, 1, {"stage": "shorts-ideation", "status": "draft", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1"
     )
     assert test_client.post(
         f"/projects/{project_id}/stages/ideation/approve"
@@ -299,7 +299,7 @@ def test_approve_route_stamps_artifact_final(client):
     project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
     project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     stage_dir = tmp_path / "runs" / project["run_id"] / "01-ideation"
-    artifacts.write_artifact(stage_dir, 1, {"stage": "shorts-ideation", "status": "draft"}, "body")
+    artifacts.write_artifact(stage_dir, 1, {"stage": "shorts-ideation", "status": "draft", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "body")
 
     approve_resp = test_client.post(f"/projects/{project_id}/stages/ideation/approve")
     assert approve_resp.status_code in (200, 303, 307)
@@ -437,7 +437,7 @@ def test_a_failed_gate_run_leaves_no_scratch_file_behind(two_stage_client, monke
     and a 409 rather than a 500."""
     test_client, tmp_path, app = two_stage_client
     project_id, run_dir = _new_project(test_client, app, tmp_path)
-    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1")
     test_client.post(f"/projects/{project_id}/stages/ideation/approve")
 
     def boom(_repo_root, _stage_id, _path, _upstream):
@@ -459,7 +459,7 @@ def test_an_edit_whose_gate_escapes_is_recorded_as_an_event(two_stage_client, mo
     just a 409 the operator might dismiss."""
     test_client, tmp_path, app = two_stage_client
     project_id, run_dir = _new_project(test_client, app, tmp_path)
-    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1")
     test_client.post(f"/projects/{project_id}/stages/ideation/approve")
 
     def boom(_repo_root, _stage_id, _path, _upstream):
@@ -483,7 +483,7 @@ def test_two_overlapping_hand_edits_produce_two_versions_not_one(two_stage_clien
     test_client, tmp_path, app = two_stage_client
     project_id, run_dir = _new_project(test_client, app, tmp_path)
     _install_real_script_linter(tmp_path)
-    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1")
     test_client.post(f"/projects/{project_id}/stages/ideation/approve")
     scripting_dir = run_dir / "02-scripting"
 
@@ -734,7 +734,7 @@ def test_hand_editing_a_styleboard_runs_the_styleboard_gate(styleboard_client):
     require unlocking a stage this test has no use for."""
     test_client, tmp_path, app = styleboard_client
     project_id, run_dir = _new_project(test_client, app, tmp_path)
-    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1")
     test_client.post(f"/projects/{project_id}/stages/ideation/approve")
 
     resp = test_client.post(

@@ -52,7 +52,12 @@ def test_approve_stamps_artifact_and_unlocks_dependent(conn, tmp_path: Path):
 
     run_dir = tmp_path / "runs" / "abc-1"
     stage_dir = run_dir / "01-ideation"
-    artifacts.write_artifact(stage_dir, 1, {"status": "draft", "stage": "shorts-ideation"}, "body")
+    artifacts.write_artifact(
+        stage_dir, 1,
+        {"status": "draft", "stage": "shorts-ideation",
+         "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]},
+        "body",
+    )
 
     unlocked = approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
     assert unlocked == ["scripting"]
@@ -166,7 +171,12 @@ def test_reapproving_an_approved_stage_does_not_churn_hash_or_cascade_staleness(
 
     run_dir = tmp_path / "runs" / "abc-1"
     ideation_dir = run_dir / "01-ideation"
-    artifacts.write_artifact(ideation_dir, 1, {"status": "draft", "stage": "shorts-ideation"}, "body")
+    artifacts.write_artifact(
+        ideation_dir, 1,
+        {"status": "draft", "stage": "shorts-ideation",
+         "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]},
+        "body",
+    )
 
     approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
     ideation_v1 = ideation_dir / "artifact.v1.md"
@@ -206,7 +216,12 @@ def test_reapproving_a_stale_stage_does_not_churn_hash(conn, tmp_path: Path):
 
     run_dir = tmp_path / "runs" / "abc-1"
     ideation_dir = run_dir / "01-ideation"
-    artifacts.write_artifact(ideation_dir, 1, {"status": "draft", "stage": "shorts-ideation"}, "body")
+    artifacts.write_artifact(
+        ideation_dir, 1,
+        {"status": "draft", "stage": "shorts-ideation",
+         "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]},
+        "body",
+    )
 
     approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
     ideation_v1 = ideation_dir / "artifact.v1.md"
@@ -242,7 +257,10 @@ async def test_regenerating_an_approved_stage_marks_approved_dependent_stale(con
     await _drain(turn_service.run_stage_turn(
         conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1", STAGES[0], STAGES, "idea",
     ))
-    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
+    approve_stage(
+        conn, tmp_path, run_dir, project_id, STAGES, "ideation",
+        override_reason="test fixture body is not real ideation-gate input",
+    )
 
     scripting_raw = run_dir / "02-scripting" / "raw_output.md"
     monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _fake_stream(events, scripting_raw, "script body"))
@@ -503,19 +521,24 @@ def test_an_override_releases_a_gate_that_never_ran(conn, tmp_path):
     assert meta["gate_override_reason"] == "artifact predates Gate D; script verified by hand"
 
 
-def test_a_stage_with_no_registered_gates_still_approves_without_an_override(conn, tmp_path):
+def test_a_stage_with_no_registered_gates_still_approves_without_an_override(conn, tmp_path: Path):
     """The registry check must only bind stages that actually have gates.
-    `ideation` has none, so an artifact with no `gates` key is complete, not
-    missing anything."""
-    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-08-06T00:00:00Z")
-    db.create_stage_row(conn, project_id, "ideation", "awaiting_review")
-    db.create_stage_row(conn, project_id, "scripting", "locked")
-    run_dir = tmp_path / "runs" / "abc-1"
-    artifacts.write_artifact(
-        run_dir / "01-ideation", 1, {"status": "draft", "stage": "shorts-ideation"}, "body"
-    )
-    approve_stage(conn, tmp_path, run_dir, project_id, STAGES, "ideation")
-    assert db.get_stage(conn, project_id, "ideation")["status"] == StageStatus.APPROVED.value
+    `grounding` has none -- it is the one stage this plan's gate-coverage
+    work deliberately excludes (no path exists to attach a gate result to a
+    pointer-indirected artifact) -- so an artifact with no `gates` key is
+    complete, not missing anything."""
+    project_id = db.create_project(conn, "rgs-1", "rgs", "raisinggoodsports", "2026-07-25T12:00:00Z")
+    db.create_stage_row(conn, project_id, "grounding", "awaiting_review")
+    run_dir = tmp_path / "runs" / "rgs-1"
+    grounding_dir = run_dir / "00-grounding"
+    rgs_briefs_dir = tmp_path / "rgs-briefs"
+    rgs_briefs_dir.mkdir(parents=True)
+    brief_path = rgs_briefs_dir / "2026-07-27-example-brief.md"
+    brief_path.write_text("---\nstatus: candidate\n---\n\nBrief body", encoding="utf-8")
+    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md", tmp_path)
+
+    approve_stage(conn, tmp_path, run_dir, project_id, GROUNDING_STAGES, "grounding")
+    assert db.get_stage(conn, project_id, "grounding")["status"] == StageStatus.APPROVED.value
 
 
 def test_approve_stage_leaves_nothing_behind_when_it_fails_partway(conn, tmp_path: Path, monkeypatch):
@@ -531,7 +554,12 @@ def test_approve_stage_leaves_nothing_behind_when_it_fails_partway(conn, tmp_pat
 
     run_dir = tmp_path / "runs" / "abc-1"
     stage_dir = run_dir / "01-ideation"
-    artifacts.write_artifact(stage_dir, 1, {"status": "draft", "stage": "shorts-ideation"}, "body")
+    artifacts.write_artifact(
+        stage_dir, 1,
+        {"status": "draft", "stage": "shorts-ideation",
+         "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]},
+        "body",
+    )
 
     real_update_stage_status = db.update_stage_status
     calls = {"n": 0}

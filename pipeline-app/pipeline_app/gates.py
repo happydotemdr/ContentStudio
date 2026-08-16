@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, is_dataclass
@@ -366,6 +367,190 @@ def run_styleboard_gate(
     return findings
 
 
+def _heading_satisfied(lines: set[str], heading: str) -> bool:
+    """Is `heading` present, allowing the qualifiers real skill output writes?
+
+    Exact-line equality was too strict. Skills routinely qualify a required
+    heading in place -- "## Packaging direction (written first)",
+    "## Settings — narrator (per beat)" -- and the section IS there; a
+    live-corpus scan found 4 of 12 heading-gated artifacts failing purely on
+    that. A heading counts as present when a line equals it, or extends it
+    with a space (which covers the spaced em-dash form) or with an em-dash
+    directly.
+
+    Deliberately a PREFIX of the full required heading, never a fuzzy match:
+    the required string is compared byte-for-byte up to its own end, so
+    "## Script, reformatted for TTS" still demands its literal comma and
+    "## Script reformatted for TTS" still fails. Requiring a space (or an
+    em-dash) after the prefix is what stops "## Settingsomething" counting as
+    "## Settings".
+    """
+    return any(
+        line == heading or line.startswith(heading + " ") or line.startswith(heading + "—")
+        for line in lines
+    )
+
+
+IDEATION_REQUIRED_HEADINGS = (
+    "## Angle / take",
+    "## Hook concept",
+    "## Packaging direction",
+    "## Validation",
+    "## Handoff",
+)
+
+
+def run_ideation_contract_gate(
+    repo_root: Path, artifact_path: Path, upstream: Mapping[str, Path]
+) -> list[dict]:
+    """Gate O-I: the concept brief's required sections are present.
+    `## Grounding` is genuinely conditional per shorts-ideation/SKILL.md's
+    own template ("omit this section entirely if no companion artifact was
+    provided") -- its absence is never checked."""
+    lines = {line.strip() for line in artifact_path.read_text(encoding="utf-8").splitlines()}
+    return [
+        {
+            "check": f"OI{i + 1}", "beat": None, "shot_index": None, "kind": "fail",
+            "message": f"{artifact_path.name} is missing the required {heading!r} section.",
+        }
+        for i, heading in enumerate(IDEATION_REQUIRED_HEADINGS)
+        if not _heading_satisfied(lines, heading)
+    ]
+
+
+VOICEOVER_REQUIRED_HEADINGS = (
+    "## Voice pick",
+    "## Settings",
+    "## Script, reformatted for TTS",
+    "## Production & loudness",
+    "## Downstream",
+)
+
+
+def run_voiceover_contract_gate(
+    repo_root: Path, artifact_path: Path, upstream: Mapping[str, Path]
+) -> list[dict]:
+    """Gate O-V: the voiceover brief's five required sections are present,
+    all mandatory -- voiceover-brief/SKILL.md:90-103 has no conditional
+    section."""
+    lines = {line.strip() for line in artifact_path.read_text(encoding="utf-8").splitlines()}
+    return [
+        {
+            "check": f"OV{i + 1}", "beat": None, "shot_index": None, "kind": "fail",
+            "message": f"{artifact_path.name} is missing the required {heading!r} section.",
+        }
+        for i, heading in enumerate(VOICEOVER_REQUIRED_HEADINGS)
+        if not _heading_satisfied(lines, heading)
+    ]
+
+
+MUSIC_REQUIRED_HEADINGS = (
+    "## Bed arc",
+    "## Hook hold-out",
+    "## Tone-contradiction check",
+    "## Deferred to elevenlabs-music",
+    "## Downstream",
+)
+
+
+def run_music_contract_gate(
+    repo_root: Path, artifact_path: Path, upstream: Mapping[str, Path]
+) -> list[dict]:
+    """Gate O-M: the bed-arc brief's five required sections are present."""
+    lines = {line.strip() for line in artifact_path.read_text(encoding="utf-8").splitlines()}
+    return [
+        {
+            "check": f"OM{i + 1}", "beat": None, "shot_index": None, "kind": "fail",
+            "message": f"{artifact_path.name} is missing the required {heading!r} section.",
+        }
+        for i, heading in enumerate(MUSIC_REQUIRED_HEADINGS)
+        if not _heading_satisfied(lines, heading)
+    ]
+
+
+def run_assembly_contract_gate(
+    repo_root: Path, artifact_path: Path, upstream: Mapping[str, Path]
+) -> list[dict]:
+    """Gate O-A: shorts-assembly/SKILL.md has no heading template
+    (verified :57-88), so this checks the five content elements its
+    'Writing the plan for a real request' section (:72-81) actually
+    mandates, by keyword presence. The QA-checklist check is a regex, not a
+    literal substring: real assembly artifacts write "QA gate" with a
+    space, never the hyphenated "qa-gate" the skill's own prose uses."""
+    text = artifact_path.read_text(encoding="utf-8")
+    checks = [
+        ("OA1", "1080" in text, "an aspect ratio statement (e.g. 1080x1920 / 9:16)"),
+        ("OA2", "LUFS" in text, "a stated loudness target (LUFS)"),
+        ("OA3", "$0" in text and "paid" in text.lower(),
+         "both a $0 and a paid tool-stack path"),
+        ("OA4", re.search(r"qa[\s-]?gate", text, re.IGNORECASE) is not None,
+         "the QA-gate + publish-gate checklist"),
+        ("OA5", "social-repurpose" in text, "the explicit hand-off to social-repurpose"),
+    ]
+    return [
+        {
+            "check": code, "beat": None, "shot_index": None, "kind": "fail",
+            "message": f"{artifact_path.name} is missing {description}.",
+        }
+        for code, present, description in checks
+        if not present
+    ]
+
+
+_REPURPOSE_OTHER_PLATFORMS = ("TikTok", "Instagram", "X", "Bluesky", "Threads")
+_PROVENANCE_MARKERS = ("[C]", "[I]", "[T]", "[C→I]", "[gap]")
+
+
+def _first_platform_index(text: str, platform: str) -> int:
+    """`X` must match as a whole word (\\bX\\b) -- a bare substring search
+    would false-positive on any capital X appearing before the YouTube
+    block for an unrelated reason (inside a word, an all-caps title). The
+    other four platform names are long enough that this risk doesn't apply
+    to them, so only X needs the word-boundary treatment."""
+    if platform == "X":
+        match = re.search(r"\bX\b", text)
+        return match.start() if match else -1
+    return text.find(platform)
+
+
+def run_repurpose_contract_gate(
+    repo_root: Path, artifact_path: Path, upstream: Mapping[str, Path]
+) -> list[dict]:
+    """Gate O-R: social-repurpose/SKILL.md:98-101 fixes YouTube-block-first
+    package ordering and per-caption provenance markers, not a heading set."""
+    text = artifact_path.read_text(encoding="utf-8")
+    findings: list[dict] = []
+
+    youtube_index = text.find("YouTube")
+    if youtube_index != -1:
+        for platform in _REPURPOSE_OTHER_PLATFORMS:
+            platform_index = _first_platform_index(text, platform)
+            if platform_index != -1 and platform_index < youtube_index:
+                findings.append({
+                    "check": "OR1", "beat": None, "shot_index": None, "kind": "fail",
+                    "message": (
+                        f"{artifact_path.name}: {platform!r} appears before 'YouTube' -- the "
+                        "package must lead with the YouTube block."
+                    ),
+                })
+                break
+    else:
+        findings.append({
+            "check": "OR1", "beat": None, "shot_index": None, "kind": "fail",
+            "message": f"{artifact_path.name} has no YouTube block at all.",
+        })
+
+    if not any(marker in text for marker in _PROVENANCE_MARKERS):
+        findings.append({
+            "check": "OR2", "beat": None, "shot_index": None, "kind": "fail",
+            "message": (
+                f"{artifact_path.name} carries no provenance marker "
+                f"({', '.join(_PROVENANCE_MARKERS)}) anywhere in the body."
+            ),
+        })
+    return findings
+
+
 # P2's migrations.py backfill (out of this package's file ownership) writes
 # synthetic styleboard artifacts with `gates: []`, on the strength of its own
 # comment there: "styleboard registers no gates (gates.GATE_REGISTRY), so []
@@ -379,6 +564,11 @@ GATE_REGISTRY: dict[str, list[tuple[str, GateRunner]]] = {
     "scripting": [("gate_d_script_language", run_script_language_gate)],
     "visual": [("gate_c_prompt_sheet", run_prompt_sheet_gate)],
     "styleboard": [("gate_s_styleboard", run_styleboard_gate)],
+    "ideation": [("gate_o_ideation_contract", run_ideation_contract_gate)],
+    "voiceover": [("gate_o_voiceover_contract", run_voiceover_contract_gate)],
+    "music": [("gate_o_music_contract", run_music_contract_gate)],
+    "assembly": [("gate_o_assembly_contract", run_assembly_contract_gate)],
+    "repurpose": [("gate_o_repurpose_contract", run_repurpose_contract_gate)],
 }
 
 

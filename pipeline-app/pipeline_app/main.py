@@ -182,6 +182,9 @@ def create_app(repo_root: Path, db_path: Path) -> FastAPI:
     app.state.backfilled_projects = migrations.backfill_styleboard_rows(
         app.state.conn, app.state.repo_root, app.state.stage_defs
     )
+    app.state.gate_coverage_backfilled = migrations.backfill_gate_coverage_artifacts(
+        app.state.conn, app.state.repo_root, app.state.stage_defs
+    )
     app.state.instance_token = f"{os.getpid()}:{uuid.uuid4().hex[:8]}"
     if _claim_reconcile_lease(app.state.conn, app.state.instance_token,
                               datetime.now(timezone.utc)):

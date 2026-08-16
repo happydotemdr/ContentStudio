@@ -232,7 +232,199 @@ def test_visual_stage_is_registered():
 def test_unregistered_stage_returns_no_results(tmp_path):
     path = tmp_path / "raw_output.md"
     path.write_text("anything\n", encoding="utf-8")
-    assert gates.run_gates_for_stage(REPO_ROOT, "ideation", path, {}) == []
+    assert gates.run_gates_for_stage(REPO_ROOT, "grounding", path, {}) == []
+
+
+IDEATION_HEADINGS = (
+    "## Angle / take\n[body]\n\n"
+    "## Hook concept\n[body]\n\n"
+    "## Packaging direction\n[body]\n\n"
+    "## Validation\n[body]\n\n"
+    "## Handoff\n[body]\n"
+)
+
+
+def test_ideation_stage_is_registered():
+    assert "ideation" in gates.GATE_REGISTRY
+
+
+def test_ideation_gate_passes_a_complete_brief(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text(IDEATION_HEADINGS, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "ideation", path, {})
+    assert len(results) == 1
+    assert results[0]["name"] == "gate_o_ideation_contract"
+    assert results[0]["status"] == "pass"
+    assert results[0]["findings"] == []
+
+
+def test_ideation_gate_flags_a_missing_required_heading(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = IDEATION_HEADINGS.replace("## Validation\n[body]\n\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "ideation", path, {})
+    assert results[0]["status"] == "fail"
+    checks = [f["check"] for f in results[0]["findings"]]
+    assert "OI1" in checks or "OI2" in checks or "OI3" in checks or "OI4" in checks
+    assert any("Validation" in f["message"] for f in results[0]["findings"])
+
+
+def test_ideation_gate_accepts_a_parenthetically_qualified_heading(tmp_path):
+    """Real briefs qualify a required heading in place -- the live-corpus scan
+    found '## Packaging direction (written first)'. The section IS present, so
+    exact-line equality was reporting a false failure."""
+    path = tmp_path / "raw_output.md"
+    text = IDEATION_HEADINGS.replace(
+        "## Packaging direction", "## Packaging direction (written first)"
+    )
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "ideation", path, {})
+    assert results[0]["status"] == "pass"
+    assert results[0]["findings"] == []
+
+
+def test_ideation_gate_does_not_require_the_conditional_grounding_section(tmp_path):
+    """IDEATION_HEADINGS already omits '## Grounding' entirely -- confirms
+    its absence alone, with every required heading present, still passes."""
+    path = tmp_path / "raw_output.md"
+    path.write_text(IDEATION_HEADINGS, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "ideation", path, {})
+    assert results[0]["status"] == "pass"
+
+
+VOICEOVER_HEADINGS = (
+    "## Voice pick\n[body]\n\n"
+    "## Settings\n[body]\n\n"
+    "## Script, reformatted for TTS\n[body]\n\n"
+    "## Production & loudness\n[body]\n\n"
+    "## Downstream\n[body]\n"
+)
+
+
+def test_voiceover_stage_is_registered():
+    assert "voiceover" in gates.GATE_REGISTRY
+
+
+def test_voiceover_gate_passes_a_complete_brief(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text(VOICEOVER_HEADINGS, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "voiceover", path, {})
+    assert len(results) == 1
+    assert results[0]["name"] == "gate_o_voiceover_contract"
+    assert results[0]["status"] == "pass"
+
+
+def test_voiceover_gate_requires_the_literal_comma_in_the_tts_heading(tmp_path):
+    """The heading is '## Script, reformatted for TTS' with a comma -- a
+    brief that drops it must fail, not silently pass on a near-miss."""
+    path = tmp_path / "raw_output.md"
+    text = VOICEOVER_HEADINGS.replace(
+        "## Script, reformatted for TTS", "## Script reformatted for TTS"
+    )
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "voiceover", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("reformatted for TTS" in f["message"] for f in results[0]["findings"])
+
+
+def test_voiceover_gate_accepts_an_em_dash_qualified_heading(tmp_path):
+    """'## Settings — per beat (mixed-tone script)' is how a real brief writes
+    it when the settings differ beat to beat. The section is present; the gate
+    must not read the qualifier as an absence."""
+    path = tmp_path / "raw_output.md"
+    text = VOICEOVER_HEADINGS.replace(
+        "## Settings", "## Settings — per beat (mixed-tone script)"
+    )
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "voiceover", path, {})
+    assert results[0]["status"] == "pass"
+    assert results[0]["findings"] == []
+
+
+def test_voiceover_gate_flags_a_missing_downstream_section(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = VOICEOVER_HEADINGS.replace("## Downstream\n[body]\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "voiceover", path, {})
+    assert results[0]["status"] == "fail"
+
+
+def test_voiceover_gate_does_not_require_non_empty_section_bodies(tmp_path):
+    """The gate checks structure (all five headings present), not content
+    quality -- a thin body under a present heading is legitimately valid,
+    not a fault, and must not be conflated with a missing section."""
+    path = tmp_path / "raw_output.md"
+    thin = (
+        "## Voice pick\n\n## Settings\n\n## Script, reformatted for TTS\n\n"
+        "## Production & loudness\n\n## Downstream\n"
+    )
+    path.write_text(thin, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "voiceover", path, {})
+    assert results[0]["status"] == "pass"
+
+
+MUSIC_HEADINGS = (
+    "## Bed arc\n[body]\n\n"
+    "## Hook hold-out\n[body]\n\n"
+    "## Tone-contradiction check\n[body]\n\n"
+    "## Deferred to elevenlabs-music\n[body]\n\n"
+    "## Downstream\n[body]\n"
+)
+
+
+def test_music_stage_is_registered():
+    assert "music" in gates.GATE_REGISTRY
+
+
+def test_music_gate_passes_a_complete_brief(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text(MUSIC_HEADINGS, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "music", path, {})
+    assert len(results) == 1
+    assert results[0]["name"] == "gate_o_music_contract"
+    assert results[0]["status"] == "pass"
+
+
+def test_music_gate_flags_a_missing_tone_contradiction_check(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = MUSIC_HEADINGS.replace("## Tone-contradiction check\n[body]\n\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "music", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("Tone-contradiction check" in f["message"] for f in results[0]["findings"])
+
+
+def test_music_gate_accepts_a_qualified_bed_arc_heading(tmp_path):
+    """'## Bed arc (revised)' after a second pass over the script -- same
+    qualified-heading shape the live-corpus scan found on the other two
+    heading gates, and the three must behave identically."""
+    path = tmp_path / "raw_output.md"
+    text = MUSIC_HEADINGS.replace("## Bed arc", "## Bed arc (revised)")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "music", path, {})
+    assert results[0]["status"] == "pass"
+    assert results[0]["findings"] == []
+
+
+def test_music_gate_flags_all_five_missing_sections_independently(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text("nothing here\n", encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "music", path, {})
+    assert results[0]["status"] == "fail"
+    assert len(results[0]["findings"]) == 5
+
+
+def test_music_gate_does_not_require_non_empty_section_bodies(tmp_path):
+    """Structure only, not content quality -- a thin body under a present
+    heading is legitimately valid and must not read as a fault."""
+    path = tmp_path / "raw_output.md"
+    thin = (
+        "## Bed arc\n\n## Hook hold-out\n\n## Tone-contradiction check\n\n"
+        "## Deferred to elevenlabs-music\n\n## Downstream\n"
+    )
+    path.write_text(thin, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "music", path, {})
+    assert results[0]["status"] == "pass"
 
 
 # --- Gate C: the world lock lives in the styleboard, not the sheet -----------
@@ -940,4 +1132,172 @@ def test_the_app_suite_declares_the_repo_root_paths_it_reads():
     assert not missing, (
         "the pipeline-app suite reads these repo-root paths and cannot run without "
         f"them: {missing}. See F-73 -- this suite is not independently relocatable."
+    )
+
+
+# --- Gate O-A: assembly content checks ----------------------------------------
+
+COMPLETE_ASSEMBLY_PLAN = (
+    "Shot-by-shot table: [rows]\n\n"
+    "Aspect ratio: 1080x1920 (9:16).\n\n"
+    "Loudness target: -14 LUFS, ducking to -22 dB under voice.\n\n"
+    "$0 stack: CapCut. Paid stack: Premiere Pro.\n\n"
+    "Run the QA gate + publish gate checklist before scheduling.\n\n"
+    "This edit plan feeds social-repurpose next.\n"
+)
+
+
+def test_assembly_stage_is_registered():
+    assert "assembly" in gates.GATE_REGISTRY
+
+
+def test_assembly_gate_passes_a_complete_plan(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text(COMPLETE_ASSEMBLY_PLAN, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert len(results) == 1
+    assert results[0]["name"] == "gate_o_assembly_contract"
+    assert results[0]["status"] == "pass"
+
+
+def test_assembly_gate_flags_a_missing_aspect_ratio_statement(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace("Aspect ratio: 1080x1920 (9:16).\n\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("aspect ratio" in f["message"].lower() for f in results[0]["findings"])
+
+
+def test_assembly_gate_flags_a_missing_zero_dollar_stack(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace("$0 stack: CapCut. Paid stack: Premiere Pro.\n\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("$0" in f["message"] for f in results[0]["findings"])
+
+
+def test_assembly_gate_flags_zero_dollar_present_but_paid_missing(tmp_path):
+    """OA3 requires BOTH $0 and paid -- test AND logic: $0 alone is insufficient."""
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace("$0 stack: CapCut. Paid stack: Premiere Pro.\n\n",
+                                          "$0 stack: CapCut only.\n\n")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("$0" in f["message"] and "paid" in f["message"].lower()
+               for f in results[0]["findings"])
+
+
+def test_assembly_gate_flags_paid_present_but_zero_dollar_missing(tmp_path):
+    """OA3 requires BOTH $0 and paid -- test AND logic: paid alone is insufficient."""
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace("$0 stack: CapCut. Paid stack: Premiere Pro.\n\n",
+                                          "Paid stack: Premiere Pro only.\n\n")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("$0" in f["message"] and "paid" in f["message"].lower()
+               for f in results[0]["findings"])
+
+
+def test_assembly_gate_matches_the_real_unhyphenated_qa_gate_wording(tmp_path):
+    """Real assembly artifacts write 'QA gate' with a space -- a check for
+    the literal hyphenated 'qa-gate' would reject every correct one."""
+    path = tmp_path / "raw_output.md"
+    path.write_text(COMPLETE_ASSEMBLY_PLAN, encoding="utf-8")  # already uses "QA gate"
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "pass"
+
+
+def test_assembly_gate_flags_a_missing_qa_gate_checklist(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace(
+        "Run the QA gate + publish gate checklist before scheduling.\n\n", ""
+    )
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("QA-gate" in f["message"] for f in results[0]["findings"])
+
+
+def test_assembly_gate_flags_a_missing_repurpose_handoff(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace("This edit plan feeds social-repurpose next.\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
+
+
+# --- Gate O-R: repurpose output-contract checks --------------------------------
+
+COMPLETE_REPURPOSE_PACKAGE = (
+    "## YouTube\nTitle: [C] grounded in the corpus.\n\n"
+    "## TikTok\nCaption: [I] extrapolated.\n\n"
+    "## Instagram\nCaption: [gap] no corpus coverage here.\n"
+)
+
+
+def test_repurpose_stage_is_registered():
+    assert "repurpose" in gates.GATE_REGISTRY
+
+
+def test_repurpose_gate_passes_a_complete_package(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text(COMPLETE_REPURPOSE_PACKAGE, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "repurpose", path, {})
+    assert len(results) == 1
+    assert results[0]["name"] == "gate_o_repurpose_contract"
+    assert results[0]["status"] == "pass"
+
+
+def test_repurpose_gate_flags_youtube_not_appearing_first(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = "## TikTok\nCaption: [I] extrapolated.\n\n## YouTube\nTitle: [C] grounded.\n"
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "repurpose", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("YouTube" in f["message"] for f in results[0]["findings"])
+
+
+def test_repurpose_gate_does_not_false_positive_on_a_capital_x_before_youtube(tmp_path):
+    """A bare substring search for 'X' would wrongly flag this as X-before-
+    YouTube; 'MAX' and 'EXPLAINED' both contain a capital X that has nothing
+    to do with the X/Twitter platform."""
+    path = tmp_path / "raw_output.md"
+    text = (
+        "MAX EXPLAINED: the concept in one line.\n\n"
+        "## YouTube\nTitle: [C] grounded.\n\n## TikTok\nCaption: [I] extrapolated.\n"
+    )
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "repurpose", path, {})
+    assert results[0]["status"] == "pass"
+
+
+def test_repurpose_gate_flags_no_provenance_marker_anywhere(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = "## YouTube\nTitle: a great video.\n\n## TikTok\nCaption: also great.\n"
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "repurpose", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("provenance marker" in f["message"] for f in results[0]["findings"])
+
+
+def test_repurpose_gate_passes_a_youtube_only_package(tmp_path):
+    """No other platform requested -- YouTube-first is vacuously true, and
+    the gate must not demand a platform block that was never asked for."""
+    path = tmp_path / "raw_output.md"
+    path.write_text("## YouTube\nTitle: [C] grounded.\n", encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "repurpose", path, {})
+    assert results[0]["status"] == "pass"
+
+
+def test_all_five_new_stages_are_registered_and_grounding_still_is_not():
+    for stage_id in ("ideation", "voiceover", "music", "assembly", "repurpose"):
+        assert stage_id in gates.GATE_REGISTRY, f"{stage_id} should be registered"
+    assert "grounding" not in gates.GATE_REGISTRY, (
+        "grounding is explicitly out of scope per the design spec §3 -- it has no path "
+        "to attach a gate result (finalize_artifact=False), and registering one would "
+        "block every grounding approval forever"
     )
