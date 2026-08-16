@@ -1,7 +1,25 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from pipeline_app import discovery_bluesky as bsky
+
+
+@pytest.fixture
+def logged(monkeypatch):
+    """Captures every bsky.obs.log() call this test makes, as a list of dicts.
+
+    Each record is {"event": ..., "level": ..., **fields} -- the same shape
+    obs.log() takes, minus the timestamp obs.log() would otherwise stamp.
+    """
+    records: list[dict] = []
+
+    def fake_log(event, *, level="info", **fields):
+        records.append({"event": event, "level": level, **fields})
+
+    monkeypatch.setattr(bsky.obs, "log", fake_log)
+    return records
 
 
 def test_on_disk_ids_matches_bare_rkey_filename(tmp_path: Path):
@@ -53,11 +71,51 @@ def test_enumerate_newest_first_skips_reposts(monkeypatch):
     assert [i["id"] for i in items] == ["real1"]
 
 
-def test_enumerate_newest_first_returns_empty_on_fetch_failure(monkeypatch):
+def test_enumerate_newest_first_raises_on_fetch_failure(monkeypatch):
+    """Inverts the test that used to live here.
+
+    brightdata_job.py:6-10 states the invariant for every adapter: a failed
+    fetch MUST raise, never return []. The old test asserted the opposite and
+    froze B-05 and B-06 in place -- B-06 permanently disables a valid handle
+    after one momentary outage.
+    """
     def raise_error(url):
         raise OSError("network down")
+
     monkeypatch.setattr(bsky, "_http_get", raise_error)
-    assert bsky.enumerate_newest_first("dead.bsky.social", keyword_filter=None) == []
+    with pytest.raises(bsky.BlueskyFetchError) as exc:
+        bsky.enumerate_newest_first("dead.bsky.social", keyword_filter=None)
+    assert "dead.bsky.social" in str(exc.value)
+
+
+def test_a_fetch_failure_is_distinguishable_from_an_empty_feed(monkeypatch):
+    monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps({"feed": []}).encode("utf-8"))
+    assert bsky.enumerate_newest_first("quiet.bsky.social", keyword_filter=None) == []
+
+    def raise_error(url):
+        raise OSError("network down")
+
+    monkeypatch.setattr(bsky, "_http_get", raise_error)
+    with pytest.raises(bsky.BlueskyFetchError):
+        bsky.enumerate_newest_first("quiet.bsky.social", keyword_filter=None)
+
+
+def test_a_fetch_failure_is_surfaced_as_a_structured_error_event(monkeypatch, logged):
+    def raise_error(url):
+        raise OSError("network down")
+
+    monkeypatch.setattr(bsky, "_http_get", raise_error)
+    with pytest.raises(bsky.BlueskyFetchError):
+        bsky.enumerate_newest_first("dead.bsky.social", keyword_filter=None)
+    (record,) = [r for r in logged if r["event"] == "adapter.enumerate_failed"]
+    assert record["level"] == "error" and record["platform"] == "bluesky"
+    assert record["handle"] == "dead.bsky.social" and record["error"] == "OSError"
+
+
+def test_malformed_json_raises_rather_than_reporting_an_empty_feed(monkeypatch):
+    monkeypatch.setattr(bsky, "_http_get", lambda url: b"{not json")
+    with pytest.raises(bsky.BlueskyFetchError):
+        bsky.enumerate_newest_first("x.bsky.social", keyword_filter=None)
 
 
 def test_download_item_writes_full_text_not_truncated_title(tmp_path, monkeypatch):

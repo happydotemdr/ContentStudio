@@ -6,15 +6,28 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from pipeline_app import artifacts
+from pipeline_app import artifacts, obs
 from pipeline_app.discovery_paths import handle_dir
 
 BLUESKY_API = "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
 USER_AGENT = "ContentStudio-discovery-engine/1.0 (personal archival; local inspection)"
+
+
+class BlueskyFetchError(RuntimeError):
+    """A getAuthorFeed page could not be fetched or parsed.
+
+    The bare `except Exception: break` this replaces made DNS failure,
+    connection reset, HTTP error, timeout and malformed JSON produce the same
+    [] a genuinely quiet account produces -- which discovery_engine records as
+    the healthy 'no_new_content', and which process_handle_validate turns into
+    a permanent status='invalid', included=False for a perfectly good handle
+    (B-05, B-06). brightdata_job.py:6-10 states the invariant this restores.
+    """
 
 
 def _http_get(url: str) -> bytes:
@@ -33,14 +46,22 @@ def on_disk_ids(repo_root: Path, handle: str) -> set[str]:
 def enumerate_newest_first(handle: str, keyword_filter: str | None, page_limit: int = 5) -> list[dict]:
     items: list[dict] = []
     cursor = None
-    for _ in range(page_limit):
+    for page_index in range(page_limit):
         params = {"actor": handle, "limit": "100"}
         if cursor:
             params["cursor"] = cursor
         try:
-            data = json.loads(_http_get(f"{BLUESKY_API}?{urllib.parse.urlencode(params)}"))
-        except Exception:
-            break
+            raw = _http_get(f"{BLUESKY_API}?{urllib.parse.urlencode(params)}")
+            data = json.loads(raw)
+        except Exception as exc:  # noqa: BLE001 - re-raised as a typed error, not swallowed
+            obs.log("adapter.enumerate_failed", level="error", platform="bluesky",
+                    handle=handle, page=page_index, pages_walked=page_index,
+                    error=type(exc).__name__)
+            print(f"  !! bluesky enumerate failed for {handle} on page {page_index + 1}: "
+                  f"{type(exc).__name__}", file=sys.stderr)
+            raise BlueskyFetchError(
+                f"{handle}: page {page_index + 1} of {page_limit} failed "
+                f"({type(exc).__name__})") from exc
         feed = data.get("feed") or []
         if not feed:
             break
