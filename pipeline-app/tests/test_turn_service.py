@@ -618,9 +618,14 @@ async def test_missing_required_upstream_records_an_error_event(conn, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_scripting_turn_records_gate_results_in_frontmatter(conn, tmp_path, monkeypatch):
-    """A failing gate must not hide the artifact that failed it -- the stage
-    still reaches awaiting_review with the file on disk."""
+async def test_whatever_the_gate_runner_returns_is_recorded_verbatim(conn, tmp_path, monkeypatch):
+    """Renamed from test_scripting_turn_records_gate_results_in_frontmatter
+    (F-26). It monkeypatches gates.run_gates_for_stage to return a hard-coded
+    literal and asserts that same literal round-trips into the frontmatter --
+    a round trip and nothing more. It proves nothing about what a real gate
+    run over a real script produces; the three tests below (P1's
+    test_cli_availability_is_recorded_on_app_state pattern) run the actual
+    registered Gate D linter for that."""
     project_id = db.create_project(conn, "gate-1", "gate", "generic", "2026-08-06T00:00:00Z")
     db.create_stage_row(conn, project_id, "ideation", "approved")
     db.create_stage_row(conn, project_id, "scripting", "ready")
@@ -661,6 +666,168 @@ async def test_scripting_turn_records_gate_results_in_frontmatter(conn, tmp_path
     assert latest is not None
     meta, _ = artifacts.read_artifact(latest)
     assert meta["gates"][0]["status"] == "fail"
+    assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.AWAITING_REVIEW.value
+
+
+# The real repo root, for the three tests below that need
+# gates.run_gates_for_stage to load the actual scripts/lint_script_language.py
+# rather than error out against an isolated tmp_path repo_root that has no
+# scripts/ directory of its own. Mirrors test_gates.py's and
+# test_routes_approve_edit.py's REPO_ROOT / _install_real_script_linter of the
+# same name and for the same reason -- gates.py only ever READS this path
+# (never writes under it), so pointing repo_root at the live tree is safe, but
+# these tests copy the linter into an isolated tmp_path/scripts instead, to
+# match this file's existing convention of repo_root == tmp_path everywhere
+# else in run_stage_turn's call sites.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _install_real_script_linter(repo_root: Path) -> None:
+    dest = repo_root / "scripts"
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copy(
+        REPO_ROOT / "scripts" / "lint_script_language.py",
+        dest / "lint_script_language.py",
+    )
+
+
+# Genuinely five-beat, fully-compliant scripts (Gate D's T2 requires all five
+# top-level beats; T4 requires a >50%-ratable pace floor) -- mirrors
+# test_gates.py's CLEAN_SCRIPT/DASHED_SCRIPT of the same names and for the
+# same reason: a HOOK-only fixture fails gate_d_script_language for real
+# (missing-beat PARSE finding) before D1 is even reached, which would
+# conflate "the script is incomplete" with "the script has an em-dash" --
+# the two things these tests need to keep distinguishable.
+CLEAN_SCRIPT = (
+    'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+    'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+    'BUILD/VALUE (8–18s | 10 words): "A position stand reports that kids still reach elite level."\n'
+    'PAYOFF (18–28s | 10 words): "The next tier exists because someone needs it sold now."\n'
+    'LOOP/CTA (28–33s | 5 words): "Best part was the mud."\n'
+    "GATES\n  Gate E (fresh Opus critic): pass\n"
+)
+DASHED_SCRIPT = (
+    # 0-5s (not 0-3s): the beat needs enough runway that the em-dash trips D1
+    # without also tripping D5's wpm ceiling on this line's 9 spoken words --
+    # this isolates D1. The other four beats are otherwise identical to
+    # CLEAN_SCRIPT's, so this script's only defect is the HOOK line's em-dash.
+    'HOOK (0–5s | 8 words): "It is not more serious play — it is labor."\n'
+    'SETUP (5–10s | 6 words): "Kids do that every single time."\n'
+    'BUILD/VALUE (10–20s | 10 words): "A position stand reports that kids still reach elite level."\n'
+    'PAYOFF (20–30s | 10 words): "The next tier exists because someone needs it sold now."\n'
+    'LOOP/CTA (30–35s | 5 words): "Best part was the mud."\n'
+    "GATES\n  Gate E (fresh Opus critic): pass\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_real_failing_gate_is_recorded_from_an_actual_lint_run(conn, tmp_path, monkeypatch):
+    """FAULT. The predecessor injected `{"status": "fail"}` into a mock and
+    asserted it came back (F-26). This runs the registered Gate D linter over
+    a script that genuinely violates D1, so the recorded result is produced,
+    not supplied."""
+    project_id = db.create_project(conn, "gate-real-fail", "gate", "generic", "2026-08-06T00:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "approved")
+    db.create_stage_row(conn, project_id, "scripting", "ready")
+
+    run_dir = tmp_path / "runs" / "gate-real-fail"
+    stage_dir = run_dir / "02-scripting"
+    raw = stage_dir / "raw_output.md"
+    _final_artifact(run_dir / "01-ideation", 1, "shorts-ideation", "concept v1")
+    _install_real_script_linter(tmp_path)
+
+    monkeypatch.setattr(
+        turn_service.cli_runner,
+        "stream_claude_turn",
+        _fake_stream(
+            [{"type": "result", "result": "ok", "total_cost_usd": 0.1, "is_error": False}],
+            writes_file=raw,
+            content=DASHED_SCRIPT,
+        ),
+    )
+
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "gate-real-fail",
+        STAGES[1], STAGES, "go",
+    ))
+
+    meta, _ = artifacts.read_artifact(artifacts.latest_artifact_path(stage_dir))
+    recorded = {g["name"]: g["status"] for g in meta["gates"]}
+    assert recorded["gate_d_script_language"] == "fail"
+    assert any(f["check"] == "D1" for g in meta["gates"] for f in g["findings"])
+
+
+@pytest.mark.asyncio
+async def test_a_clean_script_records_the_same_gate_as_passing(conn, tmp_path, monkeypatch):
+    """DISTINGUISHABILITY. A test that only ever sees `fail` cannot tell a real
+    lint run from a stuck one. Same stage, same runner, opposite verdict."""
+    project_id = db.create_project(conn, "gate-real-clean", "gate", "generic", "2026-08-06T00:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "approved")
+    db.create_stage_row(conn, project_id, "scripting", "ready")
+
+    run_dir = tmp_path / "runs" / "gate-real-clean"
+    stage_dir = run_dir / "02-scripting"
+    raw = stage_dir / "raw_output.md"
+    _final_artifact(run_dir / "01-ideation", 1, "shorts-ideation", "concept v1")
+    _install_real_script_linter(tmp_path)
+
+    monkeypatch.setattr(
+        turn_service.cli_runner,
+        "stream_claude_turn",
+        _fake_stream(
+            [{"type": "result", "result": "ok", "total_cost_usd": 0.1, "is_error": False}],
+            writes_file=raw,
+            content=CLEAN_SCRIPT,
+        ),
+    )
+
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "gate-real-clean",
+        STAGES[1], STAGES, "go",
+    ))
+
+    meta, _ = artifacts.read_artifact(artifacts.latest_artifact_path(stage_dir))
+    recorded = {g["name"]: g["status"] for g in meta["gates"]}
+    assert recorded["gate_d_script_language"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_gate_still_leaves_the_artifact_and_the_stage_reviewable(
+        conn, tmp_path, monkeypatch):
+    """SURFACING. The operator must be able to see what failed: the artifact is
+    on disk, the stage is awaiting_review, and the findings are in
+    frontmatter."""
+    project_id = db.create_project(conn, "gate-real-surface", "gate", "generic", "2026-08-06T00:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "approved")
+    db.create_stage_row(conn, project_id, "scripting", "ready")
+
+    run_dir = tmp_path / "runs" / "gate-real-surface"
+    stage_dir = run_dir / "02-scripting"
+    raw = stage_dir / "raw_output.md"
+    _final_artifact(run_dir / "01-ideation", 1, "shorts-ideation", "concept v1")
+    _install_real_script_linter(tmp_path)
+
+    monkeypatch.setattr(
+        turn_service.cli_runner,
+        "stream_claude_turn",
+        _fake_stream(
+            [{"type": "result", "result": "ok", "total_cost_usd": 0.1, "is_error": False}],
+            writes_file=raw,
+            content=DASHED_SCRIPT,
+        ),
+    )
+
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "gate-real-surface",
+        STAGES[1], STAGES, "go",
+    ))
+
+    latest = artifacts.latest_artifact_path(stage_dir)
+    assert latest is not None
+    meta, _ = artifacts.read_artifact(latest)
+    recorded = {g["name"]: g["status"] for g in meta["gates"]}
+    assert recorded["gate_d_script_language"] == "fail"
+    assert any(f["check"] == "D1" for g in meta["gates"] for f in g["findings"])
     assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.AWAITING_REVIEW.value
 
 
