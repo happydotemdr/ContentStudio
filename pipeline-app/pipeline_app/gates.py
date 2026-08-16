@@ -419,6 +419,30 @@ def run_voiceover_contract_gate(
     ]
 
 
+MUSIC_REQUIRED_HEADINGS = (
+    "## Bed arc",
+    "## Hook hold-out",
+    "## Tone-contradiction check",
+    "## Deferred to elevenlabs-music",
+    "## Downstream",
+)
+
+
+def run_music_contract_gate(
+    repo_root: Path, artifact_path: Path, upstream: Mapping[str, Path]
+) -> list[dict]:
+    """Gate O-M: the bed-arc brief's five required sections are present."""
+    lines = {line.strip() for line in artifact_path.read_text(encoding="utf-8").splitlines()}
+    return [
+        {
+            "check": f"OM{i + 1}", "beat": None, "shot_index": None, "kind": "fail",
+            "message": f"{artifact_path.name} is missing the required {heading!r} section.",
+        }
+        for i, heading in enumerate(MUSIC_REQUIRED_HEADINGS)
+        if heading not in lines
+    ]
+
+
 # P2's migrations.py backfill (out of this package's file ownership) writes
 # synthetic styleboard artifacts with `gates: []`, on the strength of its own
 # comment there: "styleboard registers no gates (gates.GATE_REGISTRY), so []
@@ -434,6 +458,7 @@ GATE_REGISTRY: dict[str, list[tuple[str, GateRunner]]] = {
     "styleboard": [("gate_s_styleboard", run_styleboard_gate)],
     "ideation": [("gate_o_ideation_contract", run_ideation_contract_gate)],
     "voiceover": [("gate_o_voiceover_contract", run_voiceover_contract_gate)],
+    "music": [("gate_o_music_contract", run_music_contract_gate)],
 }
 
 

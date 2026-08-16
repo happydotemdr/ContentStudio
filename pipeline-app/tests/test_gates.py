@@ -335,6 +335,58 @@ def test_voiceover_gate_does_not_require_non_empty_section_bodies(tmp_path):
     assert results[0]["status"] == "pass"
 
 
+MUSIC_HEADINGS = (
+    "## Bed arc\n[body]\n\n"
+    "## Hook hold-out\n[body]\n\n"
+    "## Tone-contradiction check\n[body]\n\n"
+    "## Deferred to elevenlabs-music\n[body]\n\n"
+    "## Downstream\n[body]\n"
+)
+
+
+def test_music_stage_is_registered():
+    assert "music" in gates.GATE_REGISTRY
+
+
+def test_music_gate_passes_a_complete_brief(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text(MUSIC_HEADINGS, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "music", path, {})
+    assert len(results) == 1
+    assert results[0]["name"] == "gate_o_music_contract"
+    assert results[0]["status"] == "pass"
+
+
+def test_music_gate_flags_a_missing_tone_contradiction_check(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = MUSIC_HEADINGS.replace("## Tone-contradiction check\n[body]\n\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "music", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("Tone-contradiction check" in f["message"] for f in results[0]["findings"])
+
+
+def test_music_gate_flags_all_five_missing_sections_independently(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text("nothing here\n", encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "music", path, {})
+    assert results[0]["status"] == "fail"
+    assert len(results[0]["findings"]) == 5
+
+
+def test_music_gate_does_not_require_non_empty_section_bodies(tmp_path):
+    """Structure only, not content quality -- a thin body under a present
+    heading is legitimately valid and must not read as a fault."""
+    path = tmp_path / "raw_output.md"
+    thin = (
+        "## Bed arc\n\n## Hook hold-out\n\n## Tone-contradiction check\n\n"
+        "## Deferred to elevenlabs-music\n\n## Downstream\n"
+    )
+    path.write_text(thin, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "music", path, {})
+    assert results[0]["status"] == "pass"
+
+
 # --- Gate C: the world lock lives in the styleboard, not the sheet -----------
 #
 # visual-prompts/SKILL.md instructs the skill NOT to re-emit the WORLD LOCK
