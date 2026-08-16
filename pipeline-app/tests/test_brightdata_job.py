@@ -282,3 +282,51 @@ def test_failed_job_is_distinguishable_from_a_genuinely_empty_one(monkeypatch):
             fetch_fn=lambda job_id: [],
             label="for broken-account", poll_timeout_s=300, poll_interval_s=5,
         )
+
+
+def test_record_diagnostic_buffers_a_record_shaped_for_the_events_table():
+    bd.drain_diagnostics()
+    bd.record_diagnostic(kind="adapter.billed_nothing", severity="error",
+                         source="discovery_facebook", message="NASA captured nothing",
+                         detail={"platform": "facebook", "handle": "NASA"})
+    drained = bd.drain_diagnostics()
+    assert len(drained) == 1
+    record = drained[0]
+    assert record["kind"] == "adapter.billed_nothing"
+    assert record["severity"] == "error"
+    assert record["source"] == "discovery_facebook"
+    assert record["detail"]["handle"] == "NASA"
+    # obs.record_event's severity vocabulary -- a record P8 cannot write is useless.
+    assert record["severity"] in {"info", "warning", "error", "critical"}
+
+
+def test_drain_diagnostics_empties_the_buffer_so_a_second_handle_sees_only_its_own():
+    bd.drain_diagnostics()
+    bd.record_diagnostic(kind="k", severity="warning", source="s", message="m")
+    assert len(bd.drain_diagnostics()) == 1
+    assert bd.drain_diagnostics() == []
+
+
+def test_record_diagnostic_writes_through_to_obs_log(monkeypatch):
+    """Surfacing. The event row is P8's half; the log FILE is this package's,
+    and it is the surface that exists whether or not a run row does."""
+    emitted = []
+    monkeypatch.setattr(bd.obs, "log",
+                        lambda event, **fields: emitted.append((event, fields)))
+    bd.record_diagnostic(kind="adapter.billed_nothing", severity="error",
+                         source="discovery_x", message="CNN captured nothing",
+                         detail={"handle": "CNN"})
+    assert emitted == [("adapter.billed_nothing",
+                        {"level": "error", "source": "discovery_x",
+                         "message": "CNN captured nothing", "handle": "CNN"})]
+
+
+def test_record_diagnostic_never_masks_the_thing_it_is_reporting(monkeypatch):
+    """A broken logger must not turn a reportable degradation into a crash."""
+    def _boom(*a, **k):
+        raise OSError("log directory is read-only")
+
+    bd.drain_diagnostics()  # isolation: the prior test's write-through leaves a record
+    monkeypatch.setattr(bd.obs, "log", _boom)
+    bd.record_diagnostic(kind="k", severity="error", source="s", message="m")
+    assert bd.drain_diagnostics()[0]["kind"] == "k"

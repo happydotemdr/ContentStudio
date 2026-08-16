@@ -23,8 +23,43 @@ from pathlib import Path
 
 import requests
 
+from pipeline_app import obs
+
 BRIGHTDATA_API_BASE = "https://api.brightdata.com/datasets/v3"
 REQUEST_TIMEOUT_S = 30
+
+_DIAGNOSTICS: list[dict] = []
+
+
+def record_diagnostic(*, kind: str, severity: str, source: str, message: str,
+                      detail: dict | None = None) -> dict:
+    """One structured, durable adapter diagnostic (B-01).
+
+    Writes through to obs.log -- stderr AND the dated log file, which is the
+    surface the scheduled task lacks entirely today -- and buffers a record
+    for drain_diagnostics(). Never raises: a failure to report must not mask
+    the degradation being reported.
+    """
+    record = {"kind": kind, "severity": severity, "source": source,
+              "message": message, "detail": dict(detail or {})}
+    _DIAGNOSTICS.append(record)
+    try:
+        obs.log(kind, level=severity, source=source, message=message, **record["detail"])
+    except Exception:  # noqa: BLE001 - see the docstring; never widened
+        pass
+    return record
+
+
+def drain_diagnostics() -> list[dict]:
+    """Take and clear the buffered diagnostics.
+
+    P8's run loop calls this once per handle and writes each record with
+    obs.record_event(conn, run_id=..., **record). Draining rather than
+    accumulating keeps one handle's diagnostics off another handle's row.
+    """
+    drained = list(_DIAGNOSTICS)
+    _DIAGNOSTICS.clear()
+    return drained
 
 
 class BrightDataJobTimeout(Exception):
