@@ -62,7 +62,13 @@ check, or accept you cannot verify it directly this session.
   passed count (1374) is higher than P5's own final count (1328 pre-P5) purely because P5's own 19
   landed tasks added their own regression tests — not because anything outside the remediation
   programme changed this time (contrast with the P4→P5 handoff, where PR #36's unrelated work also
-  inflated the count).
+  inflated the count). **One genuinely flaky, order-dependent failure was observed and ruled out
+  this session**: `test_turn_service.py::test_one_malformed_dependent_does_not_abort_the_staleness_
+  cascade` failed once in a full-suite run (32 failed, 1373 passed) and passed cleanly both in
+  isolation and on two immediate full-suite re-runs (back to 31/1374). Not in P6's files, not
+  reproducible, not added to the documented baseline — noted here so a future session that hits it
+  again doesn't waste a round chasing a phantom regression. If it starts failing consistently,
+  that's a different, real signal.
 - CI (`gh run list --branch main --limit 5`): **still not green** — same standing gap, see
   "Definition of done" below. Re-run yourself, don't trust this note.
 
@@ -95,28 +101,130 @@ anything from P5 or earlier waves. Its own plan file is self-contained.
 
 ## What P6 is — read `docs/superpowers/plans/remediation/P6-native-adapters.md` in full before dispatching Task 1
 
-**Do not act from this summary alone** — it is oriented for triage, not execution. Read the actual
-plan file yourself, following this programme's Sub-agent output contract (never hand a sub-agent
-the whole plan file — extract only what each task needs, same discipline every prior package used).
+**Do not act from this summary alone** — it is oriented for triage, not execution, and the plan
+file is long (1913 lines). Read the actual plan file yourself, following this programme's
+Sub-agent output contract (never hand a sub-agent the whole plan file — extract only what each
+task needs, same discipline every prior package used). This session has now read it in full.
 
-**Scope (from the master plan's package table):** `discovery_youtube.py`, `discovery_youtube_api.py`,
-`discovery_bluesky.py` — 18 findings, 4 files, worst severity S1×5.
+**The question P6 answers:** do the two native discovery adapters (YouTube, YouTube Data API,
+Bluesky) obey the same contract the four Bright Data adapters already do? No.
+`brightdata_job.py:6-10`'s own docstring states the invariant: *"a job that times out or reports
+'failed' MUST raise, never return `[]`. An empty list means 'the job completed and there was
+genuinely nothing' … the exact bug that shipped in the first Instagram adapter."* YouTube and
+Bluesky violate it — a failed enumeration and a genuinely quiet day currently share the same `[]`
+return value. **Closing that violation is the spine of this plan; every other finding hangs off it.**
 
-**The cross-package contract P6 owes P8** (frozen, from the master plan's cross-package contracts
-table): *"Typed errors (`BlueskyFetchError`, `YouTubeEnumerationError`, `YtDlpUnavailable`,
-`TranscriptFetchBlocked`) must reach `discovery_engine.py:272`, never the `:255` auto-exclude."*
-This is the seam P8 (two packages from now) will build on — get the exception types and their
-propagation path right, since P8's own plan will assume they exist exactly as specified. Confirm
-this contract's exact wording against the live master plan file before trusting this summary,
-per the recurring-bug-class discipline below.
+**Scope — files owned by this package, no other package may touch them:**
+```
+pipeline-app/pipeline_app/discovery_youtube.py
+pipeline-app/pipeline_app/discovery_youtube_api.py
+pipeline-app/pipeline_app/discovery_bluesky.py
+pipeline-app/tests/test_discovery_youtube.py
+pipeline-app/tests/test_discovery_youtube_api.py
+pipeline-app/tests/test_discovery_bluesky.py
+```
+**Explicitly NOT owned, do not touch:** `brightdata_job.py` (the reference implementation this
+package is aligning with, not modifying) and `discovery_engine.py` (P8's file — P6 only prepares
+the seam P8 consumes later).
 
-**Read the plan file's own §1 (Scope) and §2 (Finding → task map) first** — this resume prompt does
-not attempt to summarize P6's tasks the way prior resume prompts did for P4/P5, because this
-session has not yet read P6's plan file in detail. Do the same close reading before dispatching
-Task 1 that every prior package's kickoff required.
+**Findings closed here (18):** B-04 through B-17, D-52, F-12, F-20, F-24. Severities: S1×5 (B-06,
+B-10, B-12, F-12, F-20), S2×7, S3×1, S4×5. 9 of the 18 are `failure_mode: silent`, so the
+Three-Test Rule (fault / distinguishability / surfacing) applies to each.
 
-**Suite:** confirm from the plan file's own header whether P6 is app-suite-only (like P4/P5) or
-touches root-suite files too — do not assume without checking.
+**Depends on P0** (the `allow_subprocess` marker — T1/T2 spawn a real subprocess to prove
+byte-identical UTF-8 round-tripping) **and P1** (`obs.log`, imported by all three adapter modules;
+`obs.record_event` is deliberately NOT called here — adapters have no DB connection). Both are
+long merged; re-confirm `pytest.mark.allow_subprocess` still resolves before dispatching T1.
+
+**Suite: app suite only** (`cd pipeline-app && python -m pytest tests/<file> -q` per task, never a
+bare `pytest`, never from the repo root). P6 touches no root-suite files.
+
+**The three structural changes everything else builds on** (the plan's own framing, §1):
+1. **`_run_ytdlp()`** — one chokepoint for all three `subprocess.run` sites in
+   `discovery_youtube.py`, carrying `encoding="utf-8", errors="replace"`, normalizing `stdout`/
+   `stderr` from `None` to `""`, and returning the return code to a caller now obliged to check it.
+   Closes B-10 and B-16 at the source instead of in three places.
+2. **Typed failures — `YouTubeEnumerationError`, `TranscriptFetchBlocked`, `BlueskyFetchError`,
+   `YtDlpUnavailable`.** Enumeration/transport failures *raise*; a genuinely empty listing
+   *returns `[]`*. The two states stop sharing a representation.
+3. **A retryable transcript state.** `transcript_status` gains a third value, `pending_retry`, and
+   `on_disk_ids()` re-offers items carrying it — a bot-blocked capture stops being permanent.
+
+**Tasks, in the plan's own order (20 total, T1-T20) — one line each, full detail in the plan file:**
+1. **T1** — `_run_ytdlp()` chokepoint: UTF-8 round-tripping, `stdout`/`stderr` never `None` (B-10).
+2. **T2** — every existing subprocess-mocking test migrates to the new `_run_ytdlp` signature (B-10).
+3. **T3** — return codes are read; `peek`'s unguarded `json.loads` is guarded (B-16).
+4. **T4** — enumeration failure raises; only a genuinely absent `/shorts` tab is legitimately empty
+   (B-11). **Inverts** `test_enumerate_newest_first_returns_empty_on_failure`.
+5. **T5** — without Data API dates, Shorts are kept and interleaved (marked order-approximate), not
+   silently dropped (B-14, F-24, the "enshrined Shorts drop" test is deleted and replaced).
+6. **T6** — the "no Data API key" warning fires once per process, not once per video (B-15).
+7. **T7** — `fetch_upload_dates` reports its no-key path instead of failing silently (B-14, F-24).
+8. **T8** — the Data API key moves from the request URL query string to a header (D-52).
+9. **T9** — a blocked transcript fetch (`TranscriptFetchBlocked`) is distinguished from a genuinely
+   captionless video; unrecognized transcript-library exceptions fail toward retryable (B-13).
+10. **T10** — a blocked capture is written with `transcript_status="pending_retry"`, not `"missing"`
+    (B-12).
+11. **T11** — `on_disk_ids()` re-offers a `pending_retry` capture for retry (B-12).
+12. **T12** — YouTube frontmatter carries `published` alongside `upload_date` (B-04) — see §6 below,
+    this is the one task with a real cross-package handoff (to P9).
+13. **T13** — **the archetype task, Bluesky's twin of B-11**: `enumerate_newest_first` raises on a
+    transport failure instead of returning `[]` (B-05). **Inverts** F-12's named test,
+    `test_enumerate_newest_first_returns_empty_on_fetch_failure` — the test whose *name states the
+    bug as the requirement*, the exact defect class `brightdata_job.py`'s own docstring calls out.
+14. **T14** — a partial multi-page Bluesky walk is never presented as a complete one (B-05).
+15. **T15** — a transient Bluesky failure cannot permanently mark a valid handle invalid (B-06). No
+    production change expected here — this task exists to name the invariant and leaves an explicit
+    **Note for P8** in its own text (see the contract section below).
+16. **T16** — the keyword filter reads the whole post body, not just the first 60 display characters
+    (B-08).
+17. **T17** — undated Bluesky rows are dropped and counted, making `peek_upload_date`'s "dead code"
+    comment actually true (B-09).
+18. **T18** — `download_item` reads a cache instead of re-walking the entire feed once per item
+    (B-07).
+19. **T19** — a parametrized contract sweep across all native adapters (F-20) — the guard that fires
+    loudly if a native platform is ever added without an entry (P7's plan explicitly says it should
+    hoist this into a shared table covering all six platforms once it lands).
+20. **T20** — bound/opt-in the full-catalogue channel walk instead of re-enumerating everything
+    every run (B-17).
+
+**Tests deleted or inverted (4, full detail in plan §5):**
+`test_enumerate_newest_first_returns_empty_on_fetch_failure` (Bluesky, F-12, inverted in T13);
+`test_enumerate_newest_first_returns_empty_on_failure` (YouTube, unnamed twin of F-12, inverted in
+T4 — `test_missing_shorts_tab_is_not_an_error` is explicitly KEPT and strengthened, don't delete
+it); `test_without_api_dates_falls_back_to_videos_only_and_warns` (deleted and replaced in T5, it
+asserted the Shorts-drop defect as correct); `test_transcript_status_missing_when_no_transcript`
+(split, not deleted, in T10 — kept with a corrected fake and an explicit
+`transcript_attempts == 0`). After T13, `grep -rn "returns_empty_on_fetch_failure"
+pipeline-app/tests/` must return nothing.
+
+**The cross-package contract P6 owes P8 — read P6's own plan §7 for the authoritative wording, not
+just the master plan's summary table.** The master plan's cross-package contracts table
+(`2026-08-08-audit-remediation.md`, "P6 → P8" row) lists four exception types reaching
+`discovery_engine.py:272`: `BlueskyFetchError`, `YouTubeEnumerationError`, `YtDlpUnavailable`,
+`TranscriptFetchBlocked`. **P6's own plan file (§7, "Cross-package notes") is more precise and
+should be treated as authoritative where the two differ**: it names only THREE types P8 actually
+receives — `YouTubeEnumerationError`, `YtDlpUnavailable`, `BlueskyFetchError` — because
+`TranscriptFetchBlocked` (T9) is caught and converted to `transcript_status="pending_retry"`
+entirely inside `discovery_youtube.py`'s own `download_item` (T10); it never propagates up to
+`discovery_engine.py` at all. This is exactly the "verify, don't inherit" lesson applied to the
+master plan's own summary table, not just to a sibling package's code — **confirm this yourself
+against both documents before dispatching T15 or briefing whoever executes P8 next.** The concrete
+contract, quoted from P6's plan §7: *"`discovery_engine.py:255` must not convert a
+`BlueskyFetchError` into `status='invalid'` + `included=False` (B-06); the error branch at `:272`
+is the correct destination. It also gains an optional `max_items=None` opt-in for a deliberate full
+backfill (B-17) and may pass `order_confidence` through to its run record (B-14)."*
+
+**T12's contract for P9** (plan §6, in full — read it before P9's own session, not just this
+excerpt): T12 makes YouTube write BOTH `"published"` and `"upload_date"` keys with the same value
+(not a rename — files already on disk carry only `upload_date`, and renaming would blank every
+historical YouTube capture's date). P9 then owns three follow-ups, none of which are P6's or P8's
+job: (1) `discovery_digest.py:191`'s `meta.get("published") or meta.get("upload_date")` fallback
+must STAY for at least one full re-capture cycle, with a comment explaining why and a test that a
+`published`-less file still renders its date; (2) P9 decides which key is canonical in the render
+and must not read `upload_date` for any non-YouTube platform; (3) P14 should later amend
+CLAUDE.md's contract text to document `published` as canonical with `upload_date` as YouTube's
+legacy alias, so a future adapter author isn't shown two contradictory examples.
 
 ## The recurring bug class — check for it before dispatching every task, not just this once
 
