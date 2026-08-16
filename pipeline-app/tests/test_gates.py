@@ -278,6 +278,63 @@ def test_ideation_gate_does_not_require_the_conditional_grounding_section(tmp_pa
     assert results[0]["status"] == "pass"
 
 
+VOICEOVER_HEADINGS = (
+    "## Voice pick\n[body]\n\n"
+    "## Settings\n[body]\n\n"
+    "## Script, reformatted for TTS\n[body]\n\n"
+    "## Production & loudness\n[body]\n\n"
+    "## Downstream\n[body]\n"
+)
+
+
+def test_voiceover_stage_is_registered():
+    assert "voiceover" in gates.GATE_REGISTRY
+
+
+def test_voiceover_gate_passes_a_complete_brief(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text(VOICEOVER_HEADINGS, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "voiceover", path, {})
+    assert len(results) == 1
+    assert results[0]["name"] == "gate_o_voiceover_contract"
+    assert results[0]["status"] == "pass"
+
+
+def test_voiceover_gate_requires_the_literal_comma_in_the_tts_heading(tmp_path):
+    """The heading is '## Script, reformatted for TTS' with a comma -- a
+    brief that drops it must fail, not silently pass on a near-miss."""
+    path = tmp_path / "raw_output.md"
+    text = VOICEOVER_HEADINGS.replace(
+        "## Script, reformatted for TTS", "## Script reformatted for TTS"
+    )
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "voiceover", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("reformatted for TTS" in f["message"] for f in results[0]["findings"])
+
+
+def test_voiceover_gate_flags_a_missing_downstream_section(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = VOICEOVER_HEADINGS.replace("## Downstream\n[body]\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "voiceover", path, {})
+    assert results[0]["status"] == "fail"
+
+
+def test_voiceover_gate_does_not_require_non_empty_section_bodies(tmp_path):
+    """The gate checks structure (all five headings present), not content
+    quality -- a thin body under a present heading is legitimately valid,
+    not a fault, and must not be conflated with a missing section."""
+    path = tmp_path / "raw_output.md"
+    thin = (
+        "## Voice pick\n\n## Settings\n\n## Script, reformatted for TTS\n\n"
+        "## Production & loudness\n\n## Downstream\n"
+    )
+    path.write_text(thin, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "voiceover", path, {})
+    assert results[0]["status"] == "pass"
+
+
 # --- Gate C: the world lock lives in the styleboard, not the sheet -----------
 #
 # visual-prompts/SKILL.md instructs the skill NOT to re-emit the WORLD LOCK
