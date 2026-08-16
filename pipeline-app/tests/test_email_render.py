@@ -162,3 +162,106 @@ def test_text_and_html_list_the_same_titles():
     for title in ("How To Actually Finish A Video", "Second Video"):
         assert title in result["text"]
         assert title in result["html"]
+
+
+def test_render_brand_digest_orders_sections_freedom2beu_then_rgs_then_guru():
+    sections = {
+        "guru": _summary(items=[_item(item_id="g1", title="Guru Post")]),
+        "raisinggoodsports": _summary(items=[_item(item_id="r1", title="RGS Post")]),
+        "freedom2beu": _summary(items=[_item(item_id="f1", title="F2BU Post")]),
+    }
+    overall = _summary(items=[_item(item_id="g1"), _item(item_id="r1"), _item(item_id="f1")])
+    result = email_render.render_brand_digest(overall, sections, "2026-08-15")
+    text = result["text"]
+    assert text.index("F2BU Post") < text.index("RGS Post") < text.index("Guru Post")
+    html = result["html"]
+    assert html.index("F2BU Post") < html.index("RGS Post") < html.index("Guru Post")
+
+
+def test_render_brand_digest_labels_each_section():
+    sections = {"freedom2beu": _summary(items=[_item()]), "raisinggoodsports": _summary(),
+                "guru": _summary()}
+    overall = _summary(items=[_item()])
+    result = email_render.render_brand_digest(overall, sections, "2026-08-15")
+    assert "Freedom2BeU" in result["html"]
+    assert "RaisingGoodSports" in result["html"]
+    assert "Gurus" in result["html"]
+
+
+def test_render_brand_digest_omits_a_brand_missing_from_sections():
+    # This exercises render_brand_digest's own defensive contract in
+    # isolation. notify() (Task 5) always populates all three keys in
+    # `sections`, so this branch is not reachable from the real pipeline
+    # today -- it exists so render_brand_digest stays correct if ever called
+    # with a partial `sections` dict directly (e.g. from a future script or
+    # a test), which is exactly what this test does.
+    sections = {"guru": _summary(items=[_item()])}
+    overall = _summary(items=[_item()])
+    result = email_render.render_brand_digest(overall, sections, "2026-08-15")
+    assert "Freedom2BeU" not in result["html"]
+    assert "RaisingGoodSports" not in result["html"]
+    assert "Gurus" in result["html"]
+
+
+def test_render_brand_digest_subject_counts_distinct_items_not_section_sum():
+    # The same post can render under two sections (multi-tag). The subject
+    # must count it once, from `overall`, not twice from summing sections.
+    shared = _item(item_id="shared1")
+    sections = {
+        "guru": _summary(items=[shared]),
+        "raisinggoodsports": _summary(items=[shared]),
+    }
+    overall = _summary(items=[shared])
+    result = email_render.render_brand_digest(overall, sections, "2026-08-08")
+    assert result["subject"] == "ContentStudio Discovery 2026-08-08: 1 new post(s)"
+
+
+def test_render_brand_digest_issue_prefix_comes_from_overall_not_sections():
+    sections = {"guru": _summary(has_issues=False)}
+    overall = _summary(run_status="failed", has_issues=True)
+    result = email_render.render_brand_digest(overall, sections, "2026-08-08")
+    assert result["subject"].startswith("[ISSUE] ")
+
+
+def test_render_brand_digest_each_section_keeps_its_own_spotlight_and_drafts():
+    f2bu_spot = _item(item_id="f1", title="F2BU Spotlight")
+    rgs_spot = _item(item_id="r1", title="RGS Spotlight")
+    sections = {
+        "freedom2beu": _summary(items=[f2bu_spot], spotlight=f2bu_spot,
+                                drafts=["F2BU draft one.", "F2BU draft two.", "F2BU draft three."]),
+        "raisinggoodsports": _summary(items=[rgs_spot], spotlight=rgs_spot,
+                                      drafts=["RGS draft one.", "RGS draft two.", "RGS draft three."]),
+    }
+    overall = _summary(items=[f2bu_spot, rgs_spot])
+    result = email_render.render_brand_digest(overall, sections, "2026-08-15")
+    assert "F2BU draft one." in result["text"]
+    assert "RGS draft one." in result["text"]
+
+
+def test_render_brand_digest_falls_back_to_no_content_when_every_section_is_empty():
+    result = email_render.render_brand_digest(_summary(), {}, "2026-08-15")
+    assert "No new content today." in result["text"]
+    assert "No new content today." in result["html"]
+
+
+def test_render_brand_digest_warns_about_items_covered_by_no_section():
+    # An untagged handle's items pass through build_summary but match no
+    # brand in BRAND_SECTION_ORDER, so no section's `items` list contains
+    # them. Without this warning they vanish from the email while the
+    # subject's count (drawn from `overall`) still includes them --
+    # Critical finding #1 from the pre-execution review.
+    orphan = _item(item_id="orphan1", title="Orphan Post")
+    overall = _summary(items=[orphan])
+    result = email_render.render_brand_digest(overall, {}, "2026-08-15")
+    assert result["subject"] == "ContentStudio Discovery 2026-08-15: 1 new post(s)"
+    assert "no brand tag" in result["text"].lower()
+    assert "no brand tag" in result["html"].lower()
+
+
+def test_render_brand_digest_no_warning_when_every_item_is_covered():
+    covered = _item(item_id="c1")
+    sections = {"guru": _summary(items=[covered])}
+    overall = _summary(items=[covered])
+    result = email_render.render_brand_digest(overall, sections, "2026-08-15")
+    assert "no brand tag" not in result["text"].lower()
+    assert "no brand tag" not in result["html"].lower()

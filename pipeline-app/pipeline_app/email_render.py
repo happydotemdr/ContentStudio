@@ -29,6 +29,13 @@ PLATFORM_LABELS = {
     "bluesky": "Bluesky",
 }
 
+BRAND_SECTION_ORDER = ("freedom2beu", "raisinggoodsports", "guru")
+BRAND_LABELS = {
+    "freedom2beu": "Freedom2BeU",
+    "raisinggoodsports": "RaisingGoodSports",
+    "guru": "Gurus",
+}
+
 EXCERPT_MAX_CHARS = 400
 LINK_TEXT = "Click here to view"
 # Middle dot, as an HTML entity. Joined into already-escaped pieces, never
@@ -211,3 +218,63 @@ def render_email(summary: dict, run_date: str) -> dict:
     if summary["has_issues"]:
         subject = f"[ISSUE] {subject}"
     return {"subject": subject, "text": _render_text(summary), "html": _render_html(summary)}
+
+
+def render_brand_digest(overall: dict, sections: dict, run_date: str) -> dict:
+    """{"subject", "text", "html"} for one finished run, split into per-brand
+    sections in BRAND_SECTION_ORDER.
+
+    `overall` is build_summary()'s pre-partition summary -- its `items` is what
+    the subject line counts. Brand sections deliberately overlap (multi-tag: an
+    item tagged both `raisinggoodsports` and `guru` renders in both sections),
+    so summing section sizes would double-count it; `overall["items"]` is the
+    one place a post is counted exactly once. `overall["has_issues"]` likewise
+    drives the [ISSUE] prefix for the same reason -- it is a run-wide fact, not
+    a per-brand one.
+
+    `sections` maps brand -> a summary shaped exactly like render_email's
+    parameter, already restricted to that brand's items/spotlight/drafts. A
+    brand absent from `sections` is omitted from the email entirely.
+
+    An item in `overall["items"]` that no section's `items` list contains
+    (an untagged handle, or one tagged with something outside
+    BRAND_SECTION_ORDER) would otherwise vanish from the email silently
+    while the subject's count still included it -- Critical finding #1 from
+    the pre-execution review. A warning banner makes that discoverable
+    instead of silent.
+    """
+    total = len(overall["items"])
+    subject = f"ContentStudio Discovery {run_date}: {total} new post(s)"
+    if overall["has_issues"]:
+        subject = f"[ISSUE] {subject}"
+
+    def _identity(item):
+        return (item["platform"], item["handle"], item["item_id"])
+
+    covered = {_identity(i) for s in sections.values() for i in s["items"]}
+    orphan_count = sum(1 for i in overall["items"] if _identity(i) not in covered)
+    warning_text = warning_html = ""
+    if orphan_count:
+        message = (f"{orphan_count} new post(s) came from handle(s) with no brand tag "
+                   f"(or a tag outside {', '.join(BRAND_SECTION_ORDER)}) and do not "
+                   f"appear in any section below. Tag them at /discovery/handles.")
+        warning_text = f"WARNING: {message}\n\n"
+        warning_html = f"<p><strong>WARNING:</strong> {_html.escape(message)}</p>\n"
+
+    text_parts: list[str] = []
+    html_parts: list[str] = []
+    for brand in BRAND_SECTION_ORDER:
+        summary = sections.get(brand)
+        if summary is None:
+            continue
+        label = BRAND_LABELS.get(brand, brand.title())
+        text_parts.append(f"===== {label.upper()} =====\n\n{_render_text(summary)}")
+        html_parts.append(f"<h1>{_html.escape(label)}</h1>\n{_render_html(summary)}")
+
+    text = warning_text + (
+        "\n\n".join(text_parts).rstrip() + "\n" if text_parts else NO_CONTENT_TEXT + "\n"
+    )
+    html = warning_html + (
+        "\n<hr>\n".join(html_parts) if html_parts else f"<p>{NO_CONTENT_TEXT}</p>"
+    )
+    return {"subject": subject, "text": text, "html": html}
