@@ -1,5 +1,6 @@
 import datetime
 import json
+import shutil
 from pathlib import Path
 from typing import AsyncIterator
 from unittest.mock import ANY
@@ -283,7 +284,7 @@ CHAIN_STAGES = [
     # deviation note on test_a_turn_records_the_grounding_brief_it_was_built_on
     # below for why). It exists in this list only so stages that DO declare
     # "ideation" as an upstream (repurpose, widened below) can resolve it --
-    # run_stage_turn._resolve_upstream looks the id up in all_stage_defs, and
+    # gates.resolve_upstream_by_stage looks the id up in all_stage_defs, and
     # an id with no matching StageDef here is silently dropped from inputs
     # rather than erroring, which would otherwise make repurpose's kickoff
     # prompt quietly miss its ideation fragment instead of failing loudly.
@@ -673,17 +674,57 @@ async def test_upstream_change_on_a_resumed_turn_records_a_warning_event(
     assert "scripting" in rows[0]["detail"]
 
 
-def test_approved_artifact_path_distinguishes_no_artifact_from_only_drafts(tmp_path):
-    """Distinguishability: a stage with three unapproved drafts is not the same
-    as a stage with nothing -- but both must resolve to None, and the caller
-    (T5) must say which stage it was."""
-    empty, drafts = tmp_path / "a", tmp_path / "b"
-    empty.mkdir(); drafts.mkdir()
-    _draft_artifact(drafts, 1, "x", "d1"); _draft_artifact(drafts, 2, "x", "d2")
-    assert turn_service._approved_artifact_path(empty) is None
-    assert turn_service._approved_artifact_path(drafts) is None
-    _final_artifact(drafts, 3, "x", "approved")
-    assert turn_service._approved_artifact_path(drafts).name == "artifact.v3.md"
+def test_turn_service_and_gates_build_the_same_upstream_map(conn, tmp_path):
+    """P3 Handoff H2: two implementations of one map is how A-30/A-62 happened.
+    This asserts the CONTENTS agree, which P3's static parity test cannot see
+    while turn_service still builds its own."""
+    from pipeline_app import gates as gates_mod
+
+    project_id, run_dir = _approved_chain(conn, tmp_path, with_music=True)
+    stage_def = _by_id("assembly")
+    assert turn_service._upstream_by_stage(tmp_path, run_dir, CHAIN_STAGES, stage_def) == \
+        gates_mod.resolve_upstream_by_stage(
+            run_dir, CHAIN_STAGES, stage_def,
+            repo_root=tmp_path, approved_only=True, include_optional=True)
+
+
+@pytest.mark.asyncio
+async def test_an_unapproved_upstream_is_not_reported_as_a_missing_one(conn, tmp_path):
+    """The three-state rule, on turn_service's side of the boundary.
+
+    With approved_only=True an upstream that EXISTS but is unapproved resolves to
+    an absent key -- byte-identical to "this stage was never run". P4 must not
+    build a context that tells shorts-assembly "you have no styleboard" when the
+    truth is "the styleboard has a draft nobody approved". Those are different
+    situations for the skill, and the second is an operator action, not a gap.
+
+    Fourth appearance of this pattern in the programme: Bluesky returned [] for
+    empty and for failed; the cron returned 0 for both; the digest rendered the
+    same email for both; now a resolver would return an absent key for both.
+    Representing "nothing here" and "something is wrong" with one value is a
+    defect by default.
+    """
+    project_id, run_dir = _approved_chain(conn, tmp_path)
+    absent_dir = run_dir / "02b-styleboard"          # state 1: no artifact at all
+    shutil.rmtree(absent_dir)
+    with pytest.raises(turn_service.MissingUpstreamArtifactError) as absent:
+        await _drain(turn_service.run_stage_turn(
+            conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+            _by_id("assembly"), CHAIN_STAGES, "cut it"))
+
+    _draft_artifact(absent_dir, 1, "shorts-styleboard", "drafted, never approved")  # state 3
+    with pytest.raises(turn_service.UnapprovedUpstreamError) as unapproved:
+        await _drain(turn_service.run_stage_turn(
+            conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+            _by_id("assembly"), CHAIN_STAGES, "cut it"))
+
+    assert type(absent.value) is not type(unapproved.value)
+    assert "never produced an artifact" in str(absent.value)
+    assert "artifact.v1.md" in str(unapproved.value) and "approve" in str(unapproved.value).lower()
+
+    kinds = [r["kind"] for r in conn.execute(
+        "SELECT kind FROM events ORDER BY id").fetchall()]
+    assert kinds == ["handoff.upstream_missing", "handoff.upstream_unapproved"]
 
 
 def _rgs_chain(conn, tmp_path: Path, brief: str):

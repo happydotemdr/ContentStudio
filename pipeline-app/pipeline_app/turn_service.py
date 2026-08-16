@@ -1,7 +1,6 @@
 import contextlib
 import datetime
 import json
-import re
 import sqlite3
 import time
 from pathlib import Path
@@ -24,6 +23,12 @@ class MissingUpstreamArtifactError(StageNotRunnableError):
     """A declared, required dependency resolved to no artifact on disk. Refusing
     is the point: rendering a prompt that names a nonexistent path (or the
     literal string "None") makes the model invent its way around the gap."""
+
+
+class UnapprovedUpstreamError(StageNotRunnableError):
+    """A required dependency has an artifact but it was never approved -- distinct
+    from MissingUpstreamArtifactError: this is one operator action (approve, or
+    regenerate) away, not a genuine gap (A-32's turn_service-side half)."""
 
 
 def any_turn_running(conn: sqlite3.Connection) -> bool:
@@ -165,26 +170,6 @@ def propagate_grounding_staleness(
     return stale
 
 
-_VERSION_RE = re.compile(r"^artifact\.v(\d+)\.md$")
-
-
-def _approved_artifact_path(stage_dir: Path) -> Path | None:
-    """The newest artifact a human actually approved -- approval_service.
-    stamp_final writes `status: final` into the frontmatter -- not merely the
-    newest file on disk. A gate keyed to an unapproved draft records a pass
-    against a world the operator never accepted (A-32)."""
-    versions = []
-    for path in stage_dir.glob("artifact.v*.md"):
-        match = _VERSION_RE.match(path.name)
-        if match:
-            versions.append((int(match.group(1)), path))
-    for _version, path in sorted(versions, reverse=True):
-        meta, _body = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
-        if meta.get("status") == "final":
-            return path
-    return None
-
-
 def _session_inputs_path(stage_dir: Path) -> Path:
     return stage_dir / "session_inputs.json"
 
@@ -248,14 +233,16 @@ def _resume_failed(events: list[dict]) -> bool:
     return not opened and errored
 
 
-def _resolve_upstream(repo_root: Path, run_dir: Path, up: StageDef) -> Path | None:
-    """The artifact an upstream stage hands downstream. Grounding's real output
-    lives in rgs-briefs/ behind a pointer, so it needs the pointer-aware
-    resolver (A-14); every other stage hands down its approved version."""
-    stage_dir = run_dir / stage_dir_name(up)
-    if up.id == "grounding":
-        return artifacts.resolve_latest_artifact(repo_root, up.id, stage_dir)
-    return _approved_artifact_path(stage_dir)
+def _upstream_by_stage(
+    repo_root: Path, run_dir: Path, all_stage_defs: list[StageDef], stage_def: StageDef
+) -> gates.UpstreamMap:
+    """The exact gates.resolve_upstream_by_stage call run_stage_turn makes, pulled
+    into its own function so a parity test can call it directly without re-deriving
+    the kwargs (P3 Handoff H2)."""
+    return gates.resolve_upstream_by_stage(
+        run_dir, all_stage_defs, stage_def,
+        repo_root=repo_root, approved_only=True, include_optional=True,
+    )
 
 
 async def run_stage_turn(
@@ -287,20 +274,23 @@ async def run_stage_turn(
     stage_dir = run_dir / stage_dir_name(stage_def)
     raw_output_path = stage_dir / "raw_output.md"
 
-    required_defs = [s for s in all_stage_defs if s.id in stage_def.depends_on]
-    optional_defs = [s for s in all_stage_defs if s.id in stage_def.optional_depends_on]
-
     # Keyed by stage id, not a list: templates address upstreams by name
     # (prompt_builder.KICKOFF_CONTEXT_KEYS), so positional drift when an
-    # upstream drops out is structurally impossible (A-09/A-16).
-    inputs: dict[str, str] = {}
+    # upstream drops out is structurally impossible (A-09/A-16). Built once by
+    # gates.resolve_upstream_by_stage (P3 Handoff H2) rather than a second,
+    # locally maintained copy -- two implementations of one map is how
+    # A-30/A-62 happened.
+    resolved = _upstream_by_stage(repo_root, run_dir, all_stage_defs, stage_def)
     missing: list[str] = []
-    for up in required_defs:
-        path = _resolve_upstream(repo_root, run_dir, up)
-        if path is None:
-            missing.append(up.id)
+    unapproved_id: str | None = None
+    for dep_id in stage_def.depends_on:
+        state = resolved.state_of(dep_id)
+        if state == "resolved":
+            continue
+        if state == "excluded" and unapproved_id is None:
+            unapproved_id = dep_id
         else:
-            inputs[up.id] = str(path)
+            missing.append(dep_id)
     if missing:
         obs.record_event(
             conn, kind="handoff.upstream_missing", severity="error", source="turn_service",
@@ -309,16 +299,23 @@ async def run_stage_turn(
             detail={"stage": stage_def.id, "missing": missing},
         )
         raise MissingUpstreamArtifactError(
-            f"Stage '{stage_def.id}' requires {missing} but no approved artifact exists for "
-            "them. Approve or regenerate the upstream stage first."
+            f"Stage '{stage_def.id}' requires {missing} but "
+            f"{'it' if len(missing) == 1 else 'they'} never produced an artifact. "
+            "Approve or regenerate the upstream stage first."
         )
-    for up in optional_defs:
-        path = _resolve_upstream(repo_root, run_dir, up)
-        if path is None:
-            obs.log("handoff.optional_upstream_absent", level="info",
-                    stage=stage_def.id, upstream=up.id)
-        else:
-            inputs[up.id] = str(path)
+    if unapproved_id is not None:
+        excluded = resolved.excluded[unapproved_id]
+        obs.record_event(
+            conn, kind="handoff.upstream_unapproved", severity="error", source="turn_service",
+            message=(f"stage '{stage_def.id}' requires an approved '{unapproved_id}' but "
+                     f"{excluded.path.name} was never approved"),
+            detail={"stage": stage_def.id, "upstream": unapproved_id, "path": str(excluded.path)},
+        )
+        raise UnapprovedUpstreamError(
+            f"Stage '{stage_def.id}' requires an approved '{unapproved_id}' but only "
+            f"{excluded.path.name} exists, unapproved. Approve it, or regenerate it."
+        )
+    inputs = {sid: str(p) for sid, p in resolved.items()}
     upstream_paths = [Path(p) for p in inputs.values()]
     upstream_by_stage = {sid: Path(p) for sid, p in inputs.items()}
 
