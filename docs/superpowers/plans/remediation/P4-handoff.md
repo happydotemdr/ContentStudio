@@ -2313,26 +2313,105 @@ async def test_an_unapproved_upstream_is_not_reported_as_a_missing_one(conn, tmp
     assert kinds == ["handoff.upstream_missing", "handoff.upstream_unapproved"]
 ```
 
+> **Amendment (found before T17 dispatch).** Two real gaps, both confirmed against the live,
+> already-landed `gates.py` (P3 merged with the required widening — confirmed):
+>
+> 1. `turn_service._upstream_by_stage` does not exist — T5-T16 built upstream resolution inline
+>    inside `run_stage_turn`, never as a separately-callable function. The first test above calls
+>    it directly, so this task must extract one. Add it as a thin wrapper:
+>
+> ```python
+> def _upstream_by_stage(repo_root, run_dir, all_stage_defs, stage_def):
+>     """The exact gates.resolve_upstream_by_stage call run_stage_turn makes, pulled
+>     into its own function so a parity test can call it directly without re-deriving
+>     the kwargs (P3 Handoff H2)."""
+>     return gates.resolve_upstream_by_stage(
+>         run_dir, all_stage_defs, stage_def,
+>         repo_root=repo_root, approved_only=True, include_optional=True,
+>     )
+> ```
+>
+> 2. `gates.UpstreamMap` (confirmed live, `gates.py:67-109`) is `dict` subclass with a real third
+>    state, not the plain `dict[str, Path]` this section's own shown `run_stage_turn` snippet
+>    assumes. `dep_id not in resolved` for an EXCLUDED key (an artifact that exists but failed
+>    `approved_only`) does not silently read as "absent" the way the shown code implies — `__contains__`
+>    is overridden and RAISES `gates.UpstreamExcludedError` on any lookup of an excluded key. The
+>    map has a `state_of(key) -> "resolved" | "excluded" | "absent"` method built exactly to avoid
+>    catching that exception. The shown `missing = [... if dep_id not in resolved]` line would crash
+>    the very first time it hit an unapproved-but-present upstream — which is precisely the scenario
+>    the three-state test below exists to prove is handled, not crashed on. Corrected
+>    implementation, replacing the shown snippet in full:
+>
+> ```python
+>     resolved = _upstream_by_stage(repo_root, run_dir, all_stage_defs, stage_def)
+>     missing: list[str] = []
+>     unapproved_id: str | None = None
+>     for dep_id in stage_def.depends_on:
+>         state = resolved.state_of(dep_id)
+>         if state == "resolved":
+>             continue
+>         if state == "excluded" and unapproved_id is None:
+>             unapproved_id = dep_id
+>         else:
+>             missing.append(dep_id)
+>     if missing:
+>         obs.record_event(
+>             conn, kind="handoff.upstream_missing", severity="error", source="turn_service",
+>             message=(f"stage '{stage_def.id}' cannot start: no approved artifact for "
+>                      f"{', '.join(missing)}"),
+>             detail={"stage": stage_def.id, "missing": missing},
+>         )
+>         raise MissingUpstreamArtifactError(
+>             f"Stage '{stage_def.id}' requires {missing} but no approved artifact exists for "
+>             "them. Approve or regenerate the upstream stage first."
+>         )
+>     if unapproved_id is not None:
+>         excluded = resolved.excluded[unapproved_id]
+>         obs.record_event(
+>             conn, kind="handoff.upstream_unapproved", severity="error", source="turn_service",
+>             message=(f"stage '{stage_def.id}' requires an approved '{unapproved_id}' but "
+>                      f"{excluded.path.name} was never approved"),
+>             detail={"stage": stage_def.id, "upstream": unapproved_id, "path": str(excluded.path)},
+>         )
+>         raise UnapprovedUpstreamError(
+>             f"Stage '{stage_def.id}' requires an approved '{unapproved_id}' but only "
+>             f"{excluded.path.name} exists, unapproved. Approve it, or regenerate it."
+>         )
+>     inputs = {sid: str(p) for sid, p in resolved.items()}
+> ```
+>
+>    Add near the other exceptions:
+>
+> ```python
+> class UnapprovedUpstreamError(StageNotRunnableError):
+>     """A required dependency has an artifact but it was never approved -- distinct
+>     from MissingUpstreamArtifactError: this is one operator action (approve, or
+>     regenerate) away, not a genuine gap (A-32's turn_service-side half)."""
+> ```
+>
+>    T5's SEPARATE optional-upstream loop (the second `for up in optional_defs: path =
+>    _resolve_upstream(...)` block, `turn_service.py:~312-320`) is now fully redundant and should be
+>    DELETED, not kept: `include_optional=True` already walks `optional_depends_on` inside
+>    `resolve_upstream_by_stage`, so any resolved optional id is already in `resolved`/`inputs`.
+>    An optional upstream that is absent OR excluded is equally non-blocking either way, and the
+>    template's own `{% if 'music' in inputs %}` guard already handles "not present" without needing
+>    to know which of the two it was — so no replacement logic is needed for the deleted loop, only
+>    its removal.
+
 - [ ] **Run** → fails: `AttributeError: module 'pipeline_app.gates' has no attribute
       'resolve_upstream_by_stage'` (P3 not yet merged) or `TypeError: unexpected keyword argument
       'approved_only'` (P3 merged without the widening). **Either failure is the signal to stop and
       hand back to P3** — do not work around it by keeping the local copy. Once P3 has landed, the
       three-state test fails next: both paths raise the same `MissingUpstreamArtifactError`.
 - [ ] **Implement**, `turn_service.py`. Delete `_resolve_upstream` and the inline loop from T5, and
-      replace with a single call plus the required/optional split P4 still owns:
+      replace with the corrected code from the Amendment above.
 
-```python
-    resolved = gates.resolve_upstream_by_stage(
-        run_dir, all_stage_defs, stage_def,
-        repo_root=repo_root, approved_only=True, include_optional=True,
-    )
-    missing = [dep_id for dep_id in stage_def.depends_on if dep_id not in resolved]
-    inputs = {sid: str(p) for sid, p in resolved.items()}
-```
-
-The `missing` refusal, the `handoff.upstream_missing` event and the optional-absent `obs.log` from
-T5 are unchanged — only the *resolution* moves. `_approved_artifact_path` (T6) moves to `gates.py`
-as the implementation behind `approved_only=True`; delete P4's copy so there is one.
+`_approved_artifact_path` (T6, turn_service.py's own copy) is now dead code — `gates.py` already has
+its OWN distinct `_approved_artifact_path(repo_root, stage_id, stage_dir)` (3-arg, confirmed live,
+not the same symbol) backing `approved_only=True` inside `resolve_upstream_by_stage`. There is
+nothing to "move" — just delete T6's now-unused `turn_service._approved_artifact_path` and the T6
+tests that called it directly (`test_approved_artifact_path_distinguishes_no_artifact_from_only_drafts`),
+since its behavior is now exercised indirectly through `resolve_upstream_by_stage` instead.
 
 - [ ] **Run** the full app suite. T5's, T6's and T10's tests must still pass unmodified — that is
       the proof the swap is behaviour-preserving.
