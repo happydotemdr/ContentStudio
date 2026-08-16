@@ -1930,6 +1930,35 @@ This package makes no change to `discovery_digest.py` or any other P9 file.
 
 ## 7. Cross-package notes (no action by this package)
 
+> **Plan amendment (final whole-branch review, 2026-08-16):** the final review found the P8 bullet
+> below wrong in two places, both corrected here. This note is authoritative over the original
+> bullet text that follows it.
+>
+> 1. **`max_items=None` is not an optional enhancement — it is a required prerequisite fix.** T20
+>    (merged) made `enumerate_newest_first`'s `max_items` default to `ENUMERATE_MAX_ITEMS=200`
+>    rather than unbounded. `discovery_engine.py`'s `process_handle_backfill` calls
+>    `enumerate_newest_first(handle, keyword_filter)` with no override, so as of T20 a YouTube
+>    backfill for a window older than the newest 200 items **silently returns fewer items than
+>    before T20** — no error, no log, just a narrower result. This is exactly the silent-narrowing
+>    failure class this whole remediation programme exists to eliminate (see `brightdata_job.py:6-10`'s
+>    invariant, §0 above). P8 **must** thread `max_items=None` (or an equivalent override) through
+>    the backfill call site as part of wiring the backfill path, not as a nice-to-have opt-in.
+>    **Known gap for the interim** (between P6 merging and P8 landing this fix): do not run a
+>    YouTube backfill in this window expecting full historical coverage — it will silently cap at
+>    the newest 200 items per tab.
+> 2. **Routing a `BlueskyFetchError` to the `:272` error branch does not fix B-06 by itself.** The
+>    error branch (the `except Exception` branch referenced as `:272`) already sets
+>    `status='invalid'` and `included=False` on **any** exception it catches, including a
+>    `BlueskyFetchError` routed to it instead of `:255`. Simply moving the exception to a different
+>    catch branch changes nothing observable — a valid handle hit by one transient blip is still
+>    permanently disabled, just via a different code path. What P8 must actually do: the error
+>    branch itself must stop auto-excluding (`included=False`) / marking permanently invalid on a
+>    typed **transport** exception like `BlueskyFetchError` — it should instead leave `included` and
+>    `status` as they were (or record the run as `failed` without touching handle validity). Reserve
+>    the invalid+excluded outcome for the genuinely-empty-enumerate case (a handle that legitimately
+>    does not exist). "Route it to the other branch" is not sufficient on its own; the branch's own
+>    behavior must change.
+
 - **P0** must register the `allow_subprocess` marker and let it through the network/subprocess
   guard: T1/T2's byte-identity proof spawns `sys.executable -c` (a subprocess, no network). Without
   the marker the two B-10 round-trip tests cannot run, and B-10 is the S1 that motivates this
@@ -1940,9 +1969,12 @@ This package makes no change to `discovery_digest.py` or any other P9 file.
   `YouTubeEnumerationError`, `YtDlpUnavailable`, `BlueskyFetchError`. Its existing per-handle
   `except` records `error`, which is the intended outcome. The one branch it must **change** is the
   validate path: `discovery_engine.py:255` must not convert a `BlueskyFetchError` into
-  `status='invalid'` + `included=False` (B-06); the error branch at `:272` is the correct
-  destination. It also gains an optional `max_items=None` opt-in for a deliberate full backfill
-  (B-17) and may pass `order_confidence` through to its run record (B-14).
+  `status='invalid'` + `included=False` (B-06); ~~the error branch at `:272` is the correct
+  destination.~~ **See the amendment above — routing alone does not fix B-06; the `:272` branch's
+  own auto-exclude behavior must also change for a transport exception.** It also gains an optional
+  `max_items=None` opt-in for a deliberate full backfill (B-17) — ~~optional~~ **see the amendment
+  above: this is a required prerequisite, not optional** — and may pass `order_confidence` through
+  to its run record (B-14).
 - **P7** should hoist `_NATIVE_ADAPTERS` from T19 into a shared table covering all six platforms;
   `test_the_sweep_covers_every_native_platform` fails loudly if a native platform is added without
   an entry, which is the guard F-20 asks for.
