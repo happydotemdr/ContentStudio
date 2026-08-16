@@ -1,7 +1,10 @@
 # Gate coverage for ungated pipeline stages — design
 
 **Date:** 2026-08-16
-**Status:** approved (design); implementation plan not yet written
+**Status:** approved (design); implemented and merged — see
+`docs/superpowers/plans/2026-08-16-gate-coverage.md` (executed via
+`superpowers:subagent-driven-development`, [PR #40](https://github.com/happydotemdr/ContentStudio/pull/40)).
+Critic promotion (§7) remains a future, unplanned design.
 **Scope:** first of four sub-projects from a broader pipeline-architecture evaluation. Originally
 scoped to include app-dispatched critic promotion (Gate E/B) as well — **split out** after a second
 adversarial review found structural problems specific to that half (§7). This document now covers

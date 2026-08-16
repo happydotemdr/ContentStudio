@@ -12,9 +12,12 @@ package of Wave B4 (P6) are done. P7 is next.**
 
 **One unrelated PR landed in the same window** ([PR #40](https://github.com/happydotemdr/ContentStudio/pull/40),
 merge commit `f8388c4`, "pipeline-architecture-eval") — merged to `main` immediately before P6's
-own merge commit. Not part of this remediation programme; re-confirm it doesn't touch any file
-this programme's packages own before assuming it's inert, but nothing in P6's or P7's file lists
-overlapped with it this session.
+own merge commit. Not part of this remediation programme; re-confirmed again this session that it
+doesn't touch any file P7/P8/P9/P13/P14/P15 own (it touches `gates.py`, `migrations.py`, `main.py`
+and gate-related test files only). Its own final whole-branch review found three real issues in
+`migrations.py`/`pipeline_config.py` — files no remaining package in this programme owns — so they
+have no natural P-package home and are carried forward in this document instead; see items 12-14 in
+"Carried-forward open items" below.
 
 ---
 
@@ -402,6 +405,46 @@ Data adapters, entirely separate files).
 None of P3/P4/P5/P6's carried-forward items are load-bearing for P7 unless P7's own tasks happen
 to touch the exact same lines, which they should not (P7's scope is Bright Data adapters, entirely
 separate files from every prior package's).
+
+**From the gate-coverage final review (PR #40, unrelated to this remediation programme — its work
+was five new deterministic gates, not an audit finding — but its final whole-branch review found
+real issues in `pipeline_app/migrations.py` and `pipeline_app/pipeline_config.py`, neither owned by
+any remaining P-package, so they're carried forward here rather than lost):**
+
+12. **`backfill_gate_coverage_artifacts`'s downstream hash-repair (`migrations.py`) silently depends
+    on `stage_defs` being topologically ordered.** The repair cascades — fixing a dependent's
+    `depends_on[].sha256` after its upstream is backfilled can change that dependent's own hash in
+    turn, so the cascade must reach its dependents too. Verified correct against the real
+    `pipeline.yaml` order; verified **broken** against a reversed or shuffled `stage_defs` order
+    (`assembly`/`repurpose` wrongly compute stale in both). `pipeline.yaml` is topologically ordered
+    today and `_validate_topology` (`pipeline_config.py`) checks duplicates/unknown-deps/cycles but
+    never ordering — so this is dormant, not live, and no existing test would catch a regression (all
+    four new migration tests use topologically-ordered `stage_defs`). Needs either an ordering check
+    in `_validate_topology` or a doc comment pinning the precondition on the cascade function — pick
+    whichever whoever picks this up finds already has a repo convention (see item 14 for a related
+    gap in the same file).
+13. **A malformed downstream artifact now permanently short-circuits the same repair for its
+    (healthy) upstream.** `backfill_gate_coverage_artifacts` reads every downstream dependent while
+    repairing hashes; a `MalformedArtifactError` from any one of them propagates *after* the
+    upstream's own gate-stamp write has already landed, and the idempotency guard (gate name already
+    present) then skips that upstream forever, so the cascade never retries. The failure is also
+    misattributed in the log — it names the healthy upstream's path, not the broken dependent's.
+    Milder than the bug this migration exists to fix (spurious staleness, clearable by regenerating —
+    not a silent fake pass), but the same shape: a two-step sequence where step 2 can fail after
+    step 1 committed, guarded by an idempotency check that then suppresses retry forever.
+14. **`_check_no_cycles` (`pipeline_config.py`) only walks `depends_on`, never
+    `optional_depends_on`** — a cycle formed entirely through an optional edge passes topology
+    validation. Pre-dates PR #40 entirely, but was inert until item 12's hash-repair cascade started
+    traversing recorded `depends_on` entries at runtime; a genuine cyclic graph would now make that
+    cascade loop forever (`seen_edges` cannot help — a cycle keeps generating fresh hash triples).
+    Today's `pipeline.yaml` has exactly one optional edge (`assembly ← music`) and no cycle, so still
+    dormant. Whoever eventually revisits `pipeline_config.py`'s validation — no package currently
+    does — should close this alongside item 12; they're the same class of gap in the same function.
+
+None of 12-14 are any current package's job (`migrations.py` and `pipeline_config.py` aren't in
+P7/P8/P9/P13/P14/P15's owned-file lists) and all three are dormant against the live `pipeline.yaml`
+— flagging here purely so they aren't silently lost, same discipline as every other carried-forward
+item in this document.
 
 **T20 remains parked** (P5's own explicitly incomplete task, tracked separately):
 `routes/inspector.py:45` needs `browse_service.sanitize_html`, which is P15's deliverable (Wave
