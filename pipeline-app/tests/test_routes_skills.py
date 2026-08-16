@@ -206,3 +206,34 @@ def test_a_save_that_wrote_nothing_is_not_the_same_response_as_a_save_that_wrote
     )
     assert wrote.status_code == 303
     assert wrote_nothing.status_code != wrote.status_code
+
+
+def test_kickoff_save_for_a_stageless_skill_is_rejected_and_creates_no_None_md(client):
+    test_client, tmp_path = client
+    templates = tmp_path / "pipeline-app" / "stage_templates"
+
+    resp = test_client.post(
+        "/skills/rgs-pairing-review/save",
+        data={"target": "kickoff_template", "content": "junk"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 400
+    assert "rgs-pairing-review" in resp.text
+    assert not (templates / "None.md").exists()
+    assert sorted(p.name for p in templates.iterdir()) == ["ideation.md", "scripting.md", "styleboard.md"]
+
+
+def test_stageless_kickoff_rejection_differs_from_a_real_kickoff_save(client):
+    test_client, _ = client
+    real = test_client.post(
+        "/skills/shorts-ideation/save",
+        data={"target": "kickoff_template", "content": "/shorts-ideation v2\n"},
+        follow_redirects=False,
+    )
+    stageless = test_client.post(
+        "/skills/rgs-pairing-review/save",
+        data={"target": "kickoff_template", "content": "/shorts-ideation v2\n"},
+        follow_redirects=False,
+    )
+    assert (real.status_code, stageless.status_code) == (303, 400)
