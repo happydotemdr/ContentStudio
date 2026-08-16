@@ -326,7 +326,7 @@ def _prior_transcript_attempts(dest: Path) -> int:
         return 0
     try:
         meta, _ = artifacts.parse_frontmatter(dest.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, UnicodeDecodeError, artifacts.MalformedArtifactError):
         return 0
     value = meta.get("transcript_attempts")
     return value if isinstance(value, int) and value >= 0 else 0

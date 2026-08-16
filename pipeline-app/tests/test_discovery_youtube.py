@@ -424,6 +424,42 @@ def test_attempts_accumulate_and_the_status_becomes_terminal_at_the_cap(monkeypa
     assert meta["transcript_status"] == "missing"      # bounded: never loops forever
 
 
+def test_prior_transcript_attempts_tolerates_malformed_frontmatter(tmp_path):
+    """_awaiting_transcript_retry already tolerates a capture file whose
+    frontmatter fails to parse (truncated write, hand-edit, pre-P6 stray
+    file) by treating it as unreadable and moving on. _prior_transcript_attempts
+    reads the very same on-disk file for the very same retry state machine and
+    must be equally tolerant -- not raise artifacts.MalformedArtifactError,
+    which only ValueError/OSError were being caught for."""
+    dest = tmp_path / "v9__title.md"
+    # Opens a frontmatter block but never closes it -- MalformedArtifactError,
+    # not a plain ValueError/OSError.
+    dest.write_text("---\ntranscript_attempts: 2\n", encoding="utf-8")
+
+    assert yt._prior_transcript_attempts(dest) == 0
+
+
+def test_download_item_survives_a_malformed_prior_capture(monkeypatch, tmp_path):
+    """End-to-end: a malformed capture already on disk for this video must not
+    crash download_item via _prior_transcript_attempts."""
+    out_dir = tmp_path / "output" / "brand-intel" / "youtube" / "testhandle"
+    out_dir.mkdir(parents=True)
+    dest = out_dir / f"v9__{yt.slugify('T')}.md"
+    dest.write_text("---\ntranscript_attempts: 2\n", encoding="utf-8")
+
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_blocked)
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+    monkeypatch.setattr(yt.youtube_api, "fetch_one", lambda *a, **k: dict(_API_RECORD))
+
+    result = yt.download_item(tmp_path, "@testhandle", "v9", "T")
+
+    assert result["ok"] is True
+    meta, _ = _written(tmp_path, "v9")
+    # Treated as a fresh start (attempts=0 before this run), matching the
+    # sibling _awaiting_transcript_retry's tolerant fallback.
+    assert meta["transcript_attempts"] == 1
+
+
 def test_a_recovered_transcript_clears_the_pending_state(monkeypatch, tmp_path):
     monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_blocked)
     monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
