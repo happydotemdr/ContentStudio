@@ -236,6 +236,30 @@ def _run_ytdlp(args: list[str], *, label: str,
 
 ### T2 · A real emoji survives enumerate → title → filename → body (B-10)
 
+> **Plan amendment (controller, before T2 dispatch, 2026-08-16):** this task's original text listed
+> `_ytdlp_ok`, `_ytdlp_blocked`, and the inline `fake_run` closures at
+> `tests/test_discovery_youtube.py:88,114,172` (verified against the live file) as fakes to migrate
+> here, alongside `_fake_tabs` and the inline `fake_run` at `:481`. That is wrong: `_ytdlp_ok` and
+> `_ytdlp_blocked` back `peek_upload_date`/`download_item` tests, and those two functions are not
+> routed through `_run_ytdlp()` until **T3** (`peek_upload_date`) and **T3/T10**
+> (`download_item`) — T2 only routes `_enumerate_tab`. Retargeting those fakes' patch from
+> `yt.subprocess.run` to `yt._run_ytdlp` before their call site is migrated turns the patch into a
+> no-op: the still-unmigrated function keeps calling bare `subprocess.run` directly, so the mock
+> never intercepts it and the test falls through to a real, unmocked `yt-dlp` invocation. The second
+> emoji test shown below (`test_download_item_filename_and_h1_carry_the_original_characters`) has
+> the same problem — it requires `download_item` already routed through `_run_ytdlp`, which does not
+> happen until T3.
+>
+> **Corrected split:** T2 migrates only the fakes that back the already-migrated `_enumerate_tab`
+> path — `_fake_tabs` and the inline `fake_run` at `:481` (both `yt.subprocess.run`-patching, both
+> exercising enumerate-path tests) — to the new `(*args, **kwargs)` signature and `yt._run_ytdlp`
+> patch target, and adds only `test_enumerate_preserves_an_emoji_title_byte_identically` below. The
+> `_ytdlp_ok`/`_ytdlp_blocked`/`:88,114,172` fakes stay on the old `yt.subprocess.run` signature in
+> T2 — do not touch them here. Their migration, plus
+> `test_download_item_filename_and_h1_carry_the_original_characters`, moves to **T3**, appended to
+> that task's own brief where `peek_upload_date` and `download_item` are actually routed through
+> `_run_ytdlp()`. This note is authoritative over the original bullet list below.
+
 - [ ] **Write the failing tests** — the round trip through the module's own code path, not through
       the helper:
 
@@ -309,6 +333,17 @@ def _ytdlp_ok(info: dict):
 ---
 
 ### T3 · Return codes are read; `peek`'s JSON parse is guarded (B-16)
+
+> **Plan amendment (controller, before T3 dispatch, 2026-08-16):** carried over from T2's amendment
+> above. This task also owns: (1) migrating the `_ytdlp_ok`, `_ytdlp_blocked`, and inline
+> `fake_run(cmd, capture_output, text)` fakes at `tests/test_discovery_youtube.py:88,114,172` (the
+> `peek_upload_date`/`download_item`-backing fakes) from patching `yt.subprocess.run` to patching
+> `yt._run_ytdlp` with the `(*args, **kwargs)`/`(args, *, label, binary=None)` signature, now that
+> this task routes both functions through `_run_ytdlp()`; (2) adding the T2-brief test
+> `test_download_item_filename_and_h1_carry_the_original_characters` (shown in T2's section above,
+> under `_EMOJI_TITLE`/`_real_ytdlp_emitting`) once `download_item` is actually routed. Do both as
+> part of this task's own TDD cycle, verified against the file's live state at T3 dispatch time, not
+> assumed from either task's original text.
 
 - [ ] **Write the failing tests:**
 
