@@ -84,7 +84,10 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None, page_limit: 
         if not cursor:
             break
     if keyword_filter:
-        items = [i for i in items if keyword_filter.lower() in i["title"].lower()]
+        # Filter the full text, not the 60-char display title -- Instagram
+        # filters `caption` and LinkedIn/Facebook/X filter `body` (B-08).
+        needle = keyword_filter.lower()
+        items = [i for i in items if needle in (i.get("text") or "").lower()]
     return items
 
 

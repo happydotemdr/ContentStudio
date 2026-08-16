@@ -270,3 +270,20 @@ def test_the_two_validate_outcomes_have_different_types(monkeypatch):
     with pytest.raises(bsky.BlueskyFetchError) as exc:
         bsky.enumerate_newest_first("valid.bsky.social", None)
     assert empty == [] and isinstance(exc.value, bsky.BlueskyFetchError)
+
+
+def test_keyword_filter_matches_beyond_the_first_sixty_characters(monkeypatch):
+    """`title` is text[:60] for display; every other text-bearing adapter
+    filters the full body. A keyword past character 60 was silently
+    non-matching, producing a quietly under-populated capture (B-08)."""
+    long_text = ("x" * 90) + " permaculture"
+    monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(
+        {"feed": [_post("rkey1", "2026-07-29", long_text)]}).encode("utf-8"))
+    items = bsky.enumerate_newest_first("x.bsky.social", keyword_filter="permaculture")
+    assert [i["id"] for i in items] == ["rkey1"]
+
+
+def test_keyword_filter_still_excludes_a_genuine_non_match(monkeypatch):
+    monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(
+        {"feed": [_post("rkey1", "2026-07-29", "nothing relevant here")]}).encode("utf-8"))
+    assert bsky.enumerate_newest_first("x.bsky.social", keyword_filter="permaculture") == []
