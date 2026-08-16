@@ -219,3 +219,42 @@ def test_discovery_runs_page_empty_state(client: TestClient):
     response = client.get("/discovery/runs")
     assert response.status_code == 200
     assert "No discovery runs yet" in response.text
+
+
+def test_handles_page_shows_a_handles_current_brand_tags(client: TestClient, monkeypatch):
+    _no_spawn(monkeypatch)
+    _add(client, "instagram", "aspenprojectplay")
+    from pipeline_app import db as db_mod
+    conn = client.app.state.conn
+    handle_id = db_mod.get_handle_by_platform_and_handle(conn, "instagram", "aspenprojectplay")["id"]
+    db_mod.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports"])
+
+    response = client.get("/discovery/handles")
+    assert response.status_code == 200
+    assert "raisinggoodsports" in response.text
+
+
+def test_update_handle_brands_replaces_the_tag_set(client: TestClient, monkeypatch):
+    _no_spawn(monkeypatch)
+    _add(client, "instagram", "aspenprojectplay")
+    from pipeline_app import db as db_mod
+    conn = client.app.state.conn
+    handle_id = db_mod.get_handle_by_platform_and_handle(conn, "instagram", "aspenprojectplay")["id"]
+    db_mod.set_handle_brands(conn, handle_id, ["guru"])
+
+    response = client.post(f"/discovery/handles/{handle_id}/brands",
+                           data={"brands": ["guru", "raisinggoodsports"]})
+    assert response.status_code in (200, 303, 307)
+    assert db_mod.get_handle_brands(conn, handle_id) == ["guru", "raisinggoodsports"]
+
+
+def test_update_handle_brands_to_no_boxes_checked_clears_all_tags(client: TestClient, monkeypatch):
+    _no_spawn(monkeypatch)
+    _add(client, "instagram", "aspenprojectplay")
+    from pipeline_app import db as db_mod
+    conn = client.app.state.conn
+    handle_id = db_mod.get_handle_by_platform_and_handle(conn, "instagram", "aspenprojectplay")["id"]
+    db_mod.set_handle_brands(conn, handle_id, ["guru"])
+
+    client.post(f"/discovery/handles/{handle_id}/brands", data={})
+    assert db_mod.get_handle_brands(conn, handle_id) == []
