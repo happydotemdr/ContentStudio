@@ -160,6 +160,9 @@ def test_download_item_returns_ok_false_when_refetch_finds_no_match(tmp_path, mo
     # When re-fetch returns a feed that doesn't contain the target rkey
     # (aged out of page_limit=5, network error swallowed by enumerate, etc.),
     # download_item must NOT write a degraded .md file and must return ok=False.
+    from pipeline_app.discovery_paths import handle_dir
+
+    bsky.clear_feed_cache()
     page = {
         "feed": [
             {"post": {"uri": "at://did/app.bsky.feed.post/other_rkey1",
@@ -173,13 +176,68 @@ def test_download_item_returns_ok_false_when_refetch_finds_no_match(tmp_path, mo
     result = bsky.download_item(tmp_path, "adamgrant.bsky.social", "target_rkey", "some title")
 
     # Expect failure
-    assert result == {"id": "target_rkey", "ok": False, "published": None}
+    assert result == {"id": "target_rkey", "ok": False, "published": None,
+                       "reason": "not-found-in-feed"}
 
     # Verify no .md file was written
-    out_dir = tmp_path / "output" / "brand-intel" / "bluesky" / "adamgrant.bsky.social"
+    out_dir = handle_dir(tmp_path, "bluesky", "adamgrant.bsky.social")
     assert not (out_dir / "target_rkey.md").exists()
     # Also check no temp file lingering
     assert not (out_dir / "target_rkey.md.tmp").exists()
+
+
+def test_download_item_reuses_the_enumerate_walk(monkeypatch, tmp_path):
+    """Downloading N posts cost up to 5(N+1) requests against a public
+    unauthenticated endpoint -- 55 round-trips for 10 posts (B-07)."""
+    bsky.clear_feed_cache()
+    calls = {"n": 0}
+    feed = {"feed": [_post(f"rkey{i}", "2026-07-29") for i in range(3)]}
+
+    def counting(url):
+        calls["n"] += 1
+        return json.dumps(feed).encode("utf-8")
+
+    monkeypatch.setattr(bsky, "_http_get", counting)
+    bsky.enumerate_newest_first("x.bsky.social", None)
+    before = calls["n"]
+    for i in range(3):
+        bsky.download_item(tmp_path, "x.bsky.social", f"rkey{i}", "t")
+    assert calls["n"] == before, "download_item must not re-walk the feed"
+
+
+def test_download_item_reports_a_reason_when_the_item_is_not_found(monkeypatch, tmp_path, logged):
+    bsky.clear_feed_cache()
+    monkeypatch.setattr(bsky, "_http_get",
+                        lambda url: json.dumps({"feed": [_post("other", "2026-07-29")]}).encode("utf-8"))
+    bsky.enumerate_newest_first("x.bsky.social", None)
+    result = bsky.download_item(tmp_path, "x.bsky.social", "target", "t")
+    assert result["ok"] is False
+    assert result["reason"] == "not-found-in-feed"
+    assert [r for r in logged if r["event"] == "adapter.item_not_found"]
+
+
+def test_download_item_propagates_a_transport_failure_rather_than_reporting_not_found(
+        monkeypatch, tmp_path):
+    """A cache miss falls back to one re-fetch. If THAT fails, it is a failure,
+    not an aged-out item."""
+    bsky.clear_feed_cache()
+
+    def raise_error(url):
+        raise OSError("network down")
+
+    monkeypatch.setattr(bsky, "_http_get", raise_error)
+    with pytest.raises(bsky.BlueskyFetchError):
+        bsky.download_item(tmp_path, "x.bsky.social", "target", "t")
+
+
+def test_the_cache_holds_unfiltered_rows(monkeypatch, tmp_path):
+    """A keyword-filtered enumerate must still be able to serve a download of
+    any row it saw, or the filter silently breaks the download path."""
+    bsky.clear_feed_cache()
+    feed = {"feed": [_post("a", "2026-07-29", "permaculture"), _post("b", "2026-07-28", "other")]}
+    monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(feed).encode("utf-8"))
+    bsky.enumerate_newest_first("x.bsky.social", keyword_filter="permaculture")
+    assert bsky._FEED_CACHE["x.bsky.social"].keys() == {"a", "b"}
 
 
 def test_download_item_writes_parseable_frontmatter(tmp_path, monkeypatch):

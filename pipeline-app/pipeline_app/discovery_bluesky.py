@@ -36,6 +36,18 @@ def _http_get(url: str) -> bytes:
         return resp.read()
 
 
+# Normalized rows from the last enumerate, keyed by handle then rkey. Matches
+# the pattern all four Bright Data adapters already use: enumerate pays for
+# the walk once and download_item reads from it, instead of re-walking the
+# whole 5-page feed per item (B-07). Populated BEFORE keyword filtering so a
+# filtered enumerate can still serve any row it saw.
+_FEED_CACHE: dict[str, dict[str, dict]] = {}
+
+
+def clear_feed_cache(handle: str | None = None) -> None:
+    _FEED_CACHE.clear() if handle is None else _FEED_CACHE.pop(handle, None)
+
+
 def on_disk_ids(repo_root: Path, handle: str) -> set[str]:
     directory = handle_dir(repo_root, "bluesky", handle)
     if not directory.exists():
@@ -90,6 +102,7 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None, page_limit: 
     if undated:
         obs.log("adapter.undated_rows_dropped", level="warning", platform="bluesky",
                 handle=handle, count=undated)
+    _FEED_CACHE[handle] = {i["id"]: i for i in items}
     if keyword_filter:
         # Filter the full text, not the 60-char display title -- Instagram
         # filters `caption` and LinkedIn/Facebook/X filter `body` (B-08).
@@ -114,17 +127,29 @@ def download_item(repo_root: Path, handle: str, rkey: str, title: str,
     out_dir = handle_dir(repo_root, "bluesky", handle)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Re-fetch this single item's full record for the post text and exact
-    # created-at (enumerate_newest_first only carries a truncated title).
-    items = enumerate_newest_first(handle, keyword_filter=None, page_limit=5)
-    match = next((i for i in items if i["id"] == rkey), None)
-
-    # If re-fetch failed to find the item (network error, swallowed by enumerate,
-    # or aged out of page_limit=5), report failure rather than writing a degraded
-    # file. on_disk_ids() treats any existing {rkey}.md as "already captured,"
-    # so a silent write-with-blank-created would permanently hide the error.
+    # Serve from the last enumerate_newest_first walk instead of re-walking
+    # the whole 5-page feed per item (B-07). On a cache miss, fall back to
+    # exactly one bounded re-fetch before giving up -- a transport failure in
+    # that re-fetch must raise (B-05), not be reported as "not found."
+    match = _FEED_CACHE.get(handle, {}).get(rkey)
     if match is None:
-        return {"id": rkey, "ok": False, "published": None}
+        items = enumerate_newest_first(handle, keyword_filter=None, page_limit=5)
+        match = _FEED_CACHE.get(handle, {}).get(rkey)
+        if match is None:
+            # Covers callers that monkeypatch enumerate_newest_first itself
+            # (bypassing the cache-population side effect) as well as the
+            # normal path.
+            match = next((i for i in items if i["id"] == rkey), None)
+
+    # If the item still can't be found (network error, swallowed by enumerate,
+    # or aged out of page_limit=5), report failure rather than writing a
+    # degraded file. on_disk_ids() treats any existing {rkey}.md as "already
+    # captured," so a silent write-with-blank-created would permanently hide
+    # the error.
+    if match is None:
+        obs.log("adapter.item_not_found", level="warning", platform="bluesky",
+                handle=handle, item_id=rkey)
+        return {"id": rkey, "ok": False, "published": None, "reason": "not-found-in-feed"}
 
     published = match["published"]
     full_text = match.get("text") or title
