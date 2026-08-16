@@ -2,10 +2,11 @@ import datetime
 import json
 from pathlib import Path
 from typing import AsyncIterator
+from unittest.mock import ANY
 
 import pytest
 
-from pipeline_app import artifacts, db, gates
+from pipeline_app import artifacts, db, gates, grounding_service
 from pipeline_app.pipeline_config import StageDef
 from pipeline_app.state_machine import StageStatus
 from pipeline_app import turn_service
@@ -659,3 +660,92 @@ def test_approved_artifact_path_distinguishes_no_artifact_from_only_drafts(tmp_p
     assert turn_service._approved_artifact_path(drafts) is None
     _final_artifact(drafts, 3, "x", "approved")
     assert turn_service._approved_artifact_path(drafts).name == "artifact.v3.md"
+
+
+def _rgs_chain(conn, tmp_path: Path, brief: str):
+    project_id = db.create_project(conn, "rgs-1", "rgs", "raisinggoodsports", "2026-08-08T00:00:00Z")
+    for stage in CHAIN_STAGES:
+        db.create_stage_row(conn, project_id, stage.id, StageStatus.APPROVED.value)
+    run_dir = tmp_path / "runs" / "rgs-1"
+    brief_path = tmp_path / brief
+    brief_path.parent.mkdir(parents=True, exist_ok=True)
+    if not brief_path.exists():
+        brief_path.write_text("brief content", encoding="utf-8")
+    grounding_service.write_pointer(run_dir / "00-grounding", brief, tmp_path)
+    script_dep = [{"path": brief, "sha256": artifacts.compute_sha256(brief_path)}]
+    artifacts.stamp_final(
+        artifacts.write_artifact(run_dir / "02-scripting", 1,
+                                 {"stage": "shorts-scripting", "depends_on": script_dep}, "script v1"),
+        "2026-08-08T00:00:00Z",
+    )
+    return project_id, run_dir
+
+
+@pytest.mark.asyncio
+async def test_a_turn_records_the_grounding_brief_it_was_built_on(conn, tmp_path, monkeypatch, capture):
+    """A-13: re-running grounding repoints rgs-briefs/ and leaves every downstream
+    stage `approved` with the previous thinker/research pairing baked in. Nothing
+    could detect it, because no artifact recorded which brief it used.
+
+    Deviates from the Amendment's literal `CHAIN_STAGES`/`_by_id("scripting")` here:
+    per the live `pipeline.yaml`, `scripting` always depends_on `ideation` (only
+    `grounding` is brand_scope: raisinggoodsports -- A-12 keeps ideation unscoped),
+    and the real `scripting.md` template unconditionally renders `inputs['ideation']`.
+    CHAIN_STAGES's `scripting` StageDef has `depends_on=[]` (its downstream-chain
+    tests never render this template from empty state), so driving a real kickoff
+    turn through it raises a Jinja UndefinedError unrelated to this test's point.
+    A local ideation+scripting StageDef pair with a real approved ideation artifact
+    matches production topology instead."""
+    ideation_def = StageDef(id="ideation", skill="shorts-ideation", dir_prefix="01", depends_on=[])
+    scripting_def = StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02",
+                              depends_on=["ideation"])
+    stage_defs = [ideation_def, scripting_def]
+    project_id = db.create_project(conn, "rgs-1", "rgs", "raisinggoodsports", "2026-08-08T00:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", StageStatus.APPROVED.value)
+    db.create_stage_row(conn, project_id, "scripting", StageStatus.READY.value)
+    run_dir = tmp_path / "runs" / "rgs-1"
+    _final_artifact(run_dir / "01-ideation", 1, "shorts-ideation", "concept v1")
+    brief_path = tmp_path / "rgs-briefs" / "2026-08-08-a.md"
+    brief_path.parent.mkdir(parents=True, exist_ok=True)
+    brief_path.write_text("brief content", encoding="utf-8")
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_RESULT_OK], run_dir / "02-scripting" / "raw_output.md",
+                                     captured=capture))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "rgs-1",
+        scripting_def, stage_defs, "go",
+        grounding_pointer="rgs-briefs/2026-08-08-a.md"))
+    latest = artifacts.latest_artifact_path(run_dir / "02-scripting")
+    meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+    assert {"path": "rgs-briefs/2026-08-08-a.md", "sha256": ANY} in meta["depends_on"]
+
+
+def test_repointing_grounding_records_a_warning_event(conn, tmp_path):
+    project_id, run_dir = _rgs_chain(conn, tmp_path, brief="rgs-briefs/2026-08-08-a.md")
+    brief_b = tmp_path / "rgs-briefs" / "2026-08-08-b.md"
+    brief_b.write_text("brief b content", encoding="utf-8")
+    grounding_service.write_pointer(run_dir / "00-grounding", "rgs-briefs/2026-08-08-b.md", tmp_path)
+    turn_service.propagate_grounding_staleness(conn, tmp_path, run_dir, CHAIN_STAGES, project_id)
+    rows = conn.execute(
+        "SELECT severity FROM events WHERE kind = 'handoff.grounding_repointed'").fetchall()
+    assert rows and rows[0]["severity"] == "warning"
+
+
+def test_repointing_grounding_marks_downstream_stale(conn, tmp_path):
+    project_id, run_dir = _rgs_chain(conn, tmp_path, brief="rgs-briefs/2026-08-08-a.md")
+    brief_b = tmp_path / "rgs-briefs" / "2026-08-08-b.md"
+    brief_b.write_text("brief b content", encoding="utf-8")
+    grounding_service.write_pointer(run_dir / "00-grounding", "rgs-briefs/2026-08-08-b.md", tmp_path)
+    stale = turn_service.propagate_grounding_staleness(
+        conn, tmp_path, run_dir, CHAIN_STAGES, project_id)
+    assert "scripting" in stale
+    assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.STALE.value
+
+
+def test_a_generic_project_with_no_brief_is_not_marked_stale(conn, tmp_path):
+    """Distinguishability: 'this project never had a grounding brief' must not
+    read the same as 'its brief was replaced'."""
+    project_id, run_dir = _approved_chain(conn, tmp_path)   # generic brand, no pointer
+    assert turn_service.propagate_grounding_staleness(
+        conn, tmp_path, run_dir, CHAIN_STAGES, project_id) == []
+    assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.APPROVED.value

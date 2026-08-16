@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import AsyncIterator
 
-from pipeline_app import artifacts, cli_runner, db as db_mod, gates, obs, prompt_builder
+from pipeline_app import artifacts, cli_runner, db as db_mod, gates, grounding_service, obs, prompt_builder
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
 from pipeline_app.state_machine import StageStatus, is_locked_or_running, is_stale
 
@@ -126,6 +126,43 @@ def propagate_staleness(
 
 def _dependents_of(all_stage_defs: list[StageDef], stage_id: str) -> list[StageDef]:
     return [s for s in all_stage_defs if stage_id in s.all_depends_on]
+
+
+def propagate_grounding_staleness(
+    conn: sqlite3.Connection, repo_root: Path, run_dir: Path,
+    all_stage_defs: list[StageDef], project_id: int,
+) -> list[str]:
+    """Grounding's artifact lives in rgs-briefs/ behind a pointer and no stage
+    lists it in depends_on, so the hash cascade cannot see it. Any stage whose
+    artifact recorded a brief path that is no longer the pointer target was built
+    on a superseded thinker/research pairing (A-13). Public because the grounding
+    turn route is what repoints the pointer and should call it there too."""
+    current = grounding_service.read_pointer(run_dir / "00-grounding")
+    if current is None:
+        return []
+    stale: list[str] = []
+    for stage_def in all_stage_defs:
+        if stage_def.id == "grounding":
+            continue
+        row = db_mod.get_stage(conn, project_id, stage_def.id)
+        if row is None or row["status"] not in _INVALIDATABLE:
+            continue
+        latest = artifacts.latest_artifact_path(run_dir / stage_dir_name(stage_def))
+        if latest is None:
+            continue
+        meta, _body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+        briefs = [d.get("path") for d in (meta.get("depends_on") or [])
+                  if str(d.get("path", "")).startswith("rgs-briefs/")]
+        if briefs and current not in briefs:
+            db_mod.update_stage_status(conn, row["id"], StageStatus.STALE.value)
+            stale.append(stage_def.id)
+    if stale:
+        obs.record_event(
+            conn, kind="handoff.grounding_repointed", severity="warning", source="turn_service",
+            message=f"grounding brief is now {current!r}; marked stale: {', '.join(stale)}",
+            detail={"pointer": current, "stale": stale},
+        )
+    return stale
 
 
 _VERSION_RE = re.compile(r"^artifact\.v(\d+)\.md$")
@@ -387,6 +424,24 @@ async def run_stage_turn(
         {"path": _relpath(p, run_dir), "sha256": artifacts.compute_sha256(p)}
         for p in upstream_paths
     ]
+    # The grounding brief is a real input that arrives out-of-band (routes.stages
+    # resolves the pointer and passes it as grounding_pointer), so it never
+    # appears in upstream_paths. Recording it here is what lets a re-pointed
+    # brief be detected at all -- modelling grounding as a depends_on edge is
+    # forbidden by the brand-scope rule (A-12), since ideation is unscoped.
+    if grounding_pointer:
+        brief = repo_root / grounding_pointer
+        if brief.exists():
+            depends_on.append({"path": grounding_pointer,
+                               "sha256": artifacts.compute_sha256(brief)})
+        else:
+            obs.record_event(
+                conn, kind="handoff.grounding_brief_missing", severity="error",
+                source="turn_service",
+                message=f"stage '{stage_def.id}' was passed grounding pointer "
+                        f"'{grounding_pointer}' but no such file exists",
+                detail={"stage": stage_def.id, "pointer": grounding_pointer},
+            )
     gate_results = gates.run_gates_for_stage(
         repo_root, stage_def.id, raw_output_path, upstream_by_stage
     )
@@ -406,3 +461,4 @@ async def run_stage_turn(
     artifacts.write_artifact(stage_dir, version, meta, body)
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.AWAITING_REVIEW.value)
     propagate_staleness(conn, run_dir, all_stage_defs, project_id, stage_def.id, repo_root=repo_root)
+    propagate_grounding_staleness(conn, repo_root, run_dir, all_stage_defs, project_id)
