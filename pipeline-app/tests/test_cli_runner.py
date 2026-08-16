@@ -302,6 +302,54 @@ async def test_stream_claude_turn_passes_strict_mcp_config(monkeypatch, tmp_path
     assert "--strict-mcp-config" in captured["argv"]
 
 
+def test_child_env_strips_the_apps_vendor_keys(monkeypatch):
+    """D-46: stream_claude_turn passed `dict(os.environ)` straight through, so a
+    turn -- and any PreToolUse hook it induced -- inherited RESEND_API_KEY,
+    YOUTUBE_API_KEY and BRIGHTDATA_API_KEY."""
+    from pipeline_app import cli_runner
+    for name in ("RESEND_API_KEY", "YOUTUBE_API_KEY", "BRIGHTDATA_API_KEY"):
+        monkeypatch.setenv(name, "secret")
+    env = cli_runner.child_env()
+    assert "RESEND_API_KEY" not in env
+    assert "YOUTUBE_API_KEY" not in env
+    assert "BRIGHTDATA_API_KEY" not in env
+
+
+def test_child_env_keeps_the_credentials_the_cli_needs_to_authenticate(monkeypatch):
+    """Distinguishability: 'stripped a vendor key' must not become 'stripped the
+    key the CLI logs in with'. A blanket *_API_KEY filter would break the app."""
+    from pipeline_app import cli_runner
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "secret")
+    env = cli_runner.child_env()
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-x"
+    assert "BRIGHTDATA_API_KEY" not in env
+    assert env["PYTHONIOENCODING"] == "utf-8"
+
+
+@pytest.mark.asyncio
+async def test_stream_claude_turn_launches_with_the_scrubbed_env(monkeypatch, tmp_path: Path):
+    """Surfacing/binding: assert the scrub is what the subprocess actually gets,
+    not merely that a helper exists."""
+    from pipeline_app import cli_runner
+
+    monkeypatch.setattr(cli_runner, "resolve_claude_binary", lambda *a, **k: "claude")
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "secret")
+
+    captured: dict = {}
+
+    async def fake_exec(*argv, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _FakeProcess([b'{"type": "result", "result": "ok"}\n'])
+
+    monkeypatch.setattr(cli_runner.asyncio, "create_subprocess_exec", fake_exec)
+
+    async for _ in cli_runner.stream_claude_turn("prompt", tmp_path, None):
+        pass
+
+    assert "BRIGHTDATA_API_KEY" not in captured["env"]
+
+
 def test_injection_shaped_prompt_never_reaches_cmd_shim_command_line(monkeypatch):
     """Even with the Windows `cmd /c` wrapper applied, nothing from the prompt
     appears in the command list, so cmd.exe has nothing to re-parse."""

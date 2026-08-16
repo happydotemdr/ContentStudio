@@ -257,6 +257,23 @@ async def _feed_prompt_stdin(process, prompt: str) -> None:
             pass
 
 
+# Credentials the claude CLI itself may need to authenticate. Everything else
+# matching a secret-shaped suffix is stripped from a stage turn's environment:
+# a turn has no legitimate use for the app's vendor keys, and .claude/hooks/**
+# runs as an unrestricted subprocess that would otherwise inherit them (D-46).
+_ENV_KEEP = frozenset({"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"})
+_ENV_SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+
+
+def child_env() -> dict[str, str]:
+    env = {
+        key: value for key, value in os.environ.items()
+        if key in _ENV_KEEP or not key.upper().endswith(_ENV_SECRET_SUFFIXES)
+    }
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 async def stream_claude_turn(
     prompt: str,
     cwd: Path,
@@ -274,8 +291,7 @@ async def stream_claude_turn(
     argv = platform_argv(build_claude_argv(
         prompt, resume_session_id, allowed_tools, settings_path, disallowed_tools,
     ))
-    env = dict(os.environ)
-    env["PYTHONIOENCODING"] = "utf-8"
+    env = child_env()
     process = await asyncio.create_subprocess_exec(
         *argv,
         cwd=str(cwd),
