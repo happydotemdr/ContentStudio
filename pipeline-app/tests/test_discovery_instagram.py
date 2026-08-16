@@ -144,16 +144,6 @@ def test_trigger_job_requests_a_discovery_job_not_a_single_page_collect(monkeypa
     assert captured["limit_per_input"] == ig.MAX_ITEMS_PER_RUN
 
 
-def test_trigger_job_raises_when_dataset_id_still_placeholder(monkeypatch):
-    def _fail_if_called(*args, **kwargs):
-        raise AssertionError("requests.post must not be called when DATASET_ID is a placeholder")
-
-    monkeypatch.setattr(ig.requests, "post", _fail_if_called)
-    monkeypatch.setattr(ig, "DATASET_ID", "gd_REPLACE_WITH_REAL_DATASET_ID")
-    with pytest.raises(RuntimeError, match="DATASET_ID is still a placeholder"):
-        ig._trigger_job("somehandle", "the-key")
-
-
 def test_poll_job_status_gets_expected_request_and_returns_status(monkeypatch):
     captured = {}
 

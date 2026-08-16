@@ -153,6 +153,7 @@ REQUEST_TIMEOUT_S = brightdata_job.REQUEST_TIMEOUT_S
 BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
 BrightDataJobFailed = brightdata_job.BrightDataJobFailed
 BrightDataResponseError = brightdata_job.BrightDataResponseError
+BrightDataConfigError = brightdata_job.BrightDataConfigError
 
 
 def api_key() -> str | None:

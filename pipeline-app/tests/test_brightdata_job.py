@@ -54,6 +54,19 @@ def test_trigger_posts_dataset_id_with_extra_params_and_returns_snapshot_id(monk
     assert captured["timeout"] == bd.REQUEST_TIMEOUT_S
 
 
+def test_trigger_refuses_an_unprovisioned_dataset_id_before_any_http_call(monkeypatch):
+    """The guard must live where every adapter passes through, and must fire
+    BEFORE requests.post -- an unprovisioned trigger that reached Bright Data
+    would be a billed job against a nonexistent dataset."""
+    def _fail_if_called(*a, **k):
+        raise AssertionError("requests.post must not run for an unprovisioned dataset")
+
+    monkeypatch.setattr(bd.requests, "post", _fail_if_called)
+    for bad in ("gd_REPLACE_WITH_REAL_DATASET_ID", "", "   "):
+        with pytest.raises(bd.BrightDataConfigError, match="not provisioned"):
+            bd.trigger("https://api.example/v3", bad, {}, [{"url": "u"}], "k")
+
+
 def test_poll_status_returns_status_field(monkeypatch):
     captured = {}
 

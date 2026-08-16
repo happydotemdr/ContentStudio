@@ -45,6 +45,22 @@ class BrightDataResponseError(Exception):
     """
 
 
+class BrightDataConfigError(Exception):
+    """An adapter is configured with a dataset id that cannot be collected."""
+
+
+def _require_provisioned(dataset_id: str) -> None:
+    """B-24: the Instagram adapter carried this check privately, where it was
+    unreachable (its DATASET_ID has been real since 2026-08-06). Here it
+    covers all four adapters and any future one, and it runs before the POST
+    so an unprovisioned id can never start a billed job."""
+    if not (dataset_id or "").strip() or dataset_id.startswith("gd_REPLACE"):
+        raise BrightDataConfigError(
+            f"Bright Data dataset id {dataset_id!r} is not provisioned -- set the "
+            "real dataset id for this adapter before triggering a job"
+        )
+
+
 def read_key(env_var: str, key_file: Path) -> str | None:
     """The Bright Data API token, or None if not configured. Env var first --
     the scheduled task inherits the User environment -- then a gitignored
@@ -93,6 +109,7 @@ def trigger(api_base: str, dataset_id: str, params: dict, body: list[dict], key:
     which no adapter uses: a discovery job takes minutes and would hang an
     HTTP call.
     """
+    _require_provisioned(dataset_id)
     response = requests.post(
         f"{api_base}/trigger",
         params={"dataset_id": dataset_id, **params},

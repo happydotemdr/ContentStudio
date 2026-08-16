@@ -31,6 +31,7 @@ REQUEST_TIMEOUT_S = brightdata_job.REQUEST_TIMEOUT_S
 BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
 BrightDataJobFailed = brightdata_job.BrightDataJobFailed
 BrightDataResponseError = brightdata_job.BrightDataResponseError
+BrightDataConfigError = brightdata_job.BrightDataConfigError
 
 # Key lookup order: env var first (works for the scheduled task, which
 # inherits the User environment), then a gitignored file for convenience --
@@ -58,12 +59,6 @@ POLL_INTERVAL_S = 5
 
 
 def _trigger_job(handle: str, key: str) -> str:
-    if DATASET_ID.startswith("gd_REPLACE"):
-        raise RuntimeError(
-            "Instagram adapter DATASET_ID is still a placeholder -- provision the "
-            "Bright Data Instagram Posts Scraper API product and set the real "
-            "dataset id in discovery_instagram.py"
-        )
     profile_url = f"https://www.instagram.com/{handle.lstrip('@')}/"
     return brightdata_job.trigger(
         BRIGHTDATA_API_BASE,

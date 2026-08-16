@@ -42,6 +42,7 @@ TITLE_MAX_CHARS = 60
 BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
 BrightDataJobFailed = brightdata_job.BrightDataJobFailed
 BrightDataResponseError = brightdata_job.BrightDataResponseError
+BrightDataConfigError = brightdata_job.BrightDataConfigError
 
 
 def _parse_published(raw: str | None) -> str | None:
