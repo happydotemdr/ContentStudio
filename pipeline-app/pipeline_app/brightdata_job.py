@@ -62,11 +62,24 @@ def drain_diagnostics() -> list[dict]:
     return drained
 
 
-class BrightDataJobTimeout(Exception):
+class _BrightDataJobError(Exception):
+    """Base for job-level failures. Carries the snapshot id as an ATTRIBUTE,
+    not only inside the message: a snapshot the operator paid for must be
+    recoverable by code, not by reading prose out of error_message (B-19)."""
+
+    def __init__(self, message: str, *, snapshot_id: str | None = None,
+                 label: str = "", poll_timeout_s: float | None = None):
+        super().__init__(message)
+        self.snapshot_id = snapshot_id
+        self.label = label
+        self.poll_timeout_s = poll_timeout_s
+
+
+class BrightDataJobTimeout(_BrightDataJobError):
     """A Bright Data collection job did not reach 'ready' within the deadline."""
 
 
-class BrightDataJobFailed(Exception):
+class BrightDataJobFailed(_BrightDataJobError):
     """A Bright Data collection job reported status 'failed'."""
 
 
@@ -240,9 +253,13 @@ def await_results(trigger_fn, poll_fn, fetch_fn, *, label: str,
         if status == "ready":
             return fetch_fn(job_id)
         if status == "failed":
-            raise BrightDataJobFailed(f"Bright Data job {job_id} {label} failed")
+            raise BrightDataJobFailed(
+                f"Bright Data job {job_id} {label} failed",
+                snapshot_id=job_id, label=label, poll_timeout_s=poll_timeout_s
+            )
         if time.monotonic() >= deadline:
             raise BrightDataJobTimeout(
-                f"Bright Data job {job_id} {label} timed out after {poll_timeout_s}s"
+                f"Bright Data job {job_id} {label} timed out after {poll_timeout_s}s",
+                snapshot_id=job_id, label=label, poll_timeout_s=poll_timeout_s
             )
         time.sleep(poll_interval_s)

@@ -206,6 +206,19 @@ def test_await_results_raises_on_timeout(monkeypatch):
         )
 
 
+def test_timeout_exception_carries_the_snapshot_id_as_data_not_only_prose(monkeypatch):
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+    monkeypatch.setattr(bd.time, "monotonic", lambda: 10_000.0)
+    with pytest.raises(bd.BrightDataJobTimeout) as exc:
+        bd.await_results(trigger_fn=lambda: "snap-abc",
+                         poll_fn=lambda job_id: "running",
+                         fetch_fn=lambda job_id: [],
+                         label="for x/CNN", poll_timeout_s=0, poll_interval_s=5)
+    assert exc.value.snapshot_id == "snap-abc"
+    assert exc.value.label == "for x/CNN"
+    assert exc.value.poll_timeout_s == 0
+
+
 def test_await_results_never_fetches_when_job_fails(monkeypatch):
     """A failed job must raise, not fall through to an empty fetch -- an empty
     return would be recorded by the engine as the healthy status
