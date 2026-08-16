@@ -443,6 +443,130 @@ def test_backfill_gate_coverage_stamps_existing_approved_artifacts(conn, tmp_pat
     assert "gate-coverage migration" in overrides[0]["reason"]
 
 
+GATE_COVERAGE_STAGE_DEFS = [
+    StageDef(id="ideation", skill="shorts-ideation", dir_prefix="01", depends_on=[]),
+    StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02",
+             depends_on=["ideation"]),
+]
+
+
+def _project_with_downstream(conn, repo_root):
+    """An approved ideation artifact plus an approved scripting artifact that
+    recorded ideation's PRE-backfill hash -- the exact shape the live scan
+    found 17 times across 6 projects."""
+    project_id = db_mod.create_project(
+        conn, "dep-1", "dep", "generic", "2026-08-16T00:00:00Z")
+    db_mod.create_stage_row(conn, project_id, "ideation", "approved")
+    db_mod.create_stage_row(conn, project_id, "scripting", "approved")
+    run_dir = repo_root / "runs" / "dep-1"
+    upstream = artifacts.write_artifact(
+        run_dir / "01-ideation", 1,
+        {"version": 1, "status": "final", "stage": "shorts-ideation"}, "the brief",
+    )
+    downstream = artifacts.write_artifact(
+        run_dir / "02-scripting", 1,
+        {
+            "version": 1, "status": "final", "stage": "shorts-scripting",
+            "depends_on": artifacts.compute_depends_on(run_dir, [upstream]),
+        },
+        "the script",
+    )
+    return run_dir, upstream, downstream
+
+
+def test_backfill_gate_coverage_repairs_downstream_dependency_hashes(conn, tmp_path):
+    """The migration mutates an approved artifact in place, which breaks the
+    invariant turn_service._current_upstream_hashes rests on. Every dependent
+    that recorded the pre-stamp hash must be re-pointed at the post-stamp one,
+    or the whole tree below a backfilled artifact flips stale for a change
+    that is pure bookkeeping."""
+    from pipeline_app.state_machine import is_stale
+
+    run_dir, upstream, downstream = _project_with_downstream(conn, tmp_path)
+    pre_backfill = artifacts.read_artifact(downstream)[0]["depends_on"]
+    assert pre_backfill[0]["sha256"] == artifacts.compute_sha256(upstream)
+
+    migrations.backfill_gate_coverage_artifacts(conn, tmp_path, GATE_COVERAGE_STAGE_DEFS)
+
+    # (a) the upstream still got its stamp, unchanged by the repair work
+    upstream_meta, _ = artifacts.read_artifact(upstream)
+    assert "gate_o_ideation_contract" in [g["name"] for g in upstream_meta["gates"]]
+    assert artifacts.read_gate_overrides(upstream)
+
+    # (b) the dependent now records the upstream's NEW hash -- checked through
+    # the real staleness entry point, not a hand-rolled comparison.
+    new_hash = artifacts.compute_sha256(upstream)
+    assert new_hash != pre_backfill[0]["sha256"]
+    recorded = artifacts.read_artifact(downstream)[0]["depends_on"]
+    assert recorded[0]["sha256"] == new_hash
+    assert is_stale(recorded, {"01-ideation/artifact.v1.md": new_hash}) is False
+
+
+def test_backfill_gate_coverage_repair_cascades_past_the_first_dependent(conn, tmp_path):
+    """Repairing a dependent rewrites it, which changes ITS hash -- so the
+    grandchild's recorded hash has to move too, or the migration just pushes
+    the spurious staleness one level down the DAG instead of removing it."""
+    from pipeline_app.state_machine import is_stale
+
+    stage_defs = [
+        *GATE_COVERAGE_STAGE_DEFS,
+        StageDef(id="styleboard", skill="shorts-styleboard", dir_prefix="02b",
+                 depends_on=["scripting"]),
+    ]
+    run_dir, upstream, downstream = _project_with_downstream(conn, tmp_path)
+    grandchild = artifacts.write_artifact(
+        run_dir / "02b-styleboard", 1,
+        {
+            "version": 1, "status": "final", "stage": "shorts-styleboard",
+            "depends_on": artifacts.compute_depends_on(run_dir, [downstream]),
+        },
+        "the styleboard",
+    )
+
+    migrations.backfill_gate_coverage_artifacts(conn, tmp_path, stage_defs)
+
+    recorded = artifacts.read_artifact(grandchild)[0]["depends_on"]
+    assert recorded[0]["sha256"] == artifacts.compute_sha256(downstream)
+    assert is_stale(
+        recorded, {"02-scripting/artifact.v1.md": artifacts.compute_sha256(downstream)}
+    ) is False
+
+
+def test_backfill_gate_coverage_repair_is_idempotent(conn, tmp_path):
+    """Second run finds no entry carrying the old hash, so it rewrites
+    nothing -- the dependent's bytes are identical across the repeat."""
+    run_dir, upstream, downstream = _project_with_downstream(conn, tmp_path)
+    migrations.backfill_gate_coverage_artifacts(conn, tmp_path, GATE_COVERAGE_STAGE_DEFS)
+    after_first = downstream.read_bytes()
+    upstream_after_first = upstream.read_bytes()
+
+    assert migrations.backfill_gate_coverage_artifacts(
+        conn, tmp_path, GATE_COVERAGE_STAGE_DEFS) == []
+    assert downstream.read_bytes() == after_first
+    assert upstream.read_bytes() == upstream_after_first
+
+
+def test_backfill_gate_coverage_leaves_a_genuinely_stale_dependent_stale(conn, tmp_path):
+    """The repair matches on (path, old hash) together. A dependent recording
+    some other hash for that path was already stale on its own merits and must
+    not be laundered clean by the migration."""
+    from pipeline_app.state_machine import is_stale
+
+    run_dir, upstream, downstream = _project_with_downstream(conn, tmp_path)
+    meta, body = artifacts.read_artifact(downstream)
+    meta["depends_on"][0]["sha256"] = "0" * 64
+    artifacts._atomic_write_text(downstream, artifacts.render_frontmatter(meta, body))
+
+    migrations.backfill_gate_coverage_artifacts(conn, tmp_path, GATE_COVERAGE_STAGE_DEFS)
+
+    recorded = artifacts.read_artifact(downstream)[0]["depends_on"]
+    assert recorded[0]["sha256"] == "0" * 64
+    assert is_stale(
+        recorded,
+        {"01-ideation/artifact.v1.md": artifacts.compute_sha256(upstream)},
+    ) is True
+
+
 def test_backfill_gate_coverage_is_idempotent(conn, tmp_path):
     from pipeline_app import artifacts, db, migrations
     from pipeline_app.pipeline_config import StageDef

@@ -324,6 +324,100 @@ GATE_COVERAGE_STAGE_GATES = {
 }
 
 
+def _rewrite_depends_on_hash(
+    path: Path, upstream_rel: str, old_hash: str, new_hash: str,
+) -> bool:
+    """Point one artifact's recorded dependency at `upstream_rel` from
+    `old_hash` to `new_hash`. True if anything was rewritten.
+
+    Matches on (path, sha256) together, never on path alone: a dependent that
+    recorded some OTHER hash for that path is genuinely stale and must stay
+    that way. This is also what makes the repair idempotent -- after the first
+    run nothing carries the old hash any more, so a second run matches nothing
+    and writes nothing.
+    """
+    meta, body = artifacts.read_artifact(path)
+    deps = meta.get("depends_on")
+    if not isinstance(deps, list):
+        return False
+    rewrote = False
+    for dep in deps:
+        if (
+            isinstance(dep, dict)
+            and dep.get("path") == upstream_rel
+            and dep.get("sha256") == old_hash
+        ):
+            dep["sha256"] = new_hash
+            rewrote = True
+    if rewrote:
+        artifacts._atomic_write_text(path, artifacts.render_frontmatter(meta, body))
+    return rewrote
+
+
+def _repair_downstream_hashes(
+    repo_root: Path, run_dir: Path, stage_defs: list[StageDef],
+    changed_path: Path, old_hash: str,
+) -> None:
+    """Keep this migration's in-place rewrite from staling the whole tree below it.
+
+    turn_service._current_upstream_hashes documents the invariant the entire
+    staleness system rests on: artifacts are never mutated in place --
+    regenerating writes artifact.v2.md and leaves v1 alone. This migration
+    breaks it deliberately (a gate stamp and an override note have to land on
+    the artifact that was approved, not on a new version), and that changes
+    the artifact's sha256. Every dependent that recorded the OLD hash would
+    then compute as stale on the next check, for a content change that says
+    nothing about whether their input actually moved.
+
+    So the migration repairs what it disturbed: each dependent still pointing
+    at (this path, old hash) is re-pointed at the new hash. Rewriting a
+    dependent changes ITS hash too, so the repair cascades -- the queue carries
+    each (path, old, new) triple down the DAG. It terminates because stage
+    dependencies are acyclic and every hop is strictly downstream; seen_edges
+    only stops redundant re-walks when a stage is reached by two paths.
+
+    Only each stage's LATEST artifact is considered, because that is the only
+    one _current_upstream_hashes hashes and the only one propagate_staleness
+    reads a depends_on out of.
+    """
+    try:
+        seed_rel = artifacts.relpath_in_run(changed_path, run_dir)
+    except ValueError:
+        # An artifact stored outside the run dir (grounding's pointer target).
+        # Nothing records a run-relative depends_on entry for it, so there is
+        # nothing to repair.
+        return
+    queue = [(seed_rel, old_hash, artifacts.compute_sha256(changed_path))]
+    seen_edges: set[tuple[str, str, str]] = set()
+    while queue:
+        upstream_rel, old, new = queue.pop()
+        if old == new or (upstream_rel, old, new) in seen_edges:
+            continue
+        seen_edges.add((upstream_rel, old, new))
+        for stage_def in stage_defs:
+            # A stage that declares no upstream records no depends_on entries,
+            # so it can never hold one to repair. Skipping them is not just an
+            # optimisation: `grounding` is the only stage whose artifact is
+            # reached through a pointer file, and it is exactly such a root
+            # stage -- so this scan never has to resolve a pointer, and a
+            # hand-broken pointer.yaml cannot raise out of a startup migration
+            # that has no business reading it.
+            if not stage_def.all_depends_on:
+                continue
+            stage_dir = run_dir / stage_dir_name(stage_def)
+            dependent = artifacts.resolve_latest_artifact(repo_root, stage_def.id, stage_dir)
+            if dependent is None or dependent == changed_path:
+                continue
+            before = artifacts.compute_sha256(dependent)
+            if not _rewrite_depends_on_hash(dependent, upstream_rel, old, new):
+                continue
+            try:
+                dependent_rel = artifacts.relpath_in_run(dependent, run_dir)
+            except ValueError:
+                continue
+            queue.append((dependent_rel, before, artifacts.compute_sha256(dependent)))
+
+
 def backfill_gate_coverage_artifacts(
     conn: sqlite3.Connection, repo_root: Path, stage_defs: list[StageDef],
 ) -> list[str]:
@@ -331,14 +425,23 @@ def backfill_gate_coverage_artifacts(
     stages so registering their gates does not retroactively block them.
 
     Stamps a pass-shaped entry (the only way classify_gates treats a gate as
-    non-blocking) plus a genuine, visible override via
-    artifacts.record_gate_override -- the artifact's real content is never
-    re-checked against the new gate, and the override note says so, rather
-    than silently pretending it was verified.
+    non-blocking) plus a genuine, visible override, both in a single write --
+    the artifact's real content is never re-checked against the new gate, and
+    the override note says so, rather than silently pretending it was
+    verified. The override is appended into the same `meta` rather than added
+    by a second artifacts.record_gate_override pass, so the pair cannot be
+    torn apart by a crash.
 
     Idempotent: skips any artifact whose gates list already names the
     relevant gate, so a repeat run (every app startup) touches nothing after
     the first.
+
+    Stamping rewrites an approved artifact IN PLACE, which is the one thing
+    the staleness system assumes never happens, so every dependent still
+    pointing at the pre-stamp hash is repaired to the post-stamp hash --
+    see _repair_downstream_hashes. Without that, the first run of this
+    migration flipped a swathe of untouched downstream artifacts to stale
+    for a change that was purely bookkeeping.
 
     Runs on every app startup, same as backfill_styleboard_rows, so a single
     corrupt/unreadable artifact among the live 21 must not take the whole app
@@ -358,29 +461,49 @@ def backfill_gate_coverage_artifacts(
             row = db_mod.get_stage(conn, project["id"], stage_id)
             if row is None or row["status"] != StageStatus.APPROVED.value:
                 continue
-            stage_dir = repo_root / "runs" / project["run_id"] / stage_dir_name(stage_def)
-            latest = artifacts.resolve_latest_artifact(repo_root, stage_id, stage_dir)
-            if latest is None:
-                continue
+            run_dir = repo_root / "runs" / project["run_id"]
+            stage_dir = run_dir / stage_dir_name(stage_def)
+            # Inside the try, not before it (unlike the version this replaced):
+            # resolving grounding's pointer reads the filesystem, so a disk
+            # error here is exactly the recoverable, not-our-data failure the
+            # guard below exists for -- and backfill_styleboard_rows already
+            # wraps its whole per-project body this way.
+            latest: Path | None = None
             try:
+                latest = artifacts.resolve_latest_artifact(repo_root, stage_id, stage_dir)
+                if latest is None:
+                    continue
                 meta, _body = artifacts.read_artifact(latest)
                 existing_names = {g.get("name") for g in (meta.get("gates") or [])}
                 if gate_name in existing_names:
                     continue
+                old_hash = artifacts.compute_sha256(latest)
                 meta.setdefault("gates", []).append(
                     {"name": gate_name, "status": "pass", "findings": []}
                 )
-                artifacts._atomic_write_text(latest, artifacts.render_frontmatter(meta, _body))
-                artifacts.record_gate_override(
-                    latest,
+                # ONE write, not two. The stamp and the override used to be
+                # separate _atomic_write_text calls (the second inside
+                # record_gate_override), and a crash between them left an
+                # artifact stamped "pass" with no override recorded -- which
+                # the idempotency guard above then skips forever, so it never
+                # self-heals. Appending the override into the same `meta`
+                # makes both mutations land or neither.
+                artifacts._append_override(
+                    meta,
                     f"grandfathered by the 2026-08-16 gate-coverage migration -- approved before "
                     f"{gate_name!r} existed; content was never checked against it",
-                    at=now,
+                    now,
+                    None,
+                )
+                artifacts._atomic_write_text(latest, artifacts.render_frontmatter(meta, _body))
+                _repair_downstream_hashes(
+                    repo_root, run_dir, stage_defs, latest, old_hash
                 )
             except _PER_PROJECT_RECOVERABLE as exc:
                 message = (
                     "migrations.backfill_gate_coverage_artifacts: skipping artifact "
-                    f"{latest} (project_id={project['id']}, run_id={project['run_id']!r}, "
+                    f"{latest if latest is not None else stage_dir} "
+                    f"(project_id={project['id']}, run_id={project['run_id']!r}, "
                     f"stage_id={stage_id!r}) -- unreadable or malformed: "
                     f"{type(exc).__name__}: {exc}"
                 )
