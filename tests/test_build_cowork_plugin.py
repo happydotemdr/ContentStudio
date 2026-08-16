@@ -68,15 +68,50 @@ def _isolated_repo_copy(tmp_path: Path) -> Path:
     return root
 
 
+def _resolve_bash() -> str:
+    """A bare `shutil.which("bash")` can resolve to
+    `C:\\Windows\\System32\\bash.exe` -- the WSL launcher stub Windows ships
+    even when no WSL distro is installed -- if that directory happens to sit
+    ahead of Git's own bash on PATH. That stub fails outright
+    (`execvpe(/bin/bash) failed`) rather than running anything. Prefer a real
+    Git-for-Windows bash by checking its two well-known install locations
+    first; only fall back to `which`, and only accept the fallback if it is
+    not the WSL stub."""
+    program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    for candidate in (
+        program_files / "Git" / "bin" / "bash.exe",
+        program_files / "Git" / "usr" / "bin" / "bash.exe",
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    found = shutil.which("bash")
+    assert found is not None, "no bash found (Git for Windows expected on this project's target platform)"
+    assert "system32" not in found.lower(), (
+        f"shutil.which('bash') resolved to {found!r} -- the WSL launcher stub, not Git Bash. "
+        "Install Git for Windows, or fix PATH so its bash is found first."
+    )
+    return found
+
+
 def _run_isolated_build(tmp_path: Path) -> tuple[subprocess.CompletedProcess, Path]:
-    bash_path = shutil.which("bash")
-    assert bash_path is not None, "bash not found on PATH (expected on this project's target platform)"
+    bash_path = _resolve_bash()
     repo_copy = _isolated_repo_copy(tmp_path)
     result = subprocess.run(
         [bash_path, str(repo_copy / "scripts" / "build-cowork-plugin.sh")],
         cwd=repo_copy, capture_output=True, encoding="utf-8", errors="replace",
     )
     return result, repo_copy
+
+
+def test_resolve_bash_never_returns_the_wsl_launcher_stub(monkeypatch):
+    """Guard for the fallback path: if Git's own bash isn't found at either
+    well-known location, _resolve_bash must reject a `which` hit under
+    System32 (the WSL launcher stub, which fails outright with no working
+    WSL distro) rather than silently returning it."""
+    monkeypatch.setattr(Path, "is_file", lambda self: False)  # force both candidates "missing"
+    monkeypatch.setattr(shutil, "which", lambda name: r"C:\Windows\System32\bash.exe")
+    with pytest.raises(AssertionError, match="WSL launcher stub"):
+        _resolve_bash()
 
 
 def test_the_script_never_calls_the_pipeline_seven_skills():
