@@ -382,6 +382,15 @@ Inherit the WORLD LOCK; do not re-emit it into your sheet, and write every style
 This is the highest-value test in the package. It is data-driven over all nine stages, so the
 whole class of defect cannot be reintroduced.
 
+> **Amendment (found during T3 execution):** this block's own `load_topology(REPO_ROOT /
+> "pipeline.yaml", repo_root=REPO_ROOT)` call passes a `repo_root=` kwarg `load_topology`
+> does not accept yet — that parameter is added by T13, sequenced after T3. Fixed by
+> dropping the kwarg here; `load_topology(REPO_ROOT / "pipeline.yaml")` is correct at T3's
+> point in the sequence. Landed in commit 444e93d. T3 also added
+> `KICKOFF_CONTEXT_KEYS` (frozenset only) to `prompt_builder.py` as a minimal addition so
+> this test file can import it — T4 supplies the rest of that file's content and will find
+> the constant already present.
+
 - [ ] **Test first.** New block at the top of `pipeline-app/tests/test_prompt_builder.py`:
 
 ```python
@@ -392,7 +401,7 @@ from pipeline_app.pipeline_config import load_topology
 from pipeline_app.prompt_builder import KICKOFF_CONTEXT_KEYS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REAL_STAGES = load_topology(REPO_ROOT / "pipeline.yaml", repo_root=REPO_ROOT)
+REAL_STAGES = load_topology(REPO_ROOT / "pipeline.yaml")  # `repo_root=` kwarg lands in T13, not yet
 
 
 def _ast(stage_id: str) -> nodes.Template:
