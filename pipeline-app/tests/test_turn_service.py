@@ -278,6 +278,16 @@ async def test_a_failed_turn_on_a_live_session_keeps_the_session_id(conn, projec
 
 
 CHAIN_STAGES = [
+    # "ideation" carries depends_on=[] and is not itself a dependent of
+    # "scripting" here (scripting's own depends_on stays [] -- see the
+    # deviation note on test_a_turn_records_the_grounding_brief_it_was_built_on
+    # below for why). It exists in this list only so stages that DO declare
+    # "ideation" as an upstream (repurpose, widened below) can resolve it --
+    # run_stage_turn._resolve_upstream looks the id up in all_stage_defs, and
+    # an id with no matching StageDef here is silently dropped from inputs
+    # rather than erroring, which would otherwise make repurpose's kickoff
+    # prompt quietly miss its ideation fragment instead of failing loudly.
+    StageDef(id="ideation", skill="shorts-ideation", dir_prefix="01", depends_on=[]),
     StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02", depends_on=[]),
     StageDef(id="styleboard", skill="shorts-styleboard", dir_prefix="02b", depends_on=["scripting"]),
     StageDef(id="voiceover", skill="voiceover-brief", dir_prefix="03", depends_on=["scripting"]),
@@ -288,7 +298,8 @@ CHAIN_STAGES = [
         depends_on=["scripting", "styleboard", "voiceover", "visual"],
         optional_depends_on=["music"],
     ),
-    StageDef(id="repurpose", skill="social-repurpose", dir_prefix="05", depends_on=["assembly"]),
+    StageDef(id="repurpose", skill="social-repurpose", dir_prefix="05",
+             depends_on=["ideation", "scripting", "assembly"]),
 ]
 
 
@@ -687,6 +698,10 @@ def _rgs_chain(conn, tmp_path: Path, brief: str):
     grounding_service.write_pointer(run_dir / "00-grounding", brief, tmp_path)
     script_dep = [{"path": brief, "sha256": artifacts.compute_sha256(brief_path)}]
     artifacts.stamp_final(
+        artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1"),
+        "2026-08-08T00:00:00Z",
+    )
+    artifacts.stamp_final(
         artifacts.write_artifact(run_dir / "02-scripting", 1,
                                  {"stage": "shorts-scripting", "depends_on": script_dep}, "script v1"),
         "2026-08-08T00:00:00Z",
@@ -762,3 +777,63 @@ def test_a_generic_project_with_no_brief_is_not_marked_stale(conn, tmp_path):
     assert turn_service.propagate_grounding_staleness(
         conn, tmp_path, run_dir, CHAIN_STAGES, project_id) == []
     assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.APPROVED.value
+
+
+@pytest.mark.asyncio
+async def test_assembly_kickoff_prompt_carries_every_input_its_skill_requires(
+        conn, tmp_path, monkeypatch, capture):
+    """The end-to-end proof of A-01/A-03/A-04: what the model is actually sent.
+
+    Deviates from the brief: `_rgs_chain` writes only 00-grounding + 01-ideation
+    + 02-scripting artifacts. Assembly's own depends_on in CHAIN_STAGES also
+    requires styleboard/voiceover/visual, so those three approved artifacts are
+    written here inline (the assembly-specific fixture data does not belong in
+    the shared `_rgs_chain`, which other tests rely on staying scripting-only)."""
+    project_id, run_dir = _rgs_chain(conn, tmp_path, brief="rgs-briefs/2026-08-08-a.md")
+    _final_artifact(run_dir / "02b-styleboard", 1, "shorts-styleboard", "styleboard v1")
+    _final_artifact(run_dir / "03-voiceover", 1, "voiceover-brief", "vo v1")
+    _final_artifact(run_dir / "03-visual", 1, "visual-prompts", "vis v1")
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_INIT, _RESULT_OK],
+                                     run_dir / "04-assembly" / "raw_output.md", captured=capture))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("assembly"), CHAIN_STAGES, "cut it",
+        grounding_pointer="rgs-briefs/2026-08-08-a.md"))
+
+    prompt = capture[0]["prompt"]
+    assert prompt.startswith("/shorts-assembly")
+    # Kickoff inputs are rendered via raw str(Path) (turn_service.run_stage_turn's
+    # `inputs[up.id] = str(path)`), not the forward-slash-normalized _relpath used
+    # by the resumed-turn path -- so on Windows these come out backslash-separated.
+    # Deviation from the brief's literal forward-slash fragments (which only match
+    # on POSIX): build each expected fragment via Path join to match the OS.
+    for rel in (Path("02-scripting", "artifact.v1.md"), Path("02b-styleboard", "artifact.v1.md"),
+                Path("03-voiceover", "artifact.v1.md"), Path("03-visual", "artifact.v1.md")):
+        assert str(rel) in prompt, rel
+    assert "rgs-briefs/2026-08-08-a.md" in prompt
+    assert capture[0]["resume_session_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_repurpose_kickoff_prompt_carries_the_script_and_packaging_direction(
+        conn, tmp_path, monkeypatch, capture):
+    """Deviates from the brief in the same way as the assembly test above:
+    `_rgs_chain` writes ideation + scripting only, so the 04-assembly artifact
+    repurpose actually depends on (per the now-widened CHAIN_STAGES entry) is
+    written here inline rather than folded into the shared fixture."""
+    project_id, run_dir = _rgs_chain(conn, tmp_path, brief="rgs-briefs/2026-08-08-a.md")
+    _final_artifact(run_dir / "04-assembly", 1, "shorts-assembly", "asm v1")
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_INIT, _RESULT_OK],
+                                     run_dir / "05-repurpose" / "raw_output.md", captured=capture))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("repurpose"), CHAIN_STAGES, "post it",
+        grounding_pointer="rgs-briefs/2026-08-08-a.md"))
+    prompt = capture[0]["prompt"]
+    # Same OS-separator deviation as the assembly test above.
+    for rel in (Path("01-ideation", "artifact.v1.md"), Path("02-scripting", "artifact.v1.md"),
+                Path("04-assembly", "artifact.v1.md")):
+        assert str(rel) in prompt, rel
+    assert "rgs-briefs/2026-08-08-a.md" in prompt
