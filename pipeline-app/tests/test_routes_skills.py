@@ -172,3 +172,37 @@ def test_missing_template_file_is_distinguishable_from_no_template_at_all(client
             ctx_c["kickoff_template_missing"]) == ("ideation", True, False)
     assert ctx_b["kickoff_template_content"] == ctx_c["kickoff_template_content"] == "" \
         or ctx_c["kickoff_template_content"] != ""
+
+
+def test_unknown_target_is_rejected_and_writes_nothing(client):
+    test_client, tmp_path = client
+    skill_md = tmp_path / ".claude" / "skills" / "shorts-ideation" / "SKILL.md"
+    before = skill_md.read_text(encoding="utf-8")
+
+    resp = test_client.post(
+        "/skills/shorts-ideation/save",
+        data={"target": "skill_md", "content": "edited"},   # renamed hidden input
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 400
+    assert "skill_md" in resp.text          # names the target it refused
+    assert skill_md.read_text(encoding="utf-8") == before
+
+
+def test_a_save_that_wrote_nothing_is_not_the_same_response_as_a_save_that_wrote(client):
+    """Distinguishability: the 303 was indistinguishable between a real write
+    and a no-op (A-49)."""
+    test_client, _ = client
+    wrote = test_client.post(
+        "/skills/shorts-ideation/save",
+        data={"target": "SKILL.md", "content": SKILL_MD.format(name="shorts-ideation")},
+        follow_redirects=False,
+    )
+    wrote_nothing = test_client.post(
+        "/skills/shorts-ideation/save",
+        data={"target": "nonsense", "content": "x"},
+        follow_redirects=False,
+    )
+    assert wrote.status_code == 303
+    assert wrote_nothing.status_code != wrote.status_code

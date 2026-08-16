@@ -31,6 +31,34 @@ def _discovered_skill_names(repo_root) -> set[str]:
     return {p.name for p in skills_dir.iterdir() if p.is_dir()}
 
 
+VALID_TARGETS = ("SKILL.md", "kickoff_template")
+
+
+def _resolve_write_path(request: Request, skill_name: str, target: str) -> Path:
+    repo_root = request.app.state.repo_root
+    if target == "SKILL.md":
+        root = repo_root / ".claude" / "skills"
+        path = root / skill_name / "SKILL.md"
+    elif target == "kickoff_template":
+        stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
+        if stage_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Skill {skill_name!r} is not bound to a pipeline stage, so it has "
+                        f"no kickoff template to save."),
+            )
+        root = repo_root / "pipeline-app" / "stage_templates"
+        path = _template_path(repo_root, stage_id)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unrecognized save target {target!r}; expected one of {VALID_TARGETS}.",
+        )
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise HTTPException(status_code=400, detail="Refusing to write outside the skill tree.")
+    return path
+
+
 @router.get("/skills")
 def skill_list(request: Request):
     repo_root = request.app.state.repo_root
@@ -97,12 +125,14 @@ def save_skill(request: Request, skill_name: str, target: str = Form(...), conte
     if skill_name not in discovered:
         raise HTTPException(status_code=404, detail="Unknown skill.")
 
+    # Resolve and validate the target path first; raises 400 if invalid or out of bounds.
+    path = _resolve_write_path(request, skill_name, target)
+
+    # Write the file.
+    path.write_text(content, encoding="utf-8")
+
+    # Commit only for SKILL.md (kickoff_template stays as-is today; A-52 fixes that).
     if target == "SKILL.md":
-        path = repo_root / ".claude" / "skills" / skill_name / "SKILL.md"
-        path.write_text(content, encoding="utf-8")
         git_helper.commit_skill_edit(repo_root, path, skill_name)
-    elif target == "kickoff_template":
-        stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
-        path = repo_root / "pipeline-app" / "stage_templates" / f"{stage_id}.md"
-        path.write_text(content, encoding="utf-8")
+
     return RedirectResponse(url=f"/skills/{skill_name}", status_code=303)
