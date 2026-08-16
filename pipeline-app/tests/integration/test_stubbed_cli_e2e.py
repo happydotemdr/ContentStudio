@@ -78,7 +78,7 @@ def stub_cli(monkeypatch):
         yield {"type": "result", "subtype": "success", "result": "ok", "total_cost_usd": 0.0}
 
     monkeypatch.setattr(cli_runner, "stream_claude_turn", fake_stream)
-    monkeypatch.setattr(cli_runner, "scoped_permissions_settings", lambda: None)
+    monkeypatch.setattr(cli_runner, "pipeline_permissions_settings", lambda: None)
     return prompts
 
 
