@@ -1124,6 +1124,36 @@ def test_skill_md_save_produces_a_real_scoped_commit(client):
 
 ---
 
+> **Amendment (P5 T15 dispatch, discovered by the implementer and verified live):** the
+> `test_a_stage_with_no_editor_binding_is_findable` test shown below asserts against
+> `root / "pipeline-app" / "logs"` (where `root` is the fixture's `tmp_path`), assuming
+> `obs.log` writes under `repo_root`. It does not: live `obs.py` defines
+> `LOG_DIR = Path(__file__).resolve().parents[1] / "logs"` — fixed to the REAL `pipeline-app/`
+> directory in this worktree, derived from `obs.py`'s own file location, with no `repo_root`
+> parameter anywhere in `obs.log`'s signature. As written, this test can never pass on any real
+> checkout, and worse, it has a live side effect: every run of `commit_skill_edit`/`skill_detail`
+> during this test writes a real log line into the ACTUAL `pipeline-app/logs/app-<date>.log` in
+> this worktree, outside the test's own `tmp_path` sandbox — the same class of issue P1's own
+> `obs.py` accepted as a known, deliberate design point (log lines are diagnostic output, not
+> test-visible state) but which this specific test's assertion fights rather than respects.
+> **Corrected assertion:** point the test at `obs.LOG_DIR` directly instead of reconstructing a
+> path under `root`:
+> ```python
+> def test_a_stage_with_no_editor_binding_is_findable(client, tmp_path):
+>     from pipeline_app import obs
+>     test_client, root = client
+>     (root / "pipeline-app" / "stage_templates" / "styleboard.md").unlink()
+>     test_client.get("/skills/shorts-styleboard")
+>     # obs.log's LOG_DIR is fixed to the real pipeline-app/logs/, not repo_root -- it is NOT
+>     # sandboxed per-test, so assert against the real location and only check for the event's
+>     # presence (not exclusivity: other tests running in the same process may also log here).
+>     logs = sorted(obs.LOG_DIR.glob("app-*.log"))
+>     assert logs and "skill_editor.template_file_missing" in logs[-1].read_text(encoding="utf-8")
+> ```
+> This does not change any production code — `_reject`, the `saved`/`commit_failed` event
+> recording, and the four parametrized rejection tests are unaffected and proceed exactly as this
+> task's plan text already describes.
+
 ### T15 — Surfacing: every rejection and every warning leaves an `events` row
 
 **Requires P1.** One parametrized test carries the surfacing role for A-48, A-49, A-50, A-51 and
