@@ -7,6 +7,7 @@ download_brandintel.py's process_youtube_video (that script stays unmodified
 from __future__ import annotations
 
 import html
+import itertools
 import json
 import re
 import shutil
@@ -148,6 +149,21 @@ def _enumerate_tab(handle: str, tab: str, content_type: str) -> list[dict]:
     ]
 
 
+def _interleave(videos: list[dict], shorts: list[dict]) -> list[dict]:
+    """Merge two independently newest-first tabs with no dates to order by.
+
+    Round-robin, not concatenation. Concatenation puts every Short after every
+    video, so process_handle's consecutive-on-disk break ends the walk inside
+    the /videos block and no Short is ever reached -- which is why the previous
+    code dropped them outright instead. Round-robin is not a true global order
+    (that is impossible without dates), so callers get order_confidence
+    "approximate" and the condition is reported rather than silently narrowing
+    the capture (B-14).
+    """
+    return [i for pair in itertools.zip_longest(videos, shorts)
+            for i in pair if i is not None]
+
+
 def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
     """Every video AND Short for `handle`, merged into one newest-first list.
 
@@ -170,18 +186,20 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
     if dates:
         for item in items:
             item["published"] = dates.get(item["id"])
+            item["order_confidence"] = "exact"
         # Undated items (deleted/private/API miss) sort last rather than
         # masquerading as the newest.
         items.sort(key=lambda i: i["published"] or "", reverse=True)
-    elif per_tab["short"]:
-        # Without dates there is no way to interleave two independently-ordered
-        # tabs, and returning them concatenated would break the newest-first
-        # contract process_handle relies on. Fall back to /videos alone --
-        # narrower, but correct -- and say so.
-        print(f"  ! no Data API dates available for {handle}: cannot order Shorts "
-              f"against videos, so {len(per_tab['short'])} Shorts are being skipped. "
-              f"Set YOUTUBE_API_KEY to include them.", file=sys.stderr)
-        items = videos
+    else:
+        if per_tab["short"]:
+            obs.log("adapter.ordering_degraded", level="warning", platform="youtube",
+                    handle=handle, shorts=len(per_tab["short"]), videos=len(videos))
+            print(f"  ! no Data API dates for {handle}: Shorts and videos cannot be "
+                  f"date-ordered, so the merged list is approximate. Set YOUTUBE_API_KEY "
+                  f"for an exact order.", file=sys.stderr)
+        items = _interleave(videos, per_tab["short"])
+        for item in items:
+            item["order_confidence"] = "approximate"
 
     if keyword_filter:
         items = [i for i in items if keyword_filter.lower() in i["title"].lower()]

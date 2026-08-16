@@ -60,32 +60,19 @@ def test_on_disk_ids_empty_for_new_handle(tmp_path: Path):
 
 
 def test_enumerate_newest_first_applies_keyword_filter(monkeypatch):
-    fake_output = json.dumps({"entries": [
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs([
         {"id": "v1", "title": "Adam Grant on focus"},
         {"id": "v2", "title": "Unrelated video"},
         {"id": "v3", "title": "adam grant interview"},
-    ]})
-
-    class FakeProc:
-        returncode = 0
-        stdout = fake_output
-        stderr = ""
-
-    monkeypatch.setattr(yt.subprocess, "run", lambda *a, **k: FakeProc())
+    ], []))
     items = yt.enumerate_newest_first("@bigthink", keyword_filter="Adam Grant")
     assert [i["id"] for i in items] == ["v1", "v3"]
     assert all(i["published"] is None for i in items)
 
 
 def test_enumerate_newest_first_no_filter_returns_all(monkeypatch):
-    fake_output = json.dumps({"entries": [{"id": "v1", "title": "A"}, {"id": "v2", "title": "B"}]})
-
-    class FakeProc:
-        returncode = 0
-        stdout = fake_output
-        stderr = ""
-
-    monkeypatch.setattr(yt.subprocess, "run", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
+        [{"id": "v1", "title": "A"}, {"id": "v2", "title": "B"}], []))
     items = yt.enumerate_newest_first("@a", keyword_filter=None)
     assert [i["id"] for i in items] == ["v1", "v2"]
 
@@ -526,14 +513,39 @@ def test_undated_items_sort_last_not_first(monkeypatch):
     assert [i["id"] for i in yt.enumerate_newest_first("@c", None)] == ["dated", "undated"]
 
 
-def test_without_api_dates_falls_back_to_videos_only_and_warns(monkeypatch, capsys):
-    """No key -> cannot order two tabs -> narrower but correct, and loud."""
+def test_shorts_are_not_dropped_when_no_api_dates_are_available(monkeypatch):
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
+        [{"id": "v1", "title": "v"}, {"id": "v2", "title": "v"}],
+        [{"id": "s1", "title": "s"}]))
+    monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {})
+    ids = [i["id"] for i in yt.enumerate_newest_first("@c", None)]
+    assert set(ids) == {"v1", "v2", "s1"}, "no Short may be silently dropped (B-14/F-24)"
+
+
+def test_undated_enumeration_interleaves_rather_than_concatenating(monkeypatch):
+    """Concatenation is what makes the drop invisible: process_handle breaks on
+    consecutive-on-disk inside the /videos block and never reaches a Short."""
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
+        [{"id": "v1", "title": "v"}, {"id": "v2", "title": "v"}],
+        [{"id": "s1", "title": "s"}, {"id": "s2", "title": "s"}]))
+    monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {})
+    assert [i["id"] for i in yt.enumerate_newest_first("@c", None)] == ["v1", "s1", "v2", "s2"]
+
+
+def test_undated_enumeration_marks_its_order_approximate(monkeypatch, logged):
     monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
         [{"id": "v1", "title": "v"}], [{"id": "s1", "title": "s"}]))
     monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {})
     items = yt.enumerate_newest_first("@c", None)
-    assert [i["id"] for i in items] == ["v1"]
-    assert "Shorts are being skipped" in capsys.readouterr().err
+    assert {i["order_confidence"] for i in items} == {"approximate"}
+    assert [r for r in logged if r["event"] == "adapter.ordering_degraded"
+            and r["level"] == "warning" and r["shorts"] == 1]
+
+
+def test_dated_enumeration_marks_its_order_exact(monkeypatch):
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs([{"id": "v1", "title": "v"}], []))
+    monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {"v1": "2026-07-01"})
+    assert yt.enumerate_newest_first("@c", None)[0]["order_confidence"] == "exact"
 
 
 def test_absent_shorts_tab_is_still_a_legitimate_empty(monkeypatch, logged):
