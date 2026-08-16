@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -16,33 +17,79 @@ class TurnResult:
     success: bool
 
 
-# A pipeline-stage turn must never shell out, reach the live web, or write to
-# docs/, output/, or .claude/skills/ -- see CLAUDE.md's permission-scoping
-# requirement. --allowedTools is additive/auto-approve only; this subtractive
-# list is what actually blocks a tool. Verified against `claude --help`,
-# 2026-07-27: --disallowedTools takes the same comma-separated Tool(pattern)
-# syntax as --allowedTools.
+# ONE policy. --allowedTools, --disallowedTools and the --settings deny block are
+# all derived from it, and permits_write() is what the tests assert on -- so the
+# shipped flags cannot drift from the behaviour under test (F-11).
 #
-# Task is deliberately NOT denied here: midjourney-prompting's SKILL.md (its
-# Gate B, "production"-stage only) dispatches one fresh agent for adversarial
-# art-direction review, and visual-prompts auto-invokes midjourney-prompting
-# mid-turn. Denying Task would silently degrade that documented quality gate
-# with no error surfaced to the user -- a real scope-vs-capability trade-off,
-# not an oversight.
-#
-# PowerShell and Bash are both denied: this app is Windows-targeted (see
-# platform_argv's cmd-shim handling below), and a real recorded turn's
-# system/init event shows PowerShell present and usable in the tool list --
-# denying Bash alone does not stop a pipeline turn from shelling out on
-# Windows. NotebookEdit is denied alongside Write/Edit as another unscoped
-# write path not covered by the docs/**|output/**|.claude/skills/** patterns.
-PIPELINE_DISALLOWED_TOOLS = (
-    "Bash,PowerShell,WebFetch,WebSearch,"
-    "Write(docs/**),Edit(docs/**),"
-    "Write(output/**),Edit(output/**),"
-    "Write(.claude/skills/**),Edit(.claude/skills/**),"
-    "NotebookEdit"
+# --allowedTools is the auto-approve list and headless `claude -p` has nobody to
+# approve anything absent from it, so NARROWING it is what actually restricts.
+# The previous bare "Write,Edit" auto-approved every path on the machine, and the
+# `permissions.allow` blob that claimed to scope writes only granted (D-43/D-44).
+WRITE_ALLOW_PATTERNS = ("runs/**", "rgs-briefs/**")
+WRITE_DENY_PATTERNS = (
+    "docs/**",
+    "output/**",
+    # .claude/** entire, not just skills/**: settings.json registers
+    # .claude/hooks/protect_briefs.py as a PreToolUse hook that then runs as an
+    # unrestricted Python subprocess (D-46).
+    ".claude/**",
+    # gates.py loads scripts/lint_*.py by file path and exec_module's them INSIDE
+    # the uvicorn process after every turn. A turn that edits a linter gets
+    # arbitrary in-process code execution -- the exact capability the Bash and
+    # PowerShell denials exist to remove (D-45).
+    "scripts/**",
+    "pipeline-app/**",
+    "pipeline.yaml",
 )
+DENIED_TOOLS = ("Bash", "PowerShell", "WebFetch", "WebSearch", "NotebookEdit")
+
+_WRITE_TOOLS = ("Write", "Edit")
+
+
+def _scoped(tools: tuple[str, ...], patterns: tuple[str, ...]) -> list[str]:
+    return [f"{tool}({pattern})" for pattern in patterns for tool in tools]
+
+
+PIPELINE_ALLOWED_TOOLS = ",".join(
+    # Task is required, not optional: midjourney-prompting's Gate B and
+    # shorts-scripting's Gate E both dispatch a fresh reviewing agent through it.
+    ["Read", "Glob", "Grep", "Skill", "Task"] + _scoped(_WRITE_TOOLS, WRITE_ALLOW_PATTERNS)
+)
+PIPELINE_DISALLOWED_TOOLS = ",".join(
+    list(DENIED_TOOLS) + _scoped(_WRITE_TOOLS, WRITE_DENY_PATTERNS)
+)
+
+
+def _glob_to_regex(pattern: str) -> re.Pattern[str]:
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def permits_write(path: str) -> bool:
+    """Would a pipeline-stage turn be allowed to write `path`? Repo-relative,
+    forward slashes. This is the single source of truth for the write scope --
+    assert on this, never on the flag literals."""
+    normalised = path.replace("\\", "/")
+    if (normalised.startswith("/") or ".." in normalised.split("/")
+            or re.match(r"^[A-Za-z]:", normalised)):
+        return False        # nothing outside the project is auto-approved
+    if any(_glob_to_regex(p).match(normalised) for p in WRITE_DENY_PATTERNS):
+        return False
+    return any(_glob_to_regex(p).match(normalised) for p in WRITE_ALLOW_PATTERNS)
 
 
 def resolve_claude_binary(which_fn: Callable[[str], str | None] = shutil.which) -> str:
@@ -119,22 +166,15 @@ async def parse_stream_json_lines(lines: AsyncIterator[bytes]) -> AsyncIterator[
             continue
 
 
-def scoped_permissions_settings() -> str:
-    """Inline --settings JSON scoping Write/Edit to runs/** and rgs-briefs/**,
-    per the design spec's §5 permission-scoping requirement — a pipeline-stage
-    turn must never touch docs/, output/, or .claude/skills/. The Tool(pattern)
-    syntax mirrors --allowedTools "Bash(git diff *)" from Claude Code's own
-    headless-mode docs; re-verify the exact permission-rule syntax against
-    `claude --help` / the current settings reference when implementing this
-    task, since CLI flag/settings shapes can change between releases."""
+def pipeline_permissions_settings() -> str:
+    """Inline --settings JSON for a stage turn. `allow` pre-approves the two
+    write roots; `deny` is the half that actually refuses. The former name
+    (scoped_permissions_settings) and its docstring claimed an allow-only blob
+    scoped writes, which it never did (D-43)."""
     return json.dumps({
         "permissions": {
-            "allow": [
-                "Write(runs/**)",
-                "Edit(runs/**)",
-                "Write(rgs-briefs/**)",
-                "Edit(rgs-briefs/**)",
-            ],
+            "allow": _scoped(_WRITE_TOOLS, WRITE_ALLOW_PATTERNS),
+            "deny": list(DENIED_TOOLS) + _scoped(_WRITE_TOOLS, WRITE_DENY_PATTERNS),
         }
     })
 
@@ -227,7 +267,7 @@ async def stream_claude_turn(
     # --allowedTools is the auto-approve list and headless -p has nobody to
     # approve anything absent from it -- so omitting Task here silently
     # degraded Gate B rather than surfacing an error.
-    allowed_tools: str = "Read,Glob,Grep,Write,Edit,Skill,Task",
+    allowed_tools: str = PIPELINE_ALLOWED_TOOLS,
     disallowed_tools: str = PIPELINE_DISALLOWED_TOOLS,
     settings_path: str | None = None,
 ) -> AsyncIterator[dict]:

@@ -350,7 +350,7 @@ async def run_stage_turn(
     collected: list[dict] = []
     turn_stream = cli_runner.stream_claude_turn(
         prompt, repo_root, resume_id,
-        settings_path=cli_runner.scoped_permissions_settings(),
+        settings_path=cli_runner.pipeline_permissions_settings(),
     )
     try:
         async with contextlib.aclosing(turn_stream):
