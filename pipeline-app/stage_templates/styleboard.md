@@ -1,6 +1,6 @@
 /{{ skill }}
 
-Read the script at `{{ input_file }}` and lock this Short's two visual worlds: the
+Read the script at `{{ inputs['scripting'] }}` and lock this Short's two visual worlds: the
 Register A/present world, the Register B/source-era world, the motif that crosses both,
 and which Style Library entry each register binds to.
 

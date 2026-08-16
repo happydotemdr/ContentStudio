@@ -144,13 +144,12 @@ async def run_stage_turn(
 
     is_first_turn = stage_row["claude_session_id"] is None
     if is_first_turn:
-        input_files = [str(p) for p in upstream_paths]
+        inputs = {up_id: str(p) for up_id, p in upstream_by_stage.items()}
         prompt = prompt_builder.render_kickoff_prompt(templates_dir, stage_def.id, {
             "skill": stage_def.skill,
             "user_message": user_message,
             "grounding_pointer": grounding_pointer,
-            "input_file": input_files[0] if input_files else None,
-            "input_files": input_files,
+            "inputs": inputs,
             "raw_output_path": str(raw_output_path),
         })
         resume_id = None

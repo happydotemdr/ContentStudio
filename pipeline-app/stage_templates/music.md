@@ -1,9 +1,9 @@
 /{{ skill }}
 
 Read the following upstream artifacts and produce the music bed brief:
-{% for f in input_files %}
-- `{{ f }}`
-{% endfor %}
+- script (beat timings): `{{ inputs['scripting'] }}`
+- voiceover brief — its tone-per-beat call is what the tone-contradiction check runs
+  against: `{{ inputs['voiceover'] }}`
 {% if grounding_pointer %}
 A companion grounding artifact is available at `{{ grounding_pointer }}` — carry forward any
 citations or constraints it names.
