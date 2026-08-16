@@ -25,7 +25,17 @@ class StageDef:
         return [*self.depends_on, *self.optional_depends_on]
 
 
-def load_topology(path: Path) -> list[StageDef]:
+# Explicit, not inferred from the projects table: a brand_scope typo has to be
+# rejectable at load time, before any project exists to compare against (A-12).
+KNOWN_BRAND_SCOPES = frozenset({"raisinggoodsports"})
+
+
+def load_topology(path: Path, repo_root: Path | None = None) -> list[StageDef]:
+    """repo_root is where `.claude/skills/` and `pipeline-app/stage_templates/`
+    resolve from. It defaults to the YAML file's parent, which is correct only
+    because pipeline.yaml happens to live at the repo root (A-17) -- so
+    _validate_topology verifies the derived root really is a ContentStudio
+    checkout instead of validating against the wrong tree in silence."""
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     stages = [
         StageDef(
@@ -40,7 +50,7 @@ def load_topology(path: Path) -> list[StageDef]:
         )
         for s in data["stages"]
     ]
-    _validate_topology(stages, path.parent)
+    _validate_topology(stages, repo_root if repo_root is not None else path.parent)
     return stages
 
 
@@ -57,24 +67,58 @@ def _validate_topology(stages: list[StageDef], repo_root: Path) -> None:
                     f"pipeline.yaml: stage '{stage.id}' depends_on unknown stage '{dep}'"
                 )
     _check_no_cycles(stages)
+
+    skills_dir = repo_root / ".claude" / "skills"
+    templates_dir = repo_root / "pipeline-app" / "stage_templates"
+    # An empty topology has nothing to validate against a checkout, so it
+    # needs no scaffolding at all -- only guard the ones that declare stages.
+    if stages and (not skills_dir.is_dir() or not templates_dir.is_dir()):
+        raise ValueError(
+            f"pipeline.yaml: {repo_root} is not a ContentStudio checkout — expected "
+            f"{skills_dir} and {templates_dir} to exist. Pass repo_root explicitly."
+        )
+    scope_by_id = {s.id: s.brand_scope for s in stages}
     for stage in stages:
-        if stage.specialist is not None:
-            skill_md = repo_root / ".claude" / "skills" / stage.specialist / "SKILL.md"
+        # `skill` gets exactly the check `specialist` already had. It is the
+        # mandatory field, and the one every template renders as /{{ skill }}.
+        for field_name in ("skill", "specialist"):
+            name = getattr(stage, field_name)
+            if name is None:
+                continue
+            skill_md = skills_dir / name / "SKILL.md"
             if not skill_md.exists():
                 raise ValueError(
-                    f"pipeline.yaml: stage '{stage.id}' specialist '{stage.specialist}' has no "
-                    f"skill at {skill_md}"
+                    f"pipeline.yaml: stage '{stage.id}' {field_name} '{name}' has no skill "
+                    f"at {skill_md}"
                 )
-            # sidebar.html renders specialist_mode == "manual" as "(manual
-            # hand-off)" and treats anything else -- including a missing
-            # value or a typo like "Manual" -- as "(auto-delegated)", the
-            # stronger/wrong claim. A stage with a specialist must declare an
-            # unambiguous mode rather than silently defaulting to that claim.
-            if stage.specialist_mode not in ("auto", "manual"):
+        template = templates_dir / f"{stage.id}.md"
+        if not template.exists():
+            raise ValueError(
+                f"pipeline.yaml: stage '{stage.id}' has no kickoff template at {template}"
+            )
+        if stage.brand_scope is not None and stage.brand_scope not in KNOWN_BRAND_SCOPES:
+            raise ValueError(
+                f"pipeline.yaml: stage '{stage.id}' brand_scope '{stage.brand_scope}' is not "
+                f"one of {sorted(KNOWN_BRAND_SCOPES)}"
+            )
+        for dep in stage.all_depends_on:
+            dep_scope = scope_by_id[dep]
+            if dep_scope is not None and stage.brand_scope != dep_scope:
                 raise ValueError(
-                    f"pipeline.yaml: stage '{stage.id}' specialist_mode must be 'auto' or "
-                    f"'manual', got {stage.specialist_mode!r}"
+                    f"pipeline.yaml: stage '{stage.id}' (brand_scope {stage.brand_scope!r}) "
+                    f"depends on '{dep}' (brand_scope {dep_scope!r}), which has no row on every "
+                    f"project '{stage.id}' does — '{stage.id}' would sit locked forever."
                 )
+        # sidebar.html renders specialist_mode == "manual" as "(manual
+        # hand-off)" and treats anything else -- including a missing
+        # value or a typo like "Manual" -- as "(auto-delegated)", the
+        # stronger/wrong claim. A stage with a specialist must declare an
+        # unambiguous mode rather than silently defaulting to that claim.
+        if stage.specialist is not None and stage.specialist_mode not in ("auto", "manual"):
+            raise ValueError(
+                f"pipeline.yaml: stage '{stage.id}' specialist_mode must be 'auto' or "
+                f"'manual', got {stage.specialist_mode!r}"
+            )
 
 
 def _check_no_cycles(stages: list[StageDef]) -> None:

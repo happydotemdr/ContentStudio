@@ -17,6 +17,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
 
 
+def _scaffold_skills_and_templates(tmp_path: Path, stage_skills: dict[str, str]) -> None:
+    """Minimal `.claude/skills/<skill>/SKILL.md` + `pipeline-app/stage_templates/<id>.md`
+    scaffolding for every stage id -> skill name pair, satisfying T13's mandatory
+    existence checks for a tmp_path repo_root that otherwise has neither."""
+    for stage_id, skill in stage_skills.items():
+        skill_dir = tmp_path / ".claude" / "skills" / skill
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text("x", encoding="utf-8")
+        tdir = tmp_path / "pipeline-app" / "stage_templates"
+        tdir.mkdir(parents=True, exist_ok=True)
+        (tdir / f"{stage_id}.md").write_text("/x", encoding="utf-8")
+
+
 def _install_real_script_linter(tmp_path: Path) -> None:
     dest = tmp_path / "scripts"
     dest.mkdir(parents=True, exist_ok=True)
@@ -58,6 +71,7 @@ def client(tmp_path: Path, monkeypatch):
         "stages:\n  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {"ideation": "shorts-ideation"})
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     return TestClient(app, follow_redirects=False), tmp_path, app
 
@@ -71,6 +85,9 @@ def two_stage_client(tmp_path: Path, monkeypatch):
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n"
         "    depends_on: [ideation]\n",
         encoding="utf-8",
+    )
+    _scaffold_skills_and_templates(
+        tmp_path, {"ideation": "shorts-ideation", "scripting": "shorts-scripting"}
     )
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     return TestClient(app, follow_redirects=False), tmp_path, app
@@ -499,6 +516,7 @@ def test_edit_route_blocks_grounding(tmp_path: Path, monkeypatch):
         "    depends_on: []\n    brand_scope: raisinggoodsports\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {"grounding": "rgs-grounding"})
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
     resp = test_client.post("/projects", data={"slug": "rgs", "brand": "raisinggoodsports"})
@@ -545,6 +563,11 @@ def visual_client(tmp_path: Path, monkeypatch):
         "    depends_on: [scripting, styleboard]\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {
+        "scripting": "shorts-scripting",
+        "styleboard": "shorts-styleboard",
+        "visual": "visual-prompts",
+    })
     _install_gate_c_inputs(tmp_path)
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     return TestClient(app, follow_redirects=False), tmp_path, app
@@ -694,6 +717,10 @@ def styleboard_client(tmp_path: Path, monkeypatch):
         "    depends_on: [ideation]\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {
+        "ideation": "shorts-ideation",
+        "styleboard": "shorts-styleboard",
+    })
     _install_gate_c_inputs(tmp_path)
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     return TestClient(app, follow_redirects=False), tmp_path, app

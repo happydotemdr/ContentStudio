@@ -17,6 +17,14 @@ def client(tmp_path: Path, monkeypatch):
         "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n",
         encoding="utf-8",
     )
+    for skill in ("rgs-grounding", "shorts-ideation"):
+        skill_dir = tmp_path / ".claude" / "skills" / skill
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("x", encoding="utf-8")
+    tdir = tmp_path / "pipeline-app" / "stage_templates"
+    tdir.mkdir(parents=True)
+    (tdir / "grounding.md").write_text("/x", encoding="utf-8")
+    (tdir / "ideation.md").write_text("/x", encoding="utf-8")
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     # follow_redirects=False: the /projects POST route responds with a 303
     # redirect to /projects/{id}, and these tests read the new project id off
@@ -124,6 +132,14 @@ def test_chat_endpoint_returns_409_for_locked_stage(tmp_path: Path, monkeypatch)
         "    depends_on: [ideation]\n",
         encoding="utf-8",
     )
+    for skill in ("shorts-ideation", "shorts-scripting"):
+        skill_dir = tmp_path / ".claude" / "skills" / skill
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("x", encoding="utf-8")
+    tdir = tmp_path / "pipeline-app" / "stage_templates"
+    tdir.mkdir(parents=True)
+    (tdir / "ideation.md").write_text("/x", encoding="utf-8")
+    (tdir / "scripting.md").write_text("/x", encoding="utf-8")
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})

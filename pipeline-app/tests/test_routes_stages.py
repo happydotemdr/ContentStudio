@@ -10,6 +10,19 @@ from pipeline_app.main import create_app
 from pipeline_app.state_machine import StageStatus
 
 
+def _scaffold_skills_and_templates(tmp_path: Path, stage_skills: dict[str, str]) -> None:
+    """Minimal `.claude/skills/<skill>/SKILL.md` + `pipeline-app/stage_templates/<id>.md`
+    scaffolding for every stage id -> skill name pair, satisfying T13's mandatory
+    existence checks for a tmp_path repo_root that otherwise has neither."""
+    for stage_id, skill in stage_skills.items():
+        skill_dir = tmp_path / ".claude" / "skills" / skill
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text("x", encoding="utf-8")
+        tdir = tmp_path / "pipeline-app" / "stage_templates"
+        tdir.mkdir(parents=True, exist_ok=True)
+        (tdir / f"{stage_id}.md").write_text("/x", encoding="utf-8")
+
+
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -19,6 +32,9 @@ def client(tmp_path: Path, monkeypatch):
         "    depends_on: []\n    brand_scope: raisinggoodsports\n"
         "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n",
         encoding="utf-8",
+    )
+    _scaffold_skills_and_templates(
+        tmp_path, {"grounding": "rgs-grounding", "ideation": "shorts-ideation"}
     )
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     return TestClient(app, follow_redirects=False), tmp_path, app
@@ -36,6 +52,9 @@ def two_stage_client(tmp_path: Path, monkeypatch):
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n"
         "    depends_on: [ideation]\n",
         encoding="utf-8",
+    )
+    _scaffold_skills_and_templates(
+        tmp_path, {"ideation": "shorts-ideation", "scripting": "shorts-scripting"}
     )
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     return TestClient(app, follow_redirects=False), tmp_path, app
@@ -426,6 +445,11 @@ def test_stage_page_shows_grouped_parallel_pair_in_nav(tmp_path: Path, monkeypat
     (tmp_path / ".claude" / "skills" / "midjourney-prompting" / "SKILL.md").write_text(
         "---\nname: midjourney-prompting\n---\n", encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {
+        "scripting": "shorts-scripting",
+        "voiceover": "voiceover-brief",
+        "visual": "visual-prompts",
+    })
     (tmp_path / "pipeline.yaml").write_text(
         "stages:\n"
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n"
@@ -463,6 +487,9 @@ def test_stage_page_shows_all_upstream_inputs_not_just_first(tmp_path: Path, mon
         "    depends_on: [voiceover, visual]\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {
+        "voiceover": "voiceover-brief", "visual": "visual-prompts", "assembly": "shorts-assembly",
+    })
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
@@ -494,6 +521,9 @@ def test_a_missing_upstream_artifact_is_reported_not_dropped(tmp_path: Path, mon
         "    depends_on: [voiceover, visual]\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {
+        "voiceover": "voiceover-brief", "visual": "visual-prompts", "assembly": "shorts-assembly",
+    })
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
@@ -521,6 +551,9 @@ def test_a_missing_upstream_is_distinguishable_from_an_empty_one(tmp_path: Path,
         "    depends_on: [voiceover, visual]\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {
+        "voiceover": "voiceover-brief", "visual": "visual-prompts", "assembly": "shorts-assembly",
+    })
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
@@ -551,6 +584,9 @@ def test_every_declared_dependency_appears_even_when_all_are_missing(tmp_path: P
         "    depends_on: [voiceover, visual]\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {
+        "voiceover": "voiceover-brief", "visual": "visual-prompts", "assembly": "shorts-assembly",
+    })
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
@@ -572,6 +608,9 @@ def test_a_script_tag_in_an_upstream_artifact_does_not_reach_the_context(tmp_pat
         "  - id: assembly\n    skill: shorts-assembly\n    dir_prefix: \"04\"\n"
         "    depends_on: [voiceover]\n",
         encoding="utf-8",
+    )
+    _scaffold_skills_and_templates(
+        tmp_path, {"voiceover": "voiceover-brief", "assembly": "shorts-assembly"}
     )
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
@@ -615,6 +654,9 @@ def test_an_html_entity_decoded_attribute_cannot_inject_a_new_on_attribute(tmp_p
         "    depends_on: [voiceover]\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(
+        tmp_path, {"voiceover": "voiceover-brief", "assembly": "shorts-assembly"}
+    )
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
@@ -654,6 +696,9 @@ def test_a_javascript_url_via_ordinary_markdown_link_syntax_is_stripped(tmp_path
         "  - id: assembly\n    skill: shorts-assembly\n    dir_prefix: \"04\"\n"
         "    depends_on: [voiceover]\n",
         encoding="utf-8",
+    )
+    _scaffold_skills_and_templates(
+        tmp_path, {"voiceover": "voiceover-brief", "assembly": "shorts-assembly"}
     )
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
@@ -772,6 +817,7 @@ def test_stage_page_renders_gate_results_and_override_field(tmp_path: Path, monk
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {"scripting": "shorts-scripting"})
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
@@ -837,6 +883,7 @@ def test_stage_page_finding_styling_tracks_gates_non_blocking_kinds(tmp_path: Pa
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {"scripting": "shorts-scripting"})
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
@@ -884,6 +931,7 @@ def test_approve_route_blank_override_field_does_not_count_as_override(tmp_path:
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n",
         encoding="utf-8",
     )
+    _scaffold_skills_and_templates(tmp_path, {"scripting": "shorts-scripting"})
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     test_client = TestClient(app, follow_redirects=False)
     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
