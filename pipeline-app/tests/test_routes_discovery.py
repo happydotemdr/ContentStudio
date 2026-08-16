@@ -258,3 +258,14 @@ def test_update_handle_brands_to_no_boxes_checked_clears_all_tags(client: TestCl
 
     client.post(f"/discovery/handles/{handle_id}/brands", data={})
     assert db_mod.get_handle_brands(conn, handle_id) == []
+
+
+def test_update_handle_brands_with_stale_handle_id_returns_404_not_500(client: TestClient):
+    response = client.post("/discovery/handles/999999/brands", data={"brands": ["guru"]})
+    assert response.status_code == 404
+
+
+def test_brand_choices_matches_email_render_brand_section_order():
+    from pipeline_app import email_render
+    from pipeline_app.routes.discovery import BRAND_CHOICES
+    assert BRAND_CHOICES == list(email_render.BRAND_SECTION_ORDER)

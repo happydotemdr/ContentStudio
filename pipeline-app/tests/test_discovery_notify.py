@@ -426,6 +426,69 @@ def test_build_summary_attaches_brand_tags_from_the_producing_handle(notify_db):
     assert summary["items"][0]["brands"] == ["guru", "raisinggoodsports"]
 
 
+def test_notify_end_to_end_warns_on_orphaned_untagged_item(monkeypatch, notify_db):
+    # Task 5's original end-to-end test used to exercise an untagged handle
+    # through the real notify() pipeline; it was changed to tag its handle
+    # with ["guru"], leaving no end-to-end coverage of the orphan-warning
+    # banner (email_render.render_brand_digest's "no brand tag" text). This
+    # restores that coverage against the real build_summary/render pipeline,
+    # mocking only send_email.
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn)  # no set_handle_brands call -- stays untagged
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_youtube_video(repo_root, "@somechannel", "vid1", "Untagged Video", "2026-08-01T06:01:00+00:00")
+
+    captured = {}
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text, html: (captured.setdefault("text", text), captured.setdefault("html", html), True)[-1],
+    )
+
+    result = discovery_notify.notify(conn, repo_root, run_row_id)
+
+    assert result is True
+    assert "no brand tag" in captured["text"].lower()
+    assert "no brand tag" in captured["html"].lower()
+
+
+def test_notify_end_to_end_run_level_facts_render_identically_across_sections(monkeypatch, notify_db):
+    # run_status/has_issues/errored are run-wide facts copied verbatim into
+    # every brand section (discovery_notify.notify()), not filtered per
+    # brand like items are. Exercises that through the real notify()
+    # pipeline: one handle tagged with all three brands (so its section
+    # membership doesn't hide the shared facts) plus one errored, untagged
+    # handle whose error must still show up in all three sections.
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, status="completed_with_errors")
+    handle_id = _make_handle(conn, "instagram", "aspenprojectplay", "Aspen Project Play")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports", "freedom2beu"])
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_post(repo_root, "instagram", "aspenprojectplay", "p1.md",
+                ["url: 'https://instagram.com/p/1'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A caption.")
+    errored_handle_id = db.create_handle(conn, "youtube", "@dead-handle", None, "guru", None,
+                                         "2026-07-01T00:00:00+00:00")
+    db.record_handle_result(conn, run_row_id, errored_handle_id, "error", 0, "gone")
+
+    captured = {}
+    monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments", lambda item, **kw: [])
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text, html: (captured.setdefault("text", text), captured.setdefault("html", html), True)[-1],
+    )
+
+    result = discovery_notify.notify(conn, repo_root, run_row_id)
+
+    assert result is True
+    text, html = captured["text"], captured["html"]
+    # Once per brand section (guru, raisinggoodsports, freedom2beu).
+    assert text.count("@dead-handle") == 3
+    assert html.count("@dead-handle") == 3
+    assert text.count("Run status: completed_with_errors") == 3
+    assert html.count("Run status: completed_with_errors") == 3
+
+
 def test_build_summary_untagged_handle_produces_items_with_no_brands(notify_db):
     conn, repo_root = notify_db
     run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")

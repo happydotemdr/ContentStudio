@@ -7,12 +7,13 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 from pipeline_app import db as db_mod
+from pipeline_app import email_render
 from pipeline_app.discovery_paths import find_slug_collision, handle_slug
 
 router = APIRouter()
 
 COHORT_SUGGESTIONS = ["guru", "shorts-specialist", "midjourney-source", "general-interest"]
-BRAND_CHOICES = ["guru", "raisinggoodsports", "freedom2beu"]
+BRAND_CHOICES = list(email_render.BRAND_SECTION_ORDER)
 
 
 def _spawn_cron(repo_root: Path, args: list[str]) -> None:
@@ -86,6 +87,9 @@ def toggle_handle_included(request: Request, handle_id: int):
 @router.post("/discovery/handles/{handle_id}/brands")
 def update_handle_brands(request: Request, handle_id: int, brands: list[str] = Form([])):
     conn = request.app.state.conn
+    row = db_mod.get_handle(conn, handle_id)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
     db_mod.set_handle_brands(conn, handle_id, brands)
     return RedirectResponse(url="/discovery/handles", status_code=303)
 

@@ -3,8 +3,14 @@ discovery handles that predate the handle_brands table. See
 docs/superpowers/specs/2026-08-15-brand-scoped-discovery-email-design.md for
 the RaisingGoodSports/Freedom2BeU classification rationale.
 
-Safe to re-run: set_handle_brands replaces a handle's tag set, so a second run
-reproduces the same end state rather than accumulating duplicates.
+Idempotent, but NOT safe to re-run casually once Task 6's /discovery/handles UI
+has shipped: set_handle_brands replaces a handle's tag set, so re-running this
+script always resets these 15 handles' tags back to the BRAND_TAGS mapping
+below, silently discarding any manual retagging an operator has done since via
+that UI. It reproduces the same end state every time -- that consistency is
+exactly what makes it destructive to an operator's later changes. Treat this
+as a one-time initial-application script, not something to run again after
+the handles page exists.
 
 Usage: python scripts/tag_handle_brands_2026_08.py
 """
