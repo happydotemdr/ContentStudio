@@ -415,3 +415,47 @@ def test_durability_contract_backfill_refuses_a_populated_stage_dir(conn, tmp_pa
 
     backfill_styleboard_rows(conn, tmp_path, STAGE_DEFS)
     assert artifacts.compute_sha256(real) == sha
+
+
+def test_backfill_gate_coverage_stamps_existing_approved_artifacts(conn, tmp_path):
+    from pipeline_app import artifacts, db, migrations
+    from pipeline_app.pipeline_config import StageDef
+
+    stage_defs = [StageDef(id="ideation", skill="shorts-ideation", dir_prefix="01", depends_on=[])]
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-08-06T00:00:00Z")
+    row = db.create_stage_row(conn, project_id, "ideation", "approved")
+    run_dir = tmp_path / "runs" / "abc-1"
+    stage_dir = run_dir / "01-ideation"
+    path = artifacts.write_artifact(
+        stage_dir, 1, {"status": "final", "stage": "shorts-ideation"}, "old body",
+    )
+
+    touched = migrations.backfill_gate_coverage_artifacts(conn, tmp_path, stage_defs)
+
+    assert str(path.relative_to(tmp_path)).replace("\\", "/") in touched
+    meta, _ = artifacts.read_artifact(path)
+    gate_names = [g["name"] for g in meta["gates"]]
+    assert "gate_o_ideation_contract" in gate_names
+    passed = next(g for g in meta["gates"] if g["name"] == "gate_o_ideation_contract")
+    assert passed["status"] == "pass"
+    overrides = artifacts.read_gate_overrides(path)
+    assert len(overrides) == 1
+    assert "gate-coverage migration" in overrides[0]["reason"]
+
+
+def test_backfill_gate_coverage_is_idempotent(conn, tmp_path):
+    from pipeline_app import artifacts, db, migrations
+    from pipeline_app.pipeline_config import StageDef
+
+    stage_defs = [StageDef(id="ideation", skill="shorts-ideation", dir_prefix="01", depends_on=[])]
+    project_id = db.create_project(conn, "abc-1", "abc", "generic", "2026-08-06T00:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", "approved")
+    run_dir = tmp_path / "runs" / "abc-1"
+    artifacts.write_artifact(
+        run_dir / "01-ideation", 1, {"status": "final", "stage": "shorts-ideation"}, "old body",
+    )
+
+    migrations.backfill_gate_coverage_artifacts(conn, tmp_path, stage_defs)
+    second_run = migrations.backfill_gate_coverage_artifacts(conn, tmp_path, stage_defs)
+
+    assert second_run == []  # already-stamped artifacts are not touched twice

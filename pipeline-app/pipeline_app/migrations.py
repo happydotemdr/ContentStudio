@@ -309,3 +309,66 @@ def backfill_styleboard_rows(
         touched.append(project_id)
 
     return touched
+
+
+# The five gates Task 1-5 register, mapped to the check they satisfy on
+# backfill. Kept here rather than importing gates.GATE_REGISTRY: this
+# migration must know exactly which entries IT is responsible for stamping,
+# independent of whatever the registry grows to later.
+GATE_COVERAGE_STAGE_GATES = {
+    "ideation": "gate_o_ideation_contract",
+    "voiceover": "gate_o_voiceover_contract",
+    "music": "gate_o_music_contract",
+    "assembly": "gate_o_assembly_contract",
+    "repurpose": "gate_o_repurpose_contract",
+}
+
+
+def backfill_gate_coverage_artifacts(
+    conn: sqlite3.Connection, repo_root: Path, stage_defs: list[StageDef],
+) -> list[str]:
+    """Grandfather every already-approved artifact in the five newly-gated
+    stages so registering their gates does not retroactively block them.
+
+    Stamps a pass-shaped entry (the only way classify_gates treats a gate as
+    non-blocking) plus a genuine, visible override via
+    artifacts.record_gate_override -- the artifact's real content is never
+    re-checked against the new gate, and the override note says so, rather
+    than silently pretending it was verified.
+
+    Idempotent: skips any artifact whose gates list already names the
+    relevant gate, so a repeat run (every app startup) touches nothing after
+    the first.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    touched: list[str] = []
+    by_id = {s.id: s for s in stage_defs}
+
+    for project in db_mod.list_projects(conn):
+        for stage_id, gate_name in GATE_COVERAGE_STAGE_GATES.items():
+            stage_def = by_id.get(stage_id)
+            if stage_def is None:
+                continue
+            row = db_mod.get_stage(conn, project["id"], stage_id)
+            if row is None or row["status"] != StageStatus.APPROVED.value:
+                continue
+            stage_dir = repo_root / "runs" / project["run_id"] / stage_dir_name(stage_def)
+            latest = artifacts.resolve_latest_artifact(repo_root, stage_id, stage_dir)
+            if latest is None:
+                continue
+            meta, _body = artifacts.read_artifact(latest)
+            existing_names = {g.get("name") for g in (meta.get("gates") or [])}
+            if gate_name in existing_names:
+                continue
+            meta.setdefault("gates", []).append(
+                {"name": gate_name, "status": "pass", "findings": []}
+            )
+            artifacts._atomic_write_text(latest, artifacts.render_frontmatter(meta, _body))
+            artifacts.record_gate_override(
+                latest,
+                f"grandfathered by the 2026-08-16 gate-coverage migration -- approved before "
+                f"{gate_name!r} existed; content was never checked against it",
+                at=now,
+            )
+            touched.append(str(latest.relative_to(repo_root)).replace("\\", "/"))
+    return touched
