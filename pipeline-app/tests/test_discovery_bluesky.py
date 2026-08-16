@@ -3,7 +3,9 @@ from pathlib import Path
 
 import pytest
 
+from pipeline_app import artifacts
 from pipeline_app import discovery_bluesky as bsky
+from pipeline_app.discovery_paths import handle_dir
 
 
 def _post(rkey: str, day: str, text: str = "hello") -> dict:
@@ -372,3 +374,133 @@ def test_indexed_at_is_accepted_when_created_at_is_absent(monkeypatch):
                                "record": {"text": "t"}}}]}
     monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(feed).encode("utf-8"))
     assert bsky.enumerate_newest_first("x.bsky.social", None)[0]["published"] == "2026-07-29"
+
+
+# Native-adapter contract sweep (F-20)
+#
+# CLAUDE.md and brightdata_job.py:6-10 state one contract every adapter --
+# native or Bright Data -- must obey: a transport failure raises (never []),
+# a genuinely empty source returns [], and every captured item's frontmatter
+# carries an aware-UTC `fetched_at`, a `url`, and the contract's `published`
+# key. This sweeps both native adapters against that contract in one place so
+# a violation in either can never again be missed for lack of a shared test.
+
+import datetime as _dt
+
+from pipeline_app import discovery_youtube as yt
+
+
+def _raiser(exc):
+    """Factory for a callable that raises exc when called with any one arg."""
+    def _raise(_arg):
+        raise exc
+    return _raise
+
+
+def _yt_proc(returncode, stdout, stderr):
+    class FakeProc:
+        pass
+    FakeProc.returncode = returncode
+    FakeProc.stdout = stdout
+    FakeProc.stderr = stderr
+    return FakeProc()
+
+
+def _yt_ytdlp_ok(info: dict):
+    """Fake yt-dlp that writes an .info.json next to the requested -o stem,
+    matching what discovery_youtube.download_item expects to read back."""
+    def fake_run(args, *, label, binary=None):
+        stem = Path(args[args.index("-o") + 1].replace(".%(ext)s", ""))
+        stem.with_suffix(".info.json").write_text(json.dumps(info), encoding="utf-8")
+        return _yt_proc(0, "", "")
+    return fake_run
+
+
+# platform -> (module, a fixture that makes enumerate raise, a download driver)
+_NATIVE_ADAPTERS = {
+    "bluesky": bsky,
+    "youtube": yt,
+}
+
+
+def _capture_one(platform, tmp_path, monkeypatch):
+    """Drives each adapter's download_item with its own stubbed transport and
+    returns the parsed frontmatter dict of whatever it captured."""
+    if platform == "bluesky":
+        bsky.clear_feed_cache()
+        page = {"feed": [_post("rkey1", "2026-07-29")]}
+        monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(page).encode("utf-8"))
+        result = bsky.download_item(tmp_path, "x.bsky.social", "rkey1", "t")
+        assert result["ok"] is True
+        dest = handle_dir(tmp_path, "bluesky", "x.bsky.social") / "rkey1.md"
+        meta, _ = artifacts.parse_frontmatter(dest.read_text(encoding="utf-8"))
+        return meta
+    else:
+        monkeypatch.setattr(yt.youtube_api, "fetch_one", lambda *a, **k: None)
+        monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda *a, **k: {})
+        monkeypatch.setattr(yt, "_run_ytdlp", _yt_ytdlp_ok({"upload_date": "20260415"}))
+        monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+        result = yt.download_item(tmp_path, "@testhandle", "v1", "Test Video")
+        assert result["ok"] is True
+        dest_dir = tmp_path / "output" / "brand-intel" / "youtube" / "testhandle"
+        files = list(dest_dir.glob("v1__*.md"))
+        assert len(files) == 1, f"expected one .md, found {files}"
+        meta, _ = artifacts.parse_frontmatter(files[0].read_text(encoding="utf-8"))
+        return meta
+
+
+@pytest.mark.parametrize("platform", sorted(_NATIVE_ADAPTERS))
+def test_every_native_adapter_raises_on_a_transport_failure(platform, monkeypatch):
+    """The invariant brightdata_job.py:6-10 already enforces for the other four:
+    a failed fetch raises; [] means the walk completed and found nothing."""
+    module = _NATIVE_ADAPTERS[platform]
+    if platform == "bluesky":
+        monkeypatch.setattr(module, "_http_get", _raiser(OSError("down")))
+    else:
+        monkeypatch.setattr(module, "_run_ytdlp", lambda *a, **k: _yt_proc(1, "", "HTTP Error 503"))
+    with pytest.raises(Exception) as exc:
+        module.enumerate_newest_first("handle.example", keyword_filter=None)
+    assert type(exc.value) is not AssertionError
+    assert exc.value.args and "handle.example" in str(exc.value)
+
+
+@pytest.mark.parametrize("platform", sorted(_NATIVE_ADAPTERS))
+def test_every_native_adapter_returns_empty_for_a_genuinely_empty_source(platform, monkeypatch):
+    module = _NATIVE_ADAPTERS[platform]
+    if platform == "bluesky":
+        monkeypatch.setattr(module, "_http_get", lambda url: json.dumps({"feed": []}).encode())
+    else:
+        monkeypatch.setattr(module, "_run_ytdlp",
+                            lambda *a, **k: _yt_proc(0, json.dumps({"entries": []}), ""))
+        monkeypatch.setattr(module.youtube_api, "fetch_upload_dates", lambda ids, **k: {})
+    assert module.enumerate_newest_first("handle.example", keyword_filter=None) == []
+
+
+@pytest.mark.parametrize("platform", sorted(_NATIVE_ADAPTERS))
+def test_every_native_adapter_writes_an_aware_utc_fetched_at(platform, tmp_path, monkeypatch):
+    """CLAUDE.md: fetched_at is the only MANDATORY frontmatter field -- it is
+    the watermark, and an item without it is excluded from the run forever."""
+    meta = _capture_one(platform, tmp_path, monkeypatch)
+    stamp = meta["fetched_at"]
+    assert isinstance(stamp, str)
+    parsed = _dt.datetime.fromisoformat(stamp)
+    assert parsed.tzinfo is not None and parsed.utcoffset() == _dt.timedelta(0)
+    assert parsed.second == parsed.replace(microsecond=0).second
+    assert "." not in stamp, "timespec must be seconds"
+
+
+@pytest.mark.parametrize("platform", sorted(_NATIVE_ADAPTERS))
+def test_every_native_adapter_writes_a_url(platform, tmp_path, monkeypatch):
+    assert _capture_one(platform, tmp_path, monkeypatch)["url"].startswith("https://")
+
+
+@pytest.mark.parametrize("platform", sorted(_NATIVE_ADAPTERS))
+def test_every_native_adapter_writes_the_contract_published_key(platform, tmp_path, monkeypatch):
+    meta = _capture_one(platform, tmp_path, monkeypatch)
+    assert "published" in meta, "the platform contract names `published` (B-04)"
+
+
+def test_the_sweep_covers_every_native_platform():
+    """A seventh native adapter must not slip in uncovered -- that is exactly
+    how YouTube and Bluesky ended up with tests agreeing with the violation."""
+    assert set(_NATIVE_ADAPTERS) == {"youtube", "bluesky"}
