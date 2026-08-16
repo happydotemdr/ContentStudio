@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pathlib import Path
+import yaml
 
 from pipeline_app import git_helper, obs
 
@@ -40,6 +41,25 @@ def _validate_content(target: str, content: str) -> str | None:
     a success, destroying the skill (A-51)."""
     if not content.strip():
         return "Refusing to write an empty file — the editor body was blank."
+
+    if target != "SKILL.md":
+        return None
+    if not content.lstrip().startswith("---"):
+        return "A SKILL.md must begin with a YAML frontmatter block (`---`)."
+    parts = content.lstrip().split("---", 2)
+    if len(parts) < 3:
+        return "The SKILL.md frontmatter block is not closed with a second `---`."
+    try:
+        meta = yaml.safe_load(parts[1])
+    except yaml.YAMLError as exc:
+        return f"The SKILL.md frontmatter is not valid YAML: {exc}"
+    if not isinstance(meta, dict):
+        return "The SKILL.md frontmatter must be a YAML mapping."
+    missing = [k for k in ("name", "description") if not str(meta.get(k) or "").strip()]
+    if missing:
+        return (f"The SKILL.md frontmatter is missing required key(s): "
+                f"{', '.join(missing)} — the skill loader would reject this file.")
+    return None
 
 
 def _resolve_write_path(request: Request, skill_name: str, target: str) -> Path:

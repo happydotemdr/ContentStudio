@@ -75,13 +75,14 @@ def test_save_skill_md_writes_file_and_commits(client, monkeypatch):
         git_helper, "commit_skill_edit",
         lambda repo_root, file_path, skill_name, now=None: calls.append((file_path, skill_name)),
     )
+    edited_content = "---\nname: shorts-ideation\ndescription: edited description\n---\n\nedited body\n"
     resp = test_client.post(
         "/skills/shorts-ideation/save",
-        data={"target": "SKILL.md", "content": "edited content"},
+        data={"target": "SKILL.md", "content": edited_content},
     )
     assert resp.status_code in (200, 303, 307)
     saved = (tmp_path / ".claude" / "skills" / "shorts-ideation" / "SKILL.md").read_text(encoding="utf-8")
-    assert saved == "edited content"
+    assert saved == edited_content
     assert len(calls) == 1
 
 
@@ -254,3 +255,40 @@ def test_blank_content_never_truncates_a_file(client, blank):
     assert resp.status_code == 400
     assert skill_md.read_text(encoding="utf-8") == before
     assert skill_md.stat().st_size > 0
+
+
+@pytest.mark.parametrize("body, reason", [
+    ("just prose, no frontmatter\n", "frontmatter"),
+    ("---\nname: x\n", "not closed"),
+    ("---\nname: x\n---\n\nbody\n", "description"),
+    ("---\ndescription: y\n---\n\nbody\n", "name"),
+    ("---\nname: [oops\n---\n\nbody\n", "valid YAML"),
+])
+def test_skill_md_save_requires_loadable_frontmatter(client, body, reason):
+    test_client, tmp_path = client
+    skill_md = tmp_path / ".claude" / "skills" / "shorts-ideation" / "SKILL.md"
+    before = skill_md.read_text(encoding="utf-8")
+
+    resp = test_client.post(
+        "/skills/shorts-ideation/save",
+        data={"target": "SKILL.md", "content": body},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 400
+    assert reason in resp.text
+    assert skill_md.read_text(encoding="utf-8") == before
+
+
+def test_a_kickoff_template_is_not_held_to_the_frontmatter_rule(client):
+    """Distinguishability: the SKILL.md rule must not leak onto templates,
+    which are plain slash-command text."""
+    test_client, tmp_path = client
+    resp = test_client.post(
+        "/skills/shorts-ideation/save",
+        data={"target": "kickoff_template", "content": "/shorts-ideation go\n"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert (tmp_path / "pipeline-app" / "stage_templates" / "ideation.md").read_text(
+        encoding="utf-8") == "/shorts-ideation go\n"
