@@ -85,8 +85,8 @@ def _resolve_write_path(request: Request, skill_name: str, target: str) -> Path:
                 (f"Skill {skill_name!r} is not bound to a pipeline stage, so it has "
                  f"no kickoff template to save."),
             )
-        root = repo_root / "pipeline-app" / "stage_templates"
         path = stage_template_path(repo_root, stage_id)
+        root = path.parent
     else:
         raise _reject(
             request, skill_name,
@@ -208,12 +208,20 @@ def save_skill(request: Request, skill_name: str, target: str = Form(...), conte
     if result.ok:
         return RedirectResponse(url=f"/skills/{skill_name}", status_code=303)
 
-    # Record the commit failure
-    obs.record_event(
-        request.app.state.conn, kind="skill_editor.commit_failed", severity="error",
-        source="routes.skills", message=f"{skill_name}: {result.detail}",
-        detail={"skill": skill_name, "target": target, "result_status": result.status},
-    )
+    # Record the commit failure -- unless it was a deliberate policy refusal
+    # (protected-branch guard), which is a warning, not an error (Finding 5).
+    if result.status == "refused_protected_branch":
+        obs.record_event(
+            request.app.state.conn, kind="skill_editor.commit_refused", severity="warning",
+            source="routes.skills", message=f"{skill_name}: {result.detail}",
+            detail={"skill": skill_name, "target": target, "result_status": result.status},
+        )
+    else:
+        obs.record_event(
+            request.app.state.conn, kind="skill_editor.commit_failed", severity="error",
+            source="routes.skills", message=f"{skill_name}: {result.detail}",
+            detail={"skill": skill_name, "target": target, "result_status": result.status},
+        )
 
     warning = f"Saved, but not committed: {result.detail}"
     return RedirectResponse(

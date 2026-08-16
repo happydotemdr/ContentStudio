@@ -177,7 +177,10 @@ def test_a_failure_partway_leaves_no_project_at_all(conn, tmp_path: Path, monkey
 
     def flaky(self, *args, **kwargs):
         calls["n"] += 1
-        if calls["n"] == 2:            # run_dir succeeds, the first stage dir does not
+        # call 1: run_dir.parent.mkdir (runs/) succeeds
+        # call 2: run_dir.mkdir itself succeeds
+        # call 3: the first per-stage directory mkdir fails
+        if calls["n"] == 3:            # run_dir and its parent succeed, the first stage dir does not
             raise OSError(28, "No space left on device")
         return real_mkdir(self, *args, **kwargs)
 
@@ -204,7 +207,10 @@ def test_a_half_created_project_is_distinguishable_from_a_whole_one(conn, tmp_pa
 
     def flaky(self, *args, **kwargs):
         calls["n"] += 1
-        if calls["n"] == 2:
+        # call 1: run_dir.parent.mkdir (runs/) succeeds
+        # call 2: run_dir.mkdir itself succeeds
+        # call 3: the first per-stage directory mkdir fails
+        if calls["n"] == 3:            # run_dir and its parent succeed, the first stage dir does not
             raise OSError(28, "No space left on device")
         return real_mkdir(self, *args, **kwargs)
 
@@ -229,6 +235,9 @@ def test_two_projects_created_in_the_same_second_both_succeed(conn, tmp_path: Pa
     assert second["run_id"] == "my-topic-20260725-143201"      # advanced, not suffixed
     assert first["run_dir"].is_dir() and second["run_dir"].is_dir()
     assert len(db.list_projects(conn)) == 2
+
+    rows = conn.execute("SELECT * FROM events WHERE kind = 'db.transaction_rolled_back'").fetchall()
+    assert rows == []
 
 
 def test_run_id_keeps_the_shape_browse_service_anchors_on(conn, tmp_path: Path):

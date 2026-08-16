@@ -148,6 +148,9 @@ def test_overlong_slug_returns_400_not_500(client: TestClient):
                        follow_redirects=False)
     assert resp.status_code == 400
     assert "60" in resp.text
+    rows = client.app.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'project.slug_rejected'").fetchall()
+    assert len(rows) == 1 and rows[0]["severity"] == "warning"
 
 
 def test_a_failed_creation_is_a_named_error_and_leaves_an_events_row(client, monkeypatch):

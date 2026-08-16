@@ -35,6 +35,8 @@ def create_project_route(request: Request, slug: str = Form(...), brand: str = F
     except ValueError as exc:
         # Unusable slug (nothing left after sanitisation, or a path that would
         # escape runs/) — an explicit client error, not a 500.
+        obs.record_event(conn, kind="project.slug_rejected", severity="warning",
+                         source="routes.projects", message=str(exc), detail={"slug": slug})
         return PlainTextResponse(str(exc), status_code=400)
     except RunIdCollision as exc:
         obs.record_event(conn, kind="project.run_id_collision", severity="warning",

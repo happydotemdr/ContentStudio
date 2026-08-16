@@ -56,9 +56,23 @@ def create_project(
     now = now or datetime.datetime.now(datetime.timezone.utc)
     applicable = [s for s in stage_defs if s.brand_scope is None or s.brand_scope == brand]
     for attempt in range(_MAX_RUN_ID_ATTEMPTS):
+        candidate_run_id = f"{cleaned_slug}-{now.strftime('%Y%m%d-%H%M%S')}"
+        exists = conn.execute(
+            "SELECT 1 FROM projects WHERE run_id = ?", (candidate_run_id,)
+        ).fetchone()
+        if exists is not None:
+            obs.log("project.run_id_collision", level="warning",
+                    slug=cleaned_slug, attempt=attempt + 1)
+            now = now + datetime.timedelta(seconds=1)
+            continue
         try:
             return _create_once(conn, repo_root, cleaned_slug, brand, applicable, now)
         except sqlite3.IntegrityError:
+            # A genuine race: two callers both probed clean and both tried to
+            # insert the same run_id. The pre-check above handles the common
+            # (sequential, same-process) case without ever opening a transaction
+            # that db.transaction() would then have to roll back and report as
+            # an error -- this branch is the true-concurrency backstop only.
             obs.log("project.run_id_collision", level="warning",
                     slug=cleaned_slug, attempt=attempt + 1)
             now = now + datetime.timedelta(seconds=1)

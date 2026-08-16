@@ -57,7 +57,8 @@ def commit_skill_edit(repo_root: Path, file_path: Path, skill_name: str,
         message = f"skill edit: {skill_name} via pipeline-app, {now}"
         add = _git(repo_root, ["add", "--", rel_path])
         if add.returncode != 0:
-            return CommitResult(status="failed", detail=(add.stderr or add.stdout).strip())
+            return CommitResult(status="failed", branch=branch,
+                                detail=(add.stderr or add.stdout).strip())
         # `-- rel_path` on BOTH commands, so the emptiness check and the commit
         # describe the same single file (A-53/D-49).
         diff = _git(repo_root, ["diff", "--cached", "--quiet", "--", rel_path])
