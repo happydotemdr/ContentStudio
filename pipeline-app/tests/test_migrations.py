@@ -459,3 +459,50 @@ def test_backfill_gate_coverage_is_idempotent(conn, tmp_path):
     second_run = migrations.backfill_gate_coverage_artifacts(conn, tmp_path, stage_defs)
 
     assert second_run == []  # already-stamped artifacts are not touched twice
+
+
+def test_backfill_gate_coverage_skips_a_malformed_artifact_without_crashing(
+    conn, tmp_path, monkeypatch
+):
+    """A malformed/unreadable artifact in one project/stage must not raise out
+    of the migration (and therefore out of create_app at startup) -- it must
+    be skipped, logged as an event, and every other approved artifact must
+    still get stamped."""
+    from pipeline_app import artifacts, db, migrations
+    from pipeline_app.pipeline_config import StageDef
+
+    stage_defs = [StageDef(id="ideation", skill="shorts-ideation", dir_prefix="01", depends_on=[])]
+
+    recorded = []
+    monkeypatch.setattr(migrations.obs, "record_event",
+                        lambda c, **kw: recorded.append(kw) or 1)
+
+    pid_bad = db.create_project(conn, "bad-1", "bad", "generic", "2026-08-06T00:00:00Z")
+    db.create_stage_row(conn, pid_bad, "ideation", "approved")
+    bad_dir = tmp_path / "runs" / "bad-1" / "01-ideation"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "artifact.v1.md").write_text(
+        "---\nstatus: 'unterminated\n---\n\nbroken\n", encoding="utf-8",
+    )
+
+    pid_good = db.create_project(conn, "good-1", "good", "generic", "2026-08-06T00:00:00Z")
+    db.create_stage_row(conn, pid_good, "ideation", "approved")
+    good_path = artifacts.write_artifact(
+        tmp_path / "runs" / "good-1" / "01-ideation", 1,
+        {"status": "final", "stage": "shorts-ideation"}, "old body",
+    )
+
+    touched = migrations.backfill_gate_coverage_artifacts(conn, tmp_path, stage_defs)
+
+    assert str(good_path.relative_to(tmp_path)).replace("\\", "/") in touched
+    assert len(touched) == 1
+
+    skips = [e for e in recorded if e["kind"] == "migration.backfill_skipped"]
+    assert len(skips) == 1
+    assert skips[0]["severity"] == "error"
+    assert skips[0]["detail"]["project_id"] == pid_bad
+    assert skips[0]["detail"]["run_id"] == "bad-1"
+    assert skips[0]["detail"]["stage_id"] == "ideation"
+
+    meta, _ = artifacts.read_artifact(good_path)
+    assert "gate_o_ideation_contract" in [g["name"] for g in meta["gates"]]

@@ -339,6 +339,12 @@ def backfill_gate_coverage_artifacts(
     Idempotent: skips any artifact whose gates list already names the
     relevant gate, so a repeat run (every app startup) touches nothing after
     the first.
+
+    Runs on every app startup, same as backfill_styleboard_rows, so a single
+    corrupt/unreadable artifact among the live 21 must not take the whole app
+    down: each artifact's read/write is wrapped in the same
+    _PER_PROJECT_RECOVERABLE guard that function uses, logged to stderr and
+    recorded as an event, and the loop continues with the next artifact.
     """
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     touched: list[str] = []
@@ -356,19 +362,46 @@ def backfill_gate_coverage_artifacts(
             latest = artifacts.resolve_latest_artifact(repo_root, stage_id, stage_dir)
             if latest is None:
                 continue
-            meta, _body = artifacts.read_artifact(latest)
-            existing_names = {g.get("name") for g in (meta.get("gates") or [])}
-            if gate_name in existing_names:
+            try:
+                meta, _body = artifacts.read_artifact(latest)
+                existing_names = {g.get("name") for g in (meta.get("gates") or [])}
+                if gate_name in existing_names:
+                    continue
+                meta.setdefault("gates", []).append(
+                    {"name": gate_name, "status": "pass", "findings": []}
+                )
+                artifacts._atomic_write_text(latest, artifacts.render_frontmatter(meta, _body))
+                artifacts.record_gate_override(
+                    latest,
+                    f"grandfathered by the 2026-08-16 gate-coverage migration -- approved before "
+                    f"{gate_name!r} existed; content was never checked against it",
+                    at=now,
+                )
+            except _PER_PROJECT_RECOVERABLE as exc:
+                message = (
+                    "migrations.backfill_gate_coverage_artifacts: skipping artifact "
+                    f"{latest} (project_id={project['id']}, run_id={project['run_id']!r}, "
+                    f"stage_id={stage_id!r}) -- unreadable or malformed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                print(message, file=sys.stderr)
+                try:
+                    obs.record_event(
+                        conn,
+                        kind="migration.backfill_skipped",
+                        severity="error",
+                        source="migrations.backfill_gate_coverage_artifacts",
+                        message=message,
+                        detail={
+                            "project_id": project["id"],
+                            "run_id": project["run_id"],
+                            "stage_id": stage_id,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        },
+                    )
+                except Exception:  # noqa: BLE001 -- recording must never mask the skip
+                    pass
                 continue
-            meta.setdefault("gates", []).append(
-                {"name": gate_name, "status": "pass", "findings": []}
-            )
-            artifacts._atomic_write_text(latest, artifacts.render_frontmatter(meta, _body))
-            artifacts.record_gate_override(
-                latest,
-                f"grandfathered by the 2026-08-16 gate-coverage migration -- approved before "
-                f"{gate_name!r} existed; content was never checked against it",
-                at=now,
-            )
             touched.append(str(latest.relative_to(repo_root)).replace("\\", "/"))
     return touched
