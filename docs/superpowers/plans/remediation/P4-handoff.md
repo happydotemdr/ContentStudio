@@ -1745,6 +1745,16 @@ still guarded by it; otherwise leave it as-is.
 
 ---
 
+> **Amendment (found during T14 execution).** Renaming `scoped_permissions_settings` to
+> `pipeline_permissions_settings` (this task's own change) breaks
+> `pipeline-app/tests/integration/test_stubbed_cli_e2e.py`'s `stub_cli` fixture
+> (`monkeypatch.setattr(cli_runner, "scoped_permissions_settings", lambda: None)`, line 81) — a
+> genuine regression (one test flips from passing to erroring), not a pre-existing failure. Unlike
+> T13's 184-file structural conflict, this is a single mechanical reference update in a single file,
+> directly and unambiguously caused by this task's own rename — authorized as part of T14 without
+> a separate operator decision. Fix: change the attribute name in that one `monkeypatch.setattr`
+> call to `"pipeline_permissions_settings"`. No other change to that file.
+
 ### T14 — The write scope becomes real, and the tautological test dies (D-43, D-44, D-45, F-11)
 
 The mechanism that actually restricts is `--allowedTools`: it is the auto-approve list, and
