@@ -237,3 +237,20 @@ def test_stageless_kickoff_rejection_differs_from_a_real_kickoff_save(client):
         follow_redirects=False,
     )
     assert (real.status_code, stageless.status_code) == (303, 400)
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\n", "\r\n\t "])
+def test_blank_content_never_truncates_a_file(client, blank):
+    test_client, tmp_path = client
+    skill_md = tmp_path / ".claude" / "skills" / "shorts-ideation" / "SKILL.md"
+    before = skill_md.read_text(encoding="utf-8")
+
+    resp = test_client.post(
+        "/skills/shorts-ideation/save",
+        data={"target": "SKILL.md", "content": blank},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 400
+    assert skill_md.read_text(encoding="utf-8") == before
+    assert skill_md.stat().st_size > 0

@@ -34,6 +34,14 @@ def _discovered_skill_names(repo_root) -> set[str]:
 VALID_TARGETS = ("SKILL.md", "kickoff_template")
 
 
+def _validate_content(target: str, content: str) -> str | None:
+    """Return an operator-facing rejection reason, or None if the body is
+    safe to write. A blank textarea used to write a zero-byte file and 303 as
+    a success, destroying the skill (A-51)."""
+    if not content.strip():
+        return "Refusing to write an empty file — the editor body was blank."
+
+
 def _resolve_write_path(request: Request, skill_name: str, target: str) -> Path:
     repo_root = request.app.state.repo_root
     if target == "SKILL.md":
@@ -127,6 +135,11 @@ def save_skill(request: Request, skill_name: str, target: str = Form(...), conte
 
     # Resolve and validate the target path first; raises 400 if invalid or out of bounds.
     path = _resolve_write_path(request, skill_name, target)
+
+    # Validate content before writing; raises 400 if blank.
+    problem = _validate_content(target, content)
+    if problem is not None:
+        raise HTTPException(status_code=400, detail=problem)
 
     # Write the file.
     path.write_text(content, encoding="utf-8")
