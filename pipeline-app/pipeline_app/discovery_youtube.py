@@ -7,6 +7,7 @@ download_brandintel.py's process_youtube_video (that script stays unmodified
 from __future__ import annotations
 
 import html
+import itertools
 import json
 import re
 import shutil
@@ -18,6 +19,7 @@ from pathlib import Path
 
 from pipeline_app import artifacts
 from pipeline_app import discovery_youtube_api as youtube_api
+from pipeline_app import obs
 from pipeline_app.discovery_paths import handle_dir, slugify
 
 USER_AGENT = "ContentStudio-discovery-engine/1.0 (personal archival; local inspection)"
@@ -41,11 +43,68 @@ def _cookie_args() -> list[str]:
     return []
 
 
+YTDLP_BIN = ["yt-dlp"]
+
+
+class YtDlpUnavailable(RuntimeError):
+    """yt-dlp is not on PATH. Not a quiet channel -- an unusable environment."""
+
+
+def _run_ytdlp(args: list[str], *, label: str,
+               binary: list[str] | None = None) -> subprocess.CompletedProcess:
+    """The single place this module spawns yt-dlp.
+
+    encoding="utf-8", errors="replace" is load-bearing on Windows: bare
+    text=True decodes yt-dlp's UTF-8 output with the host ANSI codepage
+    (cp1252 here), which either kills the reader thread -- leaving
+    stdout=None for the caller to trip over -- or silently mojibakes a title
+    into the filename, the corpus and the daily email. Both were reproduced;
+    see finding B-10.
+
+    stdout/stderr are normalised to "" so no caller can ever face None.
+    """
+    cmd = [*(binary or YTDLP_BIN), *args]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, encoding="utf-8", errors="replace",
+        )
+    except FileNotFoundError as exc:
+        obs.log("adapter.tool_missing", level="error", platform="youtube",
+                tool=cmd[0], label=label)
+        raise YtDlpUnavailable(f"yt-dlp not found on PATH (needed for {label})") from exc
+    if proc.stdout is None:
+        proc.stdout = ""
+    if proc.stderr is None:
+        proc.stderr = ""
+    return proc
+
+
+def _awaiting_transcript_retry(path: Path) -> bool:
+    try:
+        meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError, artifacts.MalformedArtifactError) as exc:
+        obs.log("adapter.capture_unreadable", level="warning", platform="youtube",
+                path=str(path), error=type(exc).__name__)
+        return False
+    return meta.get("transcript_status") == TRANSCRIPT_PENDING
+
+
 def on_disk_ids(repo_root: Path, handle: str) -> set[str]:
+    """Video ids already fully captured for `handle`.
+
+    A capture whose transcript is pending_retry is deliberately NOT reported:
+    it exists on disk but is incomplete, and returning it here is what made a
+    bot-blocked capture permanent (B-12). download_item writes to the same
+    dest path, so re-offering is idempotent.
+    """
     directory = handle_dir(repo_root, "youtube", handle)
     if not directory.exists():
         return set()
-    return {p.name.split("__", 1)[0] for p in directory.glob("*__*.md")}
+    return {
+        path.name.split("__", 1)[0]
+        for path in directory.glob("*__*.md")
+        if not _awaiting_transcript_retry(path)
+    }
 
 
 # A channel's Shorts live on a separate tab from its long-form uploads, and the
@@ -55,18 +114,66 @@ def on_disk_ids(repo_root: Path, handle: str) -> set[str]:
 _TABS = (("videos", "video"), ("shorts", "short"))
 
 
-def _enumerate_tab(handle: str, tab: str, content_type: str) -> list[dict]:
+class YouTubeEnumerationError(RuntimeError):
+    """A channel-tab listing could not be fetched.
+
+    Never raised for a tab that genuinely does not exist, and never for a tab
+    that exists and is empty -- those return []. brightdata_job.py:6-10 states
+    the invariant: an empty list means "the walk completed and there was
+    nothing there". Returning [] on a failed fetch made a bot-block, a DNS
+    outage and a quiet channel one indistinguishable state, which the engine
+    recorded as the healthy 'no_new_content' (B-11).
+    """
+
+
+# yt-dlp exits non-zero both for "this tab does not exist" and for "the fetch
+# failed". Only /shorts is legitimately absent -- every channel has /videos --
+# and only these stderr shapes mean absence. Anything else is a failure.
+_ABSENT_TAB_MARKERS = (
+    "does not have a shorts tab",
+    "this channel does not have",
+    "http error 404",
+)
+
+
+def _is_absent_tab(tab: str, stderr: str) -> bool:
+    if tab != "shorts":
+        return False
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _ABSENT_TAB_MARKERS)
+
+
+# --flat-playlist with no bound lists a channel's entire lifetime catalogue
+# (measured: 877 items for one channel), and every id is then batched through
+# the Data API -- daily, mostly to re-date material already on disk. 200 is a
+# generous multiple of any plausible per-run item count and still covers a new
+# handle's 90-day lookback for any real channel. Pass max_items=None for a
+# deliberate full backfill (B-17).
+ENUMERATE_MAX_ITEMS = 200
+
+
+def _enumerate_tab(handle: str, tab: str, content_type: str,
+                   max_items: int | None = ENUMERATE_MAX_ITEMS) -> list[dict]:
     url = f"https://www.youtube.com/{handle}/{tab}"
-    cmd = ["yt-dlp", "-J", "--flat-playlist", "--ignore-errors", *_cookie_args(), url]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    bound = ["--playlist-end", str(max_items)] if max_items else []
+    proc = _run_ytdlp(
+        ["-J", "--flat-playlist", "--ignore-errors", *bound, *_cookie_args(), url],
+        label=f"enumerate {handle}/{tab}",
+    )
     if proc.returncode != 0 or not proc.stdout.strip():
-        # A channel with no Shorts tab is normal, not an error -- only the
-        # /videos tab failing is worth reporting loudly.
-        if tab == "videos":
-            print(f"  ! yt-dlp enumerate failed for {handle}: {proc.stderr.strip()[:200]}",
-                  file=sys.stderr)
-        return []
-    data = json.loads(proc.stdout)
+        if _is_absent_tab(tab, proc.stderr):
+            return []
+        detail = proc.stderr.strip()[:200] or f"exit {proc.returncode}, empty stdout"
+        obs.log("adapter.enumerate_failed", level="error", platform="youtube",
+                handle=handle, tab=tab, returncode=proc.returncode, stderr=detail)
+        print(f"  !! yt-dlp enumerate failed for {handle}/{tab}: {detail}", file=sys.stderr)
+        raise YouTubeEnumerationError(f"{handle}/{tab}: {detail}")
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        obs.log("adapter.enumerate_failed", level="error", platform="youtube",
+                handle=handle, tab=tab, returncode=proc.returncode, stderr=str(exc)[:200])
+        raise YouTubeEnumerationError(f"{handle}/{tab}: unparseable listing JSON") from exc
     return [
         {"id": e["id"], "title": e.get("title") or e["id"], "published": None,
          "content_type": content_type}
@@ -74,7 +181,23 @@ def _enumerate_tab(handle: str, tab: str, content_type: str) -> list[dict]:
     ]
 
 
-def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
+def _interleave(videos: list[dict], shorts: list[dict]) -> list[dict]:
+    """Merge two independently newest-first tabs with no dates to order by.
+
+    Round-robin, not concatenation. Concatenation puts every Short after every
+    video, so process_handle's consecutive-on-disk break ends the walk inside
+    the /videos block and no Short is ever reached -- which is why the previous
+    code dropped them outright instead. Round-robin is not a true global order
+    (that is impossible without dates), so callers get order_confidence
+    "approximate" and the condition is reported rather than silently narrowing
+    the capture (B-14).
+    """
+    return [i for pair in itertools.zip_longest(videos, shorts)
+            for i in pair if i is not None]
+
+
+def enumerate_newest_first(handle: str, keyword_filter: str | None, *,
+                           max_items: int | None = ENUMERATE_MAX_ITEMS) -> list[dict]:
     """Every video AND Short for `handle`, merged into one newest-first list.
 
     Ordering is load-bearing: process_handle breaks out of the walk on
@@ -83,8 +206,12 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
     Each tab is newest-first on its own but --flat-playlist carries no dates,
     so dates are batched from the Data API (1 quota unit per 50 ids) to
     establish a single order.
+
+    `max_items` bounds each tab's --flat-playlist walk (B-17); pass None for a
+    deliberate full lifetime backfill. Keyword-only with a default so the
+    existing two-positional-argument call site keeps working unchanged.
     """
-    per_tab = {ct: _enumerate_tab(handle, tab, ct) for tab, ct in _TABS}
+    per_tab = {ct: _enumerate_tab(handle, tab, ct, max_items) for tab, ct in _TABS}
     videos = per_tab["video"]
     items = [i for tab_items in per_tab.values() for i in tab_items]
 
@@ -96,18 +223,20 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
     if dates:
         for item in items:
             item["published"] = dates.get(item["id"])
+            item["order_confidence"] = "exact"
         # Undated items (deleted/private/API miss) sort last rather than
         # masquerading as the newest.
         items.sort(key=lambda i: i["published"] or "", reverse=True)
-    elif per_tab["short"]:
-        # Without dates there is no way to interleave two independently-ordered
-        # tabs, and returning them concatenated would break the newest-first
-        # contract process_handle relies on. Fall back to /videos alone --
-        # narrower, but correct -- and say so.
-        print(f"  ! no Data API dates available for {handle}: cannot order Shorts "
-              f"against videos, so {len(per_tab['short'])} Shorts are being skipped. "
-              f"Set YOUTUBE_API_KEY to include them.", file=sys.stderr)
-        items = videos
+    else:
+        if per_tab["short"]:
+            obs.log("adapter.ordering_degraded", level="warning", platform="youtube",
+                    handle=handle, shorts=len(per_tab["short"]), videos=len(videos))
+            print(f"  ! no Data API dates for {handle}: Shorts and videos cannot be "
+                  f"date-ordered, so the merged list is approximate. Set YOUTUBE_API_KEY "
+                  f"for an exact order.", file=sys.stderr)
+        items = _interleave(videos, per_tab["short"])
+        for item in items:
+            item["order_confidence"] = "approximate"
 
     if keyword_filter:
         items = [i for i in items if keyword_filter.lower() in i["title"].lower()]
@@ -132,15 +261,27 @@ def peek_upload_date(video_id: str) -> str | None:
     try:
         tmp_stem = tmp_dir / f"_peek_{video_id}"
         url = f"https://www.youtube.com/watch?v={video_id}"
-        cmd = [
-            "yt-dlp", "--skip-download", "--write-info-json", "--no-warnings",
-            "--ignore-errors", *_cookie_args(), "-o", str(tmp_stem) + ".%(ext)s", url,
-        ]
-        subprocess.run(cmd, capture_output=True, text=True)
+        proc = _run_ytdlp(
+            ["--skip-download", "--write-info-json", "--no-warnings",
+             "--ignore-errors", *_cookie_args(), "-o", str(tmp_stem) + ".%(ext)s", url],
+            label=f"peek {video_id}",
+        )
+        if proc.returncode != 0:
+            obs.log("adapter.peek_failed", level="warning", platform="youtube",
+                    video_id=video_id, returncode=proc.returncode,
+                    stderr=proc.stderr.strip()[:200])
         info_path = tmp_stem.with_suffix(".info.json")
         if not info_path.exists():
             return None
-        info = json.loads(info_path.read_text(encoding="utf-8"))
+        try:
+            info = json.loads(info_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            # download_item already guards the structurally identical parse;
+            # the same corrupt file must not be fatal on one path and tolerated
+            # on the other (B-16).
+            obs.log("adapter.info_json_unparseable", level="warning",
+                    platform="youtube", video_id=video_id, error=type(exc).__name__)
+            return None
         upload_date = info.get("upload_date")
         if not upload_date or len(upload_date) != 8:
             return None
@@ -173,9 +314,58 @@ def _vtt_to_text(vtt: str) -> str:
 _TRANSCRIPT_API_MISSING_WARNED = False
 
 
+MAX_TRANSCRIPT_ATTEMPTS = 3
+
+TRANSCRIPT_PRESENT = "present"
+TRANSCRIPT_MISSING = "missing"        # terminal: yt-dlp ran clean and there are no captions
+TRANSCRIPT_PENDING = "pending_retry"  # transient: the fetch was blocked, try again next run
+
+
+def _prior_transcript_attempts(dest: Path) -> int:
+    if not dest.exists():
+        return 0
+    try:
+        meta, _ = artifacts.parse_frontmatter(dest.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError, artifacts.MalformedArtifactError):
+        return 0
+    value = meta.get("transcript_attempts")
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
+class TranscriptFetchBlocked(RuntimeError):
+    """The transcript API refused or could not be reached.
+
+    Distinct from "this video has no captions". The bare `except Exception:
+    return None` collapsed IP-blocks, rate-limits, disabled transcripts and
+    video-unavailable into one None, so an IP block during a 300-video run
+    produced 300 permanently transcript-less captures indistinguishable from
+    300 genuinely caption-free videos (B-13).
+    """
+
+
+# Exceptions that mean "there is no transcript for this video" -- a real,
+# terminal answer. Resolved by name because the library's exception surface
+# varies across versions and the import is lazy. Anything NOT named here is
+# treated as a block: failing toward retryable costs one extra attempt, while
+# failing the other way is B-12.
+_BENIGN_TRANSCRIPT_ERRORS = (
+    "TranscriptsDisabled", "NoTranscriptFound", "NoTranscriptAvailable",
+    "VideoUnavailable", "VideoUnplayable",
+)
+
+
+def _is_benign_transcript_error(module, exc: BaseException) -> bool:
+    classes = tuple(
+        cls for cls in (getattr(module, name, None) for name in _BENIGN_TRANSCRIPT_ERRORS)
+        if isinstance(cls, type) and issubclass(cls, BaseException)
+    )
+    return bool(classes) and isinstance(exc, classes)
+
+
 def _fetch_transcript_fallback(video_id: str) -> str | None:
     global _TRANSCRIPT_API_MISSING_WARNED
     try:
+        import youtube_transcript_api as _yta
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
         # Previously this returned None silently, making an uninstalled
@@ -189,13 +379,17 @@ def _fetch_transcript_fallback(video_id: str) -> str | None:
                   "Install it: pip install -r requirements.txt", file=sys.stderr)
         return None
     try:
-        api = YouTubeTranscriptApi()
-        fetched = api.fetch(video_id)
+        fetched = YouTubeTranscriptApi().fetch(video_id)
         parts = [getattr(s, "text", "") for s in fetched]
         text = "\n".join(t for t in (p.strip() for p in parts) if t)
         return text or None
-    except Exception:
-        return None
+    except Exception as exc:  # noqa: BLE001 - re-classified, not swallowed
+        if _is_benign_transcript_error(_yta, exc):
+            return None
+        obs.log("adapter.transcript_error_unclassified", level="warning",
+                platform="youtube", video_id=video_id, error=type(exc).__name__)
+        raise TranscriptFetchBlocked(
+            f"{type(exc).__name__} while fetching transcript for {video_id}") from exc
 
 
 def download_item(repo_root: Path, handle: str, video_id: str, title: str,
@@ -206,15 +400,21 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str,
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     url = f"https://www.youtube.com/watch?v={video_id}"
+    dest = out_dir / f"{video_id}__{slugify(title)}.md"
     stem = tmp_dir / video_id
-    cmd = [
-        "yt-dlp", "--skip-download", "--write-info-json",
-        "--write-auto-subs", "--write-subs", "--sub-langs", "en.*",
-        "--sub-format", "vtt", "--ignore-errors", "--no-warnings",
-        "--retries", "5", "--sleep-requests", "2", *_cookie_args(),
-        "-o", str(stem) + ".%(ext)s", url,
-    ]
-    subprocess.run(cmd, capture_output=True, text=True)
+    proc = _run_ytdlp(
+        ["--skip-download", "--write-info-json",
+         "--write-auto-subs", "--write-subs", "--sub-langs", "en.*",
+         "--sub-format", "vtt", "--ignore-errors", "--no-warnings",
+         "--retries", "5", "--sleep-requests", "2", *_cookie_args(),
+         "-o", str(stem) + ".%(ext)s", url],
+        label=f"download {video_id}",
+    )
+    ytdlp_ok = proc.returncode == 0
+    if not ytdlp_ok:
+        obs.log("adapter.download_tool_failed", level="warning", platform="youtube",
+                handle=handle, video_id=video_id, returncode=proc.returncode,
+                stderr=proc.stderr.strip()[:200])
 
     info = {}
     info_path = stem.with_suffix(".info.json")
@@ -229,10 +429,34 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str,
     if vtts:
         transcript = _vtt_to_text(vtts[0].read_text(encoding="utf-8", errors="replace"))
         source = "yt-dlp"
+
+    transcript_blocked = False
     if not transcript:
-        fb = _fetch_transcript_fallback(video_id)
-        if fb:
-            transcript, source = fb, "youtube-transcript-api"
+        try:
+            fb = _fetch_transcript_fallback(video_id)
+        except TranscriptFetchBlocked as exc:
+            transcript_blocked = True
+            obs.log("adapter.transcript_blocked", level="warning", platform="youtube",
+                    handle=handle, video_id=video_id, reason=str(exc))
+        else:
+            if fb:
+                transcript, source = fb, "youtube-transcript-api"
+
+    attempts = _prior_transcript_attempts(dest)
+    if transcript.strip():
+        transcript_status = TRANSCRIPT_PRESENT
+    elif transcript_blocked or not ytdlp_ok:
+        # Metadata succeeded but no transcript was OBTAINED -- not the same as
+        # a video that has none. on_disk_ids() re-offers this item so the next
+        # run tries again, bounded by MAX_TRANSCRIPT_ATTEMPTS so a genuinely
+        # transcript-less video cannot loop forever (B-12).
+        attempts += 1
+        transcript_status = (TRANSCRIPT_PENDING if attempts < MAX_TRANSCRIPT_ATTEMPTS
+                             else TRANSCRIPT_MISSING)
+        obs.log("adapter.transcript_pending_retry", level="warning", platform="youtube",
+                handle=handle, video_id=video_id, attempts=attempts, final=transcript_status)
+    else:
+        transcript_status = TRANSCRIPT_MISSING
 
     # Metadata comes from the Data API when a key is configured, and falls back
     # to yt-dlp's info.json otherwise. A run counts as successful if EITHER
@@ -259,7 +483,6 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str,
         duration_s = info.get("duration")
     fetched_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
-    dest = out_dir / f"{video_id}__{slugify(title)}.md"
     meta = {
         "video_id": video_id,
         "url": url,
@@ -269,6 +492,11 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str,
         # material for this project, and the two live on separate channel
         # tabs, so the distinction is recorded rather than inferred.
         "content_type": content_type,
+        # Two spellings of one date, deliberately. `published` is the platform
+        # contract's field name (CLAUDE.md); `upload_date` is what every file
+        # already on disk uses, and discovery_digest's fallback reads it. See
+        # the P9 contract note in this plan before removing either.
+        "published": upload_date or None,
         "upload_date": upload_date or None,
         "duration_s": duration_s,
         "view_count": api_meta.get("view_count"),
@@ -281,7 +509,8 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str,
         # docstring for the corpus measurement behind that. transcript_status
         # is the field that says whether we actually hold one.
         "manual_captions": api_meta.get("manual_captions"),
-        "transcript_status": "present" if transcript.strip() else "missing",
+        "transcript_status": transcript_status,
+        "transcript_attempts": attempts,
         "transcript_source": source,
         "metadata_source": "youtube-data-api-v3" if api_meta else "yt-dlp",
         "fetched_at": fetched_at,

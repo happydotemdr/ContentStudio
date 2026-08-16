@@ -6,6 +6,22 @@ import pytest
 from pipeline_app import discovery_youtube_api as api
 
 
+@pytest.fixture
+def logged(monkeypatch):
+    """Captures every api.obs.log() call this test makes, as a list of dicts.
+
+    Each record is {"event": ..., "level": ..., **fields} -- the same shape
+    obs.log() takes, minus the timestamp obs.log() would otherwise stamp.
+    """
+    records: list[dict] = []
+
+    def fake_log(event, *, level="info", **fields):
+        records.append({"event": event, "level": level, **fields})
+
+    monkeypatch.setattr(api.obs, "log", fake_log)
+    return records
+
+
 # --------------------------------------------------------------------------- #
 # key resolution
 
@@ -109,16 +125,26 @@ def test_normalize_hidden_like_count_is_none_not_zero():
 # --------------------------------------------------------------------------- #
 # fetch_metadata
 
+def test_no_key_warning_is_printed_once_per_process(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv(api.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(api, "KEY_FILE", tmp_path / "absent.txt")
+    monkeypatch.setattr(api, "_NO_KEY_WARNED", False)
+    for _ in range(50):
+        api.fetch_metadata(["v1"])
+    assert capsys.readouterr().err.count("no YouTube Data API key") == 1
+
+
 def test_fetch_metadata_returns_empty_without_key(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv(api.KEY_ENV_VAR, raising=False)
     monkeypatch.setattr(api, "KEY_FILE", tmp_path / "absent.txt")
+    monkeypatch.setattr(api, "_NO_KEY_WARNED", False)
     assert api.fetch_metadata(["v1"]) == {}
     assert "no YouTube Data API key" in capsys.readouterr().err
 
 
 def test_fetch_metadata_keys_result_by_video_id(monkeypatch):
     monkeypatch.setattr(api, "_http_get_json",
-                        lambda url: {"items": [_api_item(id="v1"), _api_item(id="v2")]})
+                        lambda url, key=None: {"items": [_api_item(id="v1"), _api_item(id="v2")]})
     out = api.fetch_metadata(["v1", "v2"], key="k")
     assert set(out) == {"v1", "v2"}
     assert out["v1"]["upload_date"] == "2025-08-16"
@@ -127,7 +153,7 @@ def test_fetch_metadata_keys_result_by_video_id(monkeypatch):
 def test_fetch_metadata_batches_at_50(monkeypatch):
     calls = []
 
-    def fake_get(url):
+    def fake_get(url, key=None):
         calls.append(url)
         return {"items": []}
 
@@ -139,7 +165,7 @@ def test_fetch_metadata_batches_at_50(monkeypatch):
 def test_fetch_metadata_dedupes_ids(monkeypatch):
     seen = []
 
-    def fake_get(url):
+    def fake_get(url, key=None):
         seen.append(url)
         return {"items": []}
 
@@ -151,23 +177,23 @@ def test_fetch_metadata_dedupes_ids(monkeypatch):
 
 def test_fetch_metadata_omits_ids_the_api_did_not_return(monkeypatch):
     # deleted/private videos simply do not come back in items
-    monkeypatch.setattr(api, "_http_get_json", lambda url: {"items": [_api_item(id="v1")]})
+    monkeypatch.setattr(api, "_http_get_json", lambda url, key=None: {"items": [_api_item(id="v1")]})
     out = api.fetch_metadata(["v1", "deleted_video"], key="k")
     assert set(out) == {"v1"}
 
 
 def test_fetch_metadata_survives_a_failed_batch(monkeypatch):
     responses = [None, {"items": [_api_item(id="v99")]}]
-    monkeypatch.setattr(api, "_http_get_json", lambda url: responses.pop(0))
+    monkeypatch.setattr(api, "_http_get_json", lambda url, key=None: responses.pop(0))
     out = api.fetch_metadata([f"v{i}" for i in range(60)], key="k")
     # first batch failed, second still landed
     assert set(out) == {"v99"}
 
 
 def test_http_get_json_reports_403_quota(monkeypatch, capsys):
-    def raise_403(url, timeout):
+    def raise_403(request, timeout):
         raise urllib.error.HTTPError(
-            url, 403, "Forbidden", {},
+            request.full_url, 403, "Forbidden", {},
             __import__("io").BytesIO(json.dumps(
                 {"error": {"message": "quotaExceeded"}}).encode()),
         )
@@ -178,13 +204,52 @@ def test_http_get_json_reports_403_quota(monkeypatch, capsys):
 
 
 def test_fetch_one_returns_single_record(monkeypatch):
-    monkeypatch.setattr(api, "_http_get_json", lambda url: {"items": [_api_item(id="v1")]})
+    monkeypatch.setattr(api, "_http_get_json", lambda url, key=None: {"items": [_api_item(id="v1")]})
     assert api.fetch_one("v1", key="k")["title"] == "A Title"
 
 
 def test_fetch_one_none_when_absent(monkeypatch):
-    monkeypatch.setattr(api, "_http_get_json", lambda url: {"items": []})
+    monkeypatch.setattr(api, "_http_get_json", lambda url, key=None: {"items": []})
     assert api.fetch_one("gone", key="k") is None
+
+
+def test_api_key_never_appears_in_the_request_url(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(api, "_http_get_json",
+                        lambda url, key=None: seen.update(url=url, key=key) or {"items": []})
+    api.fetch_metadata(["v1"], key="SECRET-KEY")
+    assert "SECRET-KEY" not in seen["url"]
+    assert "key=" not in seen["url"]
+    assert seen["key"] == "SECRET-KEY"
+
+
+def test_http_get_json_sends_the_key_as_a_header(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"items": []}'
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["headers"] = dict(req.header_items())
+        return FakeResponse()
+
+    monkeypatch.setattr(api.urllib.request, "urlopen", fake_urlopen)
+    api._http_get_json("https://example.test?part=snippet", key="SECRET-KEY")
+    assert "SECRET-KEY" not in captured["url"]
+    assert captured["headers"]["X-goog-api-key"] == "SECRET-KEY"
+
+
+def test_an_unexpected_exception_cannot_leak_the_key_in_its_traceback(monkeypatch):
+    def boom(req, timeout):
+        raise ValueError(f"unknown url type: {req.full_url}")
+
+    monkeypatch.setattr(api.urllib.request, "urlopen", boom)
+    with pytest.raises(ValueError) as exc:
+        api._http_get_json("https://example.test?part=snippet", key="SECRET-KEY")
+    assert "SECRET-KEY" not in str(exc.value)
 
 
 def test_manual_captions_is_not_a_transcript_availability_signal():
@@ -202,3 +267,46 @@ def test_manual_captions_is_not_a_transcript_availability_signal():
         "no transcript is obtainable"
     )
     assert rec["manual_captions"] is False
+
+
+# --------------------------------------------------------------------------- #
+# fetch_upload_dates
+
+def test_fetch_upload_dates_reports_a_missing_key_instead_of_returning_silently(
+        monkeypatch, tmp_path, logged):
+    monkeypatch.delenv(api.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(api, "KEY_FILE", tmp_path / "absent.txt")
+    monkeypatch.setattr(api, "_NO_KEY_WARNED", False)
+    assert api.fetch_upload_dates(["v1"]) == {}
+    (record,) = [r for r in logged if r["event"] == "adapter.api_key_missing"]
+    assert record["level"] == "warning" and record["caller"] == "fetch_upload_dates"
+
+
+def test_fetch_upload_dates_maps_ids_to_dates(monkeypatch):
+    monkeypatch.setattr(api, "_http_get_json",
+                        lambda url, key=None: {"items": [_api_item(id="v1"), _api_item(id="v2")]})
+    assert api.fetch_upload_dates(["v1", "v2"], key="k") == {
+        "v1": "2025-08-16", "v2": "2025-08-16"}
+
+
+def test_fetch_upload_dates_batches_at_50(monkeypatch):
+    calls = []
+    monkeypatch.setattr(api, "_http_get_json",
+                        lambda url, key=None: calls.append(url) or {"items": []})
+    api.fetch_upload_dates([f"v{i}" for i in range(120)], key="k")
+    assert len(calls) == 3
+
+
+def test_fetch_upload_dates_omits_ids_with_a_malformed_publishedAt(monkeypatch):
+    monkeypatch.setattr(api, "_http_get_json", lambda url, key=None: {"items": [
+        {"id": "good", "snippet": {"publishedAt": "2026-07-01T00:00:00Z"}},
+        {"id": "short", "snippet": {"publishedAt": "2026"}},
+        {"id": "none", "snippet": {}},
+    ]})
+    assert api.fetch_upload_dates(["good", "short", "none"], key="k") == {"good": "2026-07-01"}
+
+
+def test_fetch_upload_dates_survives_a_failed_batch(monkeypatch):
+    responses = [None, {"items": [{"id": "v99", "snippet": {"publishedAt": "2026-07-01T00:00:00Z"}}]}]
+    monkeypatch.setattr(api, "_http_get_json", lambda url, key=None: responses.pop(0))
+    assert api.fetch_upload_dates([f"v{i}" for i in range(60)], key="k") == {"v99": "2026-07-01"}

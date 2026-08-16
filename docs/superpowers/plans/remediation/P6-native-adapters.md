@@ -236,6 +236,30 @@ def _run_ytdlp(args: list[str], *, label: str,
 
 ### T2 · A real emoji survives enumerate → title → filename → body (B-10)
 
+> **Plan amendment (controller, before T2 dispatch, 2026-08-16):** this task's original text listed
+> `_ytdlp_ok`, `_ytdlp_blocked`, and the inline `fake_run` closures at
+> `tests/test_discovery_youtube.py:88,114,172` (verified against the live file) as fakes to migrate
+> here, alongside `_fake_tabs` and the inline `fake_run` at `:481`. That is wrong: `_ytdlp_ok` and
+> `_ytdlp_blocked` back `peek_upload_date`/`download_item` tests, and those two functions are not
+> routed through `_run_ytdlp()` until **T3** (`peek_upload_date`) and **T3/T10**
+> (`download_item`) — T2 only routes `_enumerate_tab`. Retargeting those fakes' patch from
+> `yt.subprocess.run` to `yt._run_ytdlp` before their call site is migrated turns the patch into a
+> no-op: the still-unmigrated function keeps calling bare `subprocess.run` directly, so the mock
+> never intercepts it and the test falls through to a real, unmocked `yt-dlp` invocation. The second
+> emoji test shown below (`test_download_item_filename_and_h1_carry_the_original_characters`) has
+> the same problem — it requires `download_item` already routed through `_run_ytdlp`, which does not
+> happen until T3.
+>
+> **Corrected split:** T2 migrates only the fakes that back the already-migrated `_enumerate_tab`
+> path — `_fake_tabs` and the inline `fake_run` at `:481` (both `yt.subprocess.run`-patching, both
+> exercising enumerate-path tests) — to the new `(*args, **kwargs)` signature and `yt._run_ytdlp`
+> patch target, and adds only `test_enumerate_preserves_an_emoji_title_byte_identically` below. The
+> `_ytdlp_ok`/`_ytdlp_blocked`/`:88,114,172` fakes stay on the old `yt.subprocess.run` signature in
+> T2 — do not touch them here. Their migration, plus
+> `test_download_item_filename_and_h1_carry_the_original_characters`, moves to **T3**, appended to
+> that task's own brief where `peek_upload_date` and `download_item` are actually routed through
+> `_run_ytdlp()`. This note is authoritative over the original bullet list below.
+
 - [ ] **Write the failing tests** — the round trip through the module's own code path, not through
       the helper:
 
@@ -309,6 +333,17 @@ def _ytdlp_ok(info: dict):
 ---
 
 ### T3 · Return codes are read; `peek`'s JSON parse is guarded (B-16)
+
+> **Plan amendment (controller, before T3 dispatch, 2026-08-16):** carried over from T2's amendment
+> above. This task also owns: (1) migrating the `_ytdlp_ok`, `_ytdlp_blocked`, and inline
+> `fake_run(cmd, capture_output, text)` fakes at `tests/test_discovery_youtube.py:88,114,172` (the
+> `peek_upload_date`/`download_item`-backing fakes) from patching `yt.subprocess.run` to patching
+> `yt._run_ytdlp` with the `(*args, **kwargs)`/`(args, *, label, binary=None)` signature, now that
+> this task routes both functions through `_run_ytdlp()`; (2) adding the T2-brief test
+> `test_download_item_filename_and_h1_carry_the_original_characters` (shown in T2's section above,
+> under `_EMOJI_TITLE`/`_real_ytdlp_emitting`) once `download_item` is actually routed. Do both as
+> part of this task's own TDD cycle, verified against the file's live state at T3 dispatch time, not
+> assumed from either task's original text.
 
 - [ ] **Write the failing tests:**
 
@@ -1895,6 +1930,35 @@ This package makes no change to `discovery_digest.py` or any other P9 file.
 
 ## 7. Cross-package notes (no action by this package)
 
+> **Plan amendment (final whole-branch review, 2026-08-16):** the final review found the P8 bullet
+> below wrong in two places, both corrected here. This note is authoritative over the original
+> bullet text that follows it.
+>
+> 1. **`max_items=None` is not an optional enhancement — it is a required prerequisite fix.** T20
+>    (merged) made `enumerate_newest_first`'s `max_items` default to `ENUMERATE_MAX_ITEMS=200`
+>    rather than unbounded. `discovery_engine.py`'s `process_handle_backfill` calls
+>    `enumerate_newest_first(handle, keyword_filter)` with no override, so as of T20 a YouTube
+>    backfill for a window older than the newest 200 items **silently returns fewer items than
+>    before T20** — no error, no log, just a narrower result. This is exactly the silent-narrowing
+>    failure class this whole remediation programme exists to eliminate (see `brightdata_job.py:6-10`'s
+>    invariant, §0 above). P8 **must** thread `max_items=None` (or an equivalent override) through
+>    the backfill call site as part of wiring the backfill path, not as a nice-to-have opt-in.
+>    **Known gap for the interim** (between P6 merging and P8 landing this fix): do not run a
+>    YouTube backfill in this window expecting full historical coverage — it will silently cap at
+>    the newest 200 items per tab.
+> 2. **Routing a `BlueskyFetchError` to the `:272` error branch does not fix B-06 by itself.** The
+>    error branch (the `except Exception` branch referenced as `:272`) already sets
+>    `status='invalid'` and `included=False` on **any** exception it catches, including a
+>    `BlueskyFetchError` routed to it instead of `:255`. Simply moving the exception to a different
+>    catch branch changes nothing observable — a valid handle hit by one transient blip is still
+>    permanently disabled, just via a different code path. What P8 must actually do: the error
+>    branch itself must stop auto-excluding (`included=False`) / marking permanently invalid on a
+>    typed **transport** exception like `BlueskyFetchError` — it should instead leave `included` and
+>    `status` as they were (or record the run as `failed` without touching handle validity). Reserve
+>    the invalid+excluded outcome for the genuinely-empty-enumerate case (a handle that legitimately
+>    does not exist). "Route it to the other branch" is not sufficient on its own; the branch's own
+>    behavior must change.
+
 - **P0** must register the `allow_subprocess` marker and let it through the network/subprocess
   guard: T1/T2's byte-identity proof spawns `sys.executable -c` (a subprocess, no network). Without
   the marker the two B-10 round-trip tests cannot run, and B-10 is the S1 that motivates this
@@ -1905,9 +1969,12 @@ This package makes no change to `discovery_digest.py` or any other P9 file.
   `YouTubeEnumerationError`, `YtDlpUnavailable`, `BlueskyFetchError`. Its existing per-handle
   `except` records `error`, which is the intended outcome. The one branch it must **change** is the
   validate path: `discovery_engine.py:255` must not convert a `BlueskyFetchError` into
-  `status='invalid'` + `included=False` (B-06); the error branch at `:272` is the correct
-  destination. It also gains an optional `max_items=None` opt-in for a deliberate full backfill
-  (B-17) and may pass `order_confidence` through to its run record (B-14).
+  `status='invalid'` + `included=False` (B-06); ~~the error branch at `:272` is the correct
+  destination.~~ **See the amendment above — routing alone does not fix B-06; the `:272` branch's
+  own auto-exclude behavior must also change for a transport exception.** It also gains an optional
+  `max_items=None` opt-in for a deliberate full backfill (B-17) — ~~optional~~ **see the amendment
+  above: this is a required prerequisite, not optional** — and may pass `order_confidence` through
+  to its run record (B-14).
 - **P7** should hoist `_NATIVE_ADAPTERS` from T19 into a shared table covering all six platforms;
   `test_the_sweep_covers_every_native_platform` fails loudly if a native platform is added without
   an entry, which is the guard F-20 asks for.

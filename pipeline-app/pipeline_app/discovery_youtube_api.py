@@ -33,6 +33,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from pipeline_app import obs
+
 API_URL = "https://www.googleapis.com/youtube/v3/videos"
 
 # Key lookup order: env var first (works for the scheduled task, which inherits
@@ -46,6 +48,24 @@ _DURATION_RE = re.compile(
     r"^P(?:(?P<days>\d+)D)?"
     r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?$"
 )
+
+# One fact about the environment, not a per-video event: fetch_one() calls
+# fetch_metadata() once per video from both download_item and
+# peek_upload_date, so an unguarded warning emits hundreds of identical lines
+# and drowns the escalations that matter (B-15). Mirrors
+# discovery_youtube._TRANSCRIPT_API_MISSING_WARNED.
+_NO_KEY_WARNED = False
+
+
+def _warn_no_key(caller: str) -> None:
+    global _NO_KEY_WARNED
+    obs.log("adapter.api_key_missing", level="warning", platform="youtube",
+            caller=caller, env_var=KEY_ENV_VAR)
+    if _NO_KEY_WARNED:
+        return
+    _NO_KEY_WARNED = True
+    print(f"  ! no YouTube Data API key ({KEY_ENV_VAR} env var or {KEY_FILE.name}) "
+          f"-- falling back to yt-dlp for metadata", file=sys.stderr)
 
 
 def api_key() -> str | None:
@@ -86,10 +106,19 @@ def _to_int(value: str | None) -> int | None:
         return None
 
 
-def _http_get_json(url: str) -> dict | None:
-    """Isolated for monkeypatching in tests."""
+def _http_get_json(url: str, key: str | None = None) -> dict | None:
+    """Isolated for monkeypatching in tests.
+
+    The key goes in X-goog-api-key, never in the query string: the two except
+    clauses below are careful not to print the URL, but any exception outside
+    them escapes with the full URL -- and therefore the live key -- in a
+    traceback the discovery cron writes to its log (D-52). Bright Data and
+    Resend are already header-borne; this was the one that was not.
+    """
+    headers = {"X-goog-api-key": key} if key else {}
+    request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(url, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=30) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -148,8 +177,7 @@ def fetch_metadata(video_ids: list[str], key: str | None = None) -> dict[str, di
     """
     key = key or api_key()
     if not key:
-        print(f"  ! no YouTube Data API key ({KEY_ENV_VAR} env var or {KEY_FILE.name}) "
-              f"-- falling back to yt-dlp for metadata", file=sys.stderr)
+        _warn_no_key("fetch_metadata")
         return {}
 
     unique_ids = list(dict.fromkeys(v for v in video_ids if v))
@@ -160,10 +188,9 @@ def fetch_metadata(video_ids: list[str], key: str | None = None) -> dict[str, di
         query = urllib.parse.urlencode({
             "part": "snippet,contentDetails,statistics",
             "id": ",".join(batch),
-            "key": key,
             "maxResults": MAX_IDS_PER_CALL,
         })
-        payload = _http_get_json(f"{API_URL}?{query}")
+        payload = _http_get_json(f"{API_URL}?{query}", key)
         if payload is None:
             continue
         for item in payload.get("items") or []:
@@ -189,6 +216,7 @@ def fetch_upload_dates(video_ids: list[str], key: str | None = None) -> dict[str
     """
     key = key or api_key()
     if not key:
+        _warn_no_key("fetch_upload_dates")
         return {}
 
     unique_ids = list(dict.fromkeys(v for v in video_ids if v))
@@ -199,10 +227,9 @@ def fetch_upload_dates(video_ids: list[str], key: str | None = None) -> dict[str
         query = urllib.parse.urlencode({
             "part": "snippet",
             "id": ",".join(batch),
-            "key": key,
             "maxResults": MAX_IDS_PER_CALL,
         })
-        payload = _http_get_json(f"{API_URL}?{query}")
+        payload = _http_get_json(f"{API_URL}?{query}", key)
         if payload is None:
             continue
         for item in payload.get("items") or []:
