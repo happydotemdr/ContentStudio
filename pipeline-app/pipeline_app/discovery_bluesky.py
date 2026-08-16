@@ -53,6 +53,9 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None, page_limit: 
         try:
             raw = _http_get(f"{BLUESKY_API}?{urllib.parse.urlencode(params)}")
             data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError(f"expected a JSON object, got {type(data).__name__}")
+            feed = data.get("feed") or []
         except Exception as exc:  # noqa: BLE001 - re-raised as a typed error, not swallowed
             obs.log("adapter.enumerate_failed", level="error", platform="bluesky",
                     handle=handle, page=page_index, pages_walked=page_index,
@@ -62,7 +65,6 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None, page_limit: 
             raise BlueskyFetchError(
                 f"{handle}: page {page_index + 1} of {page_limit} failed "
                 f"({type(exc).__name__})") from exc
-        feed = data.get("feed") or []
         if not feed:
             break
         for entry in feed:

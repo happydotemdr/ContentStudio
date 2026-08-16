@@ -118,6 +118,17 @@ def test_malformed_json_raises_rather_than_reporting_an_empty_feed(monkeypatch):
         bsky.enumerate_newest_first("x.bsky.social", keyword_filter=None)
 
 
+@pytest.mark.parametrize("payload", [None, []])
+def test_valid_json_with_wrong_top_level_shape_raises_rather_than_an_attributeerror(monkeypatch, payload):
+    # Syntactically valid JSON (json.loads succeeds) but not the expected
+    # {"feed": [...]} object shape -- e.g. the API returning `null` or a bare
+    # list. Without validating the shape, `data.get("feed")` raises a raw,
+    # undocumented AttributeError instead of the documented BlueskyFetchError.
+    monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(payload).encode("utf-8"))
+    with pytest.raises(bsky.BlueskyFetchError):
+        bsky.enumerate_newest_first("x.bsky.social", keyword_filter=None)
+
+
 def test_download_item_writes_full_text_not_truncated_title(tmp_path, monkeypatch):
     # enumerate_newest_first truncates "title" to 60 chars for filtering/display,
     # but download_item must write the FULL post text to the .md body.
