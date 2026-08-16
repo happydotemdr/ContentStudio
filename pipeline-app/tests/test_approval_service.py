@@ -89,7 +89,7 @@ def test_approve_stage_grounding_resolves_artifact_via_pointer(conn, tmp_path: P
     rgs_briefs_dir.mkdir(parents=True)
     brief_path = rgs_briefs_dir / "2026-07-27-example-brief.md"
     brief_path.write_text("---\nstatus: candidate\n---\n\nBrief body", encoding="utf-8")
-    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md")
+    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md", tmp_path)
 
     approve_stage(conn, tmp_path, run_dir, project_id, GROUNDING_STAGES, "grounding")
 
@@ -110,7 +110,7 @@ def test_approve_stage_grounding_does_not_mutate_brief_content(conn, tmp_path: P
     brief_path = rgs_briefs_dir / "2026-07-27-example-brief.md"
     original_text = "---\nstatus: candidate\nresearch_codes: [R3]\n---\n\nBrief body"
     brief_path.write_text(original_text, encoding="utf-8")
-    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md")
+    write_pointer(grounding_dir, "rgs-briefs/2026-07-27-example-brief.md", tmp_path)
 
     approve_stage(conn, tmp_path, run_dir, project_id, GROUNDING_STAGES, "grounding")
 
@@ -153,7 +153,12 @@ def test_approve_stage_grounding_pointer_target_missing_returns_valueerror_not_c
     db.create_stage_row(conn, project_id, "grounding", "awaiting_review")
     run_dir = tmp_path / "runs" / "rgs-1"
     grounding_dir = run_dir / "00-grounding"
-    write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md")
+    rgs_briefs_dir = tmp_path / "rgs-briefs"
+    rgs_briefs_dir.mkdir(parents=True)
+    brief_path = rgs_briefs_dir / "does-not-exist.md"
+    brief_path.write_text("temporary", encoding="utf-8")
+    write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md", tmp_path)
+    brief_path.unlink()  # pointer target now missing, same pattern as test_grounding_service.py
 
     with pytest.raises(ValueError, match="No artifact to approve"):
         approve_stage(conn, tmp_path, run_dir, project_id, GROUNDING_STAGES, "grounding")
@@ -396,7 +401,8 @@ def test_approve_succeeds_with_an_override_and_records_the_reason(conn, tmp_path
     )
     meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
     assert meta["status"] == "final"
-    assert meta["gate_override_reason"] == "dash is inside a verbatim 1886 quote"
+    overrides = artifacts.read_gate_overrides(path)
+    assert overrides[-1]["reason"] == "dash is inside a verbatim 1886 quote"
     assert meta["gates"][0]["status"] == "fail"  # the record is not rewritten
 
 
@@ -429,7 +435,8 @@ def test_override_on_already_final_artifact_records_reason_without_rewriting_gat
     )
 
     meta_after, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
-    assert meta_after["gate_override_reason"] == (
+    overrides = artifacts.read_gate_overrides(path)
+    assert overrides[-1]["reason"] == (
         "re-approving a stale stage; dash is inside a verbatim quote"
     )
     assert meta_after["finalized_at"] == "2026-08-01T00:00:00+00:00"  # untouched, no churn
@@ -517,8 +524,8 @@ def test_an_override_releases_a_gate_that_never_ran(conn, tmp_path):
         override_reason="artifact predates Gate D; script verified by hand",
     )
     assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.APPROVED.value
-    meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
-    assert meta["gate_override_reason"] == "artifact predates Gate D; script verified by hand"
+    overrides = artifacts.read_gate_overrides(path)
+    assert overrides[-1]["reason"] == "artifact predates Gate D; script verified by hand"
 
 
 def test_a_stage_with_no_registered_gates_still_approves_without_an_override(conn, tmp_path: Path):
