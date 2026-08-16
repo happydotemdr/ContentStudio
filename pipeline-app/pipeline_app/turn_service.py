@@ -309,13 +309,13 @@ async def run_stage_turn(
     # A-30/A-62 happened.
     resolved = _upstream_by_stage(repo_root, run_dir, all_stage_defs, stage_def)
     missing: list[str] = []
-    unapproved_id: str | None = None
+    unapproved: list[str] = []
     for dep_id in stage_def.depends_on:
         state = resolved.state_of(dep_id)
         if state == "resolved":
             continue
-        if state == "excluded" and unapproved_id is None:
-            unapproved_id = dep_id
+        if state == "excluded":
+            unapproved.append(dep_id)
         else:
             missing.append(dep_id)
     if missing:
@@ -330,21 +330,20 @@ async def run_stage_turn(
             f"{'it' if len(missing) == 1 else 'they'} never produced an artifact. "
             "Approve or regenerate the upstream stage first."
         )
-    if unapproved_id is not None:
-        excluded = resolved.excluded[unapproved_id]
+    if unapproved:
+        names = [resolved.excluded[dep_id].path.name for dep_id in unapproved]
         obs.record_event(
             conn, kind="handoff.upstream_unapproved", severity="error", source="turn_service",
-            message=(f"stage '{stage_def.id}' requires an approved '{unapproved_id}' but "
-                     f"{excluded.path.name} was never approved"),
-            detail={"stage": stage_def.id, "upstream": unapproved_id, "path": str(excluded.path)},
+            message=(f"stage '{stage_def.id}' requires approved {unapproved} but "
+                     f"{names} were never approved"),
+            detail={"stage": stage_def.id, "upstream": unapproved, "paths": names},
         )
         raise UnapprovedUpstreamError(
-            f"Stage '{stage_def.id}' requires an approved '{unapproved_id}' but only "
-            f"{excluded.path.name} exists, unapproved. Approve it, or regenerate it."
+            f"Stage '{stage_def.id}' requires approved {unapproved} but only "
+            f"{names} exist, unapproved. Approve them, or regenerate."
         )
     inputs = {sid: str(p) for sid, p in resolved.items()}
     upstream_paths = [Path(p) for p in inputs.values()]
-    upstream_by_stage = {sid: Path(p) for sid, p in inputs.items()}
 
     events_dir = stage_dir / "events"
     events_dir.mkdir(parents=True, exist_ok=True)
@@ -355,19 +354,31 @@ async def run_stage_turn(
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.RUNNING.value)
 
     is_first_turn = stage_row["claude_session_id"] is None
-    if is_first_turn:
-        prompt = prompt_builder.render_kickoff_prompt(templates_dir, stage_def.id, {
-            "skill": stage_def.skill,
-            "user_message": user_message,
-            "grounding_pointer": grounding_pointer,
-            "inputs": inputs,
-            "raw_output_path": str(raw_output_path),
-        })
-        resume_id = None
-        _write_session_inputs(stage_dir, run_dir, inputs)
-    else:
-        prompt = _resumed_prompt(conn, stage_dir, run_dir, stage_def, inputs, user_message)
-        resume_id = stage_row["claude_session_id"]
+    try:
+        if is_first_turn:
+            prompt = prompt_builder.render_kickoff_prompt(templates_dir, stage_def.id, {
+                "skill": stage_def.skill,
+                "user_message": user_message,
+                "grounding_pointer": grounding_pointer,
+                "inputs": inputs,
+                "raw_output_path": str(raw_output_path),
+            })
+            resume_id = None
+            _write_session_inputs(stage_dir, run_dir, inputs)
+        else:
+            prompt = _resumed_prompt(conn, stage_dir, run_dir, stage_def, inputs, user_message)
+            resume_id = stage_row["claude_session_id"]
+    except BaseException:
+        # Mirror the turn-streaming except block below: create_turn and the
+        # RUNNING transition above already happened, so a raise here (e.g.
+        # render_kickoff_prompt's ValueError/UndefinedError on a malformed
+        # template context) must not leave the turn/stage wedged at
+        # running/RUNNING forever -- any_turn_running() would then reject
+        # every subsequent chat/regenerate on every stage until a process
+        # restart lets preflight's startup sweep fix it.
+        db_mod.update_stage_status(conn, stage_row["id"], prior_status)
+        db_mod.update_turn(conn, turn_id, "aborted", _utcnow(), None)
+        raise
 
     before_mtime = raw_output_path.stat().st_mtime if raw_output_path.exists() else None
 
@@ -471,7 +482,7 @@ async def run_stage_turn(
             )
     try:
         gate_results = gates.run_gates_for_stage(
-            repo_root, stage_def.id, raw_output_path, upstream_by_stage
+            repo_root, stage_def.id, raw_output_path, resolved
         )
         body = raw_output_path.read_text(encoding="utf-8")
         meta = {

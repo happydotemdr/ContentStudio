@@ -154,6 +154,44 @@ async def test_run_stage_turn_rejects_a_stage_the_project_has_no_row_for(conn, p
 
 
 @pytest.mark.asyncio
+async def test_a_kickoff_render_failure_does_not_wedge_the_turn_or_the_stage(
+        conn, project, monkeypatch, tmp_path):
+    """CRITICAL finding of the P4 final-review fix wave: create_turn and the
+    RUNNING transition both happen BEFORE the kickoff prompt is rendered. If
+    render_kickoff_prompt raises (a real, intended-loud failure mode from
+    A-08 -- e.g. StrictUndefined on a malformed context), that used to escape
+    with no surrounding try/except, leaving the turn row 'running' and the
+    stage row RUNNING forever: any_turn_running() would then reject every
+    subsequent chat/regenerate on every stage of every project until a
+    process restart let preflight's startup sweep fix it. T5 already fixed
+    this exact class of bug once for upstream-resolution errors by moving
+    that check above create_turn; the kickoff-render step was left
+    unprotected below it."""
+    def _boom(*args, **kwargs):
+        raise ValueError("kickoff template context is broken")
+
+    monkeypatch.setattr(turn_service.prompt_builder, "render_kickoff_prompt", _boom)
+
+    stage_def = STAGES[0]
+    with pytest.raises(ValueError, match="kickoff template context is broken"):
+        await _drain(turn_service.run_stage_turn(
+            conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
+            project["project_id"], "abc-20260725-120000", stage_def, STAGES, "idea",
+        ))
+
+    # The turn must be recorded as aborted, not left running --
+    turns = db.list_turns(conn, project["stage_row_id"])
+    assert turns[-1]["status"] == "aborted"
+    # -- and the single-flight lock must be released --
+    assert turn_service.any_turn_running(conn) is False
+    # -- and the stage must be restored to its prior status (READY here),
+    # not left wedged at RUNNING, which would reject every future turn on
+    # this stage forever.
+    updated_stage = db.get_stage(conn, project["project_id"], "ideation")
+    assert updated_stage["status"] == StageStatus.READY.value
+
+
+@pytest.mark.asyncio
 async def test_disconnected_turn_is_marked_aborted_not_left_running(conn, project, monkeypatch, tmp_path):
     """Simulates an SSE client disconnect: the caller stops draining the
     generator (calls aclose()) instead of consuming it to completion. The
@@ -926,20 +964,6 @@ async def test_upstream_change_on_a_resumed_turn_records_a_warning_event(
     assert "scripting" in rows[0]["detail"]
 
 
-def test_turn_service_and_gates_build_the_same_upstream_map(conn, tmp_path):
-    """P3 Handoff H2: two implementations of one map is how A-30/A-62 happened.
-    This asserts the CONTENTS agree, which P3's static parity test cannot see
-    while turn_service still builds its own."""
-    from pipeline_app import gates as gates_mod
-
-    project_id, run_dir = _approved_chain(conn, tmp_path, with_music=True)
-    stage_def = _by_id("assembly")
-    assert turn_service._upstream_by_stage(tmp_path, run_dir, CHAIN_STAGES, stage_def) == \
-        gates_mod.resolve_upstream_by_stage(
-            run_dir, CHAIN_STAGES, stage_def,
-            repo_root=tmp_path, approved_only=True, include_optional=True)
-
-
 @pytest.mark.asyncio
 async def test_an_unapproved_upstream_is_not_reported_as_a_missing_one(conn, tmp_path):
     """The three-state rule, on turn_service's side of the boundary.
@@ -977,6 +1001,38 @@ async def test_an_unapproved_upstream_is_not_reported_as_a_missing_one(conn, tmp
     kinds = [r["kind"] for r in conn.execute(
         "SELECT kind FROM events ORDER BY id").fetchall()]
     assert kinds == ["handoff.upstream_missing", "handoff.upstream_unapproved"]
+
+
+@pytest.mark.asyncio
+async def test_two_unapproved_required_upstreams_are_both_reported(conn, tmp_path):
+    """Finding #1 of the P4 final-review fix wave: the excluded-dependency loop
+    used to track only a single `unapproved_id`, so a SECOND excluded upstream
+    fell through to `missing` -- which is checked first and raises
+    MissingUpstreamArtifactError ("never produced an artifact"), even though a
+    draft exists for at least one of them. With two required upstreams both
+    present-but-unapproved, the turn must raise UnapprovedUpstreamError naming
+    BOTH, not MissingUpstreamArtifactError."""
+    project_id, run_dir = _approved_chain(conn, tmp_path)
+    styleboard_dir = run_dir / "02b-styleboard"
+    voiceover_dir = run_dir / "03-voiceover"
+    shutil.rmtree(styleboard_dir)
+    shutil.rmtree(voiceover_dir)
+    _draft_artifact(styleboard_dir, 1, "shorts-styleboard", "drafted, never approved")
+    _draft_artifact(voiceover_dir, 1, "voiceover-brief", "drafted, never approved")
+
+    with pytest.raises(turn_service.UnapprovedUpstreamError) as excinfo:
+        await _drain(turn_service.run_stage_turn(
+            conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+            _by_id("assembly"), CHAIN_STAGES, "cut it"))
+
+    message = str(excinfo.value)
+    assert "styleboard" in message and "voiceover" in message
+
+    rows = conn.execute(
+        "SELECT kind, detail FROM events WHERE kind = 'handoff.upstream_unapproved'").fetchall()
+    assert len(rows) == 1
+    detail = json.loads(rows[0]["detail"])
+    assert sorted(detail["upstream"]) == ["styleboard", "voiceover"]
 
 
 def _rgs_chain(conn, tmp_path: Path, brief: str):

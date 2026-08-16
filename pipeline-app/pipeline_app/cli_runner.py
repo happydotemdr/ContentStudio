@@ -262,7 +262,7 @@ async def _feed_prompt_stdin(process, prompt: str) -> None:
 # a turn has no legitimate use for the app's vendor keys, and .claude/hooks/**
 # runs as an unrestricted subprocess that would otherwise inherit them (D-46).
 _ENV_KEEP = frozenset({"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"})
-_ENV_SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+_ENV_SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY", "_CREDENTIALS")
 
 
 def child_env() -> dict[str, str]:

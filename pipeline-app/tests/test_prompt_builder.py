@@ -79,7 +79,7 @@ def test_every_input_a_kickoff_template_names_is_reachable_via_depends_on(stage)
 
     # A-08's static half: no template may reference a name outside the frozen
     # five-key context. Jinja's default Undefined would render it as "".
-    assert _names(ast) <= (KICKOFF_CONTEXT_KEYS | {"stage_id", "path"}), (
+    assert _names(ast) <= KICKOFF_CONTEXT_KEYS, (
         f"{stage.id}.md references {sorted(_names(ast) - KICKOFF_CONTEXT_KEYS)}"
     )
 
@@ -136,7 +136,7 @@ def test_ideation_template_includes_grounding_block_when_present():
     assert "rgs-briefs/2026-07-25-idea.md" in prompt
 
 
-def test_scripting_template_references_input_file():
+def test_scripting_template_references_ideation_artifact_path():
     prompt = render_kickoff_prompt(TEMPLATES_DIR, "scripting", {
         "skill": "shorts-scripting",
         "user_message": "",
@@ -198,7 +198,7 @@ def test_visual_template_deliverable_names_i2v_and_cover_not_just_stills():
     assert "cover" in prompt.lower()
 
 
-def test_grounding_template_has_no_input_file_reference():
+def test_grounding_template_renders_with_no_upstream_inputs():
     prompt = render_kickoff_prompt(TEMPLATES_DIR, "grounding", {
         "skill": "rgs-grounding",
         "user_message": "a Short about travel-sport burnout",
