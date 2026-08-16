@@ -94,8 +94,10 @@ _TABS = (("videos", "video"), ("shorts", "short"))
 
 def _enumerate_tab(handle: str, tab: str, content_type: str) -> list[dict]:
     url = f"https://www.youtube.com/{handle}/{tab}"
-    cmd = ["yt-dlp", "-J", "--flat-playlist", "--ignore-errors", *_cookie_args(), url]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = _run_ytdlp(
+        ["-J", "--flat-playlist", "--ignore-errors", *_cookie_args(), url],
+        label=f"enumerate {handle}/{tab}",
+    )
     if proc.returncode != 0 or not proc.stdout.strip():
         # A channel with no Shorts tab is normal, not an error -- only the
         # /videos tab failing is worth reporting loudly.

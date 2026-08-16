@@ -396,19 +396,15 @@ def test_missing_library_is_distinguishable_from_no_transcript(monkeypatch, caps
 
 def _fake_tabs(videos, shorts):
     """Fake yt-dlp that answers per channel tab."""
-    def fake_run(cmd, capture_output, text):
-        url = cmd[-1]
+    def fake_run(args, *, label, binary=None):
+        url = args[-1]
         entries = shorts if url.endswith("/shorts") else videos
-        class FakeProc:
-            returncode = 0
-            stdout = json.dumps({"entries": entries})
-            stderr = ""
-        return FakeProc()
+        return _proc(0, json.dumps({"entries": entries}), "")
     return fake_run
 
 
 def test_enumerate_includes_shorts(monkeypatch):
-    monkeypatch.setattr(yt.subprocess, "run", _fake_tabs(
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
         [{"id": "v1", "title": "long form"}],
         [{"id": "s1", "title": "a short"}],
     ))
@@ -419,7 +415,7 @@ def test_enumerate_includes_shorts(monkeypatch):
 
 
 def test_enumerate_tags_content_type(monkeypatch):
-    monkeypatch.setattr(yt.subprocess, "run", _fake_tabs(
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
         [{"id": "v1", "title": "long form"}],
         [{"id": "s1", "title": "a short"}],
     ))
@@ -438,7 +434,7 @@ def test_merged_list_is_globally_newest_first_not_concatenated(monkeypatch):
     at the end of the videos block and never reach a single Short. The merged
     list must be sorted by date across both tabs.
     """
-    monkeypatch.setattr(yt.subprocess, "run", _fake_tabs(
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
         [{"id": "v_new", "title": "v"}, {"id": "v_old", "title": "v"}],
         [{"id": "s_mid", "title": "s"}],
     ))
@@ -452,7 +448,7 @@ def test_merged_list_is_globally_newest_first_not_concatenated(monkeypatch):
 
 
 def test_enumerate_populates_published_so_engine_skips_per_item_peeks(monkeypatch):
-    monkeypatch.setattr(yt.subprocess, "run", _fake_tabs(
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
         [{"id": "v1", "title": "v"}], []))
     monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates",
                         lambda ids, **k: {"v1": "2026-07-01"})
@@ -460,7 +456,7 @@ def test_enumerate_populates_published_so_engine_skips_per_item_peeks(monkeypatc
 
 
 def test_undated_items_sort_last_not_first(monkeypatch):
-    monkeypatch.setattr(yt.subprocess, "run", _fake_tabs(
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
         [{"id": "dated", "title": "v"}, {"id": "undated", "title": "v"}], []))
     monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates",
                         lambda ids, **k: {"dated": "2026-07-01"})
@@ -469,7 +465,7 @@ def test_undated_items_sort_last_not_first(monkeypatch):
 
 def test_without_api_dates_falls_back_to_videos_only_and_warns(monkeypatch, capsys):
     """No key -> cannot order two tabs -> narrower but correct, and loud."""
-    monkeypatch.setattr(yt.subprocess, "run", _fake_tabs(
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
         [{"id": "v1", "title": "v"}], [{"id": "s1", "title": "s"}]))
     monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {})
     items = yt.enumerate_newest_first("@c", None)
@@ -478,29 +474,50 @@ def test_without_api_dates_falls_back_to_videos_only_and_warns(monkeypatch, caps
 
 
 def test_missing_shorts_tab_is_not_an_error(monkeypatch, capsys):
-    def fake_run(cmd, capture_output, text):
-        url = cmd[-1]
-        class FakeProc:
-            returncode = 1 if url.endswith("/shorts") else 0
-            stdout = "" if url.endswith("/shorts") else json.dumps({"entries": [{"id": "v1", "title": "v"}]})
-            stderr = "no shorts tab"
-        return FakeProc()
-    monkeypatch.setattr(yt.subprocess, "run", fake_run)
+    def fake_run(args, *, label, binary=None):
+        url = args[-1]
+        return _proc(
+            1 if url.endswith("/shorts") else 0,
+            "" if url.endswith("/shorts") else json.dumps({"entries": [{"id": "v1", "title": "v"}]}),
+            "no shorts tab",
+        )
+    monkeypatch.setattr(yt, "_run_ytdlp", fake_run)
     monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {"v1": "2026-07-01"})
     items = yt.enumerate_newest_first("@c", None)
     assert [i["id"] for i in items] == ["v1"]
     assert "enumerate failed" not in capsys.readouterr().err
 
 
+_EMOJI_TITLE = "Playa \U0001F60D Ocotal \U0001F525 naïve wins"
+
+
+def _real_ytdlp_emitting(payload: dict) -> list[str]:
+    """A binary substitute that writes real UTF-8 bytes to stdout."""
+    script = ("import sys, json;"
+              f"sys.stdout.buffer.write(json.dumps({payload!r}, ensure_ascii=False)"
+              ".encode('utf-8'))")
+    return [sys.executable, "-c", script]
+
+
+@pytest.mark.allow_subprocess
+def test_enumerate_preserves_an_emoji_title_byte_identically(monkeypatch):
+    monkeypatch.setattr(yt, "YTDLP_BIN", _real_ytdlp_emitting(
+        {"entries": [{"id": "v1", "title": _EMOJI_TITLE}]}))
+    monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates",
+                        lambda ids, **k: {"v1": "2026-07-01"})
+    items = yt.enumerate_newest_first("@c", None)
+    assert items[0]["title"] == _EMOJI_TITLE
+
+
 def test_duplicate_across_tabs_is_deduped(monkeypatch):
-    monkeypatch.setattr(yt.subprocess, "run", _fake_tabs(
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
         [{"id": "x", "title": "v"}], [{"id": "x", "title": "v"}]))
     monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {"x": "2026-07-01"})
     assert len(yt.enumerate_newest_first("@c", None)) == 1
 
 
 def test_keyword_filter_applies_across_both_tabs(monkeypatch):
-    monkeypatch.setattr(yt.subprocess, "run", _fake_tabs(
+    monkeypatch.setattr(yt, "_run_ytdlp", _fake_tabs(
         [{"id": "v1", "title": "Adam Grant talk"}, {"id": "v2", "title": "other"}],
         [{"id": "s1", "title": "adam grant clip"}, {"id": "s2", "title": "nope"}]))
     monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {
