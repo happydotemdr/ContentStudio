@@ -141,3 +141,44 @@ def test_project_home_nav_has_no_current_highlight(client: TestClient):
     # current-highlight class — checked as the exact class token (not a bare
     # "current" substring, which could false-positive on unrelated text).
     assert 'class="pipeline-stage current"' not in home.text
+
+
+def test_overlong_slug_returns_400_not_500(client: TestClient):
+    resp = client.post("/projects", data={"slug": "x" * 200, "brand": "generic"},
+                       follow_redirects=False)
+    assert resp.status_code == 400
+    assert "60" in resp.text
+    rows = client.app.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'project.slug_rejected'").fetchall()
+    assert len(rows) == 1 and rows[0]["severity"] == "warning"
+
+
+def test_a_failed_creation_is_a_named_error_and_leaves_an_events_row(client, monkeypatch):
+    real_mkdir = Path.mkdir
+    monkeypatch.setattr(Path, "mkdir",
+                        lambda self, *a, **k: (_ for _ in ()).throw(OSError(28, "no space")))
+
+    resp = client.post("/projects", data={"slug": "why-kids-quit", "brand": "generic"},
+                       follow_redirects=False)
+    monkeypatch.undo()
+
+    assert resp.status_code == 500
+    assert "no space" in resp.text            # not a bare traceback
+    rows = client.app.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'project.create_failed'").fetchall()
+    assert len(rows) == 1 and rows[0]["severity"] == "error"
+
+
+def test_a_run_id_collision_returns_409_with_retry_advice_not_500(client, monkeypatch):
+    import pipeline_app.routes.projects as projects_route
+    from pipeline_app.project_service import RunIdCollision
+
+    monkeypatch.setattr(
+        projects_route, "create_project",
+        lambda *a, **k: (_ for _ in ()).throw(RunIdCollision("retry in a moment")),
+    )
+    resp = client.post("/projects", data={"slug": "dup", "brand": "generic"},
+                       follow_redirects=False)
+
+    assert resp.status_code == 409
+    assert "retry" in resp.text.lower()

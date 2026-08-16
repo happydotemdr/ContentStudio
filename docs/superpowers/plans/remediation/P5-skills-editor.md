@@ -1124,6 +1124,36 @@ def test_skill_md_save_produces_a_real_scoped_commit(client):
 
 ---
 
+> **Amendment (P5 T15 dispatch, discovered by the implementer and verified live):** the
+> `test_a_stage_with_no_editor_binding_is_findable` test shown below asserts against
+> `root / "pipeline-app" / "logs"` (where `root` is the fixture's `tmp_path`), assuming
+> `obs.log` writes under `repo_root`. It does not: live `obs.py` defines
+> `LOG_DIR = Path(__file__).resolve().parents[1] / "logs"` — fixed to the REAL `pipeline-app/`
+> directory in this worktree, derived from `obs.py`'s own file location, with no `repo_root`
+> parameter anywhere in `obs.log`'s signature. As written, this test can never pass on any real
+> checkout, and worse, it has a live side effect: every run of `commit_skill_edit`/`skill_detail`
+> during this test writes a real log line into the ACTUAL `pipeline-app/logs/app-<date>.log` in
+> this worktree, outside the test's own `tmp_path` sandbox — the same class of issue P1's own
+> `obs.py` accepted as a known, deliberate design point (log lines are diagnostic output, not
+> test-visible state) but which this specific test's assertion fights rather than respects.
+> **Corrected assertion:** point the test at `obs.LOG_DIR` directly instead of reconstructing a
+> path under `root`:
+> ```python
+> def test_a_stage_with_no_editor_binding_is_findable(client, tmp_path):
+>     from pipeline_app import obs
+>     test_client, root = client
+>     (root / "pipeline-app" / "stage_templates" / "styleboard.md").unlink()
+>     test_client.get("/skills/shorts-styleboard")
+>     # obs.log's LOG_DIR is fixed to the real pipeline-app/logs/, not repo_root -- it is NOT
+>     # sandboxed per-test, so assert against the real location and only check for the event's
+>     # presence (not exclusivity: other tests running in the same process may also log here).
+>     logs = sorted(obs.LOG_DIR.glob("app-*.log"))
+>     assert logs and "skill_editor.template_file_missing" in logs[-1].read_text(encoding="utf-8")
+> ```
+> This does not change any production code — `_reject`, the `saved`/`commit_failed` event
+> recording, and the four parametrized rejection tests are unaffected and proceed exactly as this
+> task's plan text already describes.
+
 ### T15 — Surfacing: every rejection and every warning leaves an `events` row
 
 **Requires P1.** One parametrized test carries the surfacing role for A-48, A-49, A-50, A-51 and
@@ -1279,6 +1309,62 @@ MAX_SLUG_LENGTH = 60
 - [ ] Commit: `fix(projects): bound the slug length so a run path cannot overflow (A-78)`
 
 ---
+
+> **Amendment (P5 kickoff session, verified live against the P5 worktree at origin/main
+> `ed93875`):** this task's shown implementation is stale. It assumes `db.py`'s
+> `create_project`/`create_stage_row` commit per row with no way to batch them, and has
+> `_create_once` bypass `db_mod` entirely with hand-rolled `conn.execute` + `conn.commit()`/
+> `conn.rollback()`. That is no longer true. Live `db.py` now ships `db.transaction(conn)` (a
+> reentrant context manager, `db.py:70-`) and `commit_unless_in_transaction` (`db.py:42-67`),
+> which `create_project`/`create_stage_row` already call instead of a raw `conn.commit()`
+> (`db.py:1511-1533`, confirmed). Wrapping the whole per-row sequence in `with
+> db_mod.transaction(conn):` already makes the DB half of A-78 atomic — on any exception inside
+> the block, `transaction()` itself rolls back and emits its own `db.transaction_rolled_back`
+> event, which is strictly better observability than anything this task would add by hand. This
+> infrastructure did not exist when this task's code was drafted; it must not be bypassed or
+> reimplemented — routes/projects.py and routes/stages.py already rely on the same mechanism for
+> other invariants (see `db.py`'s `transaction()` docstring), and hand-rolling a parallel
+> commit/rollback path here would fight it, not fix it. **Corrected implementation:** keep calling
+> `db_mod.create_project` / `db_mod.create_stage_row` exactly as `project_service.py` already
+> does today; do not import `sqlite3` for INSERTs and do not add `conn.commit()`/`conn.rollback()`
+> calls. `_create_once`'s only real job is the filesystem half, which `transaction()` cannot see:
+>
+> ```python
+> import shutil
+>
+> def _create_once(conn, repo_root, cleaned_slug, brand, applicable, now) -> dict:
+>     run_id = f"{cleaned_slug}-{now.strftime('%Y%m%d-%H%M%S')}"
+>     run_dir = repo_root / "runs" / run_id
+>     if run_dir.resolve().parent != (repo_root / "runs").resolve():
+>         raise ValueError(f"slug resolves outside the runs directory: {cleaned_slug!r}")
+>
+>     created_dir = False
+>     try:
+>         with db_mod.transaction(conn):
+>             project_id = db_mod.create_project(conn, run_id, cleaned_slug, brand, now.isoformat())
+>             for stage in applicable:
+>                 status = compute_initial_status(stage.depends_on)
+>                 db_mod.create_stage_row(conn, project_id, stage.id, status.value)
+>             run_dir.mkdir(parents=True, exist_ok=False)
+>             created_dir = True
+>             for stage in applicable:
+>                 (run_dir / stage_dir_name(stage)).mkdir(parents=True, exist_ok=True)
+>     except BaseException:
+>         if created_dir:
+>             shutil.rmtree(run_dir, ignore_errors=True)
+>         raise
+>     return {"project_id": project_id, "run_id": run_id, "run_dir": run_dir}
+> ```
+>
+> `from pipeline_app import db as db_mod` and the `compute_initial_status`/`stage_dir_name`
+> imports project_service.py already has stay as they are — do not drop the `db_mod` import, the
+> plan body's instruction to "stop using the auto-committing db_mod helpers" no longer applies.
+> `exist_ok=False` on `run_dir.mkdir` (not the plan's original omission) matters here:
+> `_create_once` is retried by T18's caller with a new `run_id` per attempt, so a stale `run_dir`
+> from an earlier partial failure must never be silently reused. The two tests below still exercise
+> exactly the failure shape they describe (`Path.mkdir` raising on the 2nd call captures the
+> stage-dir loop start today the same as it did against the plan's original code — this is a
+> behavior-preserving correction, not a test change).
 
 ### T17 — A-78: project creation is all-or-nothing
 

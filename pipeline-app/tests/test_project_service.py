@@ -141,3 +141,122 @@ def test_create_project_leaves_nothing_behind_when_it_fails_partway(conn, tmp_pa
     # legitimate-empty baseline above -- same zero projects, but ONE rollback
     # event where there were zero. "Nothing was created" and "creation blew up
     # halfway" are no longer the same database.
+
+
+def test_an_overlong_slug_is_rejected_before_anything_is_created(conn, tmp_path: Path):
+    """Nothing bounded the slug, and the deepest run path is
+    runs/<slug>-<ts>/02b-styleboard/events/<ms>.jsonl — an OSError partway
+    through left a committed project with a partial set of stage rows (A-78)."""
+    from pipeline_app.project_service import MAX_SLUG_LENGTH
+
+    with pytest.raises(ValueError) as exc:
+        create_project(conn, tmp_path, "a" * (MAX_SLUG_LENGTH + 1), "generic", STAGES)
+
+    assert str(MAX_SLUG_LENGTH) in str(exc.value)
+    assert db.list_projects(conn) == []
+    assert not (tmp_path / "runs").exists()
+
+
+def test_a_slug_at_the_limit_is_still_accepted(conn, tmp_path: Path):
+    """Distinguishability: the bound must reject the overlong case only, not
+    quietly narrow what a legitimate project may be called."""
+    from pipeline_app.project_service import MAX_SLUG_LENGTH
+
+    result = create_project(conn, tmp_path, "a" * MAX_SLUG_LENGTH, "generic", STAGES)
+    assert result["run_dir"].is_dir()
+    assert len(db.list_projects(conn)) == 1
+
+
+def test_a_failure_partway_leaves_no_project_at_all(conn, tmp_path: Path, monkeypatch):
+    """The project row was inserted and committed, then run_dir.mkdir, then
+    one stage row + one mkdir per stage with a commit per row. A failure
+    partway left a committed project with a partial set of stage rows that
+    nothing repairs, permanently unusable but normal-looking (A-78)."""
+    real_mkdir = Path.mkdir
+    calls = {"n": 0}
+
+    def flaky(self, *args, **kwargs):
+        calls["n"] += 1
+        # call 1: run_dir.parent.mkdir (runs/) succeeds
+        # call 2: run_dir.mkdir itself succeeds
+        # call 3: the first per-stage directory mkdir fails
+        if calls["n"] == 3:            # run_dir and its parent succeed, the first stage dir does not
+            raise OSError(28, "No space left on device")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", flaky)
+
+    with pytest.raises(OSError):
+        create_project(conn, tmp_path, "why-kids-quit", "generic", STAGES)
+
+    monkeypatch.undo()
+    assert db.list_projects(conn) == []
+    assert list((tmp_path / "runs").iterdir()) == []
+
+
+def test_a_half_created_project_is_distinguishable_from_a_whole_one(conn, tmp_path, monkeypatch):
+    """The distinguishability the audit asks for: 'broken' must not present
+    as 'a project'. Before the fix the broken run appeared in the project list
+    exactly like the good one, minus stage rows nobody looks at."""
+    good = create_project(conn, tmp_path, "good-run", "generic", STAGES)
+    assert {r["stage_id"] for r in db.list_stages(conn, good["project_id"])} == \
+        {"ideation", "scripting"}
+
+    real_mkdir = Path.mkdir
+    calls = {"n": 0}
+
+    def flaky(self, *args, **kwargs):
+        calls["n"] += 1
+        # call 1: run_dir.parent.mkdir (runs/) succeeds
+        # call 2: run_dir.mkdir itself succeeds
+        # call 3: the first per-stage directory mkdir fails
+        if calls["n"] == 3:            # run_dir and its parent succeed, the first stage dir does not
+            raise OSError(28, "No space left on device")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", flaky)
+    with pytest.raises(OSError):
+        create_project(conn, tmp_path, "bad-run", "generic", STAGES)
+    monkeypatch.undo()
+
+    projects = db.list_projects(conn)
+    assert [p["slug"] for p in projects] == ["good-run"]
+
+
+def test_two_projects_created_in_the_same_second_both_succeed(conn, tmp_path: Path):
+    """run_id uniqueness rested entirely on second-resolution, so a
+    double-submitted form raised sqlite3.IntegrityError (A-79)."""
+    now = datetime.datetime(2026, 7, 25, 14, 32, 0, tzinfo=datetime.timezone.utc)
+
+    first = create_project(conn, tmp_path, "My Topic", "generic", STAGES, now=now)
+    second = create_project(conn, tmp_path, "my_topic", "generic", STAGES, now=now)
+
+    assert first["run_id"] == "my-topic-20260725-143200"
+    assert second["run_id"] == "my-topic-20260725-143201"      # advanced, not suffixed
+    assert first["run_dir"].is_dir() and second["run_dir"].is_dir()
+    assert len(db.list_projects(conn)) == 2
+
+    rows = conn.execute("SELECT * FROM events WHERE kind = 'db.transaction_rolled_back'").fetchall()
+    assert rows == []
+
+
+def test_run_id_keeps_the_shape_browse_service_anchors_on(conn, tmp_path: Path):
+    """browse_service._RUN_ID_TIMESTAMP_RE is `-(\\d{8}-\\d{6})$` — anchored at
+    the END. A disambiguating suffix would silently stop /browse dating the
+    run, so collisions advance the timestamp instead."""
+    import re
+    now = datetime.datetime(2026, 7, 25, 14, 32, 0, tzinfo=datetime.timezone.utc)
+    for _ in range(3):
+        result = create_project(conn, tmp_path, "dup", "generic", STAGES, now=now)
+        assert re.search(r"-(\d{8}-\d{6})$", result["run_id"])
+
+
+def test_an_exhausted_retry_window_raises_a_named_error_not_IntegrityError(conn, tmp_path):
+    from pipeline_app.project_service import _MAX_RUN_ID_ATTEMPTS, RunIdCollision
+    now = datetime.datetime(2026, 7, 25, 14, 32, 0, tzinfo=datetime.timezone.utc)
+    for i in range(_MAX_RUN_ID_ATTEMPTS):
+        create_project(conn, tmp_path, "dup", "generic", STAGES,
+                       now=now + datetime.timedelta(seconds=i))
+
+    with pytest.raises(RunIdCollision):
+        create_project(conn, tmp_path, "dup", "generic", STAGES, now=now)
