@@ -121,6 +121,25 @@ def test_unparseable_listing_json_raises_the_typed_error(monkeypatch):
         yt.enumerate_newest_first("@c", keyword_filter=None)
 
 
+def test_enumeration_is_bounded_by_playlist_end(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(yt, "_run_ytdlp",
+                        lambda args, **k: seen.update(args=args) or _proc(0, json.dumps({"entries": []}), ""))
+    monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {})
+    yt.enumerate_newest_first("@c", None)
+    assert "--playlist-end" in seen["args"]
+    assert seen["args"][seen["args"].index("--playlist-end") + 1] == str(yt.ENUMERATE_MAX_ITEMS)
+
+
+def test_a_full_walk_can_still_be_requested(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(yt, "_run_ytdlp",
+                        lambda args, **k: seen.update(args=args) or _proc(0, json.dumps({"entries": []}), ""))
+    monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {})
+    yt.enumerate_newest_first("@c", None, max_items=None)
+    assert "--playlist-end" not in seen["args"]
+
+
 def test_peek_upload_date_reads_info_json(monkeypatch, tmp_path):
     def fake_run(args, *, label, binary=None):
         # simulate yt-dlp writing the info.json next to -o's stem

@@ -143,10 +143,21 @@ def _is_absent_tab(tab: str, stderr: str) -> bool:
     return any(marker in lowered for marker in _ABSENT_TAB_MARKERS)
 
 
-def _enumerate_tab(handle: str, tab: str, content_type: str) -> list[dict]:
+# --flat-playlist with no bound lists a channel's entire lifetime catalogue
+# (measured: 877 items for one channel), and every id is then batched through
+# the Data API -- daily, mostly to re-date material already on disk. 200 is a
+# generous multiple of any plausible per-run item count and still covers a new
+# handle's 90-day lookback for any real channel. Pass max_items=None for a
+# deliberate full backfill (B-17).
+ENUMERATE_MAX_ITEMS = 200
+
+
+def _enumerate_tab(handle: str, tab: str, content_type: str,
+                   max_items: int | None = ENUMERATE_MAX_ITEMS) -> list[dict]:
     url = f"https://www.youtube.com/{handle}/{tab}"
+    bound = ["--playlist-end", str(max_items)] if max_items else []
     proc = _run_ytdlp(
-        ["-J", "--flat-playlist", "--ignore-errors", *_cookie_args(), url],
+        ["-J", "--flat-playlist", "--ignore-errors", *bound, *_cookie_args(), url],
         label=f"enumerate {handle}/{tab}",
     )
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -185,7 +196,8 @@ def _interleave(videos: list[dict], shorts: list[dict]) -> list[dict]:
             for i in pair if i is not None]
 
 
-def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
+def enumerate_newest_first(handle: str, keyword_filter: str | None, *,
+                           max_items: int | None = ENUMERATE_MAX_ITEMS) -> list[dict]:
     """Every video AND Short for `handle`, merged into one newest-first list.
 
     Ordering is load-bearing: process_handle breaks out of the walk on
@@ -194,8 +206,12 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
     Each tab is newest-first on its own but --flat-playlist carries no dates,
     so dates are batched from the Data API (1 quota unit per 50 ids) to
     establish a single order.
+
+    `max_items` bounds each tab's --flat-playlist walk (B-17); pass None for a
+    deliberate full lifetime backfill. Keyword-only with a default so the
+    existing two-positional-argument call site keeps working unchanged.
     """
-    per_tab = {ct: _enumerate_tab(handle, tab, ct) for tab, ct in _TABS}
+    per_tab = {ct: _enumerate_tab(handle, tab, ct, max_items) for tab, ct in _TABS}
     videos = per_tab["video"]
     items = [i for tab_items in per_tab.values() for i in tab_items]
 
