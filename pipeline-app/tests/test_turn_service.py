@@ -234,6 +234,34 @@ async def test_aborted_turn_persists_cost_when_a_result_event_was_captured(conn,
     assert turns[-1]["cost_usd"] == 0.42
 
 
+@pytest.mark.asyncio
+async def test_a_session_that_never_opened_is_cleared_so_the_next_turn_re_renders(
+        conn, project, tmp_path, monkeypatch):
+    """A-06: --resume <dead-id> fails, the stage lands in no_artifact, and
+    is_first_turn stays False forever -- there was no in-app recovery at all."""
+    db.update_stage_session(conn, project["stage_row_id"], "dead-session")
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _fake_stream(
+        [{"type": "result", "result": "No conversation found with session ID", "is_error": True}]))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
+        project["project_id"], "abc-20260725-120000", STAGES[0], STAGES, "go"))
+    assert db.get_stage(conn, project["project_id"], "ideation")["claude_session_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_turn_on_a_live_session_keeps_the_session_id(conn, project, tmp_path, monkeypatch):
+    """Distinguishability: an ordinary failed turn (the session DID open) must
+    not be mistaken for a dead session id and lose its resume point."""
+    db.update_stage_session(conn, project["stage_row_id"], "session-1")
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn", _fake_stream([
+        {"type": "system", "subtype": "init", "session_id": "session-1"},
+        {"type": "result", "result": "tool error", "is_error": True}]))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
+        project["project_id"], "abc-20260725-120000", STAGES[0], STAGES, "go"))
+    assert db.get_stage(conn, project["project_id"], "ideation")["claude_session_id"] == "session-1"
+
+
 CHAIN_STAGES = [
     StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02", depends_on=[]),
     StageDef(id="styleboard", skill="shorts-styleboard", dir_prefix="02b", depends_on=["scripting"]),

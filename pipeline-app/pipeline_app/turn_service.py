@@ -178,6 +178,18 @@ def _resumed_prompt(conn, stage_dir: Path, run_dir: Path, stage_def: StageDef,
     return "\n".join(lines) + "\n\n" + user_message
 
 
+def _resume_failed(events: list[dict]) -> bool:
+    """The CLI never opened the resumed session: no system/init carrying a
+    session id, and the turn ended in error. Both halves matter -- an error on a
+    session that DID open is an ordinary failed turn, not a dead id."""
+    opened = any(
+        e.get("type") == "system" and e.get("subtype") == "init" and e.get("session_id")
+        for e in events
+    )
+    errored = (not events) or any(e.get("type") == "result" and e.get("is_error") for e in events)
+    return not opened and errored
+
+
 def _resolve_upstream(repo_root: Path, run_dir: Path, up: StageDef) -> Path | None:
     """The artifact an upstream stage hands downstream. Grounding's real output
     lives in rgs-briefs/ behind a pointer, so it needs the pointer-aware
@@ -327,7 +339,15 @@ async def run_stage_turn(
         "complete" if result.success else "failed",
         _utcnow(), result.cost_usd,
     )
-    if result.session_id:
+    if resume_id is not None and _resume_failed(collected):
+        db_mod.update_stage_session(conn, stage_row["id"], None)
+        obs.record_event(
+            conn, kind="handoff.session_unresumable", severity="warning", source="turn_service",
+            message=(f"stage '{stage_def.id}' session {resume_id} could not be resumed; cleared "
+                     "so the next turn re-renders the kickoff prompt"),
+            detail={"stage": stage_def.id, "session_id": resume_id},
+        )
+    elif result.session_id:
         db_mod.update_stage_session(conn, stage_row["id"], result.session_id)
 
     if not finalize_artifact:
