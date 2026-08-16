@@ -8,6 +8,16 @@ from pipeline_app import artifacts
 from pipeline_app import discovery_youtube as yt
 
 
+def _proc(returncode, stdout, stderr):
+    """Factory for fake subprocess.CompletedProcess objects."""
+    class FakeProc:
+        pass
+    FakeProc.returncode = returncode
+    FakeProc.stdout = stdout
+    FakeProc.stderr = stderr
+    return FakeProc()
+
+
 @pytest.fixture(autouse=True)
 def no_data_api_by_default(monkeypatch):
     """Keep these tests off the network.
@@ -504,3 +514,56 @@ def test_download_item_records_content_type(monkeypatch, tmp_path):
     yt.download_item(tmp_path, "@testhandle", "s9", "A Short", "short")
     meta, _ = _written(tmp_path, "s9")
     assert meta["content_type"] == "short"
+
+
+# --------------------------------------------------------------------------- #
+# _run_ytdlp() encoding and None-safety (B-10)
+
+@pytest.mark.allow_subprocess
+def test_run_ytdlp_round_trips_a_non_cp1252_title_byte_identically():
+    """B-10, the reproduction, as a test.
+
+    U+1F60D's UTF-8 bytes include 0x8D, which is undefined in cp1252: under
+    text=True the reader thread dies and subprocess.run returns stdout=None.
+    U+1F525's bytes are all cp1252-defined, so it decodes into four mojibake
+    characters instead of crashing. Both are in this title, plus a Latin-1
+    letter whose corruption is visible in a filename.
+    """
+    title = "Playa \U0001F60D Ocotal \U0001F525 naïve wins"
+    script = (
+        "import sys, json;"
+        "sys.stdout.buffer.write(json.dumps("
+        f"{{'entries': [{{'id': 'v1', 'title': {title!r}}}]}}"
+        ", ensure_ascii=False).encode('utf-8'))"
+    )
+    monkey_bin = [sys.executable, "-c", script]
+    proc = yt._run_ytdlp(monkey_bin[1:], binary=monkey_bin[:1], label="test")
+
+    assert proc.returncode == 0
+    entry = json.loads(proc.stdout)["entries"][0]
+    assert entry["title"] == title
+    assert entry["title"].encode("utf-8") == title.encode("utf-8")
+
+
+def test_run_ytdlp_never_returns_none_stdout(monkeypatch):
+    """The AttributeError branch: a dead reader thread yields stdout=None."""
+    class DeadReader:
+        returncode = 0
+        stdout = None
+        stderr = None
+
+    monkeypatch.setattr(yt.subprocess, "run", lambda *a, **k: DeadReader())
+    proc = yt._run_ytdlp(["-J"], label="test")
+    assert proc.stdout == ""
+    assert proc.stderr == ""
+    assert proc.stdout.strip() == ""  # would AttributeError today
+
+
+def test_run_ytdlp_passes_utf8_encoding_not_bare_text_mode(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(yt.subprocess, "run",
+                        lambda *a, **k: seen.update(k) or _proc(0, "{}", ""))
+    yt._run_ytdlp(["-J"], label="test")
+    assert seen["encoding"] == "utf-8"
+    assert seen["errors"] == "replace"
+    assert "text" not in seen

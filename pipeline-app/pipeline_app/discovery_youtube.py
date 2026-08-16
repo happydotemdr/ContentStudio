@@ -18,6 +18,7 @@ from pathlib import Path
 
 from pipeline_app import artifacts
 from pipeline_app import discovery_youtube_api as youtube_api
+from pipeline_app import obs
 from pipeline_app.discovery_paths import handle_dir, slugify
 
 USER_AGENT = "ContentStudio-discovery-engine/1.0 (personal archival; local inspection)"
@@ -39,6 +40,42 @@ def _cookie_args() -> list[str]:
     print(f"  ! no cookies.txt at {COOKIES_PATH} -- per-video yt-dlp fetches will "
           f"likely fail YouTube's bot-check", file=sys.stderr)
     return []
+
+
+YTDLP_BIN = ["yt-dlp"]
+
+
+class YtDlpUnavailable(RuntimeError):
+    """yt-dlp is not on PATH. Not a quiet channel -- an unusable environment."""
+
+
+def _run_ytdlp(args: list[str], *, label: str,
+               binary: list[str] | None = None) -> subprocess.CompletedProcess:
+    """The single place this module spawns yt-dlp.
+
+    encoding="utf-8", errors="replace" is load-bearing on Windows: bare
+    text=True decodes yt-dlp's UTF-8 output with the host ANSI codepage
+    (cp1252 here), which either kills the reader thread -- leaving
+    stdout=None for the caller to trip over -- or silently mojibakes a title
+    into the filename, the corpus and the daily email. Both were reproduced;
+    see finding B-10.
+
+    stdout/stderr are normalised to "" so no caller can ever face None.
+    """
+    cmd = [*(binary or YTDLP_BIN), *args]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, encoding="utf-8", errors="replace",
+        )
+    except FileNotFoundError as exc:
+        obs.log("adapter.tool_missing", level="error", platform="youtube",
+                tool=cmd[0], label=label)
+        raise YtDlpUnavailable(f"yt-dlp not found on PATH (needed for {label})") from exc
+    if proc.stdout is None:
+        proc.stdout = ""
+    if proc.stderr is None:
+        proc.stderr = ""
+    return proc
 
 
 def on_disk_ids(repo_root: Path, handle: str) -> set[str]:
