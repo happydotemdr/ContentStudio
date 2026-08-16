@@ -31,8 +31,6 @@ import datetime as _dt
 import sys
 from pathlib import Path
 
-import yaml
-
 from pipeline_app import artifacts
 from pipeline_app.discovery_paths import handle_dir
 
@@ -229,9 +227,7 @@ def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[
             continue
         try:
             meta, body = artifacts.parse_frontmatter(text)
-        except yaml.YAMLError:
-            continue
-        if not isinstance(meta, dict):
+        except artifacts.MalformedArtifactError:
             continue
         fetched_at = meta.get("fetched_at")
         # Non-str includes an unquoted YAML timestamp, which parses to a
