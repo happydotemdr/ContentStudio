@@ -287,3 +287,30 @@ def test_keyword_filter_still_excludes_a_genuine_non_match(monkeypatch):
     monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(
         {"feed": [_post("rkey1", "2026-07-29", "nothing relevant here")]}).encode("utf-8"))
     assert bsky.enumerate_newest_first("x.bsky.social", keyword_filter="permaculture") == []
+
+
+def test_a_row_with_no_usable_created_at_is_dropped(monkeypatch, logged):
+    """peek_upload_date's comment claims enumerate always populates
+    'published'. It did not: a short/absent createdAt yielded None, and for a
+    new handle five of those in a row aborted the whole walk with a healthy
+    status. The Bright Data adapters drop such rows in _normalize_row; match
+    them, and report the drop (B-09)."""
+    feed = {"feed": [
+        _post("good", "2026-07-29"),
+        {"post": {"uri": "at://did/app.bsky.feed.post/bad", "record": {"text": "t", "createdAt": "2026"}}},
+        {"post": {"uri": "at://did/app.bsky.feed.post/none", "record": {"text": "t"}}},
+    ]}
+    monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(feed).encode("utf-8"))
+    items = bsky.enumerate_newest_first("x.bsky.social", None)
+    assert [i["id"] for i in items] == ["good"]
+    assert all(i["published"] for i in items)
+    (record,) = [r for r in logged if r["event"] == "adapter.undated_rows_dropped"]
+    assert record["level"] == "warning" and record["count"] == 2
+
+
+def test_indexed_at_is_accepted_when_created_at_is_absent(monkeypatch):
+    feed = {"feed": [{"post": {"uri": "at://did/app.bsky.feed.post/i1",
+                               "indexedAt": "2026-07-29T10:00:00Z",
+                               "record": {"text": "t"}}}]}
+    monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(feed).encode("utf-8"))
+    assert bsky.enumerate_newest_first("x.bsky.social", None)[0]["published"] == "2026-07-29"

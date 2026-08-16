@@ -46,6 +46,7 @@ def on_disk_ids(repo_root: Path, handle: str) -> set[str]:
 def enumerate_newest_first(handle: str, keyword_filter: str | None, page_limit: int = 5) -> list[dict]:
     items: list[dict] = []
     cursor = None
+    undated = 0
     for page_index in range(page_limit):
         params = {"actor": handle, "limit": "100"}
         if cursor:
@@ -78,11 +79,17 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None, page_limit: 
                 continue
             text = (record.get("text") or "").strip()
             created = record.get("createdAt") or post.get("indexedAt") or ""
-            published = created[:10] if len(created) >= 10 else None
-            items.append({"id": rkey, "title": text[:60], "text": text, "published": published})
+            if len(created) < 10:
+                undated += 1
+                continue
+            items.append({"id": rkey, "title": text[:60], "text": text,
+                          "published": created[:10]})
         cursor = data.get("cursor")
         if not cursor:
             break
+    if undated:
+        obs.log("adapter.undated_rows_dropped", level="warning", platform="bluesky",
+                handle=handle, count=undated)
     if keyword_filter:
         # Filter the full text, not the 60-char display title -- Instagram
         # filters `caption` and LinkedIn/Facebook/X filter `body` (B-08).
@@ -92,7 +99,10 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None, page_limit: 
 
 
 def peek_upload_date(item_id: str) -> str | None:
-    return None  # normally dead code: enumerate_newest_first always populates 'published'
+    # Genuinely dead code as of B-09: enumerate_newest_first drops any row it
+    # cannot date, so every item it yields carries 'published'. Kept because
+    # the PlatformAdapter contract requires the method.
+    return None
 
 
 def download_item(repo_root: Path, handle: str, rkey: str, title: str,
