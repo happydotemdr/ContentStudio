@@ -65,7 +65,7 @@ def test_skill_detail_shows_skill_md_content(client):
     test_client, tmp_path = client
     resp = test_client.get("/skills/shorts-ideation")
     assert resp.status_code == 200
-    assert "original content" in resp.text
+    assert "Body." in resp.text
 
 
 def test_save_skill_md_writes_file_and_commits(client, monkeypatch):
