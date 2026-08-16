@@ -34,6 +34,17 @@ the SKILL.md prose that must follow is handed to P13 as a contract (§6), not ed
 - `pipeline-app/tests/test_pipeline_config.py`
 - `pipeline-app/tests/test_routes_chat_sse.py`
 
+> **Scope amendment (operator-authorized, 2026-08-16, T13 only):** T13's topology-validation
+> tightening broke test fixtures in files P4 does not otherwise own. The operator authorized T13
+> to also touch whichever of `tests/conftest.py`, `tests/test_header.py`, `tests/test_main.py`,
+> `tests/test_obs.py`, `tests/test_routes_approve_edit.py`, `tests/test_routes_browse.py`,
+> `tests/test_routes_discovery.py`, `tests/test_routes_doctor.py`, `tests/test_routes_inspector.py`,
+> `tests/test_routes_projects.py`, `tests/test_routes_stages.py`, and
+> `tests/integration/test_stubbed_cli_e2e.py` need it — strictly limited to adding
+> skill/kickoff-template scaffolding (or a topology-validation guard) to their EXISTING fixtures, so
+> the suite returns to its pre-T13 baseline. No other change to any of these files is authorized by
+> this amendment, and no other task in this package may rely on it.
+
 **Finding IDs (26):** A-01, A-02, A-03, A-04, A-05, A-06, A-07, A-08, A-09, A-10, A-11, A-12,
 A-13, A-14, A-15, A-16, A-17, A-32, A-44, A-46, D-43, D-44, D-45, D-46, F-11, F-15.
 
@@ -1554,6 +1565,36 @@ async def test_run_stage_turn_rejects_a_stage_the_project_has_no_row_for(conn, p
 ---
 
 ### T13 — Topology validation catches what it silently allowed (A-10, A-11, A-12, A-17)
+
+> **Amendment (found during T13 execution, operator decision recorded 2026-08-16).** T13's own
+> mandatory skill/kickoff-template-existence checks in `_validate_topology` — correct and required
+> by A-10/A-11 — break 184 tests across 12 files P4 does not own: `tests/conftest.py`'s shared
+> `client` fixture (used by ~9 files) writes `stages: []` with an empty `.claude/skills/` and no
+> `pipeline-app/stage_templates/` at all, and ~10 files' own local `client`/`two_stage_client`
+> fixtures declare real, non-empty stage lists with no matching skill/template scaffolding at all.
+> None of this was reachable before T13 tightened the check from "check `specialist` only" to
+> "check `skill` and require a kickoff template for every stage."
+>
+> **Operator decision:** widen T13's scope to fix these fixtures too, rather than accept the
+> regression or defer the finding. Two parts:
+>
+> 1. **Guard the checkout-sanity check with `if stages:`** in `_validate_topology` (in
+>    `pipeline_config.py`, already inside P4's owned scope) — an empty topology has nothing to
+>    validate, so it needs no scaffolding at all. This alone fixes every fixture that writes
+>    `stages: []` (`conftest.py`'s shared fixture and its ~9 dependents, plus several files' own
+>    `stages: []`-only local fixtures) with a one-line, in-scope change.
+> 2. **Scaffold the remaining fixtures that declare real, non-empty stages** with no matching
+>    `.claude/skills/<skill>/SKILL.md` / `pipeline-app/stage_templates/<id>.md` — mirroring the
+>    pattern `tests/test_routes_skills.py`'s own fixture already uses correctly (create a minimal
+>    skill dir + `SKILL.md`, and a minimal `stage_templates/<id>.md`, for each stage id/skill the
+>    fixture's `pipeline.yaml` text declares). This part DOES touch files outside P4's originally
+>    declared scope (`tests/conftest.py` is unaffected by part 2, but several `tests/test_routes_*.py`
+>    and `tests/test_header.py`/`test_main.py`/`test_obs.py` files may still need scaffolding after
+>    part 1's guard is applied) — explicitly authorized by the operator for this task only, scoped
+>    strictly to adding scaffolding to existing fixtures, never to changing what those files test.
+>
+> After both parts, re-run the FULL app suite and confirm it is back to exactly the pre-T13
+> baseline (31 failed, same test names) — not just that `test_pipeline_config.py` is green.
 
 - [ ] **Test first**, `pipeline-app/tests/test_pipeline_config.py`:
 
