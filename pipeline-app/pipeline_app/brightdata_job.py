@@ -35,6 +35,16 @@ class BrightDataJobFailed(Exception):
     """A Bright Data collection job reported status 'failed'."""
 
 
+class BrightDataResponseError(Exception):
+    """A Bright Data endpoint returned a body this client cannot use.
+
+    Distinct from an HTTP error: the call succeeded, the shape did not. The
+    message names the endpoint AND the keys actually received, which is the
+    difference between a five-minute and a two-hour diagnosis across four
+    platforms (B-20).
+    """
+
+
 def read_key(env_var: str, key_file: Path) -> str | None:
     """The Bright Data API token, or None if not configured. Env var first --
     the scheduled task inherits the User environment -- then a gitignored
@@ -51,6 +61,26 @@ def read_key(env_var: str, key_file: Path) -> str | None:
 
 def _auth(key: str) -> dict:
     return {"Authorization": f"Bearer {key}"}
+
+
+def _shape_of(payload) -> str:
+    if isinstance(payload, dict):
+        return f"keys {sorted(payload)}"
+    return type(payload).__name__
+
+
+def _json_field(response, endpoint: str, field: str):
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise BrightDataResponseError(
+            f"{endpoint} returned a non-JSON body"
+        ) from exc
+    if not isinstance(payload, dict) or field not in payload:
+        raise BrightDataResponseError(
+            f"{endpoint} response has no '{field}' -- received {_shape_of(payload)}"
+        )
+    return payload[field]
 
 
 def trigger(api_base: str, dataset_id: str, params: dict, body: list[dict], key: str) -> str:
@@ -71,7 +101,7 @@ def trigger(api_base: str, dataset_id: str, params: dict, body: list[dict], key:
         timeout=REQUEST_TIMEOUT_S,
     )
     response.raise_for_status()
-    return response.json()["snapshot_id"]
+    return _json_field(response, "trigger", "snapshot_id")
 
 
 def poll_status(api_base: str, job_id: str, key: str) -> str:
@@ -81,7 +111,7 @@ def poll_status(api_base: str, job_id: str, key: str) -> str:
         timeout=REQUEST_TIMEOUT_S,
     )
     response.raise_for_status()
-    return response.json()["status"]
+    return _json_field(response, f"progress/{job_id}", "status")
 
 
 def fetch_results(api_base: str, job_id: str, key: str) -> list[dict]:
@@ -92,7 +122,13 @@ def fetch_results(api_base: str, job_id: str, key: str) -> list[dict]:
         timeout=REQUEST_TIMEOUT_S,
     )
     response.raise_for_status()
-    return response.json()
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise BrightDataResponseError(
+            f"snapshot/{job_id} returned {type(payload).__name__}, not a list of "
+            f"rows -- received {_shape_of(payload)}"
+        )
+    return payload
 
 
 def await_results(trigger_fn, poll_fn, fetch_fn, *, label: str,

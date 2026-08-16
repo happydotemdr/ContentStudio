@@ -138,6 +138,7 @@ BRIGHTDATA_API_BASE = brightdata_job.BRIGHTDATA_API_BASE
 # and callers need not know where the exceptions live.
 BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
 BrightDataJobFailed = brightdata_job.BrightDataJobFailed
+BrightDataResponseError = brightdata_job.BrightDataResponseError
 
 
 def api_key() -> str | None:

@@ -151,6 +151,26 @@ def test_await_results_raises_and_never_fetches_on_timeout(monkeypatch):
         )
 
 
+def test_trigger_names_the_endpoint_and_the_received_keys_on_a_bad_body(monkeypatch):
+    monkeypatch.setattr(bd.requests, "post",
+                        lambda *a, **k: _FakeResponse({"error": "bad token"}))
+    with pytest.raises(bd.BrightDataResponseError) as exc:
+        bd.trigger("https://api.example/v3", "gd_abc", {}, [{"url": "u"}], "k")
+    assert "trigger" in str(exc.value)
+    assert "snapshot_id" in str(exc.value)
+    assert "error" in str(exc.value)          # the keys actually received
+
+
+def test_fetch_results_rejects_a_dict_payload_instead_of_handing_it_on(monkeypatch):
+    """A dict response used to reach _normalize_row, which iterated key
+    STRINGS and died with AttributeError naming neither the endpoint nor the
+    cause."""
+    monkeypatch.setattr(bd.requests, "get",
+                        lambda *a, **k: _FakeResponse({"error": "snapshot expired"}))
+    with pytest.raises(bd.BrightDataResponseError, match="not a list of rows"):
+        bd.fetch_results("https://api.example/v3", "job1", "k")
+
+
 def test_failed_job_is_distinguishable_from_a_genuinely_empty_one(monkeypatch):
     """Distinguishability test. The whole discipline is that these two
     outcomes must NOT look the same to the caller."""

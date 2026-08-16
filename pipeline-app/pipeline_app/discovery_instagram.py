@@ -30,6 +30,7 @@ REQUEST_TIMEOUT_S = brightdata_job.REQUEST_TIMEOUT_S
 # working and callers need not know the exceptions moved.
 BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
 BrightDataJobFailed = brightdata_job.BrightDataJobFailed
+BrightDataResponseError = brightdata_job.BrightDataResponseError
 
 # Key lookup order: env var first (works for the scheduled task, which
 # inherits the User environment), then a gitignored file for convenience --

@@ -37,6 +37,12 @@ POLL_INTERVAL_S = 5
 
 TITLE_MAX_CHARS = 60
 
+# Re-exported so `pytest.raises(discovery_linkedin.BrightDataJobFailed)` works
+# and callers need not know the exceptions moved.
+BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
+BrightDataJobFailed = brightdata_job.BrightDataJobFailed
+BrightDataResponseError = brightdata_job.BrightDataResponseError
+
 
 def _parse_published(raw: str | None) -> str | None:
     """Bright Data's date_posted -> the engine's required YYYY-MM-DD, or None.

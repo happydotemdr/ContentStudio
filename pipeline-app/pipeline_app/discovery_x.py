@@ -152,6 +152,7 @@ REQUEST_TIMEOUT_S = brightdata_job.REQUEST_TIMEOUT_S
 # callers need not know where the exceptions live.
 BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
 BrightDataJobFailed = brightdata_job.BrightDataJobFailed
+BrightDataResponseError = brightdata_job.BrightDataResponseError
 
 
 def api_key() -> str | None:
