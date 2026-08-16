@@ -1994,6 +1994,141 @@ and in `stream_claude_turn` replace the two `env = dict(os.environ)` /
 
 ---
 
+> **Amendment (found before T16 dispatch).** Several gaps in this section's own shown code:
+>
+> 1. `_fake_stream`/`capture`/`_INIT`/`_RESULT_OK` in `test_turn_service.py` **already exist**
+>    (added by T5's own amendment, reused since) — do not re-add them; the brief's "replace
+>    `_fake_stream`" instruction is already satisfied. Only add the two new per-stage assertion
+>    tests there.
+> 2. `test_repurpose_kickoff_prompt_carries_the_script_and_packaging_direction` is shown with an
+>    elided `(...)` signature/body. Full version, mirroring the assembly test immediately above it:
+>
+> ```python
+> @pytest.mark.asyncio
+> async def test_repurpose_kickoff_prompt_carries_the_script_and_packaging_direction(
+>         conn, tmp_path, monkeypatch, capture):
+>     project_id, run_dir = _rgs_chain(conn, tmp_path, brief="rgs-briefs/2026-08-08-a.md")
+>     monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+>                         _fake_stream([_INIT, _RESULT_OK],
+>                                      run_dir / "05-repurpose" / "raw_output.md", captured=capture))
+>     await _drain(turn_service.run_stage_turn(
+>         conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+>         _by_id("repurpose"), CHAIN_STAGES, "post it",
+>         grounding_pointer="rgs-briefs/2026-08-08-a.md"))
+>     prompt = capture[0]["prompt"]
+>     for fragment in ("01-ideation/artifact.v1.md", "02-scripting/artifact.v1.md",
+>                      "04-assembly/artifact.v1.md"):
+>         assert fragment in prompt, fragment
+>     assert "rgs-briefs/2026-08-08-a.md" in prompt
+> ```
+>    Note `_rgs_chain` (T11's fixture) writes only `scripting`'s artifact, not the full downstream
+>    chain — but `repurpose`'s `depends_on` in `CHAIN_STAGES` is `["assembly"]` only (T5's amendment
+>    deliberately left it un-widened; see T5's own amendment note). Since this test needs
+>    `01-ideation` and `04-assembly` artifacts too for the real handoff to work end to end,
+>    `CHAIN_STAGES`'s `repurpose` entry needs widening to `depends_on=["ideation", "scripting",
+>    "assembly"]` (matching real `pipeline.yaml`) for THIS test to be meaningful, and `_rgs_chain`
+>    needs an `ideation` artifact added alongside its existing `scripting` write. Widen both — this
+>    is safe now that T5-T15 are all landed and none of their tests rely on `repurpose`'s old
+>    under-specified `depends_on` in `CHAIN_STAGES` (verify this empirically by running the full
+>    `test_turn_service.py` suite after the widening, before proceeding).
+>
+> 3. `test_routes_chat_sse.py` has NO `capture` fixture of its own (fixtures aren't shared across
+>    test files without a `conftest.py` entry, and none exists there) — add a local one, identical in
+>    shape to `test_turn_service.py`'s. That file's existing `client` fixture (shared by 5 of its own
+>    tests) only declares `grounding` + `ideation` stages, neither suited to a missing-required-upstream
+>    scenario. Follow the file's own established pattern (see
+>    `test_chat_endpoint_returns_409_for_locked_stage`, which already builds its own standalone
+>    `pipeline.yaml`/app/client inline rather than reusing the shared fixture) for both new tests
+>    rather than trying to extend the shared fixture. Full bodies:
+>
+> ```python
+> @pytest.fixture
+> def capture() -> list[dict]:
+>     return []
+>
+>
+> def test_chat_on_a_stage_with_a_missing_required_upstream_leaves_an_error_event(tmp_path, monkeypatch):
+>     """Surfacing: the refusal must be findable after the fact. The route raises
+>     inside the SSE body generator, so the events row is the only durable signal."""
+>     monkeypatch.chdir(tmp_path)
+>     (tmp_path / "pipeline.yaml").write_text(
+>         "stages:\n"
+>         "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n"
+>         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n"
+>         "    depends_on: [ideation]\n",
+>         encoding="utf-8",
+>     )
+>     for skill in ("shorts-ideation", "shorts-scripting"):
+>         skill_dir = tmp_path / ".claude" / "skills" / skill
+>         skill_dir.mkdir(parents=True)
+>         (skill_dir / "SKILL.md").write_text("x", encoding="utf-8")
+>     tdir = tmp_path / "pipeline-app" / "stage_templates"
+>     tdir.mkdir(parents=True)
+>     (tdir / "ideation.md").write_text("/x", encoding="utf-8")
+>     (tdir / "scripting.md").write_text("Read `{{ inputs['ideation'] }}`.\n", encoding="utf-8")
+>     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+>     test_client = TestClient(app, follow_redirects=False)
+>     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+>     project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+>     # ideation is left at its default "ready" status -- no approved artifact --
+>     # so scripting's one required upstream is genuinely missing.
+>     with pytest.raises(Exception):
+>         with test_client.stream("POST", f"/projects/{project_id}/stages/scripting/chat",
+>                                 data={"message": "go"}) as response:
+>             list(response.iter_lines())
+>     rows = app.state.conn.execute(
+>         "SELECT severity, message FROM events WHERE kind = 'handoff.upstream_missing'").fetchall()
+>     assert rows and rows[0]["severity"] == "error"
+>
+>
+> def test_chat_kickoff_prompt_reaches_the_cli_with_the_grounding_pointer(client, monkeypatch, tmp_path, capture):
+>     """A-04 through the real route: routes/stages.py resolves a pointer for every
+>     non-grounding stage on an RGS project and hands it to run_stage_turn."""
+>     test_client, app = client
+>     (tmp_path / "rgs-briefs").mkdir()
+>     (tmp_path / "rgs-briefs" / "2026-07-25-abc.md").write_text("brief content", encoding="utf-8")
+>     resp = test_client.post("/projects", data={"slug": "abc", "brand": "raisinggoodsports"})
+>     project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+>     project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+>     from pipeline_app import grounding_service
+>     run_dir = tmp_path / "runs" / project["run_id"]
+>     grounding_service.write_pointer(run_dir / "00-grounding", "rgs-briefs/2026-07-25-abc.md", tmp_path)
+>     app.state.conn.execute(
+>         "UPDATE stages SET status = 'approved' WHERE project_id = ? AND stage_id = 'grounding'",
+>         (project_id,))
+>     app.state.conn.commit()
+>     # Overwrite the shared client fixture's stub ideation.md with one that
+>     # actually renders grounding_pointer, so this test can observe it reaching
+>     # the prompt -- the fixture's default template is an unconditional "/x".
+>     (tmp_path / "pipeline-app" / "stage_templates" / "ideation.md").write_text(
+>         "/{{ skill }}\n{% if grounding_pointer %}pointer: `{{ grounding_pointer }}`{% endif %}\n",
+>         encoding="utf-8",
+>     )
+>     monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+>                         lambda prompt, cwd, resume_session_id, **kw: _fake_stream_route(
+>                             prompt, capture))
+>     with test_client.stream("POST", f"/projects/{project_id}/stages/ideation/chat",
+>                             data={"message": "go"}) as response:
+>         list(response.iter_text())
+>     assert "rgs-briefs/" in capture[0]["prompt"]
+> ```
+>
+>    where `_fake_stream_route` is a small local async-generator helper (add it above the tests):
+>
+> ```python
+> async def _fake_stream_route(prompt, captured):
+>     captured.append({"prompt": prompt})
+>     yield {"type": "result", "result": "done", "total_cost_usd": 0.01, "is_error": False}
+> ```
+>
+>    Add `from pipeline_app import turn_service` at module level if not already present (it already
+>    is, per the file's existing imports), and `import pytest` (already present).
+>
+> Verify all of this empirically against the live `routes/stages.py` chat route before trusting it
+> — that file is NOT owned by P4 (read-only), so if its actual behavior around pointer resolution or
+> exception propagation differs from what's assumed here, adapt the test to match the real behavior
+> and document the deviation; do not modify `routes/stages.py` itself under any circumstance.
+
 ### T16 — The test doubles stop discarding the prompt (F-15)
 
 `turn_service.py:133-159` — upstream resolution, `is_first_turn`, the whole kickoff render —
