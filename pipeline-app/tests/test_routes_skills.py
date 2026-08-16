@@ -292,3 +292,15 @@ def test_a_kickoff_template_is_not_held_to_the_frontmatter_rule(client):
     assert resp.status_code == 303
     assert (tmp_path / "pipeline-app" / "stage_templates" / "ideation.md").read_text(
         encoding="utf-8") == "/shorts-ideation go\n"
+
+
+def test_detail_flags_a_missing_skill_md_instead_of_rendering_empty(client):
+    test_client, tmp_path = client
+    (tmp_path / ".claude" / "skills" / "shorts-scripting" / "SKILL.md").unlink()
+
+    present = test_client.get("/skills/shorts-ideation")
+    absent = test_client.get("/skills/shorts-scripting")
+
+    assert present.context["skill_md_missing"] is False
+    assert absent.context["skill_md_missing"] is True
+    assert absent.context["skill_md_content"] == ""

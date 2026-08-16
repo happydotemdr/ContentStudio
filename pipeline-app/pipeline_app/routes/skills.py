@@ -115,7 +115,11 @@ def skill_detail(request: Request, skill_name: str):
         raise HTTPException(status_code=404, detail="Unknown skill.")
 
     skill_md_path = repo_root / ".claude" / "skills" / skill_name / "SKILL.md"
-    skill_md_content = skill_md_path.read_text(encoding="utf-8") if skill_md_path.exists() else ""
+    skill_md_exists = skill_md_path.is_file()
+    skill_md_content = skill_md_path.read_text(encoding="utf-8") if skill_md_exists else ""
+    if not skill_md_exists:
+        obs.log("skill_editor.skill_md_missing", level="warning",
+                skill=skill_name, path=str(skill_md_path))
 
     stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
     template_path = _template_path(repo_root, stage_id) if stage_id else None
@@ -133,6 +137,7 @@ def skill_detail(request: Request, skill_name: str):
         {
             "skill_name": skill_name,
             "skill_md_content": skill_md_content,
+            "skill_md_missing": not skill_md_exists,
             "stage_id": stage_id,
             "kickoff_template_applies": stage_id is not None,
             "kickoff_template_missing": kickoff_template_missing,
