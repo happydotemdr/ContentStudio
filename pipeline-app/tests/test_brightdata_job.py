@@ -140,6 +140,37 @@ def test_fetch_results_requests_json_format(monkeypatch):
     assert captured["params"] == {"format": "json"}
 
 
+def test_fetch_results_retries_a_transient_connection_error(monkeypatch):
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+    attempts = iter([requests.ConnectionError("reset by peer"), None])
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        failure = next(attempts)
+        if failure is not None:
+            raise failure
+        return _FakeResponse([{"id": "1"}])
+
+    monkeypatch.setattr(bd.requests, "get", fake_get)
+    assert bd.fetch_results("https://api.example/v3", "job1", "k") == [{"id": "1"}]
+
+
+def test_trigger_is_never_retried_because_a_retried_trigger_double_bills(monkeypatch):
+    """Bright Data bills per record. A trigger whose response was lost may
+    have started a job anyway; retrying it starts -- and pays for -- a second
+    one. This is the one call in the module that must fail fast."""
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+    calls = []
+
+    def fake_post(url, params=None, headers=None, json=None, timeout=None):
+        calls.append(url)
+        raise _http_error(503)
+
+    monkeypatch.setattr(bd.requests, "post", fake_post)
+    with pytest.raises(requests.HTTPError):
+        bd.trigger("https://api.example/v3", "gd_abc", {}, [{"url": "u"}], "k")
+    assert len(calls) == 1, "trigger must be attempted exactly once"
+
+
 def test_await_results_returns_rows_once_ready(monkeypatch):
     monkeypatch.setattr(bd.time, "sleep", lambda s: None)
     statuses = iter(["running", "running", "ready"])

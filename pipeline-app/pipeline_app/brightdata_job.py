@@ -141,6 +141,10 @@ def trigger(api_base: str, dataset_id: str, params: dict, body: list[dict], key:
     HTTP call.
     """
     _require_provisioned(dataset_id)
+    # NOT wrapped in _with_retry. Bright Data bills per record: a trigger whose
+    # response is lost in transit may have started a job on the vendor side, so
+    # a retry can create -- and pay for -- a second collection of the same
+    # posts. Poll and fetch are free and are retried; this one is not (B-18).
     response = requests.post(
         f"{api_base}/trigger",
         params={"dataset_id": dataset_id, **params},
@@ -166,20 +170,23 @@ def poll_status(api_base: str, job_id: str, key: str) -> str:
 
 
 def fetch_results(api_base: str, job_id: str, key: str) -> list[dict]:
-    response = requests.get(
-        f"{api_base}/snapshot/{job_id}",
-        params={"format": "json"},
-        headers=_auth(key),
-        timeout=REQUEST_TIMEOUT_S,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if not isinstance(payload, list):
-        raise BrightDataResponseError(
-            f"snapshot/{job_id} returned {type(payload).__name__}, not a list of "
-            f"rows -- received {_shape_of(payload)}"
+    def _do_fetch():
+        response = requests.get(
+            f"{api_base}/snapshot/{job_id}",
+            params={"format": "json"},
+            headers=_auth(key),
+            timeout=REQUEST_TIMEOUT_S,
         )
-    return payload
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise BrightDataResponseError(
+                f"snapshot/{job_id} returned {type(payload).__name__}, not a list of "
+                f"rows -- received {_shape_of(payload)}"
+            )
+        return payload
+
+    return _with_retry(_do_fetch, what=f"snapshot/{job_id}")
 
 
 def await_results(trigger_fn, poll_fn, fetch_fn, *, label: str,
