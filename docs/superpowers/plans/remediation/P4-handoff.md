@@ -821,6 +821,26 @@ Add `from pipeline_app import obs` to the imports.
 
 ---
 
+> **Amendment (found before T6 dispatch).** This task's own shown test code calls
+> `_draft_artifact(stage_dir, version, stage_name, body)` and
+> `_final_artifact(stage_dir, version, stage_name, body)`, neither of which exists yet in
+> `test_turn_service.py`. Add both (T6 is the first task to need them; T7/T10/T11/T16 reuse them):
+>
+> ```python
+> def _draft_artifact(stage_dir: Path, version: int, stage_name: str, body: str) -> Path:
+>     return artifacts.write_artifact(stage_dir, version, {"stage": stage_name}, body)
+>
+>
+> def _final_artifact(stage_dir: Path, version: int, stage_name: str, body: str) -> Path:
+>     path = _draft_artifact(stage_dir, version, stage_name, body)
+>     artifacts.stamp_final(path, "2026-08-08T00:00:00Z")
+>     return path
+> ```
+>
+> `artifacts.stamp_final(path, finalized_at, gate_override_reason=None, *, actor=None)` already
+> exists (`pipeline_app/artifacts.py:445`) and sets `meta["status"] = "final"` — exactly what T6's
+> own `_approved_artifact_path` checks for.
+
 ### T6 — Resolve upstreams to the approved artifact, not the newest draft (A-32)
 
 - [ ] **Test first**, `test_turn_service.py`:
