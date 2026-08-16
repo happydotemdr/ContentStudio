@@ -4,6 +4,7 @@ import jinja2
 import pytest
 from jinja2 import nodes
 
+from pipeline_app import prompt_builder
 from pipeline_app.pipeline_config import load_topology
 from pipeline_app.prompt_builder import KICKOFF_CONTEXT_KEYS, render_kickoff_prompt
 
@@ -289,3 +290,40 @@ def test_grounding_pointer_reaches_the_last_two_stages(stage_id, skill, inputs):
     assert "rgs-briefs/2026-08-08-x.md" in with_ptr
     assert "companion grounding artifact" not in without
     assert with_ptr != without
+
+
+def test_a_typo_in_a_template_raises_instead_of_rendering_empty(tmp_path):
+    """Kickoff templates are operator-editable through the skill editor and
+    written straight to disk. Jinja's default Undefined made `{{ raw_output_path_ }}`
+    render as "" -- the stage then finished with no artifact and no explanation."""
+    (tmp_path / "typo.md").write_text(
+        "/{{ skill }}\n\nWrite to `{{ raw_output_path_ }}`.\n", encoding="utf-8")
+    with pytest.raises(jinja2.UndefinedError):
+        render_kickoff_prompt(tmp_path, "typo", {
+            "skill": "x", "user_message": "", "grounding_pointer": None,
+            "inputs": {}, "raw_output_path": "out.md",
+        })
+
+
+def test_render_rejects_a_context_missing_a_frozen_key():
+    with pytest.raises(ValueError, match=r"missing \['inputs'\]"):
+        render_kickoff_prompt(TEMPLATES_DIR, "ideation", {
+            "skill": "shorts-ideation", "user_message": "", "grounding_pointer": None,
+            "raw_output_path": "out.md",
+        })
+
+
+def test_render_rejects_an_unknown_context_key():
+    with pytest.raises(ValueError, match=r"unknown keys \['input_file'\]"):
+        render_kickoff_prompt(TEMPLATES_DIR, "ideation", {
+            "skill": "shorts-ideation", "user_message": "", "grounding_pointer": None,
+            "inputs": {}, "raw_output_path": "out.md", "input_file": "legacy",
+        })
+
+
+def test_validate_template_source_rejects_a_bad_name_before_it_is_saved():
+    stage = next(s for s in REAL_STAGES if s.id == "scripting")
+    with pytest.raises(jinja2.UndefinedError):
+        prompt_builder.validate_template_source("{{ inputs['nope'] }}", prompt_builder.sample_context(stage))
+    prompt_builder.validate_template_source(
+        "{{ inputs['ideation'] }}", prompt_builder.sample_context(stage))  # does not raise
