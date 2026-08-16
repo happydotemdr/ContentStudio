@@ -426,12 +426,14 @@ def test_missing_transcript_api_warns_only_once_per_process(monkeypatch, capsys)
 def test_missing_library_is_distinguishable_from_no_transcript(monkeypatch, capsys):
     """The whole point: absent dependency and absent transcript must differ."""
     # library present, but this video genuinely has no transcript -> silent None
+    module = type(sys)("youtube_transcript_api")
+    module.TranscriptsDisabled = type("TranscriptsDisabled", (Exception,), {})
+
     class FakeApi:
         def fetch(self, vid):
-            raise RuntimeError("no transcript for this video")
-    monkeypatch.setitem(sys.modules, "youtube_transcript_api",
-                        type(sys)("youtube_transcript_api"))
-    sys.modules["youtube_transcript_api"].YouTubeTranscriptApi = FakeApi
+            raise module.TranscriptsDisabled("no transcript for this video")
+    module.YouTubeTranscriptApi = FakeApi
+    monkeypatch.setitem(sys.modules, "youtube_transcript_api", module)
     monkeypatch.setattr(yt, "_TRANSCRIPT_API_MISSING_WARNED", False)
     assert yt._fetch_transcript_fallback("v1") is None
     assert "not installed" not in capsys.readouterr().err
@@ -668,3 +670,53 @@ def test_run_ytdlp_passes_utf8_encoding_not_bare_text_mode(monkeypatch):
     assert seen["encoding"] == "utf-8"
     assert seen["errors"] == "replace"
     assert "text" not in seen
+
+
+def _install_fake_transcript_api(monkeypatch, exc_names, raising):
+    """Install a stand-in youtube_transcript_api whose fetch() raises `raising`."""
+    module = type(sys)("youtube_transcript_api")
+    for name in exc_names:
+        setattr(module, name, type(name, (Exception,), {}))
+
+    class FakeApi:
+        def fetch(self, vid):
+            raise getattr(module, raising)("boom")
+
+    module.YouTubeTranscriptApi = FakeApi
+    monkeypatch.setitem(sys.modules, "youtube_transcript_api", module)
+    return module
+
+
+_EXC_NAMES = ("TranscriptsDisabled", "NoTranscriptFound", "VideoUnavailable",
+              "IpBlocked", "RequestBlocked", "TooManyRequests", "YouTubeRequestFailed")
+
+
+def test_a_genuinely_captionless_video_returns_none(monkeypatch):
+    _install_fake_transcript_api(monkeypatch, _EXC_NAMES, "TranscriptsDisabled")
+    assert yt._fetch_transcript_fallback("v1") is None
+
+
+@pytest.mark.parametrize("blocked", ["IpBlocked", "RequestBlocked", "TooManyRequests",
+                                     "YouTubeRequestFailed"])
+def test_a_blocked_transcript_fetch_raises(monkeypatch, blocked):
+    _install_fake_transcript_api(monkeypatch, _EXC_NAMES, blocked)
+    with pytest.raises(yt.TranscriptFetchBlocked):
+        yt._fetch_transcript_fallback("v1")
+
+
+def test_blocked_is_distinguishable_from_captionless(monkeypatch):
+    _install_fake_transcript_api(monkeypatch, _EXC_NAMES, "NoTranscriptFound")
+    assert yt._fetch_transcript_fallback("v1") is None
+    _install_fake_transcript_api(monkeypatch, _EXC_NAMES, "IpBlocked")
+    with pytest.raises(yt.TranscriptFetchBlocked):
+        yt._fetch_transcript_fallback("v1")
+
+
+def test_an_unrecognised_transcript_exception_is_treated_as_blocked(monkeypatch, logged):
+    """Fail toward retryable. Mis-classifying a block as "no captions" writes a
+    permanent transcript-less capture (B-12); the reverse costs one retry."""
+    _install_fake_transcript_api(monkeypatch, (*_EXC_NAMES, "SomeNewLibraryError"),
+                                 "SomeNewLibraryError")
+    with pytest.raises(yt.TranscriptFetchBlocked):
+        yt._fetch_transcript_fallback("v1")
+    assert [r for r in logged if r["event"] == "adapter.transcript_error_unclassified"]

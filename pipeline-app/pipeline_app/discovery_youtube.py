@@ -277,9 +277,40 @@ def _vtt_to_text(vtt: str) -> str:
 _TRANSCRIPT_API_MISSING_WARNED = False
 
 
+class TranscriptFetchBlocked(RuntimeError):
+    """The transcript API refused or could not be reached.
+
+    Distinct from "this video has no captions". The bare `except Exception:
+    return None` collapsed IP-blocks, rate-limits, disabled transcripts and
+    video-unavailable into one None, so an IP block during a 300-video run
+    produced 300 permanently transcript-less captures indistinguishable from
+    300 genuinely caption-free videos (B-13).
+    """
+
+
+# Exceptions that mean "there is no transcript for this video" -- a real,
+# terminal answer. Resolved by name because the library's exception surface
+# varies across versions and the import is lazy. Anything NOT named here is
+# treated as a block: failing toward retryable costs one extra attempt, while
+# failing the other way is B-12.
+_BENIGN_TRANSCRIPT_ERRORS = (
+    "TranscriptsDisabled", "NoTranscriptFound", "NoTranscriptAvailable",
+    "VideoUnavailable", "VideoUnplayable",
+)
+
+
+def _is_benign_transcript_error(module, exc: BaseException) -> bool:
+    classes = tuple(
+        cls for cls in (getattr(module, name, None) for name in _BENIGN_TRANSCRIPT_ERRORS)
+        if isinstance(cls, type) and issubclass(cls, BaseException)
+    )
+    return bool(classes) and isinstance(exc, classes)
+
+
 def _fetch_transcript_fallback(video_id: str) -> str | None:
     global _TRANSCRIPT_API_MISSING_WARNED
     try:
+        import youtube_transcript_api as _yta
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
         # Previously this returned None silently, making an uninstalled
@@ -293,13 +324,17 @@ def _fetch_transcript_fallback(video_id: str) -> str | None:
                   "Install it: pip install -r requirements.txt", file=sys.stderr)
         return None
     try:
-        api = YouTubeTranscriptApi()
-        fetched = api.fetch(video_id)
+        fetched = YouTubeTranscriptApi().fetch(video_id)
         parts = [getattr(s, "text", "") for s in fetched]
         text = "\n".join(t for t in (p.strip() for p in parts) if t)
         return text or None
-    except Exception:
-        return None
+    except Exception as exc:  # noqa: BLE001 - re-classified, not swallowed
+        if _is_benign_transcript_error(_yta, exc):
+            return None
+        obs.log("adapter.transcript_error_unclassified", level="warning",
+                platform="youtube", video_id=video_id, error=type(exc).__name__)
+        raise TranscriptFetchBlocked(
+            f"{type(exc).__name__} while fetching transcript for {video_id}") from exc
 
 
 def download_item(repo_root: Path, handle: str, video_id: str, title: str,
