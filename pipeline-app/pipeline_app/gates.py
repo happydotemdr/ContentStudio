@@ -473,6 +473,60 @@ def run_assembly_contract_gate(
     ]
 
 
+_REPURPOSE_OTHER_PLATFORMS = ("TikTok", "Instagram", "X", "Bluesky", "Threads")
+_PROVENANCE_MARKERS = ("[C]", "[I]", "[T]", "[C→I]", "[gap]")
+
+
+def _first_platform_index(text: str, platform: str) -> int:
+    """`X` must match as a whole word (\\bX\\b) -- a bare substring search
+    would false-positive on any capital X appearing before the YouTube
+    block for an unrelated reason (inside a word, an all-caps title). The
+    other four platform names are long enough that this risk doesn't apply
+    to them, so only X needs the word-boundary treatment."""
+    if platform == "X":
+        match = re.search(r"\bX\b", text)
+        return match.start() if match else -1
+    return text.find(platform)
+
+
+def run_repurpose_contract_gate(
+    repo_root: Path, artifact_path: Path, upstream: Mapping[str, Path]
+) -> list[dict]:
+    """Gate O-R: social-repurpose/SKILL.md:98-101 fixes YouTube-block-first
+    package ordering and per-caption provenance markers, not a heading set."""
+    text = artifact_path.read_text(encoding="utf-8")
+    findings: list[dict] = []
+
+    youtube_index = text.find("YouTube")
+    if youtube_index != -1:
+        for platform in _REPURPOSE_OTHER_PLATFORMS:
+            platform_index = _first_platform_index(text, platform)
+            if platform_index != -1 and platform_index < youtube_index:
+                findings.append({
+                    "check": "OR1", "beat": None, "shot_index": None, "kind": "fail",
+                    "message": (
+                        f"{artifact_path.name}: {platform!r} appears before 'YouTube' -- the "
+                        "package must lead with the YouTube block."
+                    ),
+                })
+                break
+    else:
+        findings.append({
+            "check": "OR1", "beat": None, "shot_index": None, "kind": "fail",
+            "message": f"{artifact_path.name} has no YouTube block at all.",
+        })
+
+    if not any(marker in text for marker in _PROVENANCE_MARKERS):
+        findings.append({
+            "check": "OR2", "beat": None, "shot_index": None, "kind": "fail",
+            "message": (
+                f"{artifact_path.name} carries no provenance marker "
+                f"({', '.join(_PROVENANCE_MARKERS)}) anywhere in the body."
+            ),
+        })
+    return findings
+
+
 # P2's migrations.py backfill (out of this package's file ownership) writes
 # synthetic styleboard artifacts with `gates: []`, on the strength of its own
 # comment there: "styleboard registers no gates (gates.GATE_REGISTRY), so []
@@ -490,6 +544,7 @@ GATE_REGISTRY: dict[str, list[tuple[str, GateRunner]]] = {
     "voiceover": [("gate_o_voiceover_contract", run_voiceover_contract_gate)],
     "music": [("gate_o_music_contract", run_music_contract_gate)],
     "assembly": [("gate_o_assembly_contract", run_assembly_contract_gate)],
+    "repurpose": [("gate_o_repurpose_contract", run_repurpose_contract_gate)],
 }
 
 

@@ -1190,3 +1190,66 @@ def test_assembly_gate_flags_a_missing_repurpose_handoff(tmp_path):
     path.write_text(text, encoding="utf-8")
     results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
     assert results[0]["status"] == "fail"
+
+
+# --- Gate O-R: repurpose output-contract checks --------------------------------
+
+COMPLETE_REPURPOSE_PACKAGE = (
+    "## YouTube\nTitle: [C] grounded in the corpus.\n\n"
+    "## TikTok\nCaption: [I] extrapolated.\n\n"
+    "## Instagram\nCaption: [gap] no corpus coverage here.\n"
+)
+
+
+def test_repurpose_stage_is_registered():
+    assert "repurpose" in gates.GATE_REGISTRY
+
+
+def test_repurpose_gate_passes_a_complete_package(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text(COMPLETE_REPURPOSE_PACKAGE, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "repurpose", path, {})
+    assert len(results) == 1
+    assert results[0]["name"] == "gate_o_repurpose_contract"
+    assert results[0]["status"] == "pass"
+
+
+def test_repurpose_gate_flags_youtube_not_appearing_first(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = "## TikTok\nCaption: [I] extrapolated.\n\n## YouTube\nTitle: [C] grounded.\n"
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "repurpose", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("YouTube" in f["message"] for f in results[0]["findings"])
+
+
+def test_repurpose_gate_does_not_false_positive_on_a_capital_x_before_youtube(tmp_path):
+    """A bare substring search for 'X' would wrongly flag this as X-before-
+    YouTube; 'MAX' and 'EXPLAINED' both contain a capital X that has nothing
+    to do with the X/Twitter platform."""
+    path = tmp_path / "raw_output.md"
+    text = (
+        "MAX EXPLAINED: the concept in one line.\n\n"
+        "## YouTube\nTitle: [C] grounded.\n\n## TikTok\nCaption: [I] extrapolated.\n"
+    )
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "repurpose", path, {})
+    assert results[0]["status"] == "pass"
+
+
+def test_repurpose_gate_flags_no_provenance_marker_anywhere(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = "## YouTube\nTitle: a great video.\n\n## TikTok\nCaption: also great.\n"
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "repurpose", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("provenance marker" in f["message"] for f in results[0]["findings"])
+
+
+def test_repurpose_gate_passes_a_youtube_only_package(tmp_path):
+    """No other platform requested -- YouTube-first is vacuously true, and
+    the gate must not demand a platform block that was never asked for."""
+    path = tmp_path / "raw_output.md"
+    path.write_text("## YouTube\nTitle: [C] grounded.\n", encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "repurpose", path, {})
+    assert results[0]["status"] == "pass"
