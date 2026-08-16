@@ -1,6 +1,7 @@
 import contextlib
 import datetime
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -106,8 +107,34 @@ def _dependents_of(all_stage_defs: list[StageDef], stage_id: str) -> list[StageD
     return [s for s in all_stage_defs if stage_id in s.depends_on]
 
 
+_VERSION_RE = re.compile(r"^artifact\.v(\d+)\.md$")
+
+
+def _approved_artifact_path(stage_dir: Path) -> Path | None:
+    """The newest artifact a human actually approved -- approval_service.
+    stamp_final writes `status: final` into the frontmatter -- not merely the
+    newest file on disk. A gate keyed to an unapproved draft records a pass
+    against a world the operator never accepted (A-32)."""
+    versions = []
+    for path in stage_dir.glob("artifact.v*.md"):
+        match = _VERSION_RE.match(path.name)
+        if match:
+            versions.append((int(match.group(1)), path))
+    for _version, path in sorted(versions, reverse=True):
+        meta, _body = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+        if meta.get("status") == "final":
+            return path
+    return None
+
+
 def _resolve_upstream(repo_root: Path, run_dir: Path, up: StageDef) -> Path | None:
-    return artifacts.latest_artifact_path(run_dir / stage_dir_name(up))
+    """The artifact an upstream stage hands downstream. Grounding's real output
+    lives in rgs-briefs/ behind a pointer, so it needs the pointer-aware
+    resolver (A-14); every other stage hands down its approved version."""
+    stage_dir = run_dir / stage_dir_name(up)
+    if up.id == "grounding":
+        return artifacts.resolve_latest_artifact(repo_root, up.id, stage_dir)
+    return _approved_artifact_path(stage_dir)
 
 
 async def run_stage_turn(

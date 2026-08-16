@@ -252,6 +252,16 @@ def _by_id(stage_id: str) -> StageDef:
     return next(s for s in CHAIN_STAGES if s.id == stage_id)
 
 
+def _draft_artifact(stage_dir: Path, version: int, stage_name: str, body: str) -> Path:
+    return artifacts.write_artifact(stage_dir, version, {"stage": stage_name}, body)
+
+
+def _final_artifact(stage_dir: Path, version: int, stage_name: str, body: str) -> Path:
+    path = _draft_artifact(stage_dir, version, stage_name, body)
+    artifacts.stamp_final(path, "2026-08-08T00:00:00Z")
+    return path
+
+
 def _dep(run_dir: Path, relpath: str) -> dict:
     path = run_dir / relpath
     return {"path": relpath, "sha256": artifacts.compute_sha256(path)}
@@ -269,25 +279,26 @@ def _build_approved_chain(conn, tmp_path: Path, downstream_statuses: dict[str, s
         db.create_stage_row(conn, project_id, stage.id, statuses[stage.id])
 
     run_dir = tmp_path / "runs" / "abc-1"
-    artifacts.write_artifact(run_dir / "02-scripting", 1, {"stage": "shorts-scripting"}, "script v1")
+    _stamp = lambda path: artifacts.stamp_final(path, "2026-08-08T00:00:00Z")
+    _stamp(artifacts.write_artifact(run_dir / "02-scripting", 1, {"stage": "shorts-scripting"}, "script v1"))
     script_dep = [_dep(run_dir, "02-scripting/artifact.v1.md")]
-    artifacts.write_artifact(run_dir / "02b-styleboard", 1,
-                             {"stage": "shorts-styleboard", "depends_on": script_dep}, "styleboard v1")
+    _stamp(artifacts.write_artifact(run_dir / "02b-styleboard", 1,
+                             {"stage": "shorts-styleboard", "depends_on": script_dep}, "styleboard v1"))
     styleboard_dep = [_dep(run_dir, "02b-styleboard/artifact.v1.md")]
-    artifacts.write_artifact(run_dir / "03-voiceover", 1, {"stage": "voiceover-brief", "depends_on": script_dep}, "vo v1")
-    artifacts.write_artifact(run_dir / "03-visual", 1,
-                             {"stage": "visual-prompts", "depends_on": script_dep + styleboard_dep}, "vis v1")
+    _stamp(artifacts.write_artifact(run_dir / "03-voiceover", 1, {"stage": "voiceover-brief", "depends_on": script_dep}, "vo v1"))
+    _stamp(artifacts.write_artifact(run_dir / "03-visual", 1,
+                             {"stage": "visual-prompts", "depends_on": script_dep + styleboard_dep}, "vis v1"))
     assembly_dep = [
         *script_dep, *styleboard_dep,
         _dep(run_dir, "03-voiceover/artifact.v1.md"),
         _dep(run_dir, "03-visual/artifact.v1.md"),
     ]
-    artifacts.write_artifact(run_dir / "04-assembly", 1, {"stage": "shorts-assembly", "depends_on": assembly_dep}, "asm v1")
-    artifacts.write_artifact(
+    _stamp(artifacts.write_artifact(run_dir / "04-assembly", 1, {"stage": "shorts-assembly", "depends_on": assembly_dep}, "asm v1"))
+    _stamp(artifacts.write_artifact(
         run_dir / "05-repurpose", 1,
         {"stage": "social-repurpose", "depends_on": [_dep(run_dir, "04-assembly/artifact.v1.md")]},
         "rep v1",
-    )
+    ))
     return project_id, run_dir
 
 
@@ -405,7 +416,7 @@ async def test_scripting_turn_records_gate_results_in_frontmatter(conn, tmp_path
     run_dir = tmp_path / "runs" / "gate-1"
     stage_dir = run_dir / "02-scripting"
     raw = stage_dir / "raw_output.md"
-    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    _final_artifact(run_dir / "01-ideation", 1, "shorts-ideation", "concept v1")
 
     monkeypatch.setattr(
         turn_service.cli_runner,
@@ -439,3 +450,39 @@ async def test_scripting_turn_records_gate_results_in_frontmatter(conn, tmp_path
     meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
     assert meta["gates"][0]["status"] == "fail"
     assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.AWAITING_REVIEW.value
+
+
+@pytest.mark.asyncio
+async def test_upstream_resolves_to_the_approved_version_not_an_unapproved_draft(
+        conn, tmp_path, monkeypatch, capture):
+    """A-32: latest_artifact_path returns the highest version regardless of
+    approval, so regenerating an approved styleboard and re-running visual made
+    Gate C validate the sheet against a world lock the operator never accepted."""
+    project_id, run_dir = _approved_chain(conn, tmp_path)
+    _draft_artifact(run_dir / "02b-styleboard", 2, "shorts-styleboard", "unapproved v2")
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_RESULT_OK], run_dir / "03-visual" / "raw_output.md",
+                                     captured=capture))
+    seen: dict = {}
+    monkeypatch.setattr(turn_service.gates, "run_gates_for_stage",
+                        lambda root, sid, path, upstream: seen.update(upstream) or [])
+
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("visual"), CHAIN_STAGES, "go",
+    ))
+    assert seen["styleboard"].name == "artifact.v1.md"          # the approved one
+    assert "artifact.v2.md" not in capture[0]["prompt"]
+
+
+def test_approved_artifact_path_distinguishes_no_artifact_from_only_drafts(tmp_path):
+    """Distinguishability: a stage with three unapproved drafts is not the same
+    as a stage with nothing -- but both must resolve to None, and the caller
+    (T5) must say which stage it was."""
+    empty, drafts = tmp_path / "a", tmp_path / "b"
+    empty.mkdir(); drafts.mkdir()
+    _draft_artifact(drafts, 1, "x", "d1"); _draft_artifact(drafts, 2, "x", "d2")
+    assert turn_service._approved_artifact_path(empty) is None
+    assert turn_service._approved_artifact_path(drafts) is None
+    _final_artifact(drafts, 3, "x", "approved")
+    assert turn_service._approved_artifact_path(drafts).name == "artifact.v3.md"
