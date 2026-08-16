@@ -50,10 +50,24 @@ def test_voiceover_and_visual_are_a_parallel_pair():
     assert voiceover.dir_prefix == visual.dir_prefix == "03"
 
 
-def test_assembly_depends_on_both_branch_stages():
+def test_assembly_depends_on_every_artifact_its_skill_requires():
+    """shorts-assembly/SKILL.md:16-29 requires the script, the voiceover brief and the
+    prompt sheet, and :31-39 requires the styleboard's BINDINGS line to resolve slot
+    tokens. depends_on used to carry only [voiceover, visual] (A-01/A-03)."""
     stages = load_topology(REPO_ROOT / "pipeline.yaml")
     assembly = next(s for s in stages if s.id == "assembly")
-    assert set(assembly.depends_on) == {"voiceover", "visual"}
+    assert set(assembly.depends_on) == {"scripting", "styleboard", "voiceover", "visual"}
+    # The bed arc is a real edge but not a gate: SKILL.md calls it "genuinely
+    # optional and its absence is never a blocker" (A-02).
+    assert assembly.optional_depends_on == ["music"]
+
+
+def test_repurpose_depends_on_the_script_and_the_packaging_direction():
+    """social-repurpose/SKILL.md:12-13 needs the script text and the ideation
+    packaging direction, not just the edit plan (A-01)."""
+    stages = load_topology(REPO_ROOT / "pipeline.yaml")
+    repurpose = next(s for s in stages if s.id == "repurpose")
+    assert repurpose.depends_on == ["ideation", "scripting", "assembly"]
 
 
 def test_grounding_is_brand_scoped_to_raisinggoodsports():

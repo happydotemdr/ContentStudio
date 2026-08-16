@@ -37,8 +37,9 @@ stages:
   - id: assembly
     skill: shorts-assembly
     dir_prefix: "04"
-    depends_on: [voiceover, visual]
+    depends_on: [scripting, styleboard, voiceover, visual]
+    optional_depends_on: [music]
   - id: repurpose
     skill: social-repurpose
     dir_prefix: "05"
-    depends_on: [assembly]
+    depends_on: [ideation, scripting, assembly]

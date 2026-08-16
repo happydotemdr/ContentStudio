@@ -10,10 +10,19 @@ class StageDef:
     skill: str
     dir_prefix: str
     depends_on: list[str] = field(default_factory=list)
+    # An edge that supplies an input but does NOT gate unlocking. state_machine.
+    # stages_to_unlock reads `depends_on` only, so an optional upstream never
+    # locks its dependent -- which is exactly what shorts-assembly/SKILL.md:26-29
+    # asks for ("genuinely optional and its absence is never a blocker") and why
+    # modelling music as a hard edge would have been wrong (A-02).
     optional_depends_on: list[str] = field(default_factory=list)
     brand_scope: str | None = None
     specialist: str | None = None
     specialist_mode: str | None = None
+
+    @property
+    def all_depends_on(self) -> list[str]:
+        return [*self.depends_on, *self.optional_depends_on]
 
 
 def load_topology(path: Path) -> list[StageDef]:
@@ -24,6 +33,7 @@ def load_topology(path: Path) -> list[StageDef]:
             skill=s["skill"],
             dir_prefix=s["dir_prefix"],
             depends_on=list(s.get("depends_on", [])),
+            optional_depends_on=list(s.get("optional_depends_on", [])),
             brand_scope=s.get("brand_scope"),
             specialist=s.get("specialist"),
             specialist_mode=s.get("specialist_mode"),
@@ -41,7 +51,7 @@ def _validate_topology(stages: list[StageDef], repo_root: Path) -> None:
             raise ValueError(f"pipeline.yaml: duplicate stage id '{stage.id}'")
         seen.add(stage.id)
     for stage in stages:
-        for dep in stage.depends_on:
+        for dep in stage.all_depends_on:
             if dep not in seen:
                 raise ValueError(
                     f"pipeline.yaml: stage '{stage.id}' depends_on unknown stage '{dep}'"
