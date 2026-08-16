@@ -26,48 +26,55 @@ def _skill_dirs() -> set[str]:
 # test_the_lock_file_matches_the_current_skills_tree exists to guard.
 #
 # The build script also shells out to `git rev-list --count HEAD` and
-# `git rev-parse --short HEAD` to derive the plugin version; `tmp_path` is
-# not a git repo, so a stub `git` shim (prepended onto PATH for the
-# subprocess only) answers those two calls without needing a real repo.
-_FAKE_GIT_SH = """#!/usr/bin/env bash
-case "$1" in
-  rev-list) echo 42 ;;
-  rev-parse) echo abc1234 ;;
-  *) exit 1 ;;
-esac
-"""
+# `git rev-parse --short HEAD` to derive the plugin version, so the isolated
+# copy is made a real (one-commit, throwaway) git repo below.
+#
+# This used to be a stub `git` shim prepended onto PATH for the subprocess.
+# That passed locally and failed on GitHub's Windows runner with
+# "fatal: not a git repository", because PATH-shadowing `git` inside Git Bash
+# is not something the caller controls: `C:\\Program Files\\Git\\bin\\bash.exe`
+# is a wrapper that prepends `/mingw64/bin:/usr/bin` to PATH before running the
+# script, putting the real git.exe ahead of anything the test prepended.
+# `C:\\Program Files\\Git\\usr\\bin\\bash.exe` -- what `shutil.which("bash")`
+# finds on a dev box that has put Git's usr/bin on PATH -- does not. So which
+# bash `which` happened to find decided whether the shim was honored or
+# silently bypassed. A real repo needs no shim and no PATH games.
+_GIT_IDENTITY = ("-c", "user.email=test@example.invalid", "-c", "user.name=Test",
+                 "-c", "commit.gpgsign=false")
+
+
+def _git(repo: Path, *args: str) -> None:
+    # Scrub inherited GIT_* pointers so an outer git context (GIT_DIR et al.)
+    # can never redirect these commands away from the throwaway repo.
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")}
+    subprocess.run(["git", *args], cwd=repo, check=True,
+                   capture_output=True, encoding="utf-8", errors="replace", env=env)
 
 
 def _isolated_repo_copy(tmp_path: Path) -> Path:
     """A tmp_path tree carrying only what build-cowork-plugin.sh reads:
-    .claude/skills/ and scripts/ (script + lock helper). Running the build
-    against this copy, with cwd=this copy, can never write to the real
-    repo's tracked lock file."""
+    .claude/skills/ and scripts/ (script + lock helper), committed into a
+    throwaway one-commit git repo so the build's `git rev-list`/`git rev-parse`
+    version derivation resolves the same way it does in the real repo. Running
+    the build against this copy, with cwd=this copy, can never write to the
+    real repo's tracked lock file."""
     root = tmp_path / "repo_copy"
     shutil.copytree(REPO / ".claude" / "skills", root / ".claude" / "skills")
     shutil.copytree(REPO / "scripts", root / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
+    _git(root, "init", "-q")
+    _git(root, "add", "-A")
+    _git(root, *_GIT_IDENTITY, "commit", "-q", "--no-verify", "-m", "isolated build fixture")
     return root
-
-
-def _fake_git_path(tmp_path: Path) -> Path:
-    bin_dir = tmp_path / "fakebin"
-    bin_dir.mkdir(exist_ok=True)
-    git_stub = bin_dir / "git"
-    git_stub.write_text(_FAKE_GIT_SH, encoding="utf-8")
-    git_stub.chmod(0o755)
-    return bin_dir
 
 
 def _run_isolated_build(tmp_path: Path) -> tuple[subprocess.CompletedProcess, Path]:
     bash_path = shutil.which("bash")
     assert bash_path is not None, "bash not found on PATH (expected on this project's target platform)"
     repo_copy = _isolated_repo_copy(tmp_path)
-    fakebin = _fake_git_path(tmp_path)
-    env = dict(os.environ)
-    env["PATH"] = f"{fakebin}{os.pathsep}{env.get('PATH', '')}"
     result = subprocess.run(
         [bash_path, str(repo_copy / "scripts" / "build-cowork-plugin.sh")],
-        cwd=repo_copy, capture_output=True, encoding="utf-8", errors="replace", env=env,
+        cwd=repo_copy, capture_output=True, encoding="utf-8", errors="replace",
     )
     return result, repo_copy
 
@@ -161,6 +168,15 @@ def test_the_build_produces_a_valid_manifest_and_the_expected_roster(tmp_path):
     )
     assert manifest["name"] == "content-studio"
     assert manifest["version"] != "0.1.0"
+    # Derived, and derived from THIS repo's real git state -- not from a
+    # constant. The shim this test used to install answered every build with
+    # the same 0.1.42+gabc1234, which would have satisfied the `!= "0.1.0"`
+    # check above while proving nothing about the derivation.
+    count = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=repo_copy,
+                           check=True, capture_output=True, encoding="utf-8").stdout.strip()
+    sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=repo_copy,
+                         check=True, capture_output=True, encoding="utf-8").stdout.strip()
+    assert manifest["version"] == f"0.1.{count}+g{sha}"
     shipped = {p.name for p in (repo_copy / "cowork-plugin" / "skills").iterdir() if p.is_dir()}
     assert shipped == _skill_dirs() - EXCLUDED
 
