@@ -638,6 +638,31 @@ def test_a_failing_shorts_tab_is_not_treated_as_an_absent_one(monkeypatch):
 _EMOJI_TITLE = "Playa \U0001F60D Ocotal \U0001F525 naïve wins"
 
 
+def test_on_disk_ids_re_offers_a_pending_retry_capture(monkeypatch, tmp_path):
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_blocked)
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+    monkeypatch.setattr(yt.youtube_api, "fetch_one", lambda *a, **k: dict(_API_RECORD))
+    yt.download_item(tmp_path, "@testhandle", "blocked", "T")
+    assert yt.on_disk_ids(tmp_path, "@testhandle") == set()
+
+
+def test_on_disk_ids_keeps_a_terminal_capture(monkeypatch, tmp_path):
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({"upload_date": "20260415"}))
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+    yt.download_item(tmp_path, "@testhandle", "captionless", "T")
+    assert yt.on_disk_ids(tmp_path, "@testhandle") == {"captionless"}
+
+
+def test_on_disk_ids_treats_an_unreadable_file_as_captured(tmp_path, logged):
+    """Fail toward not re-downloading: an unreadable file is an operator
+    problem, not a licence to re-pay for the whole back catalogue."""
+    directory = tmp_path / "output" / "brand-intel" / "youtube" / "testhandle"
+    directory.mkdir(parents=True)
+    (directory / "weird__t.md").write_bytes(b"\xff\xfe not frontmatter")
+    assert yt.on_disk_ids(tmp_path, "@testhandle") == {"weird"}
+    assert [r for r in logged if r["event"] == "adapter.capture_unreadable"]
+
+
 def _real_ytdlp_emitting(payload: dict) -> list[str]:
     """A binary substitute that writes real UTF-8 bytes to stdout."""
     script = ("import sys, json;"

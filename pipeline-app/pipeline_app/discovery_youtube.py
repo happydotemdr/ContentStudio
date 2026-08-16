@@ -79,11 +79,32 @@ def _run_ytdlp(args: list[str], *, label: str,
     return proc
 
 
+def _awaiting_transcript_retry(path: Path) -> bool:
+    try:
+        meta, _ = artifacts.parse_frontmatter(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError, artifacts.MalformedArtifactError) as exc:
+        obs.log("adapter.capture_unreadable", level="warning", platform="youtube",
+                path=str(path), error=type(exc).__name__)
+        return False
+    return meta.get("transcript_status") == TRANSCRIPT_PENDING
+
+
 def on_disk_ids(repo_root: Path, handle: str) -> set[str]:
+    """Video ids already fully captured for `handle`.
+
+    A capture whose transcript is pending_retry is deliberately NOT reported:
+    it exists on disk but is incomplete, and returning it here is what made a
+    bot-blocked capture permanent (B-12). download_item writes to the same
+    dest path, so re-offering is idempotent.
+    """
     directory = handle_dir(repo_root, "youtube", handle)
     if not directory.exists():
         return set()
-    return {p.name.split("__", 1)[0] for p in directory.glob("*__*.md")}
+    return {
+        path.name.split("__", 1)[0]
+        for path in directory.glob("*__*.md")
+        if not _awaiting_transcript_retry(path)
+    }
 
 
 # A channel's Shorts live on a separate tab from its long-form uploads, and the
