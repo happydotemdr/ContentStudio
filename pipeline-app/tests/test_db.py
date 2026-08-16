@@ -115,6 +115,28 @@ def test_schema_init_is_idempotent_with_new_discovery_tables(tmp_path: Path):
     conn.close()
 
 
+def test_handle_brands_table_exists_on_a_fresh_database(tmp_path: Path):
+    db_path = tmp_path / "pipeline.db"
+    schema_path = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db.init_db(db_path, schema_path)
+    conn = db.get_connection(db_path)
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    assert "handle_brands" in tables
+    conn.close()
+
+
+def test_handle_brands_cascades_when_its_handle_is_deleted(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-15T00:00:00Z")
+    conn.execute("INSERT INTO handle_brands (handle_id, brand) VALUES (?, ?)", (handle_id, "guru"))
+    conn.commit()
+    conn.execute("DELETE FROM handles WHERE id = ?", (handle_id,))
+    conn.commit()
+    remaining = conn.execute("SELECT * FROM handle_brands WHERE handle_id = ?", (handle_id,)).fetchall()
+    assert remaining == []
+
+
 def test_two_running_discovery_runs_violate_unique_index(tmp_path: Path):
     db_path = tmp_path / "pipeline.db"
     schema_path = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
@@ -204,6 +226,37 @@ def test_upsert_handle_from_migration_is_idempotent(conn):
     )
     assert second_id == first_id
     assert db.get_handle(conn, first_id)["status"] == "invalid"  # not clobbered by re-running
+
+
+def test_set_and_get_handle_brands(conn):
+    handle_id = db.create_handle(conn, "instagram", "aspenprojectplay", None, "guru", None, "2026-08-15T00:00:00Z")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports"])
+    assert db.get_handle_brands(conn, handle_id) == ["guru", "raisinggoodsports"]
+
+
+def test_get_handle_brands_is_empty_for_an_untagged_handle(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-15T00:00:00Z")
+    assert db.get_handle_brands(conn, handle_id) == []
+
+
+def test_set_handle_brands_replaces_rather_than_accumulates(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-15T00:00:00Z")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports"])
+    db.set_handle_brands(conn, handle_id, ["freedom2beu"])
+    assert db.get_handle_brands(conn, handle_id) == ["freedom2beu"]
+
+
+def test_set_handle_brands_dedupes_repeated_values(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-15T00:00:00Z")
+    db.set_handle_brands(conn, handle_id, ["guru", "guru", "freedom2beu"])
+    assert db.get_handle_brands(conn, handle_id) == ["freedom2beu", "guru"]
+
+
+def test_set_handle_brands_to_empty_list_clears_all_tags(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-15T00:00:00Z")
+    db.set_handle_brands(conn, handle_id, ["guru"])
+    db.set_handle_brands(conn, handle_id, [])
+    assert db.get_handle_brands(conn, handle_id) == []
 
 
 def test_insert_running_run_then_second_raises(conn):

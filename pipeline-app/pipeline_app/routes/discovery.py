@@ -7,11 +7,13 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 from pipeline_app import db as db_mod
+from pipeline_app import email_render
 from pipeline_app.discovery_paths import find_slug_collision, handle_slug
 
 router = APIRouter()
 
 COHORT_SUGGESTIONS = ["guru", "shorts-specialist", "midjourney-source", "general-interest"]
+BRAND_CHOICES = list(email_render.BRAND_SECTION_ORDER)
 
 
 def _spawn_cron(repo_root: Path, args: list[str]) -> None:
@@ -26,11 +28,14 @@ def _spawn_cron(repo_root: Path, args: list[str]) -> None:
 def discovery_handles_page(request: Request):
     conn = request.app.state.conn
     handles = db_mod.list_handles(conn)
+    handle_brands = {h["id"]: db_mod.get_handle_brands(conn, h["id"]) for h in handles}
     settings = db_mod.get_settings(conn)
     return request.app.state.templates.TemplateResponse(
         request, "discovery_handles.html",
         {
-            "handles": handles, "cohort_suggestions": COHORT_SUGGESTIONS, "settings": settings,
+            "handles": handles, "cohort_suggestions": COHORT_SUGGESTIONS,
+            "brand_choices": BRAND_CHOICES, "handle_brands": handle_brands,
+            "settings": settings,
             "active_nav": "discovery_handles", "cli_available": request.app.state.cli_available,
         },
     )
@@ -76,6 +81,16 @@ def toggle_handle_included(request: Request, handle_id: int):
     row = db_mod.get_handle(conn, handle_id)
     if row is not None:
         db_mod.set_handle_included(conn, handle_id, not bool(row["included"]))
+    return RedirectResponse(url="/discovery/handles", status_code=303)
+
+
+@router.post("/discovery/handles/{handle_id}/brands")
+def update_handle_brands(request: Request, handle_id: int, brands: list[str] = Form([])):
+    conn = request.app.state.conn
+    row = db_mod.get_handle(conn, handle_id)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    db_mod.set_handle_brands(conn, handle_id, brands)
     return RedirectResponse(url="/discovery/handles", status_code=303)
 
 

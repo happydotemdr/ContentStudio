@@ -149,10 +149,14 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
 
     calls = {}
     monkeypatch.setattr(discovery_notify, "build_summary",
-                         lambda c, r, rid: (calls.setdefault("build_args", (c, r, rid)), {"fake": "summary", "items": []})[1])
+                         lambda c, r, rid: (calls.setdefault("build_args", (c, r, rid)),
+                                             {"run_status": "completed", "has_issues": False,
+                                              "items": [], "errored": []})[1])
     monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight", lambda items: None)
-    monkeypatch.setattr(discovery_notify.email_render, "render_email",
-                         lambda summary, run_date: (calls.setdefault("render_args", (summary, run_date)), {"subject": "s", "text": "t", "html": "h"})[1])
+    monkeypatch.setattr(discovery_notify.email_render, "render_brand_digest",
+                         lambda overall, sections, run_date:
+                             (calls.setdefault("render_args", (overall, sections, run_date)),
+                              {"subject": "s", "text": "t", "html": "h"})[1])
     monkeypatch.setattr(discovery_notify, "send_email",
                          lambda subject, text, html: (calls.setdefault("send_args", (subject, text, html)), True)[1])
 
@@ -160,7 +164,10 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
 
     assert result is True
     assert calls["build_args"] == (conn, repo_root, run_row_id)
-    assert calls["render_args"] == ({"fake": "summary", "items": [], "spotlight": None, "drafts": []}, "2026-08-01")
+    overall, sections, run_date = calls["render_args"]
+    assert overall == {"run_status": "completed", "has_issues": False, "items": [], "errored": []}
+    assert set(sections) == {"freedom2beu", "raisinggoodsports", "guru"}
+    assert run_date == "2026-08-01"
     assert calls["send_args"] == ("s", "t", "h")
 
 
@@ -170,6 +177,7 @@ def test_notify_end_to_end_uses_real_build_summary_and_render_email(monkeypatch,
     conn, repo_root = notify_db
     run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
     handle_id = _make_handle(conn)
+    db.set_handle_brands(conn, handle_id, ["guru"])
     db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
     _write_youtube_video(repo_root, "@somechannel", "vid1", "Real Contract Video", "2026-08-01T06:01:00+00:00")
 
@@ -309,26 +317,81 @@ def test_notify_threads_spotlight_and_drafts_into_render(monkeypatch, notify_db)
     run_row_id = _make_run(conn)
     seen = {}
 
+    item = {"marker": "the-item", "brands": ["guru"], "platform": "youtube", "handle": "@x", "item_id": "i1"}
+    spotlight = {"marker": "the-spotlight", "platform": "youtube", "handle": "@x", "item_id": "i1"}
     monkeypatch.setattr(discovery_notify, "build_summary",
                         lambda *a: {"run_status": "completed", "has_issues": False,
-                                    "items": [{"marker": "the-item"}], "errored": []})
+                                    "items": [item], "errored": []})
     monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight",
-                        lambda items: {"marker": "the-spotlight"})
+                        lambda items: spotlight if items else None)
     monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments",
                         lambda item, **kw: ["d1", "d2", "d3"])
 
-    def fake_render(summary, run_date):
-        seen["summary"] = summary
+    def fake_render(overall, sections, run_date):
+        seen["sections"] = sections
         seen["run_date"] = run_date
         return {"subject": "S", "text": "T", "html": "<p>H</p>"}
 
-    monkeypatch.setattr(discovery_notify.email_render, "render_email", fake_render)
+    monkeypatch.setattr(discovery_notify.email_render, "render_brand_digest", fake_render)
     monkeypatch.setattr(discovery_notify, "send_email", lambda *a: True)
 
     assert discovery_notify.notify(conn, repo_root, run_row_id) is True
-    assert seen["summary"]["spotlight"] == {"marker": "the-spotlight"}
-    assert seen["summary"]["drafts"] == ["d1", "d2", "d3"]
+    # `item` is tagged "guru" only, so only the guru section sees it as a spotlight.
+    assert seen["sections"]["guru"]["spotlight"] == spotlight
+    assert seen["sections"]["guru"]["drafts"] == ["d1", "d2", "d3"]
+    assert seen["sections"]["freedom2beu"]["spotlight"] is None
+    assert seen["sections"]["freedom2beu"]["drafts"] == []
     assert seen["run_date"] == "2026-08-01"
+
+
+def test_notify_reuses_drafts_when_the_same_item_is_spotlighted_in_two_sections(monkeypatch, notify_db):
+    # `guru` is a superset of `raisinggoodsports` here, so the identical post
+    # is the best spotlight in both sections. draft_comments (a ~90s `claude
+    # -p` subprocess call) must run once, not once per section -- High
+    # finding #2 from the pre-execution review.
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn, "instagram", "aspenprojectplay", "Aspen Project Play")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports"])
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_post(repo_root, "instagram", "aspenprojectplay", "p1.md",
+                ["url: 'https://instagram.com/p/1'", "like_count: 40",
+                 "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A caption with enough text to be a spotlight candidate.")
+
+    draft_calls = []
+    monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments",
+                         lambda item, **kw: draft_calls.append(item["item_id"]) or ["d1", "d2", "d3"])
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a: True)
+
+    discovery_notify.notify(conn, repo_root, run_row_id)
+
+    assert len(draft_calls) == 1
+
+
+def test_notify_partitions_items_by_brand_and_repeats_multi_tagged_items(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn, "instagram", "aspenprojectplay", "Aspen Project Play")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports"])
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_post(repo_root, "instagram", "aspenprojectplay", "p1.md",
+                ["url: 'https://instagram.com/p/1'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A caption that mentions youth sports parenting.")
+
+    seen = {}
+    monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments", lambda item, **kw: [])
+    monkeypatch.setattr(discovery_notify.email_render, "render_brand_digest",
+                         lambda overall, sections, run_date:
+                             (seen.setdefault("sections", sections),
+                              {"subject": "s", "text": "t", "html": "h"})[-1])
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a: True)
+
+    discovery_notify.notify(conn, repo_root, run_row_id)
+
+    assert len(seen["sections"]["guru"]["items"]) == 1
+    assert len(seen["sections"]["raisinggoodsports"]["items"]) == 1
+    assert len(seen["sections"]["freedom2beu"]["items"]) == 0
 
 
 def test_notify_skips_drafting_when_there_is_no_spotlight(monkeypatch, notify_db):
@@ -345,3 +408,94 @@ def test_notify_skips_drafting_when_there_is_no_spotlight(monkeypatch, notify_db
 
     assert discovery_notify.notify(conn, repo_root, run_row_id) is True
     assert calls == []
+
+
+def test_build_summary_attaches_brand_tags_from_the_producing_handle(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn, "instagram", "aspenprojectplay", "Aspen Project Play")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports"])
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_post(repo_root, "instagram", "aspenprojectplay", "p1.md",
+                ["url: 'https://instagram.com/p/1'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A caption.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert len(summary["items"]) == 1
+    assert summary["items"][0]["brands"] == ["guru", "raisinggoodsports"]
+
+
+def test_notify_end_to_end_warns_on_orphaned_untagged_item(monkeypatch, notify_db):
+    # Task 5's original end-to-end test used to exercise an untagged handle
+    # through the real notify() pipeline; it was changed to tag its handle
+    # with ["guru"], leaving no end-to-end coverage of the orphan-warning
+    # banner (email_render.render_brand_digest's "no brand tag" text). This
+    # restores that coverage against the real build_summary/render pipeline,
+    # mocking only send_email.
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn)  # no set_handle_brands call -- stays untagged
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_youtube_video(repo_root, "@somechannel", "vid1", "Untagged Video", "2026-08-01T06:01:00+00:00")
+
+    captured = {}
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text, html: (captured.setdefault("text", text), captured.setdefault("html", html), True)[-1],
+    )
+
+    result = discovery_notify.notify(conn, repo_root, run_row_id)
+
+    assert result is True
+    assert "no brand tag" in captured["text"].lower()
+    assert "no brand tag" in captured["html"].lower()
+
+
+def test_notify_end_to_end_run_level_facts_render_identically_across_sections(monkeypatch, notify_db):
+    # run_status/has_issues/errored are run-wide facts copied verbatim into
+    # every brand section (discovery_notify.notify()), not filtered per
+    # brand like items are. Exercises that through the real notify()
+    # pipeline: one handle tagged with all three brands (so its section
+    # membership doesn't hide the shared facts) plus one errored, untagged
+    # handle whose error must still show up in all three sections.
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, status="completed_with_errors")
+    handle_id = _make_handle(conn, "instagram", "aspenprojectplay", "Aspen Project Play")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports", "freedom2beu"])
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_post(repo_root, "instagram", "aspenprojectplay", "p1.md",
+                ["url: 'https://instagram.com/p/1'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A caption.")
+    errored_handle_id = db.create_handle(conn, "youtube", "@dead-handle", None, "guru", None,
+                                         "2026-07-01T00:00:00+00:00")
+    db.record_handle_result(conn, run_row_id, errored_handle_id, "error", 0, "gone")
+
+    captured = {}
+    monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments", lambda item, **kw: [])
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text, html: (captured.setdefault("text", text), captured.setdefault("html", html), True)[-1],
+    )
+
+    result = discovery_notify.notify(conn, repo_root, run_row_id)
+
+    assert result is True
+    text, html = captured["text"], captured["html"]
+    # Once per brand section (guru, raisinggoodsports, freedom2beu).
+    assert text.count("@dead-handle") == 3
+    assert html.count("@dead-handle") == 3
+    assert text.count("Run status: completed_with_errors") == 3
+    assert html.count("Run status: completed_with_errors") == 3
+
+
+def test_build_summary_untagged_handle_produces_items_with_no_brands(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn)  # no set_handle_brands call -- stays untagged
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_youtube_video(repo_root, "@somechannel", "vid1", "A Video", "2026-08-01T06:01:00+00:00")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["items"][0]["brands"] == []

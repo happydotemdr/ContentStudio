@@ -4,7 +4,7 @@
 {% if handles %}
 <table>
   <thead>
-    <tr><th>Platform</th><th>Handle</th><th>Display name</th><th>Cohort</th><th>Status</th><th>Included</th><th>Last seen</th></tr>
+    <tr><th>Platform</th><th>Handle</th><th>Display name</th><th>Cohort</th><th>Brands</th><th>Status</th><th>Included</th><th>Last seen</th></tr>
   </thead>
   <tbody>
     {% for h in handles %}
@@ -13,6 +13,15 @@
       <td>{{ h.handle }}</td>
       <td>{{ h.display_name or "" }}</td>
       <td>{{ h.cohort }}</td>
+      <td>
+        <form method="post" action="/discovery/handles/{{ h.id }}/brands">
+          {% for b in brand_choices %}
+          <label><input type="checkbox" name="brands" value="{{ b }}"
+            {% if b in handle_brands.get(h.id, []) %}checked{% endif %}> {{ b }}</label>
+          {% endfor %}
+          <button type="submit">Save</button>
+        </form>
+      </td>
       <td><span class="status" data-handle-status="{{ h.id }}">{{ h.status }}</span></td>
       <td>
         <form method="post" action="/discovery/handles/{{ h.id }}/toggle">
