@@ -264,6 +264,7 @@ async def run_stage_turn(
     events_path = events_dir / f"{int(time.time() * 1000)}.jsonl"
 
     turn_id = db_mod.create_turn(conn, stage_row["id"], "running", _utcnow(), str(events_path))
+    prior_status = stage_row["status"]
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.RUNNING.value)
 
     is_first_turn = stage_row["claude_session_id"] is None
@@ -318,13 +319,12 @@ async def run_stage_turn(
         # sweep (it only looks for turns still `running`), so without this
         # the stage would stay wedged at RUNNING permanently -- even across
         # a restart -- since chat/approve/edit all reject a running stage.
-        # Same recovery rule as preflight._unwedge_stage: AWAITING_REVIEW if
-        # a resolvable artifact already exists, else READY.
-        latest = artifacts.resolve_latest_artifact(repo_root, stage_def.id, stage_dir)
-        new_status = (
-            StageStatus.AWAITING_REVIEW.value if latest is not None else StageStatus.READY.value
-        )
-        db_mod.update_stage_status(conn, stage_row["id"], new_status)
+        # Restore exactly what the turn interrupted. Re-deriving the status from
+        # artifact existence (the old rule) always produced AWAITING_REVIEW for a
+        # stage that had any artifact, which laundered `stale` -- and
+        # `approved` -- into `awaiting_review` on nothing more than an aborted
+        # turn, erasing the stage-page warning permanently (A-46).
+        db_mod.update_stage_status(conn, stage_row["id"], prior_status)
         # extract_turn_result is safe to call on a partial `collected` -- it
         # simply returns None fields for whatever never arrived. Covers the
         # rare case where a `result` event (and its cost) was captured just

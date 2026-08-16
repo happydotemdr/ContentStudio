@@ -337,6 +337,40 @@ _INIT = {"type": "system", "subtype": "init", "session_id": "session-1"}
 _RESULT_OK = {"type": "result", "result": "done", "total_cost_usd": 0.01, "is_error": False}
 
 
+@pytest.mark.asyncio
+async def test_aborting_a_turn_on_a_stale_stage_leaves_it_stale(conn, tmp_path, monkeypatch):
+    """A-46: a stale stage always has an artifact, so the abort recovery's
+    `latest is not None` branch always resolved to awaiting_review -- opening
+    chat on a stale stage and closing the tab erased the only cue that the
+    artifact was built on a since-changed input."""
+    project_id, run_dir = _approved_chain(conn, tmp_path,
+                                          downstream_statuses={"voiceover": StageStatus.STALE.value})
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_INIT, _RESULT_OK]))
+    agen = turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("voiceover"), CHAIN_STAGES, "redo")
+    await agen.__anext__()
+    await agen.aclose()
+    assert db.get_stage(conn, project_id, "voiceover")["status"] == StageStatus.STALE.value
+
+
+@pytest.mark.asyncio
+async def test_aborting_a_turn_on_an_approved_stage_leaves_it_approved(conn, tmp_path, monkeypatch):
+    """Distinguishability: `approved -> running -> abort` laundered into
+    awaiting_review too. Restoring the prior status must be exact, not a guess
+    keyed to artifact existence."""
+    project_id, run_dir = _approved_chain(conn, tmp_path)   # no override -> voiceover starts APPROVED
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_INIT, _RESULT_OK]))
+    agen = turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("voiceover"), CHAIN_STAGES, "redo")
+    await agen.__anext__()
+    await agen.aclose()
+    assert db.get_stage(conn, project_id, "voiceover")["status"] == StageStatus.APPROVED.value
+
+
 @pytest.fixture
 def capture() -> list[dict]:
     return []
