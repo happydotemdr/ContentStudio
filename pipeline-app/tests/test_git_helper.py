@@ -5,12 +5,18 @@ import pytest
 
 from pipeline_app.git_helper import commit_skill_edit
 
+pytestmark = pytest.mark.allow_subprocess
+
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "init", "-b", "skill-edits"], cwd=tmp_path, check=True,
+                   capture_output=True, encoding="utf-8", errors="replace")
+    for key, value in (("user.email", "test@example.com"), ("user.name", "Test User")):
+        subprocess.run(["git", "config", key, value], cwd=tmp_path, check=True,
+                       capture_output=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=tmp_path, check=True,
+                   capture_output=True, encoding="utf-8", errors="replace")
     return tmp_path
 
 

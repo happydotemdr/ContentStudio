@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,16 +7,49 @@ from fastapi.testclient import TestClient
 from pipeline_app import git_helper
 from pipeline_app.main import create_app
 
+pytestmark = pytest.mark.allow_subprocess
+
+PIPELINE_YAML = (
+    "stages:\n"
+    "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n"
+    "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n"
+    "    depends_on: [ideation]\n"
+    "  - id: styleboard\n    skill: shorts-styleboard\n    dir_prefix: \"02b\"\n"
+    "    depends_on: [scripting]\n"
+)
+
+SKILL_MD = "---\nname: {name}\ndescription: A real description.\n---\n\nBody.\n"
+
+
+def _init_repo(root: Path) -> None:
+    # `git init` lands on init.defaultBranch, which is `main` or `master` on
+    # most machines -- both PROTECTED_BRANCHES (D-51). The editor's happy path
+    # is a working branch, so the fixture models that; the protected-branch
+    # refusal gets its own repo in test_git_helper.py.
+    subprocess.run(["git", "init", "-b", "skill-edits"], cwd=root, check=True,
+                   capture_output=True, encoding="utf-8", errors="replace")
+    for key, value in (("user.email", "test@example.com"), ("user.name", "Test User")):
+        subprocess.run(["git", "config", key, value], cwd=root, check=True,
+                       capture_output=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=root, check=True,
+                   capture_output=True, encoding="utf-8", errors="replace")
+
 
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "pipeline.yaml").write_text("stages: []\n", encoding="utf-8")
-    skill_dir = tmp_path / ".claude" / "skills" / "shorts-ideation"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("original content", encoding="utf-8")
-    (tmp_path / "pipeline-app" / "stage_templates").mkdir(parents=True)
-    (tmp_path / "pipeline-app" / "stage_templates" / "ideation.md").write_text("/shorts-ideation", encoding="utf-8")
+    (tmp_path / "pipeline.yaml").write_text(PIPELINE_YAML, encoding="utf-8")
+    for name in ("shorts-ideation", "shorts-scripting", "shorts-styleboard",
+                 "rgs-pairing-review"):
+        skill_dir = tmp_path / ".claude" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(SKILL_MD.format(name=name), encoding="utf-8")
+    templates = tmp_path / "pipeline-app" / "stage_templates"
+    templates.mkdir(parents=True)
+    (templates / "ideation.md").write_text("/shorts-ideation\n", encoding="utf-8")
+    (templates / "scripting.md").write_text("/shorts-scripting\n", encoding="utf-8")
+    (templates / "styleboard.md").write_text("/shorts-styleboard\n", encoding="utf-8")
+    _init_repo(tmp_path)
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     return TestClient(app), tmp_path
 
