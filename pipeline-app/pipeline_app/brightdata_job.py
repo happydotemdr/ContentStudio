@@ -99,6 +99,37 @@ def _json_field(response, endpoint: str, field: str):
     return payload[field]
 
 
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+MAX_ATTEMPTS = 4
+RETRY_BASE_S = 2.0
+
+
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return True
+    response = getattr(exc, "response", None)
+    return response is not None and response.status_code in RETRY_STATUSES
+
+
+def _with_retry(call, *, what: str):
+    """Bounded retry with backoff for a NON-BILLING call.
+
+    B-18: a single transient 429/503 on one of up to 60 polls used to abandon
+    a collection job that was already triggered and billed. Polling and
+    fetching a snapshot cost nothing, so retrying them is free insurance.
+    trigger() is deliberately NOT wrapped -- see the comment there.
+    On exhaustion the original exception propagates, so a genuine failure
+    still reaches the engine's per-handle error path.
+    """
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 - re-raised below unless transient
+            if attempt == MAX_ATTEMPTS or not _is_transient(exc):
+                raise
+            time.sleep(RETRY_BASE_S * (2 ** (attempt - 1)))
+
+
 def trigger(api_base: str, dataset_id: str, params: dict, body: list[dict], key: str) -> str:
     """Start a collection job; returns its snapshot id.
 
@@ -122,13 +153,16 @@ def trigger(api_base: str, dataset_id: str, params: dict, body: list[dict], key:
 
 
 def poll_status(api_base: str, job_id: str, key: str) -> str:
-    response = requests.get(
-        f"{api_base}/progress/{job_id}",
-        headers=_auth(key),
-        timeout=REQUEST_TIMEOUT_S,
-    )
-    response.raise_for_status()
-    return _json_field(response, f"progress/{job_id}", "status")
+    def _do_poll():
+        response = requests.get(
+            f"{api_base}/progress/{job_id}",
+            headers=_auth(key),
+            timeout=REQUEST_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        return _json_field(response, f"progress/{job_id}", "status")
+
+    return _with_retry(_do_poll, what=f"progress/{job_id}")
 
 
 def fetch_results(api_base: str, job_id: str, key: str) -> list[dict]:

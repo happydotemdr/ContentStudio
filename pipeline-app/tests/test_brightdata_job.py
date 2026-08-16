@@ -1,8 +1,15 @@
 from pathlib import Path
 
 import pytest
+import requests
 
 from pipeline_app import brightdata_job as bd
+
+
+def _http_error(status: int) -> requests.HTTPError:
+    response = requests.Response()
+    response.status_code = status
+    return requests.HTTPError(f"{status}", response=response)
 
 
 class _FakeResponse:
@@ -78,6 +85,46 @@ def test_poll_status_returns_status_field(monkeypatch):
     assert bd.poll_status("https://api.example/v3", "job1", "the-key") == "ready"
     assert captured["url"] == "https://api.example/v3/progress/job1"
     assert captured["headers"]["Authorization"] == "Bearer the-key"
+
+
+def test_poll_status_retries_a_transient_503_and_then_succeeds(monkeypatch):
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+    attempts = iter([_http_error(503), _http_error(429), None])
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        failure = next(attempts)
+        if failure is not None:
+            raise failure
+        return _FakeResponse({"status": "ready"})
+
+    monkeypatch.setattr(bd.requests, "get", fake_get)
+    assert bd.poll_status("https://api.example/v3", "job1", "k") == "ready"
+
+
+def test_poll_status_does_not_retry_a_401(monkeypatch):
+    """A bad token is not transient. Retrying it wastes four round-trips and
+    delays the one message the operator needs."""
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+    calls = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(url)
+        raise _http_error(401)
+
+    monkeypatch.setattr(bd.requests, "get", fake_get)
+    with pytest.raises(requests.HTTPError):
+        bd.poll_status("https://api.example/v3", "job1", "k")
+    assert len(calls) == 1
+
+
+def test_poll_status_raises_after_the_retry_budget_is_exhausted(monkeypatch):
+    """The raise-on-exhaustion contract stays intact: a genuine outage still
+    surfaces as a per-handle error, it is not swallowed into a default."""
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+    monkeypatch.setattr(bd.requests, "get",
+                        lambda *a, **k: (_ for _ in ()).throw(_http_error(503)))
+    with pytest.raises(requests.HTTPError):
+        bd.poll_status("https://api.example/v3", "job1", "k")
 
 
 def test_fetch_results_requests_json_format(monkeypatch):
