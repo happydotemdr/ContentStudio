@@ -96,3 +96,54 @@ def test_unchanged_content_is_a_no_op_even_with_unrelated_staged_work(repo: Path
     log = subprocess.run(["git", "log", "--oneline"], cwd=repo, check=True,
                          capture_output=True, encoding="utf-8", errors="replace").stdout
     assert log.count("skill edit") == 1
+
+
+def test_every_git_call_carries_a_timeout(repo: Path, monkeypatch):
+    """All three subprocess.run calls used capture_output with no timeout, so
+    a git that prompts (GPG passphrase, an interactive hook) blocked forever
+    with its prompt swallowed and wedged the request thread (D-50)."""
+    seen = []
+    real = subprocess.run
+
+    def spy(args, **kwargs):
+        if args and args[0] == "git":
+            seen.append(kwargs.get("timeout"))
+        return real(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    skill_file = repo / ".claude" / "skills" / "shorts-ideation" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("edited\n", encoding="utf-8")
+
+    commit_skill_edit(repo, skill_file, "shorts-ideation")
+
+    assert seen and all(t is not None and t > 0 for t in seen)
+
+
+def test_a_hanging_git_reports_failure_rather_than_hanging(repo: Path, monkeypatch):
+    def boom(args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    skill_file = repo / ".claude" / "skills" / "shorts-ideation" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("edited\n", encoding="utf-8")
+
+    result = commit_skill_edit(repo, skill_file, "shorts-ideation")
+
+    assert result.status == "failed"
+    assert "timed out" in result.detail
+    assert result.ok is False              # distinguishable from no_change, which is also
+                                           # "no commit was made" but is NOT a failure
+
+
+def test_git_missing_from_path_reports_failure_rather_than_raising(repo: Path, monkeypatch):
+    def boom(args, **kwargs):
+        raise FileNotFoundError(2, "The system cannot find the file specified", "git")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    skill_file = repo / ".claude" / "skills" / "shorts-ideation" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("edited\n", encoding="utf-8")
+
+    assert commit_skill_edit(repo, skill_file, "shorts-ideation").status == "failed"

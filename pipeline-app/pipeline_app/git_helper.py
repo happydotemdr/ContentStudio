@@ -36,18 +36,26 @@ def commit_skill_edit(repo_root: Path, file_path: Path, skill_name: str,
     rel_path = file_path.relative_to(repo_root).as_posix()
     message = f"skill edit: {skill_name} via pipeline-app, {now}"
 
-    add = _git(repo_root, ["add", "--", rel_path])
-    if add.returncode != 0:
-        return CommitResult(status="failed", detail=(add.stderr or add.stdout).strip())
-    # `-- rel_path` on BOTH commands, so the emptiness check and the commit
-    # describe the same single file (A-53/D-49).
-    diff = _git(repo_root, ["diff", "--cached", "--quiet", "--", rel_path])
-    if diff.returncode == 0:
-        return CommitResult(status="no_change")
-    commit = _git(repo_root, ["commit", "-m", message, "--", rel_path])
-    if commit.returncode != 0:
-        detail = (commit.stderr or commit.stdout).strip()
-        obs.log("git.commit_failed", level="error", path=rel_path, detail=detail)
+    try:
+        add = _git(repo_root, ["add", "--", rel_path])
+        if add.returncode != 0:
+            return CommitResult(status="failed", detail=(add.stderr or add.stdout).strip())
+        # `-- rel_path` on BOTH commands, so the emptiness check and the commit
+        # describe the same single file (A-53/D-49).
+        diff = _git(repo_root, ["diff", "--cached", "--quiet", "--", rel_path])
+        if diff.returncode == 0:
+            return CommitResult(status="no_change")
+        commit = _git(repo_root, ["commit", "-m", message, "--", rel_path])
+        if commit.returncode != 0:
+            detail = (commit.stderr or commit.stdout).strip()
+            obs.log("git.commit_failed", level="error", path=rel_path, detail=detail)
+            return CommitResult(status="failed", detail=detail)
+        sha = _git(repo_root, ["rev-parse", "HEAD"]).stdout.strip() or None
+        return CommitResult(status="committed", commit_sha=sha)
+    except subprocess.TimeoutExpired:
+        detail = f"git timed out after {GIT_TIMEOUT_SECONDS}s"
+        obs.log("git.timeout", level="error", path=rel_path, detail=detail)
         return CommitResult(status="failed", detail=detail)
-    sha = _git(repo_root, ["rev-parse", "HEAD"]).stdout.strip() or None
-    return CommitResult(status="committed", commit_sha=sha)
+    except OSError as exc:                  # git absent from PATH, or unreadable cwd
+        obs.log("git.unavailable", level="error", path=rel_path, detail=str(exc))
+        return CommitResult(status="failed", detail=str(exc))
