@@ -21,7 +21,17 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+BEAT_LABELS = ("HOOK", "SETUP", "BUILD/VALUE", "PAYOFF", "LOOP/CTA")
 BEAT_LABEL_RE = re.compile(r"^(HOOK|SETUP|BUILD/VALUE|PAYOFF|LOOP/CTA)\b")
+# Leading markdown furniture a heading can hide behind: blockquote, ATX heading,
+# list bullet, bold/italic/underscore emphasis, inline code.
+_MARKDOWN_LEAD_RE = re.compile(r"^[\s>#*_+`~-]+")
+# After the furniture is stripped, a genuine heading still carries its range or
+# its colon. Requiring one of those is what keeps a prose line that merely names
+# a beat ("- LOOP/CTA mirrors the hook") from false-failing.
+_SUSPECT_HEADING_RE = re.compile(
+    r"^(HOOK|SETUP|BUILD/VALUE|PAYOFF|LOOP/CTA)\b[^\n]*[(:]"
+)
 REHOOK_RE = re.compile(r"^\[re-hook\b")
 SUBRANGE_RE = re.compile(r"^\(\d+")
 RANGE_RE = re.compile(r"\((\d+)\s*[–—-]\s*(\d+)s")
@@ -32,7 +42,21 @@ QUOTED_RE = re.compile(r'"([^"]+)"|“([^”]+)”')
 # Every beat heading states its own budget as `| N words`. That declaration is
 # the only independent witness to how much spoken text the line is supposed to
 # contain, and it is what the dropped-text detector below measures against.
+# Because it is the detector's only witness, it is required, not optional: a
+# top-level heading, or any sub-beat heading that carries a time range, must
+# declare it or the parse blocks (C-89) -- a witness the author can omit is no
+# witness at all.
 DECLARED_WORDS_RE = re.compile(r"\|\s*(\d+)\s*words")
+# A refused sub-beat's tell: a `(start-end)` range that does not start the
+# line -- e.g. `mechanism (11-18s | 19 words):` -- fails SUBRANGE_RE (which
+# requires the range to open the line) and names no BEAT_LABEL either, so it
+# falls through both `_beat_name` and `_disguised_beat_label` unrecognised.
+# The anchor here is the budget group, not the range: measured identical
+# precision against the 4 shipped fixtures (2/2 true positives, 0 false
+# positives) to a `RANGE_RE and DECLARED_WORDS_RE` anchor, and it additionally
+# catches `mechanism (11-18 sec | 19 words):`, whose non-standard range suffix
+# a RANGE_RE anchor misses outright.
+BUDGET_GROUP_RE = re.compile(r"\([^)\n]*\|\s*\d+\s*words[^)\n]*\)")
 
 
 @dataclass(frozen=True)
@@ -50,6 +74,17 @@ class Finding:
     beat: str | None
     message: str
     kind: str = "fail"
+
+
+# `kind` is a closed set. Blocking is the default; a kind is non-blocking only
+# by being named here. Both callers (this module's main() and
+# pipeline_app.gates.run_script_language_gate) MUST derive blocking from
+# is_blocking() rather than testing a literal, so the two cannot drift.
+NON_BLOCKING_KINDS = frozenset({"skipped", "info"})
+
+
+def is_blocking(finding: Finding) -> bool:
+    return finding.kind not in NON_BLOCKING_KINDS
 
 
 def word_count(text: str) -> int:
@@ -70,6 +105,23 @@ def _beat_name(stripped: str) -> str | None:
     if SUBRANGE_RE.match(stripped):
         return "sub-beat"
     return None
+
+
+def _disguised_beat_label(stripped: str) -> str | None:
+    """The beat a line NAMES if it is a heading the parser refused, else None.
+
+    This is the fail-closed half of the parser. `_beat_name` answers "is this a
+    beat?"; this answers "did something that looks exactly like a beat just fall
+    through?". A heading the parser cannot read must be a finding, never a
+    deletion -- a deleted beat takes every D-check over it with it, and the
+    coverage machinery below can only fire for headings it already recognised.
+
+    Known limit, stated rather than papered over: a disguised heading carrying
+    neither a `(` nor a `:` is not detected here. The five-label cross-check in
+    `check_beat_set` is the independent second detector for that case."""
+    unstyled = _MARKDOWN_LEAD_RE.sub("", stripped).replace("**", "").replace("__", "").lstrip()
+    match = _SUSPECT_HEADING_RE.match(unstyled)
+    return match.group(1) if match else None
 
 
 # The dropped-text threshold. Calibrated against the declared-vs-counted spread
@@ -129,7 +181,17 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
     budget is the sum across its sub-beats), and per line for a sub-beat that
     declares its own. A material shortfall is a `partial-parse` finding: the
     parser saying out loud that it is linting less text than the script
-    contains."""
+    contains.
+
+    A sub-beat line SUBRANGE_RE refuses (its range does not start the line,
+    e.g. a label-first `mechanism (11-18s | 19 words):`) is also refused loud
+    rather than deleted silent, on the same principle as a disguised top-level
+    heading -- but only when it carries its own `| N words` budget group,
+    the author's own assertion that the line is a beat line. Known limit,
+    stated rather than papered over: a refused sub-beat line carrying no
+    budget group is not detected here. The dropped-text check above is the
+    independent second detector for that case, when the sub-beat's own
+    budget or its parent group's budget survives on a nearby line."""
     vo_lines: list[VOLine] = []
     findings: list[Finding] = []
 
@@ -168,6 +230,29 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
         stripped = raw.strip()
         beat = _beat_name(stripped)
         if beat is None:
+            disguised = _disguised_beat_label(stripped)
+            if disguised is not None:
+                findings.append(
+                    Finding(
+                        "PARSE",
+                        disguised,
+                        f"line {number}: {stripped[:70]!r} names beat {disguised} but is "
+                        "not a parseable beat heading -- strip the markdown styling so the "
+                        "line begins with the bare label",
+                        kind="fail",
+                    )
+                )
+            elif current_label is not None and BUDGET_GROUP_RE.search(stripped):
+                findings.append(
+                    Finding(
+                        "PARSE",
+                        current_label,
+                        f"line {number}: {stripped[:70]!r} carries a word budget but is not "
+                        "a parseable sub-beat line -- SUBRANGE_RE requires the range to "
+                        "start the line; move the label after the colon or drop it",
+                        kind="fail",
+                    )
+                )
             continue
 
         declared_match = DECLARED_WORDS_RE.search(stripped)
@@ -181,6 +266,19 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
             label_covered = False
             group_declared = declared
             group_counted = 0
+
+        carries_range = RANGE_RE.search(stripped) is not None
+        if declared is None and (is_top_level or carries_range):
+            findings.append(
+                Finding(
+                    "PARSE",
+                    beat if is_top_level else (current_label or beat),
+                    f"beat heading at line {number} declares no `| N words` budget -- the "
+                    "dropped-text detector has no independent witness to measure the "
+                    "extracted text against, so this beat would be linted on trust",
+                    kind="fail",
+                )
+            )
 
         spans = _quoted_spans(stripped)
         counted = sum(word_count(span) for span in spans)
@@ -318,13 +416,14 @@ FINGERPRINT_PHRASES = (
 # "robustness" via backtracking, but ordering the alternation by descending
 # length makes the intended match obvious instead of load-bearing on regex
 # engine behaviour.
-BUZZWORDS = (
-    "delving", "delved", "delves", "delve",
-    "leveraging", "leveraged", "leverages", "leverage",
-    "comprehensiveness", "comprehensively", "comprehensive",
-    "robustness", "robustly", "robust",
-    "holistically", "holistic",
-)
+BUZZWORD_LEMMAS = {
+    "delve": ("delving", "delved", "delves", "delve"),
+    "leverage": ("leveraging", "leveraged", "leverages", "leverage"),
+    "comprehensive": ("comprehensiveness", "comprehensively", "comprehensive"),
+    "robust": ("robustness", "robustly", "robust"),
+    "holistic": ("holistically", "holistic"),
+}
+BUZZWORDS = tuple(form for forms in BUZZWORD_LEMMAS.values() for form in forms)
 BUZZWORD_RE = re.compile(r"\b(" + "|".join(BUZZWORDS) + r")\b", re.IGNORECASE)
 
 # Tokens a text-to-speech voice cannot render as speech. These belong on an
@@ -361,11 +460,53 @@ def check_vocabulary(vo_lines: list[VOLine]) -> list[Finding]:
                         "belongs on an on-screen plate",
                     )
                 )
+    findings.append(
+        Finding(
+            "D3/D4",
+            None,
+            f"scope: checked {len(FINGERPRINT_PHRASES)} fingerprint phrases, "
+            f"{len(BUZZWORD_LEMMAS)} corpus lemmas "
+            f"({', '.join(sorted(BUZZWORD_LEMMAS))}) and "
+            f"{len(UNSPEAKABLE)} unspeakable token classes. A clean D3/D4 means none of "
+            "these, not 'no AI tells' -- the no-lists are the corpus's own and are not "
+            "extended by guesswork",
+            kind="info",
+        )
+    )
     return findings
+
+
+def check_beat_set(vo_lines: list[VOLine]) -> list[Finding]:
+    """Every one of the five top-level beats must have produced a spoken line.
+
+    Independent of `_disguised_beat_label`, deliberately: two detectors with
+    different failure modes means an evasion has to beat both. All four shipped
+    scripts carry all five labels, so this is calibrated on real artifacts, not
+    invented."""
+    seen = {vo.beat for vo in vo_lines}
+    missing = [label for label in BEAT_LABELS if label not in seen]
+    if not missing:
+        return []
+    return [
+        Finding(
+            "PARSE",
+            None,
+            f"no voiceover line parsed for beat(s) {', '.join(missing)} -- either the "
+            "script is missing them or their headings did not parse; a gate that never "
+            "saw a beat did not check it",
+            kind="fail",
+        )
+    ]
 
 
 WPM_CEILING = 170
 WPM_TOLERANCE = 2
+
+# More than half of the voiceover lines must carry a readable range. The
+# four shipped scripts run 5/6, 5/6, 7/7 and 8/8, so this floor clears
+# every real artifact with margin while refusing the "delete the ranges
+# you cannot meet" evasion: 1 of 6 ratable is not a gate that checked pace.
+RATABLE_MIN_FRACTION = 0.5
 
 
 def beat_wpm(vo: VOLine) -> float | None:
@@ -397,26 +538,28 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
     for vo in vo_lines:
         wpm = beat_wpm(vo)
         if wpm is None:
-            # Same `skipped` kind either way -- only the message text
-            # distinguishes a range that was never parsed (old-format
-            # re-hook line) from one that parsed but is malformed (start >=
-            # end), so a reader isn't told "missing" when the beat actually
-            # carries a nonsensical range.
+            # A malformed range (start >= end) is a defect, not a known
+            # unknown -- it blocks. A genuinely absent/unparsed range stays
+            # `skipped`, non-blocking.
             if vo.start_s is not None and vo.end_s is not None and vo.end_s <= vo.start_s:
-                reason = (
-                    f"malformed time range ({vo.start_s}–{vo.end_s}s, start >= end); "
-                    "pace unchecked"
+                findings.append(
+                    Finding(
+                        "D5",
+                        vo.beat,
+                        f"line {vo.line_number}: malformed time range "
+                        f"({vo.start_s}–{vo.end_s}s, start >= end); pace unchecked",
+                        kind="fail",
+                    )
                 )
             else:
-                reason = "no computable time range; pace unchecked"
-            findings.append(
-                Finding(
-                    "D5",
-                    vo.beat,
-                    f"line {vo.line_number}: {reason}",
-                    kind="skipped",
+                findings.append(
+                    Finding(
+                        "D5",
+                        vo.beat,
+                        f"line {vo.line_number}: no computable time range; pace unchecked",
+                        kind="skipped",
+                    )
                 )
-            )
             continue
         rated += 1
         if wpm > limit:
@@ -428,15 +571,21 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
                     f"(+{WPM_TOLERANCE} tolerance) -- more words than fit in the beat",
                 )
             )
-    if vo_lines and rated == 0:
+    if vo_lines and rated <= RATABLE_MIN_FRACTION * len(vo_lines):
+        # A script whose one beat is malformed trips both this backstop and the
+        # malformed-range-specific `fail` above (0 of 1 rated is also "at or
+        # below the floor") -- that is two independently true diagnostics, not
+        # a bug to dedupe: one names the floor breach, the other names the
+        # specific defect.
         findings.append(
             Finding(
                 "D5",
                 None,
-                f"not one of the {len(vo_lines)} voiceover lines carries a readable time "
-                "range, so the wpm ceiling was never checked on this script -- every beat "
-                "heading needs a `(<start>–<end>s | N words)` range, e.g. "
-                "`(0–3s | 8 words)`. A gate that rated nothing is not a gate that passed",
+                f"only {rated} of {len(vo_lines)} voiceover lines carry a readable time "
+                f"range, at or below the {RATABLE_MIN_FRACTION:.0%} floor -- the wpm "
+                "ceiling was never checked on this script -- every beat heading needs a "
+                "`(<start>–<end>s | N words)` range, e.g. `(0–3s | 8 words)`. A gate "
+                "that rated a minority is not a gate that passed",
             )
         )
     return findings
@@ -444,14 +593,37 @@ def check_pace(vo_lines: list[VOLine]) -> list[Finding]:
 
 GATE_E_RE = re.compile(r"^\s*Gate E\b[^:]*:\s*(\S.*)$", re.MULTILINE)
 # A value still wrapped in <…> or […] is the output contract's own slot, not a
-# result. So is one that still carries the template's `|` alternation bars --
+# result. So is one that still carries the template's own text unchanged --
 # no genuine result ("pass", "3 findings", "2 findings, 1 defended",
-# "overridden: <why>") contains one.
+# "overridden: <why>") reproduces that exact alternation.
 PLACEHOLDER_WRAPPED_RE = re.compile(r"^<.*>$|^\[.*\]$", re.DOTALL)
+# The output contract's own alternation, matched as text rather than inferred
+# from the presence of a `|`. A genuine result ("2 findings | 1 defended") may
+# contain a pipe; only the template contains this sequence.
+TEMPLATE_VALUE_RE = re.compile(
+    r"^[<\[]?\s*pass\s*\|\s*N\s+findings\s*\|\s*N\s+defended\s*\|\s*overridden\s*:",
+    re.IGNORECASE,
+)
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def _unfenced(text: str) -> str:
+    """`text` with every fenced line blanked, line numbering preserved.
+
+    A `Gate E:` line inside an example fence is documentation, not a report."""
+    out: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append("")
+            continue
+        out.append("" if in_fence else line)
+    return "\n".join(out)
 
 
 def _is_unfilled_placeholder(value: str) -> bool:
-    return bool(PLACEHOLDER_WRAPPED_RE.match(value)) or "|" in value
+    return bool(PLACEHOLDER_WRAPPED_RE.match(value)) or bool(TEMPLATE_VALUE_RE.match(value))
 
 
 def check_gate_e_reported(text: str) -> list[Finding]:
@@ -466,7 +638,7 @@ def check_gate_e_reported(text: str) -> list[Finding]:
     reason>` is a slot, not a result, and accepting it would let a skill
     satisfy the lock without deciding anything at all -- weaker even than
     "silent to deliberate"."""
-    values = [m.group(1).strip() for m in GATE_E_RE.finditer(text)]
+    values = [m.group(1).strip() for m in GATE_E_RE.finditer(_unfenced(text))]
     if any(not _is_unfilled_placeholder(value) for value in values):
         return []
     if values:
@@ -493,6 +665,7 @@ def lint(vo_lines: list[VOLine], text: str, parse_findings: list[Finding] | None
     """Run every Gate D check, in check order."""
     return [
         *(parse_findings or []),
+        *check_beat_set(vo_lines),
         *check_punctuation(vo_lines),
         *check_vocabulary(vo_lines),
         *check_pace(vo_lines),
@@ -512,14 +685,17 @@ def main(argv: list[str] | None = None) -> int:
     vo_lines, parse_findings = parse_script(text)
     if not vo_lines:
         print(f"Gate D: no voiceover lines parsed from {args.script}. Check the script format.")
+        for finding in parse_findings:
+            print(f"  [{finding.check}] {finding.beat or 'script'}: {finding.message}")
         return 2
 
     findings = lint(vo_lines, text, parse_findings)
-    blocking = [f for f in findings if f.kind != "skipped"]
-    skipped = [f for f in findings if f.kind == "skipped"]
+    blocking = [f for f in findings if is_blocking(f)]
+    notes = [f for f in findings if not is_blocking(f)]
 
-    for finding in skipped:
-        print(f"  [skipped] {finding.beat or 'script'}: {finding.message}")
+    for finding in notes:
+        marker = "skipped" if finding.kind == "skipped" else "info"
+        print(f"  [{marker}] {finding.beat or 'script'}: {finding.message}")
 
     if not blocking:
         print(f"Gate D: PASS -- {len(vo_lines)} voiceover lines, 0 findings.")

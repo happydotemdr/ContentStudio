@@ -1,14 +1,15 @@
-# Resume prompt — audit-remediation programme, start P12 (Wave B2, tripwire cluster)
+# Resume prompt — audit-remediation programme, start P4 (Wave B3)
 
 Paste everything below the line into a fresh session. It is self-contained and assumes zero prior
 context. `EXECUTION-KICKOFF-PROMPT.md` beside this file is the original programme brief and is
 still binding verbatim; this document is the delta — where execution got to, what the next session
 must do, and everything learned the hard way that is written down nowhere else.
 
-Last updated 2026-08-14. **P3 (Gates & Approval) is merged into `main`**
-([PR #32](https://github.com/happydotemdr/ContentStudio/pull/32), merge commit `02791e7`).
-Combined with P0, P1, P2, P10, P11 already in `main`, **Wave B2's other two members (P3, P11) are
-both done — P12 is the only member of that tripwire cluster left, and is next.**
+Last updated 2026-08-15. **P12 (Gate D & tools) is done, its PR is open, not yet merged**
+([PR #34](https://github.com/happydotemdr/ContentStudio/pull/34), branch
+`claude/pipeline-audit-review-4dd767`). Combined with P0, P1, P2, P3, P10, P11, P12 all landed or
+in-flight, **Wave B2's tripwire cluster (P3 + P11 + P12) is now fully complete** — P3 and P11 were
+already merged; P12's PR is open and awaiting merge. **Wave B3 (P4, then P5) is next.**
 
 ---
 
@@ -23,45 +24,65 @@ plan. Instruct every one of them explicitly not to let scope creep. Keep the doc
 accurate and the plan updated at every step. When you find a new gap or defect, **file it in the
 relevant plan for review/validation before addressing it**, and only fix it inline if it is a
 critical or important blocker. This has happened in every package executed so far — expect it in
-P12 too; the mitigation that has worked every time is in "The recurring bug class" below.
+P4 too; the mitigation that has worked every time is in "The recurring bug class" below.
+
+## Before anything else: confirm P12's PR status
+
+P12's PR #34 was open, not merged, as of this document's writing. Check its current state first —
+it may have been merged, closed, or left open since:
+
+```bash
+gh pr view 34 --json state,mergedAt,url
+```
+
+- **If merged:** `origin/main` now contains all of P12's commits. Fast-forward this worktree (or
+  start a fresh one — see "The repo" below) and delete P12's SDD workspace
+  (`.superpowers/sdd/P12-gate-d-tools/`, git-ignored — its ledger's history is preserved in this
+  branch's git log even after deletion, same pattern as every prior package). Proceed with P4.
+- **If still open:** proceed with P4 on a **fresh worktree off `origin/main`**, not off P12's
+  branch — P4 does not depend on anything in P12's diff (they touch entirely disjoint files: P12
+  is `scripts/lint_script_language.py`, `scripts/resolve_brief_version.py`,
+  `scripts/build-cowork-plugin.sh`, plus one file P12 patched in `pipeline-app/pipeline_app/`
+  — `gates.py` — which P4 also reads but does not write). There is no reason to wait for the merge
+  or to stack P4 on top of P12's unmerged branch.
+- **If closed without merging:** stop and ask the operator what happened — that would be
+  unexpected and worth understanding before proceeding.
 
 ## The repo
 
-Worktree: `C:\Projects\ContentStudio\.claude\worktrees\pipeline-audit-review-4dd767`
-Branch `claude/pipeline-audit-review-4dd767` — **already fast-forwarded to `origin/main` this
-session** (HEAD `02791e7`, identical to `origin/main`). Verify this is still true before trusting
-it (`git fetch origin main && git rev-parse HEAD origin/main` — they should match); if the
-operator did other work on `main` between sessions, fast-forward again the same way. Main branch
-`main`. Windows 11, PowerShell primary. Python is `C:/Python314/python.exe`.
+Windows 11, PowerShell primary. Python is `C:/Python314/python.exe`.
 
 Two commits must never be altered: `1d39c9d` (the audit) and `6c61f14` (the remediation
 programme).
 
-**The separate MAIN CHECKOUT** (`C:\Projects\ContentStudio`, where `pipeline-app` is installed
-editable) was **not** touched this session and is **one commit behind** `origin/main` as of this
-writing (`ab77f06`, missing the P3 merge `02791e7`) — it also has the operator's own uncommitted
-work in progress (`doc-ingest-app/` modifications, untracked `pipeline.db.backup-pre-migration*`
-files, two untracked `rgs-briefs/*.md` drafts). **Do not `git pull`/`merge`/`reset` there yourself**
-— it has real uncommitted changes that aren't yours to touch. Re-run the same fetch+status check
-at the start of your session (`cd C:\Projects\ContentStudio && git fetch origin main && git status
---short && git log --oneline -3`) to see its current state before assuming anything about it; if
-it still needs the P3 merge and that's blocking something, ask the operator rather than pulling
-over their uncommitted work.
+**This session's own worktree**, if resuming directly in it:
+`C:\Projects\ContentStudio\.claude\worktrees\pipeline-audit-review-4dd767`, branch
+`claude/pipeline-audit-review-4dd767` — this branch now carries all of P12's work on top of
+`origin/main`'s state as of P12's merge-base (`5895d97`, itself the commit that landed via PR #33
+before P12 started). **Do not build P4 on this branch** unless you have confirmed PR #34 merged
+and this branch is otherwise exactly `origin/main` — safest is to start P4 in a fresh worktree via
+`superpowers:using-git-worktrees`, off whatever `origin/main` is once you've resolved the PR #34
+status above.
 
-**Baseline suite counts, verified this session at `HEAD 02791e7`:**
-- Root suite (`python -m pytest tests/ -q` from repo root): **371 passed, 1 failed** — the same
-  documented, deliberately-deferred exception as every prior session
+**The separate MAIN CHECKOUT** (`C:\Projects\ContentStudio`, where `pipeline-app` is installed
+editable) had **real uncommitted operator work in progress** as of this session
+(`doc-ingest-app/` modifications, untracked `pipeline.db.backup-pre-migration*` files, two
+untracked `rgs-briefs/*.md` drafts) — **do not `git pull`/`merge`/`reset` there yourself**. Re-run
+the same fetch+status check at the start of your session
+(`cd C:\Projects\ContentStudio && git fetch origin main && git status --short && git log --oneline
+-3`) to see its current state before assuming anything about it.
+
+**Baseline suite counts, verified this session on P12's branch at its final commit (`b75bf8f`,
+before the final-review fix wave) — re-verify against whatever base you actually start from, these
+numbers are P12-branch-specific and will differ once you're on `origin/main` post-merge:**
+- Root suite (`python -m pytest tests/ -q` from repo root): **445 passed, 1 failed** — the same
+  documented, deliberately-deferred pre-existing exception as every prior session
   (`test_lint_prompt_sheet.py::test_a_single_mutation_of_a_green_sheet_always_fails_gate_c[fenced-heading]`,
-  P11-owned, not P3's or P12's file). The pass count rose from 355 to 371 because `main` also
-  picked up an unrelated merge (PR #31, a `doc-ingest-app/` feature) between P3's branch-push and
-  its merge — not your concern, just why the number moved.
-- App suite (`cd pipeline-app && python -m pytest -q`): **31 failed, 1204 passed, 3 skipped.** All
-  31 are pre-existing, in files P3 either doesn't fully own or wasn't asked to repair (see
-  [PR #32](https://github.com/happydotemdr/ContentStudio/pull/32)'s body for the full breakdown —
-  `write_pointer`/`gate_overrides` API-shape mismatches in test setup code across
-  `test_routes_stages.py`, `test_approval_service.py`, `test_browse_service.py`,
-  `test_routes_browse.py`, plus two unrelated single failures). **P12 does not own or need to fix
-  these** — they are a separate, already-filed follow-up (see "Carried-forward open items" below).
+  unowned by P12 or P4).
+- App suite (`cd pipeline-app && python -m pytest -q`): **31 failed, 1207 passed, 3 skipped.** All
+  31 failures are pre-existing, in files a sibling package (P3) either doesn't fully own or wasn't
+  asked to repair — see PR #34's body for the exact test names, unchanged from PR #32's original
+  list. **P4 does not own or need to fix these** — they're a separate, already-filed follow-up.
 
 ## Where execution is — the landing order (unchanged from the original brief, reproduced here for convenience)
 
@@ -69,111 +90,113 @@ over their uncommitted work.
 |---|---|---|
 | A | P0 → P1 | **merged** |
 | B1 | P2, then P10 | **merged** |
-| **B2** | **P3 + P11 + P12 together** | **P3 and P11 merged. P12 has not started — start it now.** |
-| B3 | P4, then P5 | not started |
+| **B2** | **P3 + P11 + P12 together** | **All three done. P3 and P11 merged; P12's PR #34 open (see above).** |
+| **B3** | **P4, then P5** | **P4 has not started — start it now.** |
 | B4 | P6, P7, then P8, and P9 | not started |
 | B5 | P15 | not started |
 | C | P13, then P14 | not started |
 
-**Why P12 is next, precisely:** §7.2 of `EXECUTION-KICKOFF-PROMPT.md` says P3, P11 and P12 carry a
-deliberate tripwire cluster and must land together, or the follower retires the tripwire in the
-same commit. P11 landed first (tripwired P3's divergence-ledger test, which P3 already handled).
-P3 has now landed. **P12's own T8 leaves a `strict=True` xfail that was meant to go red the moment
-P3 landed — but P12 hasn't executed yet, so that xfail doesn't exist in the repo yet either.** See
-the next section for exactly what this means for how you should execute P12 T6/T8 — it is NOT the
-same sequence the plan's own prose describes, because the timing assumption behind that prose
-(P12 running before P3) is now false.
+**Why P4 is next, precisely:** the master plan's own dependency table (`docs/superpowers/plans/
+2026-08-08-audit-remediation.md`, search "P2 lands before P3 and P4" and the wave table around
+line 177-195) puts P4 in Wave B3, gated only on P2 and P3 — both already merged. P4's own T17 task
+carries a "counter-contract back to P3" (three keywords P4 needs from `gates.py`) — **confirmed
+this session, live in the repo: `pipeline_app/gates.py:466` already defines
+`resolve_upstream_by_stage(run_dir, all_stage_defs, stage_def, *, repo_root=None,
+approved_only=False, include_optional=False) -> UpstreamMap`**, exactly the signature the master
+plan's frozen-interfaces table (line 194) describes. P4 is unblocked; nothing is waiting on it.
 
-## READ THIS BEFORE DISPATCHING P12 T6 OR T8 — the plan's own xfail choreography no longer applies
+## What P4 is — read `docs/superpowers/plans/remediation/P4-handoff.md` in full before dispatching Task 1
 
-P12's plan file (`docs/superpowers/plans/remediation/P12-gate-d-tools.md`) was written assuming
-P12 would execute *before* P3, so its T8 instructs: implement a source-scanning test that checks
-`pipeline_app/gates.py` doesn't hardcode `!= "skipped"`, watch it fail, then **mark it
-`@pytest.mark.xfail(reason="P3 owns gates.py; see P12 plan §6", strict=True)`** — the idea being
-that this xfail turns into a loud `XPASS` failure "the moment P3 lands," which is the signal for
-someone to go fix `gates.py` for real and delete the marker.
+**Do not act from this summary alone** — it is oriented for triage, not execution. Read the actual
+plan file yourself, following this programme's Sub-agent output contract (never hand a sub-agent
+the whole plan file — extract only what each task needs, same discipline this session used
+throughout P12).
 
-**That trigger condition — P3 landing — is already true, before you dispatch a single P12 task.**
-Confirmed empirically this session: `pipeline-app/pipeline_app/gates.py` (currently line ~430)
-still reads:
-```python
-blocking = [f for f in findings if f.get("kind") != "skipped"]
+**The question P4 answers:** *are the skill handoffs correct?* For seven of nine pipeline stages,
+yes. For `assembly` and `repurpose`, no — and the failure ships silently, because the kickoff
+templates tell the skill an input is present that the graph (`pipeline.yaml`) cannot actually
+deliver. **The verdict: the graph is wrong, not the skills** — `shorts-assembly/SKILL.md:16-29`
+and `social-repurpose/SKILL.md:12-13` declare real, corpus-traced input requirements that
+`pipeline.yaml` under-declares. P4 fixes `pipeline.yaml` and the kickoff templates; the SKILL.md
+prose that must eventually follow is handed to **P13** as a contract, not edited by P4.
+
+**Scope — files owned by this package, no other package may touch them:**
 ```
-Marking a fresh test `xfail` and watching it immediately need to become `XPASS`-and-deleted in the
-very same task is theater with no purpose here — **skip the xfail step entirely.** But — and this
-is the part that actually matters — **you cannot fix `gates.py`'s line yet either**, because the
-real fix (`blocking = [f for f in findings if f.get("kind") not in linter.NON_BLOCKING_KINDS]`,
-per the plan's own §6.1) needs `linter.NON_BLOCKING_KINDS` and `linter.is_blocking()` to exist in
-`scripts/lint_script_language.py` first — and **those don't exist yet either**; they are created
-by **P12's own T6**, not by anything already in `main`.
+pipeline.yaml                                      (REPO ROOT)
+pipeline-app/pipeline_app/turn_service.py
+pipeline-app/pipeline_app/prompt_builder.py
+pipeline-app/pipeline_app/pipeline_config.py
+pipeline-app/pipeline_app/cli_runner.py
+pipeline-app/stage_templates/*.md                  (all 9)
+pipeline-app/tests/test_turn_service.py
+pipeline-app/tests/test_cli_runner.py
+pipeline-app/tests/test_prompt_builder.py
+pipeline-app/tests/test_pipeline_config.py
+pipeline-app/tests/test_routes_chat_sse.py
+```
 
-**The correct sequence, different from both the plan's literal T8 text and from doing nothing:**
+**Findings closed here (26):** A-01 through A-17, A-32, A-44, A-46, D-43 through D-46, F-11, F-15
+— see the plan's own §2 finding→task map for the full breakdown; it is a real table with every ID
+mapped to a task, not a rough correspondence.
 
-1. Execute P12 T1 through T6 in order as written (T6 is what adds `NON_BLOCKING_KINDS`/
-   `is_blocking`/`BUZZWORD_LEMMAS` to `scripts/lint_script_language.py`).
-2. **Immediately after T6 lands** (before T7/T8, or interleaved with them — your call on exact
-   ordering, but T6 must precede this step), do the small `gates.py` fix as its own mini-task,
-   since `gates.py` is P3's file but P3 is now merged — it is no longer under any active branch's
-   exclusive ownership, and no other in-flight package needs it, so there is nothing to coordinate
-   around beyond doing it carefully and documenting why:
-   - **Important, confirmed this session — the plan's own §6.1 phrasing (`linter.NON_BLOCKING_KINDS`)
-     is misleading about WHERE the fix goes.** The `blocking = [f for f in findings if
-     f.get("kind") != "skipped"]` line lives inside `run_gates_for_stage`'s generic dispatch loop
-     (around line 428, currently), which iterates over **every gate registered for a stage_id**
-     (Gate C, Gate D, Gate S — whichever apply) and judges already-returned `dict` findings
-     generically. There is **no `linter` variable in scope at that point** — each `runner(...)`
-     call already returned plain dicts, with no linter module handle attached. You cannot write
-     `linter.NON_BLOCKING_KINDS` literally as the plan's prose suggests; grep the function body
-     yourself to confirm before trusting this note, since it may have changed. The fix instead
-     needs a **`gates.py`-level constant**, e.g. `_NON_BLOCKING_KINDS = frozenset({"skipped",
-     "info"})` defined near the top of `gates.py`, with `blocking = [f for f in findings if
-     f.get("kind") not in _NON_BLOCKING_KINDS]`. Confirmed this session: neither Gate C
-     (`lint_prompt_sheet.py`) nor Gate S (`gates.py`'s own `_check_styleboard_slots`) currently
-     emits a `"skipped"` or `"info"` kind finding — only Gate D (`lint_script_language.py:417`,
-     pre-P12) uses `"skipped"`, and P12's own T6 is what introduces `"info"`. So today the
-     gate-agnostic constant and Gate D's own `NON_BLOCKING_KINDS` happen to be the same two
-     strings — but they are two SEPARATE definitions (one in `scripts/lint_script_language.py`
-     for the CLI, one in `pipeline_app/gates.py` for the generic dispatch loop), not one shared
-     import, because `run_gates_for_stage` genuinely cannot know which linter produced a given
-     finding. Document this distinction in your commit — a future gate adding a new non-blocking
-     `kind` must update BOTH constants, and that is exactly the kind of drift a comment here
-     should call out explicitly, not paper over.
-   - Add the §6.2 "mirror test" to the **app suite** (`pipeline-app/tests/test_gates.py`):
-     assert that `run_script_language_gate(repo_root, path, {})`'s findings (in order, with
-     `kind`s) equal `linter.lint(*linter.parse_script(text), text)`'s serialized output, run over
-     `CLEAN_SCRIPT` plus at least three of T7's mutation rows, and that `status` is `"fail"`
-     exactly when the CLI's `main()` returns `1`. This is what makes the two-caller parity
-     property real on the app side, not just asserted about the CLI side.
-   - Also fix what the contract note flags as a rendering hazard: Gate D now emits findings with
-     `beat is None` for some checks (`check_beat_set`, the ratable-fraction finding, the D3/D4
-     scope note) — confirm nothing in `gates.py`'s `_as_dicts` or `routes/stages.py`'s gate
-     rendering (the `gate_view`/Gates-panel work from P3) assumes a beat string and would `KeyError`
-     or literally render the word `"None"`. Check empirically against the live template
-     (`pipeline_app/templates/stage.html`, the Gates panel P3's final review just rewired to
-     render `gate_view`) before assuming it's fine.
-   - `_as_dicts` must pass `kind` through verbatim — confirm it does not default a missing `kind`
-     to `"skipped"` (read the function; this is a one-line check, not a rewrite).
-3. **Now write P12's own T8** exactly as its plan text describes for the CLI half
-   (`test_the_cli_exit_code_is_exactly_the_blocking_predicate` — no xfail needed there, it was
-   never gated on P3), but for the `gates.py`-hardcoding test
-   (`test_gates_py_does_not_hardcode_the_blocking_kind`), write it as a **plain, non-xfail
-   assertion** — it should pass immediately because you already fixed `gates.py` in step 2. Do
-   not mark it xfail and do not expect it to fail; if it does fail at this point, your step-2 fix
-   is incomplete or came after a rebase that reverted it — investigate, don't paper over it with
-   xfail.
-4. Continue T9 onward as written.
+**Tasks, in the plan's own order (20 total, T1-T20):**
+1. **T1** — declare the missing `pipeline.yaml` edges (`assembly` needs `scripting`+`styleboard`
+   as hard deps, `music` as a NEW `optional_depends_on` concept; `repurpose` needs
+   `ideation`+`scripting`, not just `assembly`).
+2. **T2** — address kickoff-template upstreams by stage id (`inputs['scripting']`), not position;
+   deletes the `input_file`/`input_files` mechanism entirely; rewrites all 9 stage templates.
+3. **T3** — the highest-value test in the package: a data-driven, AST-parsed conformance test over
+   all 9 stages proving every `inputs[...]` a template references is actually reachable via
+   `depends_on`/`optional_depends_on`, and every declared dependency is actually named in the
+   template. This is the test that makes the whole defect class structurally impossible to
+   reintroduce — read it before writing anything else in this package, it defines the contract
+   every other task must satisfy.
+4. **T4** — `StrictUndefined` + a frozen five-key kickoff context + `validate_template_source` for
+   the skill-editor's trial-render path.
+5. **T5** — a required dependency with no approved artifact now refuses the turn
+   (`MissingUpstreamArtifactError`) instead of rendering the literal string `None` into a prompt.
+6. **T6** — upstream resolution now returns the **approved** artifact, not merely the newest
+   draft on disk — with a deliberate, documented divergence: staleness computation
+   (`_current_upstream_hashes`) keeps comparing against the latest (not approved-only) version, so
+   an unapproved re-generation still correctly marks dependents stale.
+7. **T7** — a resumed turn is now told, in-prompt, which upstream artifacts changed since the
+   session was last opened (was previously silent — the model kept reasoning from stale paths).
+8. **T8** — an unresumable Claude session id is now cleared, so the next turn re-renders the
+   kickoff prompt instead of wedging the stage forever.
+9. **T9** — an aborted turn now restores the *pre-turn* status (stale stays stale) instead of
+   always re-deriving `awaiting_review`.
+10. **T10-T16** — pointer-aware staleness/upstream resolution for grounding briefs, topology
+    validation (`_validate_topology` requiring a kickoff template per stage, brand-scope
+    compatibility checks), `StageNotRunnableError` on a `None` stage row, `load_topology`'s
+    `repo_root` handling, permission-policy hardening (`D-43` through `D-46` — a `Write,Edit`
+    allowlist narrowed to pattern-scoped forms, `scripts/**` and `.claude/**` denied, vendor
+    `*_API_KEY` stripped from the child environment), a tautological test deletion + replacement,
+    and per-stage prompt-content assertions replacing today's weaker test doubles. Read each in
+    the plan file itself — this resume prompt does not reproduce their code.
+11. **T17-T20** — four tasks that carry **no P4 finding of their own**, sequenced last so the
+    finding work is never blocked on another package's merge:
+    - **T17** (P3 Handoff H2): swap P4's inline upstream map for `gates.resolve_upstream_by_stage`
+      — **confirmed unblocked this session**, see above.
+    - **T18** (P2 §6.1-6.3): adopt the durable `artifacts.py` API P2 already shipped.
+    - **T19** (P1, F-26 second half): a gate-result test in `test_turn_service.py` that asserts
+      its own mock — P1 already closed the `test_main.py` half of this same finding.
+    - **T20** (P5 contract): `stage_id_by_skill`, `stage_template_path`, and the duplicate-`skill:`
+      rejection rule — P5 (next in this same wave) swaps its own private copy for this one.
 
-This whole detour is itself an instance of "The recurring bug class" below — treat it as the
-worked example, not a one-off.
+**Suite:** `cd pipeline-app && python -m pytest` (app rootdir). **Never from the repo root** — P4
+touches no root-suite files at all (everything it owns lives under `pipeline-app/` or is
+`pipeline.yaml` at repo root, which the app suite reads via `REPO_ROOT`, not the root pytest
+suite).
 
 ## The recurring bug class — check for it before dispatching every task, not just this once
 
-Every package executed since P2 has hit at least one instance of this, and P3 alone hit five: **a
-task's own shown test/implementation code can reference a function, class, fixture, or
-sibling-package API that doesn't exist yet at the point that task is dispatched** — because the
-plan text was written assuming a landing order, a sibling package's state, or another task's
-sequencing that turned out different from what's actually true in the live repo by the time you
-get there. The mitigation, unchanged since P2:
+Every package executed since P2 has hit at least one instance of this, and P3 alone hit five, P12
+hit at least seven (five in-package plus one whole-package sequencing swap plus one carried-forward
+from the resume brief): **a task's own shown test/implementation code can reference a function,
+class, fixture, or sibling-package API that doesn't exist yet at the point that task is
+dispatched** — because the plan text was written assuming a landing order, a sibling package's
+state, or another task's sequencing that turned out different from what's actually true in the live
+repo by the time you get there. The mitigation, unchanged since P2:
 
 1. **Grep for every symbol a task's own shown code references** before dispatching it — function
    names, class names, fixture names, other packages' modules — and confirm each either already
@@ -182,44 +205,66 @@ get there. The mitigation, unchanged since P2:
    directly at the relevant task, **with its own commit** explaining what was wrong and why —
    then dispatch the corrected version. Never fix a gap silently inline without amending the plan.
 3. Your own amendments can contain the same class of bug — re-verify their own claims (exact line
-   numbers, exact counts, exact function signatures) against the live repo before committing them,
-   the same discipline P3's five amendments this session were held to.
+   numbers, exact counts, exact function signatures) against the live repo before committing them.
+4. **Verify empirically before writing a brief, not after a fix-loop round.** P12's session found
+   this is cheaper than it sounds: several of P12's own amendments (a broken test filename that
+   didn't match the target regex, a mutation-matrix row whose direction was backwards, a sub-beat
+   fixture's actual parse behavior) were caught by running a two-line Python scratch check BEFORE
+   dispatching the implementer, not after a reviewer caught it. When a brief's own code references
+   something you can trivially execute or grep for, do it — it's cheaper than a fix round.
 
-P3's own five instances, for pattern-matching (full detail in `P3-gates-approval.md`'s own
-blockquote history and in [PR #32](https://github.com/happydotemdr/ContentStudio/pull/32)'s body):
-a test needing UI wiring three tasks away; a plan-text count of "five" that was actually six once
-an earlier task's own already-landed text was accounted for; a task needing a sibling,
-not-yet-executed package's function; a fix that broke an earlier task's own exact-equality test on
-a by-design wording split; and a task asking for two keywords owned by a different, not-yet-run
-package. **P12's own T6/T8 sequencing issue (above) is a sixth instance, found and resolved before
-this resume prompt was even written — read it as the concrete template for what "grep every
-referenced symbol first" looks like in practice.**
+**P4-specific things worth grepping for before you start**, since this resume prompt could not
+verify everything (it wrote to disk before dispatching any P4 task):
+- `pipeline-app/pipeline_app/pipeline_config.py`'s current `StageDef` dataclass — does it already
+  have anything resembling `optional_depends_on` from some other package's incidental touch? Grep
+  before T1 assumes a clean slate.
+- `pipeline-app/pipeline_app/turn_service.py`'s current `run_stage_turn` — the plan's T5/T6/T7/T8
+  snippets all assume specific line ranges and existing helper shapes (`_resolve_upstream`,
+  `is_first_turn`, the exception hierarchy). Read the live function before trusting any quoted
+  line number.
+- `pipeline-app/pipeline_app/artifacts.py` — P2 already shipped `compute_depends_on`,
+  `read_artifact`/`MalformedArtifactError`, `reserve_version`/`write_reserved_artifact`/
+  `release_version`, `record_gate_override(at=)`, `write_pointer(repo_root)`,
+  `classify_brief_change` (master plan's frozen-interfaces table, line 193). Confirm these exist
+  with the exact signatures P4's T18 expects before dispatching that task.
+- `.claude/skills/shorts-assembly/SKILL.md` and `.claude/skills/social-repurpose/SKILL.md` —
+  P4's whole premise rests on lines 16-29 and 12-13 respectively still saying what the plan quotes.
+  These are P13's files to eventually edit, but P4 only READS them — confirm the cited line ranges
+  still say what P4's plan claims before trusting the finding narrative.
 
-## Frozen cross-package interfaces (unchanged, reproduced for convenience)
+## Frozen cross-package interfaces (updated this session)
 
 - `obs.log(event, *, level, **fields)` and `obs.record_event(conn, *, kind, severity, source,
   message, detail, run_id) -> int`. `record_event` must never raise.
 - `gates.resolve_upstream_by_stage(*, repo_root=None, approved_only=False,
   include_optional=False)` returns an `UpstreamMap` with three states — absent/present/excluded —
-  where reading an excluded key raises.
+  where reading an excluded key raises. **Confirmed live in the repo this session** (see above) —
+  P4's T17 can consume it directly, no further verification needed beyond what this session did.
 - `| safe` means "sanitized by its producer." P3 wrote its own private sanitizer in
   `routes/stages.py` (a HANDOFF, since the intended owner, P15, hasn't executed) — do not assume
-  `browse_service.sanitize_html` exists; it still doesn't.
-- **P3 → P15 stage context keys** (now live, confirmed): `gate_view[]` (`state ∈
-  passed|failed|errored|never_ran|unknown|malformed`), `has_blocking_gate`, `gate_override`/
-  `gate_overrides[]`, `artifact_version`, `artifact_created_at`, `artifact_finalized_at`,
-  `inputs[]` (`present`/`malformed`/`artifact`/`body`/`html` per declared dependency),
-  `edit_allowed`/`edit_blocked_reason`/`edit_action`/`edit_field`, `error_banner`. A blocked
-  approve is 409 re-rendering `stage.html`, never a `PlainTextResponse` — confirmed, zero
-  `PlainTextResponse` sites remain in `routes/stages.py`.
+  `browse_service.sanitize_html` exists; it still doesn't, unaffected by P4 or P12.
+- **P3 → P15 stage context keys** (live, confirmed by P3's own final review): `gate_view[]`
+  (`state ∈ passed|failed|errored|never_ran|unknown|malformed`), `has_blocking_gate`,
+  `gate_override`/`gate_overrides[]`, `artifact_version`, `artifact_created_at`,
+  `artifact_finalized_at`, `inputs[]` (`present`/`malformed`/`artifact`/`body`/`html` per declared
+  dependency), `edit_allowed`/`edit_blocked_reason`/`edit_action`/`edit_field`, `error_banner`.
+  **P12's final-review fix wave added one more key to this same context-building path**:
+  `non_blocking_kinds` (sourced from `gates._NON_BLOCKING_KINDS`), threaded into `stage.html`'s
+  Gates-panel rendering so the template no longer hardcodes its own copy of the non-blocking `kind`
+  set. Not P4's concern, but if P4's own work touches anything in `routes/stages.py`'s stage
+  context builder, be aware this key now exists there too.
 - **P1 → P15:** `recent_events[]` and `orphaned_count: int | None`, `None` must render differently
   from `0`.
-- **P4 still hasn't executed.** Two things P3 wanted from it are deferred and documented in
-  `P3-gates-approval.md`'s T24 amendment: `turn_service.propagate_staleness` needs an optional
-  `repo_root=` keyword, and a `turn_service.propagate_grounding_staleness` function doesn't exist
-  yet. Not P12's concern, but don't be surprised if you see the gap while reading `routes/stages.py`.
+- **P4 still hasn't executed** (as of this document). Two things P3 wanted from it were deferred
+  and documented in `P3-gates-approval.md`'s T24 amendment: `turn_service.propagate_staleness`
+  needs an optional `repo_root=` keyword, and a `turn_service.propagate_grounding_staleness`
+  function doesn't exist yet. **This is now squarely P4's own scope** (T10-T14 territory) — resolve
+  it as part of this package rather than deferring further.
+- **P12 → downstream Gate D consumers:** `scripts/lint_script_language.py` now exports
+  `NON_BLOCKING_KINDS: frozenset[str]` and `is_blocking(finding) -> bool`. Not P4's concern (P4
+  never touches Gate D), noted here only for completeness.
 
-## Carried-forward open items (none are P12's job; know they exist)
+## Carried-forward open items (none are P4's job; know they exist)
 
 Two operator decisions remain open, unresolved, not any package's call — surface them again if the
 operator hasn't weighed in (repeated in every resume prompt since P10/P11):
@@ -227,10 +272,10 @@ operator hasn't weighed in (repeated in every resume prompt since P10/P11):
 1. `T21R-01` — the `CLOSE`/`MACRO` 1-object-floor carve-out in Gate C's C8 check (P11's file).
 2. `T6R-02` — what should catch an extra fenced example block mid-sheet (the one documented
    root-suite exception, `test_lint_prompt_sheet.py::...[fenced-heading]`, unchanged for many
-   sessions now).
+   sessions now, confirmed still present and still out-of-scope for every package including P12).
 
-From P3's final review, filed for a small future follow-up task (not P12's; do not fold these
-into P12's own work unless a P12 task happens to touch the exact same lines):
+From P3's final review (unchanged, still open, not P4's job unless a P4 task happens to touch the
+exact same lines):
 
 3. Nine test failures in files P3 owns (`test_routes_stages.py` x3, `test_approval_service.py`
    x6) assert a pre-P2 API shape.
@@ -238,31 +283,47 @@ into P12's own work unless a P12 task happens to touch the exact same lines):
    the same stage share one fixed scratch filename).
 5. Gate messages on that same hand-edit path name the scratch filename instead of a stable display
    name.
-6. Eight Minor findings (an unused `_approved_artifact_path` parameter — a trap for P4 — plus
-   seven more; full list in PR #32's body).
+6. Eight further Minor findings from P3's final review — full list in PR #32's body.
 7. New CSS classes (`status-blocking`, `status-ok`, `input-missing`, `input-malformed`) introduced
-   by P3's final-review fix wave have no stylesheet rules yet — correct semantics, missing color.
+   by P3's final-review fix wave still have no stylesheet rules — correct semantics, missing color.
+
+From P12's final review (new this session, not P4's job):
+
+8. Nine Minor findings parked from P12's final whole-branch review — D5's floor message wording
+   regression, a missing companion test the plan's own §5 called for, a stale docstring, an
+   order-dependent tie-detection edge case, a confounded C-97 test fixture, dead `--check` code in
+   `cowork_plugin_lock.py`, a loose-file gap in the plugin content-hash stamp, a pre-existing
+   `yaml` import that narrows the "stdlib-only" claim's scope, and a near-trivially-green mtime
+   test. Full list in PR #34's body and `.superpowers/sdd/P12-gate-d-tools/progress.md` (preserved
+   in git history even after that workspace directory is deleted post-merge).
 
 ## Traps, verbatim (carried forward from every prior session, still binding)
 
 - `python -m` is mandatory. A bare `pytest` at the repo root silently omits all app tests.
 - `pipeline-app` is installed EDITABLE against the MAIN checkout (`C:\Projects\ContentStudio`),
-  not this worktree. Bake an explicit working-directory check (`pwd && git rev-parse
+  not any worktree. Bake an explicit working-directory check (`pwd && git rev-parse
   --show-toplevel && git branch --show-current`) into every dispatch prompt.
 - The live database is `C:\Projects\ContentStudio\pipeline-app\pipeline.db` — main checkout,
   git-ignored. Never write to it.
 - `subprocess` with `text=True` decodes as cp1252 on this host. Always `encoding="utf-8",
   errors="replace"`.
+- **New from P12:** never invoke `bash`/`sh` by BARE NAME in a `subprocess.run([...])` call, even
+  in test code you're writing fresh — it can resolve to a broken Windows WSL launcher stub
+  (`C:\Windows\System32\bash.exe`) instead of the real Git Bash, depending on Python's own PATH
+  search order versus an interactive shell's. Always resolve via `shutil.which("bash")` first and
+  use the resolved absolute path. This bit P12 twice in the same package (once caught by a
+  reviewer, once correctly avoided the second time after the first fix was documented) —
+  it is now the canonical example of "grep for the documented trap before writing subprocess code,"
+  not just "check for missing symbols."
 - `os.kill(pid, 0)` terminates the process on Windows. Use `OpenProcess` for liveness.
-- Never invoke `bash`/`sh` by bare name in a subprocess. Resolve with `shutil.which()`.
 - Writing a commit message through `bash -c "..."` eats anything in backticks; write long/quote-
   heavy commit or PR bodies to a file and use `-F`/`--body-file` instead of an inline heredoc.
 - `grep -c` exits 1 when the count is zero, silently truncating a `&&` chain. Use `;` instead.
 - A `str` regex's `\d` is Unicode-aware in Python; `int()` parses non-ASCII decimal digits. Use
   `[0-9]` and verify empirically if parsing any numeric field from a filename or frontmatter value.
-- In this specific harness, the Bash tool's working directory resets to the worktree path after
-  every separate call — `cd` does not persist between calls. Chain multi-step operations touching
-  a different directory in one command.
+- In this specific harness, the Bash tool's working directory can drift between calls depending on
+  prior `cd`s within the same tool call — prefer absolute paths, and re-run `pwd` if a command
+  fails with an unexpected "no such file or directory" on a path you expect to exist.
 - A regex with a fully-optional trailing group after a non-greedy `.*?`, matched with `.match()`
   (not `.fullmatch()`), will silently never capture the optional group.
 - When two independently-written pieces of text/code both need to find something via a
@@ -270,25 +331,32 @@ into P12's own work unless a P12 task happens to touch the exact same lines):
   will collide.
 - A hand-written HTML sanitizer built on `html.parser.HTMLParser` must escape TEXT NODES
   (`handle_data`), not just attribute values — `convert_charrefs=True` hands `handle_data`
-  already entity-DECODED text, so markdown-escaped `&lt;script&gt;` inside a code block
-  round-trips back to a live `<script>` tag if re-emitted verbatim. Also:
-  `HTMLParser.CDATA_CONTENT_ELEMENTS` is `("script", "style")`, not just `"script"`. (Only
-  relevant if a future package touches `routes/stages.py`'s sanitizer again — P12 shouldn't need
-  to, but if you find yourself there, this bit P3's final review twice.)
-- **New from this session:** a plan's own choreography for a cross-package tripwire (mark xfail →
-  wait for the sibling to land → XPASS signals cleanup) can itself go stale if the sibling lands
-  *before* the tripwire-owning package even starts. Check the actual trigger condition against the
-  live repo before mechanically following the plan's literal steps — see "READ THIS BEFORE
-  DISPATCHING P12 T6 OR T8" above for the worked example.
+  already entity-DECODED text. Also: `HTMLParser.CDATA_CONTENT_ELEMENTS` is `("script", "style")`,
+  not just `"script"`. (Only relevant if a future package touches `routes/stages.py`'s sanitizer
+  again — unlikely for P4, noted for completeness.)
+- **A plan's own execution-order assumption can be wrong even when nothing about the CODE has
+  changed** — three separate times in P12, a task's own text assumed either a different task-number
+  ordering (T16 needing T17's file), a different execution timing (T2 assuming T7 would run first
+  to supply a shared test fixture), or a test fixture that was simply unreachable given how the
+  underlying function actually behaves (T11's sequential-write collision tests, defeated by
+  `find_latest`'s full-rescan design). None of these were found by reading the plan text alone —
+  each required either grepping the live repo or writing a two-line empirical check before
+  dispatch. Do this proactively for P4's own T3 (the conformance test) and T17 (the P3 handoff) —
+  both are exactly the shape most likely to have quietly drifted.
+- **A mandatory final whole-branch review has found real issues in every package executed so
+  far without exception** — P3: 2 Critical + 3 Important; P10: 15; P11: 6; P12: 0 Critical + 5
+  Important. Do not skip it, do not shorten it, do not let a clean per-task review record talk you
+  out of dispatching it on the most capable available model.
 
 ## Definition of done (the whole programme, not any one package)
 
-1. All 328 findings closed — each verified by the mechanism its plan names. P3's own 22 are
-   confirmed closed independently by its mandatory final review. Count each package's own total
-   from its merged PR, not from memory.
-2. Both suites green everywhere they can be: root suite 371/1 (the one documented T6R-02
-   exception); app suite 31/1204/3 as of P3's merge (see "Carried-forward open items" #3 above for
-   what would close the remaining 9 that are P3-owned).
+1. All 328 findings closed — each verified by the mechanism its plan names. P3's own 22, P12's own
+   16 (15 from its own plan table + C-88b) are confirmed closed independently by each package's
+   mandatory final review. Count each package's own total from its merged PR, not from memory.
+2. Both suites green everywhere they can be: root suite target 445/1 (the one documented T6R-02
+   exception — this number will shift again once P4 lands its own root-suite-adjacent work, though
+   P4 owns no root-suite files directly); app suite target keeps the same 31 pre-existing failures
+   until a dedicated follow-up closes them (see "Carried-forward open items" #3 above).
 3. CI exists (3 jobs, from P0) and is green — check its current state at session start rather than
    assuming; not reconfirmed this session.
 4. Every S0/S1 has an observed-failing-first regression test.
@@ -296,8 +364,5 @@ into P12's own work unless a P12 task happens to touch the exact same lines):
 6. Gate C rejects a malformed shot heading — done, verified end to end (CLI-side by P11, app-side
    by P3).
 7. `git grep "pipeline-app/scripts" -- '*.md'` returns nothing — the F-64 atomic rename
-   (`pipeline-app/scripts/` → `pipeline-app/tools/`, §7.3 of the kickoff brief) is **not** P12's
-   task; confirmed this session it's referenced in `P0-harness-ci.md`, `P8-engine-cron.md`, and
-   `P14-docs-truth.md` — P8 is the one that actually performs the move (per the kickoff brief's
-   own "P8's `setup_discovery_task.py` update" phrasing), in Wave B4, well after P12. Not
+   (`pipeline-app/scripts/` → `pipeline-app/tools/`) is P8's task (Wave B4), well after P4. Not
    something to check for or worry about until P8's turn.

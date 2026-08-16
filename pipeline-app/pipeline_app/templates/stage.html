@@ -56,8 +56,8 @@
       {% if gate.findings %}
       <ul class="gate-findings">
         {% for finding in gate.findings %}
-        {% if finding.kind == "skipped" %}
-        <li class="gate-finding gate-finding-skipped">[skipped] {{ finding.check }}{% if finding.beat %} ({{ finding.beat }}){% endif %}: {{ finding.message }}</li>
+        {% if finding.kind in non_blocking_kinds %}
+        <li class="gate-finding gate-finding-skipped">[{{ finding.kind }}] {{ finding.check }}{% if finding.beat %} ({{ finding.beat }}){% endif %}: {{ finding.message }}</li>
         {% else %}
         <li class="gate-finding gate-finding-blocking">[{{ finding.check }}]{% if finding.beat %} ({{ finding.beat }}){% endif %}: {{ finding.message }}</li>
         {% endif %}

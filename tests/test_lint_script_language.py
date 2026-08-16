@@ -1,8 +1,11 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+import lint_script_language  # noqa: E402
 from lint_script_language import (  # noqa: E402
     VOLine,
     Finding,
@@ -11,11 +14,16 @@ from lint_script_language import (  # noqa: E402
     check_punctuation,
     check_vocabulary,
     check_pace,
+    check_beat_set,
     beat_wpm,
     WPM_CEILING,
     check_gate_e_reported,
     lint,
     main,
+    is_blocking,
+    NON_BLOCKING_KINDS,
+    BUZZWORD_LEMMAS,
+    BUZZWORDS,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -98,6 +106,141 @@ def test_zero_vo_lines_yields_no_lines():
     lines, findings = parse_script("just prose, no beats at all\n")
     assert lines == []
     assert findings == []
+
+
+def test_a_bolded_beat_label_is_a_blocking_parse_finding():
+    """C-88 fault test. `**HOOK**` is a heading to every human who reads the
+    script and to nobody in the parser. It used to delete the beat and every
+    check over it, silently. It must now block."""
+    text = (
+        '**HOOK**   (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP      (3–8s | 6 words): "Kids do that every single time."\n'
+    )
+    lines, findings = parse_script(text)
+    assert [vo.beat for vo in lines] == ["SETUP"]
+    assert [(f.check, f.beat, f.kind) for f in findings] == [("PARSE", "HOOK", "fail")]
+    assert "not a parseable beat heading" in findings[0].message
+
+
+def test_a_disguised_heading_is_distinguishable_from_a_script_that_omits_it():
+    """C-88 distinguishability test. A script that never had a HOOK and a script
+    whose HOOK the parser refused must not produce the same finding set."""
+    disguised = '## HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+    absent = 'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+    _, disguised_findings = parse_script(disguised)
+    _, absent_findings = parse_script(absent)
+    assert disguised_findings != absent_findings
+    assert [f.beat for f in disguised_findings] == ["HOOK"]
+    assert absent_findings == []
+
+
+def test_prose_that_merely_mentions_a_beat_label_is_not_a_disguised_heading():
+    """The heuristic's guard rail: a notes line reading `- LOOP/CTA mirrors the
+    hook` carries no range and no colon, so it is prose, not a refused heading."""
+    text = (
+        'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        "- LOOP/CTA mirrors the hook by design\n"
+    )
+    _, findings = parse_script(text)
+    assert findings == []
+
+
+def test_a_label_first_sub_beat_is_a_blocking_parse_finding():
+    """C-88b fault test. `mechanism (18-28s | 19 words)` is a label-first
+    sub-beat: SUBRANGE_RE requires the range to start the line, so this line
+    falls through `_beat_name` unrecognised -- and unlike T1's disguised
+    top-level headings, it names no BEAT_LABEL either, so `_disguised_beat_label`
+    does not catch it. It carries its own `| N words` budget group, the
+    author's own assertion that this is a beat line -- so refusing it must be
+    a loud finding, not a silent deletion."""
+    text = (
+        "BUILD/VALUE (8–28s | 20 words):\n"
+        '  (8–18s | 20 words): "A position stand reports that kids who sample many sports '
+        'still tend to reach the elite level in the end."\n'
+        '  mechanism (18–28s | 19 words): "Kids hand over control and something shifts fast today for them."\n'
+    )
+    _, findings = parse_script(text)
+    assert [(f.check, f.beat, f.kind) for f in findings] == [("PARSE", "BUILD/VALUE", "fail")]
+    assert "line 3" in findings[0].message
+
+
+def test_a_refused_sub_beat_is_distinguishable_from_a_beat_that_has_none():
+    """C-88b distinguishability test. Both scripts have a heading already
+    covered by a sibling sub-beat whose own declared/counted words match
+    exactly, so neither the coverage check nor the dropped-text check fires
+    either way -- isolating the one real difference: one script's second
+    sub-beat is label-first and silently refused ('the parser ate what the
+    author wrote'), the other simply has no second sub-beat at all ('the
+    author wrote nothing'). Those must not collapse into the same empty
+    finding list -- that collapse is the defect itself."""
+    with_refused = (
+        "BUILD/VALUE (8–28s | 20 words):\n"
+        '  (8–18s | 20 words): "A position stand reports that kids who sample many sports '
+        'still tend to reach the elite level in the end."\n'
+        '  mechanism (18–28s | 19 words): "Kids hand over control and something shifts fast today for them."\n'
+    )
+    with_none = (
+        "BUILD/VALUE (8–28s | 20 words):\n"
+        '  (8–18s | 20 words): "A position stand reports that kids who sample many sports '
+        'still tend to reach the elite level in the end."\n'
+    )
+    _, refused_findings = parse_script(with_refused)
+    _, none_findings = parse_script(with_none)
+    assert refused_findings != none_findings
+    assert none_findings == []
+
+
+def test_a_refused_sub_beat_reaches_the_shell_as_exit_1(tmp_path):
+    """C-88b surfacing test. The script's ONLY defect is the refused sub-beat:
+    the BUILD/VALUE parent carries a valid `| N words` budget that exactly
+    matches what its surviving sibling sub-beat provides (so neither T3's
+    missing-budget check nor the group-level dropped-text check has anything
+    to fire on), and all five top-level beats are present with clean,
+    in-tolerance lines (so T2's `check_beat_set` and every other D-check stay
+    silent too). The exit code must still be 1, proving the new sub-beat
+    detector fired on its own -- not some other check riding along. Verified
+    by hand: with `BUDGET_GROUP_RE` disabled, this script now exits 0."""
+    text = (
+        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+        "BUILD/VALUE (8–28s | 8 words):\n"
+        '  (11–18s | 8 words): "Kids hand over control and something shifts fast."\n'
+        '  mechanism (18–24s | 6 words): "Extra words that never surfaced today somehow."\n'
+        'PAYOFF (28–35s | 6 words): "His proof came from a trader."\n'
+        'LOOP/CTA (38–45s | 6 words): "It won\'t set him back today."\n'
+        "GATES\n  Gate E (fresh Opus critic): pass\n"
+    )
+    path = tmp_path / "refused_subbeat.md"
+    path.write_text(text, encoding="utf-8")
+    assert main([str(path)]) == 1
+
+
+def test_a_visual_note_line_carrying_a_time_range_is_not_a_refused_sub_beat():
+    """Calibration: `tests/fixtures/script_decline.md:189`'s visual note line
+    carries a time range but no `| N words` budget group -- the signal that
+    separates a refused sub-beat from ordinary shot-list prose describing a
+    beat's visuals. Taken verbatim from the shipped fixture."""
+    text = (
+        'BUILD/VALUE (8–28s | 8 words): "Kids hand over control and something shifts fast."\n'
+        "  Hook (0–3s): The club registration form already mid-slide back across a table, adult hand and\n"
+    )
+    _, findings = parse_script(text)
+    assert findings == []
+
+
+def test_the_shipped_fixtures_produce_no_refused_sub_beat_finding():
+    """Calibration: 0 hits across the 4 shipped fixtures, honouring §1's
+    'fixtures stay byte-identical' guarantee -- the new detector must not
+    retroactively invalidate any real artifact."""
+    for name in (
+        "script_let_kids_play_act.md",
+        "script_specialization.md",
+        "script_decline.md",
+        "script_nobody_asked.md",
+    ):
+        _, findings = parse_script(_read(name))
+        hits = [f for f in findings if "parseable sub-beat line" in f.message]
+        assert hits == [], f"{name}: {hits}"
 
 
 def test_beat_heading_with_no_quoted_line_anywhere_is_partial_parse():
@@ -185,6 +328,50 @@ def test_an_over_count_is_not_a_dropped_text_finding():
     text = 'HOOK (0–8s | 3 words): "This spoken line is very much longer than its heading claims."\n'
     _, findings = parse_script(text)
     assert findings == []
+
+
+def test_a_top_level_heading_with_no_word_budget_blocks():
+    """C-89 fault test. The dropped-text detector's only witness is the
+    heading's own declaration. A heading that omits it disables the detector
+    for that beat, so the omission itself must block."""
+    text = 'HOOK (0–3s): "Best part was the mud today, honestly."\n'
+    _, findings = parse_script(text)
+    assert [(f.check, f.beat, f.kind) for f in findings] == [("PARSE", "HOOK", "fail")]
+    assert "| N words" in findings[0].message
+
+
+def test_a_sub_beat_with_a_range_but_no_budget_blocks():
+    """The same hole one level down: a sub-beat carrying a time range is
+    new-format and must declare its budget."""
+    text = (
+        "BUILD/VALUE (8–28s | 16 words):\n"
+        '  (8–18s): "A position stand reports that samplers reach elite level."\n'
+    )
+    _, findings = parse_script(text)
+    assert any(f.kind == "fail" and "| N words" in f.message for f in findings)
+
+
+def test_the_old_format_rehook_without_a_range_is_still_exempt():
+    """Calibration. `script_let_kids_play_act.md:14` is an old-format re-hook
+    with neither a range nor a budget; it is a known, shipped shape and must not
+    be broken by this rule. The rule is: a beat line that declares a TIME RANGE
+    must also declare a WORD BUDGET."""
+    text = (
+        'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
+    )
+    _, findings = parse_script(text)
+    assert findings == []
+
+
+def test_a_declared_zero_budget_is_distinguishable_from_no_declaration():
+    """C-89 distinguishability test. `| 0 words` is an author saying "this beat
+    speaks nothing"; omitting the annotation is the detector being switched off.
+    They are different states and must produce different results."""
+    declared = 'HOOK (0–3s | 0 words): "Mud."\n'
+    omitted = 'HOOK (0–3s): "Mud."\n'
+    assert parse_script(declared)[1] != parse_script(omitted)[1]
+    assert parse_script(declared)[1] == []
 
 
 def test_authorial_rounding_on_the_shipped_fixtures_never_fires_the_detector():
@@ -330,7 +517,7 @@ def test_d3_flags_fingerprint_phrases():
     lines, _ = parse_script(
         'HOOK (0–3s | 9 words): "It\'s important to note that some may argue otherwise."\n'
     )
-    assert sorted(f.check for f in check_vocabulary(lines)) == ["D3", "D3"]
+    assert sorted(f.check for f in check_vocabulary(lines) if is_blocking(f)) == ["D3", "D3"]
 
 
 def test_d3_flags_buzzwords_and_their_inflections():
@@ -346,7 +533,9 @@ def test_d3_inflections_are_complete_for_every_corpus_lemma():
     findings. The five lemmas are the corpus's own and are not extended here;
     only their inflections are completed."""
     lines, _ = parse_script('HOOK (0–8s | 5 words): "We delved into robustness levers."\n')
-    found = sorted(f.message.rsplit(" ", 1)[-1] for f in check_vocabulary(lines))
+    found = sorted(
+        f.message.rsplit(" ", 1)[-1] for f in check_vocabulary(lines) if is_blocking(f)
+    )
     assert found == ["'delved'", "'robustness'"]
 
 
@@ -360,12 +549,41 @@ def test_d3_flags_the_remaining_new_inflections():
 def test_d3_does_not_flag_a_word_that_merely_contains_a_lemma():
     """`levers` and `lever` are not `leverage`; the word boundaries hold."""
     lines, _ = parse_script('HOOK (0–8s | 6 words): "He pulled the levers, every lever."\n')
-    assert check_vocabulary(lines) == []
+    assert [f for f in check_vocabulary(lines) if is_blocking(f)] == []
 
 
 def test_d3_does_not_flag_hackfort_the_surname():
     lines, _ = parse_script('HOOK (0–3s | 5 words): "Côté, Lidor and Hackfort reported."\n')
-    assert check_vocabulary(lines) == []
+    assert [f for f in check_vocabulary(lines) if is_blocking(f)] == []
+
+
+def test_d3_d4_coverage_scope_is_reported_as_a_non_blocking_finding():
+    """C-92. A clean D3/D4 means "none of these eight things", not "no AI
+    tells". The gate now says which eight, in a finding both callers render."""
+    lines, _ = parse_script('HOOK (0–3s | 6 words): "Best part was the mud today."\n')
+    scope = [f for f in check_vocabulary(lines) if f.kind == "info"]
+    assert len(scope) == 1
+    assert scope[0].check == "D3/D4"
+    assert "3 fingerprint phrases" in scope[0].message
+    assert "5 corpus lemmas" in scope[0].message
+    assert "4 unspeakable token classes" in scope[0].message
+    assert not is_blocking(scope[0])
+
+
+def test_the_non_blocking_kinds_are_a_closed_declared_set():
+    """The contract pipeline_app/gates.py binds to. A new kind must be a
+    deliberate edit here, not an accident downstream."""
+    assert NON_BLOCKING_KINDS == frozenset({"skipped", "info"})
+    assert is_blocking(Finding("D1", "HOOK", "x")) is True
+    assert is_blocking(Finding("D5", "HOOK", "x", kind="skipped")) is False
+    assert is_blocking(Finding("PARSE", "HOOK", "x", kind="partial-parse")) is True
+
+
+def test_buzzword_inflections_are_derived_from_the_five_corpus_lemmas():
+    """The lemma count in the scope message must be the real one, not a literal
+    typed beside it -- anti-tautology rule: assert on effect, not on echo."""
+    assert len(BUZZWORD_LEMMAS) == 5
+    assert set(BUZZWORDS) == {form for forms in BUZZWORD_LEMMAS.values() for form in forms}
 
 
 def test_d4_flags_unspeakable_tokens():
@@ -388,7 +606,7 @@ def test_d3_and_d4_are_clean_on_every_shipped_fixture():
         "script_nobody_asked.md",
     ):
         lines, _ = parse_script(_read(name))
-        assert check_vocabulary(lines) == [], name
+        assert [f for f in check_vocabulary(lines) if is_blocking(f)] == [], name
 
 
 def test_d5_flags_an_over_stuffed_beat():
@@ -432,17 +650,92 @@ def test_d5_tolerance_passes_a_beat_at_171_wpm():
 
 
 def test_d5_skips_a_beat_with_no_range_and_says_so():
-    # A ratable HOOK sits alongside the old-format re-hook on purpose: with the
-    # re-hook alone this script would be 100% unratable, which is now its own
-    # blocking finding (see test_d5_blocks_when_no_beat_at_all_is_ratable).
-    # This test is about the per-beat `skipped` semantics, which are unchanged.
+    # Two ratable beats (HOOK, SETUP) sit alongside the old-format re-hook on
+    # purpose: 2 of 3 beats ratable clears the 50% floor (see
+    # test_d5_blocks_when_most_beats_are_unratable for the case where it
+    # doesn't), so the only finding here is the per-beat `skipped` semantics
+    # on the one still-unratable line, which are unchanged.
     lines, _ = parse_script(
         'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
         '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
     )
     findings = check_pace(lines)
     assert [f.kind for f in findings] == ["skipped"]
     assert findings[0].check == "D5"
+
+
+def test_d5_blocks_when_most_beats_are_unratable():
+    """Finding 1 (the floor). Deleting the ranges from most-but-not-all beats
+    used to leave a minority rated and no pace check on the majority, with the
+    all-unratable backstop staying silent because it wasn't literally zero.
+    1 of 3 ratable must now block, and the message must name both counts."""
+    lines, _ = parse_script(
+        'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP (0:03–0:08 | 6 words): "Kids do that every single time."\n'
+        '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
+    )
+    findings = [f for f in check_pace(lines) if f.kind == "fail"]
+    assert len(findings) == 1
+    assert findings[0].check == "D5"
+    assert "1 of 3" in findings[0].message
+
+
+def test_d5_treats_a_malformed_range_as_blocking_not_skipped():
+    """Finding 2's other half. A malformed range (start >= end) is a defect,
+    not a known unknown -- it must not be reported inside a non-blocking
+    `skipped` finding, distinguishable from a merely-absent range only by
+    message text."""
+    lines, _ = parse_script(
+        'HOOK (8–3s | 8 words): "Best part was the mud today, honestly."\n'
+    )
+    findings = check_pace(lines)
+    fails = [f for f in findings if f.kind == "fail"]
+    assert any("start >= end" in f.message for f in fails)
+    assert all(f.kind != "skipped" for f in findings if "start >= end" in f.message)
+
+
+def test_d5_distinguishes_mostly_unratable_from_fully_rated():
+    """The two states this task tells apart must actually differ: a script
+    where every beat is ratable produces no blocking finding at all, unlike
+    the mostly-unratable case above."""
+    unratable_lines, _ = parse_script(
+        'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP (0:03–0:08 | 6 words): "Kids do that every single time."\n'
+        '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
+    )
+    rated_lines, _ = parse_script(
+        'HOOK (0–3s | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+    )
+    assert [f for f in check_pace(unratable_lines) if f.kind == "fail"] != []
+    assert [f for f in check_pace(rated_lines) if f.kind == "fail"] == []
+
+
+def test_ratable_min_fraction_is_load_bearing_not_decorative(monkeypatch):
+    """Final-review finding #4. `rated * 2 <= len(vo_lines)` used to encode
+    50% as a separate literal `2`, independent of RATABLE_MIN_FRACTION --
+    changing the constant changed only the printed message, never the actual
+    threshold enforced. This script has 3 of 4 VO lines ratable (75%): at the
+    shipped 0.5 floor that clears comfortably (no block), but at a
+    monkeypatched 0.75 floor it lands exactly on the line and must block --
+    proving the comparison actually reads the constant now."""
+    lines, _ = parse_script(
+        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
+        'BUILD/VALUE (8–13s | 6 words): "They hand over the account today."\n'
+        '[re-hook beat @ ~15s]: "His proof, a trader who bought it."\n'
+    )
+    assert len(lines) == 4
+
+    findings = check_pace(lines)
+    assert [f for f in findings if f.kind == "fail"] == []
+
+    monkeypatch.setattr(lint_script_language, "RATABLE_MIN_FRACTION", 0.75)
+    findings = check_pace(lines)
+    fails = [f for f in findings if f.kind == "fail"]
+    assert len(fails) == 1
+    assert "75%" in fails[0].message
 
 
 def test_d5_blocks_when_no_beat_at_all_is_ratable():
@@ -485,6 +778,34 @@ def test_d5_counts_on_shipped_fixtures():
         lines, _ = parse_script(_read(name))
         fails = [f for f in check_pace(lines) if f.kind == "fail"]
         assert len(fails) == count, f"{name}: got {len(fails)}"
+
+
+def test_a_missing_top_level_beat_blocks_the_lint():
+    """C-88 surfacing test. The second, independent detector: whatever styling
+    trick hid the heading, the label is absent from the parsed set and that is
+    reported at the gate boundary."""
+    text = (
+        'HOOK        (0–3s  | 8 words): "Best part was the mud today, honestly."\n'
+        'SETUP       (3–8s  | 6 words): "Kids do that every single time."\n'
+        'BUILD/VALUE (8–20s | 9 words): "They hand over the whole account without a question."\n'
+        'PAYOFF      (20–30s| 9 words): "Ask about the mud and you get him back."\n'
+    )
+    lines, _ = parse_script(text)
+    findings = check_beat_set(lines)
+    assert [(f.check, f.kind) for f in findings] == [("PARSE", "fail")]
+    assert "LOOP/CTA" in findings[0].message
+
+
+def test_the_shipped_fixtures_all_carry_the_five_beats():
+    """Calibration: the check is pinned to what real scripts actually do."""
+    for name in (
+        "script_let_kids_play_act.md",
+        "script_specialization.md",
+        "script_decline.md",
+        "script_nobody_asked.md",
+    ):
+        lines, _ = parse_script(_read(name))
+        assert check_beat_set(lines) == [], name
 
 
 def test_d6_passes_a_well_formed_gate_e_line():
@@ -571,6 +892,32 @@ def test_d6_fails_on_every_shipped_fixture_because_they_predate_the_gate():
         assert [f.check for f in check_gate_e_reported(_read(name))] == ["D6"], name
 
 
+def test_d6_accepts_a_pipe_separated_genuine_result():
+    """C-91. A result written in the contract's own vocabulary, separated with a
+    pipe, is a result. The old heuristic called it a template."""
+    assert check_gate_e_reported("  Gate E (critic): 2 findings | 1 defended\n") == []
+
+
+def test_d6_still_rejects_the_unwrapped_template_text():
+    """The heuristic the pipe rule was standing in for: the actual template
+    alternation, pasted without its angle brackets."""
+    text = "  Gate E (critic): pass | N findings | N defended | overridden: reason\n"
+    assert [f.check for f in check_gate_e_reported(text)] == ["D6"]
+
+
+def test_d6_ignores_a_gate_e_line_inside_a_code_fence():
+    """A script quoting the output contract in an example must not thereby
+    satisfy the lock -- that is a zero-cost defeat, and the sibling linter
+    already scopes its equivalent check to unfenced lines."""
+    text = "```\nGate E (critic): pass\n```\n\nsome prose\n"
+    assert [f.check for f in check_gate_e_reported(text)] == ["D6"]
+
+
+def test_d6_accepts_a_real_line_outside_a_fence_alongside_a_fenced_example():
+    text = "```\nGate E (critic): <pass | N findings>\n```\n  Gate E (critic): pass\n"
+    assert check_gate_e_reported(text) == []
+
+
 def test_decline_hook_loop_mirror_produces_no_gate_d_finding():
     """SKILL.md:108 requires the Loop/CTA to mirror the Hook, and the corpus
     cites it [C] (Jenny Hoyos, mhVDcqnxxaY). A gate that blocks a mandated
@@ -602,16 +949,49 @@ def test_main_returns_2_on_a_file_with_no_vo_lines(tmp_path):
     assert main([str(path)]) == 2
 
 
+def test_main_surfaces_parse_findings_when_every_heading_is_disguised(tmp_path, capsys):
+    """Final-review finding #1. `parse_script` already computes precise PARSE
+    findings -- naming the exact line and what is wrong -- before concluding
+    there are zero VO lines. The zero-VO-lines early return in `main()` used
+    to discard them, leaving the operator with only the generic "no
+    voiceover lines parsed" sentence even though every beat heading here is
+    disguised (bolded) and the parser said exactly why it refused each one."""
+    text = (
+        '**HOOK** (0–3s | 6 words): "Best part was the mud today."\n'
+        '**SETUP** (3–8s | 6 words): "Kids do that every single time."\n'
+    )
+    path = tmp_path / "all_disguised.md"
+    path.write_text(text, encoding="utf-8")
+    assert main([str(path)]) == 2
+    output = capsys.readouterr().out
+    assert "no voiceover lines parsed" in output
+    # The precise PARSE findings must be surfaced too, not just the generic
+    # sentence -- same format main() uses for blocking findings elsewhere.
+    assert "[PARSE] HOOK:" in output
+    assert "[PARSE] SETUP:" in output
+    assert "not a parseable beat heading" in output
+
+
 def test_main_returns_1_on_a_failing_fixture(tmp_path):
     path = tmp_path / "bad.md"
     path.write_text(_read("script_decline.md"), encoding="utf-8")
     assert main([str(path)]) == 1
 
 
-def test_main_returns_0_on_a_clean_script(tmp_path):
+def test_main_returns_0_on_a_clean_five_beat_script(tmp_path):
+    """Renamed from test_main_returns_0_on_a_clean_script (C-88 / T2): the
+    fixture was a one-beat script, and check_beat_set now blocks any script
+    missing a top-level label, so a "clean" script must carry all five. Not
+    built on a shared CLEAN_SCRIPT constant -- that name belongs to T7, which
+    lands its own module-level constant later in this package's task order;
+    defining it here would collide with T7's addition."""
     path = tmp_path / "clean.md"
     path.write_text(
-        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        'HOOK        (0–3s   | 6 words): "Best part was the mud today."\n'
+        'SETUP       (3–8s   | 6 words): "Kids do that every single time."\n'
+        'BUILD/VALUE (8–20s  | 9 words): "They hand over the whole account without a question."\n'
+        'PAYOFF      (20–30s | 9 words): "Ask about the mud and you get him back."\n'
+        'LOOP/CTA    (30–35s | 6 words): "Best part was the mud today."\n'
         "GATES\n  Gate E (fresh Opus critic): pass\n",
         encoding="utf-8",
     )
@@ -622,12 +1002,142 @@ def test_main_returns_0_when_only_finding_is_skipped(tmp_path):
     """Carried forward from Task 4's review: a kind="skipped" finding (e.g. D5
     on a beat with no computable time range) must never contribute to a
     non-zero exit. This script has a re-hook beat with no range (skipped D5)
-    plus a well-formed Gate E line, so the only findings are non-blocking."""
+    plus a well-formed Gate E line, so the only findings are non-blocking.
+
+    Widened to all five top-level beats for the same reason as
+    test_main_returns_0_on_a_clean_five_beat_script above: check_beat_set
+    (C-88 / T2) now blocks a script missing a label, and this fixture was
+    previously HOOK-only."""
     path = tmp_path / "skipped_only.md"
     path.write_text(
-        'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
+        'HOOK        (0–3s   | 6 words): "Best part was the mud today."\n'
         '[re-hook beat @ ~15s]: "His proof, a trader who bought the presses."\n'
+        'SETUP       (3–8s   | 6 words): "Kids do that every single time."\n'
+        'BUILD/VALUE (8–20s  | 9 words): "They hand over the whole account without a question."\n'
+        'PAYOFF      (20–30s | 9 words): "Ask about the mud and you get him back."\n'
+        'LOOP/CTA    (30–35s | 6 words): "Best part was the mud today."\n'
         "GATES\n  Gate E (fresh Opus critic): pass\n",
         encoding="utf-8",
     )
     assert main([str(path)]) == 0
+
+
+CLEAN_SCRIPT = """\
+=== SHORT SCRIPT — Gate D mutation base ===
+
+HOOK        (0–4s  | 9 words): "Nobody asked him what the best part was."
+SETUP       (4–10s | 12 words): "He came home muddy, and the whole story arrived without a question."
+BUILD/VALUE (10–24s | 18 words):
+  (10–20s | 18 words): "Kids hand over the account when nothing is riding on the answer, and that is the entire trick."
+  (20–24s | 4 words): "That part never airs."
+PAYOFF      (24–34s | 18 words): "Ask about the score and you get a score. Ask about the mud and you get him."
+LOOP/CTA    (34–40s | 10 words, mirrors hook): "Ask what the best part was. Then believe it."
+
+GATES
+  Gate E (fresh Opus critic): 2 findings, 1 defended
+"""
+
+
+def _run(tmp_path, text, name="script.md"):
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return main([str(path)])
+
+
+def test_the_mutation_base_passes_gate_d(tmp_path):
+    """The control. If this ever fails, every row below is meaningless."""
+    assert _run(tmp_path, CLEAN_SCRIPT) == 0
+
+
+MUTATIONS = [
+    # (id, target substring, replacement, the check that must fire)
+    ("D1-em-dash", "arrived without a question.",
+     "arrived — without a question.", "D1"),
+    ("D2-parenthetical", "you get him.", "you get him (again).", "D2"),
+    ("D3-buzzword", "Kids hand over", "Kids leveraged and hand over", "D3"),
+    ("D4-inline-stat", "you get a score.", "you get n=142 back.", "D4"),
+    ("D5-over-stuffed", "HOOK        (0–4s  | 9 words)",
+     "HOOK        (0–1s  | 9 words)", "D5"),
+    ("D5-malformed-range", "SETUP       (4–10s | 12 words)",
+     "SETUP       (10–4s | 12 words)", "D5"),
+    ("D6-deleted", "  Gate E (fresh Opus critic): 2 findings, 1 defended\n", "", "D6"),
+    ("D6-fenced", "GATES\n", "GATES\n```\n", "D6"),
+    ("C88-bolded-label", "HOOK        (0–4s", "**HOOK**    (0–4s", "PARSE"),
+    ("C88-deleted-beat",
+     'LOOP/CTA    (34–40s | 10 words, mirrors hook): "Ask what the best part was. Then believe it."\n',
+     "", "PARSE"),
+    ("C89-stripped-budget", "HOOK        (0–4s  | 9 words)", "HOOK        (0–4s)", "PARSE"),
+    # C88b (T1b, already merged): CLEAN_SCRIPT's BUILD/VALUE sub-beat is
+    # deliberately the BARE, parseable form (a parenthesis starting the
+    # line) so the control stays clean. This mutation adds a "mechanism "
+    # label prefix, which SUBRANGE_RE cannot match -- the exact refused-line
+    # shape T1b's detector exists to catch instead of silently deleting.
+    # The heading's own budget (18 words) exactly matches what the surviving
+    # first sub-beat alone provides, so refusing the second sub-beat below
+    # does not also trip the group-level dropped-text check or T2's
+    # check_beat_set -- isolating the row to the label-first sub-beat
+    # detector alone. Verified by hand: with `BUDGET_GROUP_RE` disabled, this
+    # mutation no longer fails the gate.
+    ("C88b-label-first-subbeat",
+     '  (20–24s | 4 words): "That part never airs."',
+     '  aside (20–24s | 4 words): "That part never airs."',
+     "PARSE"),
+]
+
+
+@pytest.mark.parametrize("mutation_id,target,replacement,expected_check", MUTATIONS,
+                         ids=[m[0] for m in MUTATIONS])
+def test_each_single_edit_evasion_still_fails_the_gate(
+    tmp_path, mutation_id, target, replacement, expected_check
+):
+    """The whole point of Gate D. Each row is ONE edit to a passing script, of
+    the kind a model actually emits. Every one must block, and must block for
+    the named reason -- a gate that fails for the wrong reason is a gate that
+    will be 'fixed' into passing."""
+    assert target in CLEAN_SCRIPT, mutation_id
+    mutated = CLEAN_SCRIPT.replace(target, replacement, 1)
+    assert mutated != CLEAN_SCRIPT, mutation_id
+
+    lines, parse_findings = parse_script(mutated)
+    findings = [f for f in lint(lines, mutated, parse_findings) if is_blocking(f)]
+    assert findings, mutation_id
+    assert expected_check in {f.check for f in findings}, (mutation_id, findings)
+    assert _run(tmp_path, mutated) == 1, mutation_id
+
+
+GATES_PY = (
+    Path(__file__).resolve().parents[1]
+    / "pipeline-app" / "pipeline_app" / "gates.py"
+)
+
+
+def test_the_cli_exit_code_is_exactly_the_blocking_predicate(tmp_path):
+    """Parity, CLI half. main()'s exit code is a pure function of
+    is_blocking() over lint()'s output -- no second opinion, no extra rule that
+    the app-mode caller would not also apply."""
+    cases = [
+        CLEAN_SCRIPT,
+        CLEAN_SCRIPT.replace("you get him.", "you get him (again)."),
+        CLEAN_SCRIPT.replace("HOOK        (0–4s  | 9 words)", "HOOK        (0–4s)"),
+        _read("script_decline.md"),
+        _read("script_nobody_asked.md"),
+    ]
+    for i, text in enumerate(cases):
+        lines, parse_findings = parse_script(text)
+        expected_blocking = [f for f in lint(lines, text, parse_findings) if is_blocking(f)]
+        assert _run(tmp_path, text, name=f"case{i}.md") == (1 if expected_blocking else 0), i
+
+
+def test_gates_py_does_not_hardcode_the_blocking_kind():
+    """Parity drift guard. pipeline_app/gates.py (P3's file, fixed in this
+    package's own gates.py mini-fix task, commit 25e640d) must derive blocking
+    from the linter's own is_blocking()/NON_BLOCKING_KINDS-equivalent, not from
+    a literal `!= "skipped"`. A literal there would silently diverge the moment
+    this module adds a kind -- which T6 already did (the "info" kind). This
+    test is read-only over gates.py; it does not import or execute it."""
+    source = GATES_PY.read_text(encoding="utf-8")
+    assert '!= "skipped"' not in source, (
+        'gates.py still tests a kind literal -- it must derive blocking from a '
+        "closed set (mirroring this module's NON_BLOCKING_KINDS/is_blocking()) so "
+        "the CLI and app gates cannot diverge"
+    )

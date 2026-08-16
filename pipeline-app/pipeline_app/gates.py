@@ -156,9 +156,11 @@ def run_script_language_gate(
     text = artifact_path.read_text(encoding="utf-8")
     vo_lines, parse_findings = linter.parse_script(text)
     if not vo_lines:
-        raise ValueError(
-            f"no voiceover lines parsed from {artifact_path.name} -- check the script format"
-        )
+        detail = "; ".join(f"[{f.check}] {f.beat or 'script'}: {f.message}" for f in parse_findings)
+        message = f"no voiceover lines parsed from {artifact_path.name} -- check the script format"
+        if detail:
+            message = f"{message}: {detail}"
+        raise ValueError(message)
     return _as_dicts(linter.lint(vo_lines, text, parse_findings))
 
 
@@ -380,6 +382,16 @@ GATE_REGISTRY: dict[str, list[tuple[str, GateRunner]]] = {
 }
 
 
+# Mirrors scripts/lint_script_language.py's NON_BLOCKING_KINDS -- deliberately a
+# SEPARATE definition, not a shared import, because run_gates_for_stage judges
+# already-returned dict findings generically across every gate registered for a
+# stage (Gate C, Gate D, Gate S), with no linter module handle in scope to read
+# a per-linter NON_BLOCKING_KINDS from. If a future gate introduces a new
+# non-blocking `kind`, BOTH this constant and the linter's own must be updated --
+# that is exactly the drift this comment exists to call out, not paper over.
+_NON_BLOCKING_KINDS = frozenset({"skipped", "info"})
+
+
 def run_gates_for_stage(
     repo_root: Path,
     stage_id: str,
@@ -427,7 +439,7 @@ def run_gates_for_stage(
                 }],
             })
             continue
-        blocking = [f for f in findings if f.get("kind") != "skipped"]
+        blocking = [f for f in findings if f.get("kind") not in _NON_BLOCKING_KINDS]
         results.append({
             "name": name,
             "status": "fail" if blocking else "pass",

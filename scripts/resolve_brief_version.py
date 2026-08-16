@@ -9,6 +9,12 @@ Usage:
   resolve_brief_version.py --slug <slug> --kind <kind>            # stage artifact
   resolve_brief_version.py --slug <topic-slug>                    # grounding brief (no --kind)
   resolve_brief_version.py --slug <slug> --kind <kind> --next --date YYYY-MM-DD
+
+Exit codes:
+  0  Resolved, or a next filename proposed -- <path>\t<version> or <filename>\t<version>
+  3  NONE -- no prior version exists (the expected empty case) -- NONE\t0
+  2  Error -- unusable input or an unresolvable state (nothing on stdout; message on stderr)
+  1  Retired. Never returned.
 """
 import argparse
 import re
@@ -18,6 +24,15 @@ from pathlib import Path
 import yaml
 
 FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+
+EXIT_OK = 0      # a usable answer was printed
+EXIT_ERROR = 2   # unusable input or an unresolvable state (argparse also uses 2)
+EXIT_NONE = 3    # the expected empty case: no prior version exists
+
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Exit 1 is deliberately retired. It used to mean BOTH "no prior version" and
+# "a brief is malformed", and callers read it as the former -- which turned a
+# corrupt brief into "start at v1". Nothing returns 1 now.
 
 
 def parse_frontmatter(text: str) -> dict:
@@ -36,13 +51,18 @@ def _pattern(slug: str, kind: str | None) -> re.Pattern:
 
 
 def find_latest(directory: Path, slug: str, kind: str | None) -> tuple[Path | None, int]:
-    if not directory.exists():
-        return None, 0
+    if not directory.is_dir():
+        raise FileNotFoundError(
+            f"{directory} does not exist or is not a directory -- resolve_brief_version "
+            "must be run from the repo root, or given an explicit --dir. Returning "
+            '"no prior version" here would propose v1 over a live brief.'
+        )
     pattern = _pattern(slug, kind)
     best_path: Path | None = None
     best_version = 0
     for path in sorted(directory.glob("*.md")):
-        if not pattern.match(path.name):
+        match = pattern.match(path.name)
+        if not match:
             continue
         try:
             meta = parse_frontmatter(path.read_text(encoding="utf-8"))
@@ -51,6 +71,19 @@ def find_latest(directory: Path, slug: str, kind: str | None) -> tuple[Path | No
         version = meta.get("version")
         if not isinstance(version, int):
             raise ValueError(f"{path}: frontmatter missing an integer 'version' field")
+        if version == best_version and best_path is not None:
+            raise ValueError(
+                f"version tie at {version}: {best_path.name} and {path.name} both declare "
+                "it. The resolver cannot choose correctly and will not guess -- renumber "
+                "one of them."
+            )
+        suffix_version = int(match.group(2)) if match.group(2) else 1
+        if suffix_version != version:
+            raise ValueError(
+                f"{path}: filename says -v{suffix_version} but frontmatter says "
+                f"version: {version}. The version chain is what every stage's "
+                "`supersedes:` line depends on; it cannot be two numbers."
+            )
         if version > best_version:
             best_version = version
             best_path = path
@@ -58,11 +91,23 @@ def find_latest(directory: Path, slug: str, kind: str | None) -> tuple[Path | No
 
 
 def next_filename(directory: Path, slug: str, kind: str | None, date: str) -> tuple[str, int]:
+    if not DATE_RE.match(date):
+        raise ValueError(
+            f"--date {date!r} is not YYYY-MM-DD. A brief named with anything else can "
+            "never be found by find_latest again -- it leaves the version chain for good."
+        )
     _, best_version = find_latest(directory, slug, kind)
     next_version = best_version + 1
     suffix = f"-{kind}" if kind else ""
     version_suffix = "" if next_version == 1 else f"-v{next_version}"
-    return f"{date}-{slug}{suffix}{version_suffix}.md", next_version
+    filename = f"{date}-{slug}{suffix}{version_suffix}.md"
+    proposed = directory / filename
+    if proposed.exists():
+        raise FileExistsError(
+            f"{proposed} already exists -- refusing to propose a name that would "
+            "overwrite a brief. The version chain has drifted; resolve it by hand."
+        )
+    return filename, next_version
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -75,20 +120,29 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     directory = Path(args.dir)
+    print(f"resolve_brief_version: reading {directory.resolve()}", file=sys.stderr)
 
-    if args.next:
-        if not args.date:
-            parser.error("--next requires --date YYYY-MM-DD")
-        filename, version = next_filename(directory, args.slug, args.kind, args.date)
-        print(f"{filename}\t{version}")
-        return 0
+    try:
+        if args.next:
+            if not args.date:
+                parser.error("--next requires --date YYYY-MM-DD")
+            filename, version = next_filename(directory, args.slug, args.kind, args.date)
+            print(f"{filename}\t{version}")
+            return EXIT_OK
 
-    path, version = find_latest(directory, args.slug, args.kind)
+        path, version = find_latest(directory, args.slug, args.kind)
+    except (FileNotFoundError, ValueError, FileExistsError) as exc:
+        # Deliberately NOT a bare except: these are the failure classes this
+        # resolver can produce, and each is reported with its own message rather
+        # than collapsed into the "nothing found" answer.
+        print(f"resolve_brief_version: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
     if path is None:
         print("NONE\t0")
-        return 1
+        return EXIT_NONE
     print(f"{path.as_posix()}\t{version}")
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":

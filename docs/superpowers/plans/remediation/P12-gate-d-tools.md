@@ -360,6 +360,23 @@ and add `*check_beat_set(vo_lines),` to `lint()` immediately after the parse fin
       (`tests/test_lint_script_language.py:611-618`) now fails — it is a one-beat script. That is
       expected and is amended in T7; leave it red for exactly one task and note it in the commit
       body, or amend it now to use `CLEAN_SCRIPT` from T7 if you sequence T7 first.
+
+      > **P12 execution-order amendment, added during this package's own SDD run (2026-08-15).**
+      > This package is being executed in strict numeric task order (T1, T1b, T2, T3, T4, T5, T6,
+      > then a gates.py mini-fix, then T7, T8, ...) rather than reordering T7 to run immediately
+      > after T2. Under that order, "leave it red for exactly one task" is false — the test would
+      > stay red across T3, T4, T5 and T6 as well, four tasks, not one, since none of them touch
+      > this test either. The plan's own second option applies instead: **amend it now, in T2's own
+      > commit** — but using a small inline fix, not the shared `CLEAN_SCRIPT` module constant,
+      > because `CLEAN_SCRIPT` does not exist yet (T7 is the task that introduces it) and defining
+      > it early would collide with T7 adding the same name later. T2 should replace the test's
+      > one-beat script with a minimal five-beat script (all five `BEAT_LABELS`, each with a valid
+      > `| N words` budget so T3's not-yet-landed mandatory-budget rule is moot either way) so the
+      > test passes standalone under T2's own change, and rename it to
+      > `test_main_returns_0_on_a_clean_five_beat_script` so its name matches what it actually
+      > asserts. When T7 lands its shared `CLEAN_SCRIPT` constant, T7's implementer should replace
+      > this test's inline script with `CLEAN_SCRIPT` (per the plan's original intent) and may
+      > rename it back if desired — that is T7's call, not a re-opening of this amendment.
 - [ ] **Commit:** `fix(gate-d): cross-check the parsed beat set against the five labels (C-88)`
 
 ---
@@ -1159,6 +1176,35 @@ Note the collision path in the last test arises because v2 now resolves and the 
 v3 — adjust the planted file to `-v3.md` with `version: 2` frontmatter if you want the pure
 collision; either way the assertion is *clean → 0, colliding → 2*.
 
+> **Plan amendment, added during this package's own SDD run (2026-08-15).**
+> `test_next_filename_refuses_a_proposal_that_already_exists` and
+> `test_a_collision_and_a_clean_proposal_are_distinguishable`, as literally specified above, turn
+> out to be UNREACHABLE via sequential writes within a single test — verified independently by
+> both T11's implementer and its reviewer, tracing `find_latest`'s actual behavior by hand. The
+> cause predates T11 and is unrelated to any check this package adds: `find_latest` performs an
+> **unconditional full rescan of every matching file in the directory on every call**, so ANY
+> well-formed file planted at the "colliding" target path is simply absorbed into `best_version`
+> by `find_latest` itself before `next_filename`'s own `.exists()` guard ever gets a chance to see
+> it as a collision — the proposal just becomes one version higher and no collision occurs. This
+> means `next_filename`'s `.exists()` guard (which this task, T11, adds) cannot actually be
+> defeated by ordinary sequential use; it exists purely as a defense against a genuine **race
+> condition** — e.g. two concurrent CLI invocations (or a CLI run mid-write from another process)
+> both computing "next is vN" from the same `find_latest` scan before either writes, where the
+> file appears on disk between the read and the write. That is real and worth guarding against in
+> a pipeline where multiple skills or automation processes could invoke this resolver, but it is a
+> **narrower property** than this task's own C-98 narrative ("verified proposing `-v2` while `-v3`
+> sat on disk") and the literal fixtures above originally assumed (state drift reachable via
+> ordinary, non-concurrent use).
+>
+> **Correct test strategy, used by T11's actual implementation:** simulate the race directly —
+> `monkeypatch` `find_latest` to return a stale `(path, version)` answer, then confirm
+> `next_filename` still refuses to write over a file that has since appeared at the computed
+> target path. This is a legitimate, non-tautological test of real `.exists()` behavior (not "was
+> a mock called"), and the race it simulates is a real, reachable scenario for this resolver's
+> actual deployment, not a contrived one. Anyone reading this task later: the `.exists()` guard is
+> real and load-bearing, but do not expect a sequential-write test fixture to ever exercise it; it
+> cannot.
+
 - [ ] **Run**, see the first return `(path, 1)` and the third return a filename.
 - [ ] **Implement** in `find_latest`, using the pattern's already-captured group:
 
@@ -1433,6 +1479,23 @@ shorts-ideation -> shorts-scripting -> shorts-styleboard -> {voiceover-brief, vi
 ---
 
 ### T16 — Derive the version, assert the roster, validate the JSON, fail loud on a bad copy
+
+> **Plan amendment, added during this package's own SDD run (2026-08-15).** T16's own
+> implementation snippet below calls `python scripts/cowork_plugin_lock.py --write --plugin-dir
+> "$PLUGIN_DIR"`, and its own test asserts `"cowork_plugin_lock.py" in source`. That file does not
+> exist yet at this point in the plan's numeric order — **T17, which comes AFTER T16 in this
+> document, is the task that creates it.** Confirmed empirically this session:
+> `scripts/cowork_plugin_lock.py` does not exist in the repo as of T15 landing. Executing T16
+> literally, in order, would either fail its own behavioral test (the build script would error
+> calling a nonexistent Python module) or force T16's implementer to invent a throwaway version of
+> `cowork_plugin_lock.py` that T17 then has to reconcile with or replace — the same "recurring bug
+> class" this whole programme has hit repeatedly. **The two tasks are executed in swapped order in
+> this session: T17 first (creates `scripts/cowork_plugin_lock.py` and the tracked lock file), then
+> T16 (wires the already-existing module into the build script).** Both tasks' own text is
+> otherwise unchanged and still individually correct — only the ORDER differs from the document's
+> numbering. If you are reading this while executing T16, confirm `scripts/cowork_plugin_lock.py`
+> already exists and exposes `compute_stamp`/`shipped_skills`/`main` with `--write`/`--check`
+> before writing anything; if it doesn't, stop and dispatch T17 first.
 
 **Finding:** C-102. Every build writes `"version": "0.1.0"`, so an installed plugin cannot be told
 from one made months and many skill edits ago. Nothing validates the manifest, and the only
