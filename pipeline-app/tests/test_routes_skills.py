@@ -422,3 +422,79 @@ def test_the_three_save_outcomes_are_three_different_responses(client, monkeypat
         (nothing.status_code, False),
     }
     assert len(outcomes) == 3
+
+
+def events(test_client, kind: str) -> list[dict]:
+    """Query the events table by kind, returning a list of dicts."""
+    import json
+    app = test_client.app
+    rows = app.state.conn.execute(
+        "SELECT id, kind, severity, source, message, detail FROM events WHERE kind = ? ORDER BY id",
+        (kind,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        row_dict = dict(row)
+        if row_dict.get("detail"):
+            row_dict["detail"] = json.loads(row_dict["detail"])
+        result.append(row_dict)
+    return result
+
+
+@pytest.mark.parametrize("finding, skill, data, kind", [
+    ("A-49", "shorts-ideation",
+     {"target": "typo", "content": "x"}, "skill_editor.save_rejected"),
+    ("A-50", "rgs-pairing-review",
+     {"target": "kickoff_template", "content": "x"}, "skill_editor.save_rejected"),
+    ("A-51-blank", "shorts-ideation",
+     {"target": "SKILL.md", "content": "   "}, "skill_editor.save_rejected"),
+    ("A-51-frontmatter", "shorts-ideation",
+     {"target": "SKILL.md", "content": "no frontmatter\n"}, "skill_editor.save_rejected"),
+])
+def test_a_rejected_save_is_findable_afterwards(client, finding, skill, data, kind):
+    """Not a print(): a human-reachable row. Asserting a print happened is
+    exactly the 35-site defect D-02."""
+    test_client, _ = client
+    assert events(test_client, kind) == []
+
+    test_client.post(f"/skills/{skill}/save", data=data, follow_redirects=False)
+
+    rows = events(test_client, kind)
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "warning"
+    assert rows[0]["source"] == "routes.skills"
+    assert skill in rows[0]["message"] or skill in (rows[0]["detail"] or "")
+
+
+def test_a_successful_save_is_findable_and_is_a_different_row(client):
+    test_client, _ = client
+    test_client.post("/skills/shorts-ideation/save",
+                     data={"target": "SKILL.md",
+                           "content": SKILL_MD.format(name="shorts-ideation") + "x\n"})
+    saved = events(test_client, "skill_editor.saved")
+    assert len(saved) == 1
+    assert saved[0]["severity"] == "info"
+    assert events(test_client, "skill_editor.save_rejected") == []
+
+
+def test_a_failed_commit_is_findable_at_error_severity(client, monkeypatch):
+    from pipeline_app import git_helper
+    test_client, _ = client
+    monkeypatch.setattr(git_helper, "commit_skill_edit",
+                        lambda *a, **k: git_helper.CommitResult(status="failed", detail="hook"))
+    test_client.post("/skills/shorts-ideation/save",
+                     data={"target": "SKILL.md",
+                           "content": SKILL_MD.format(name="shorts-ideation") + "x\n"})
+    rows = events(test_client, "skill_editor.commit_failed")
+    assert len(rows) == 1 and rows[0]["severity"] == "error"
+
+
+def test_a_stage_with_no_editor_binding_is_findable(client, tmp_path):
+    """A-48 surfacing: a stage in pipeline.yaml whose template file is absent
+    used to render as a blank box and nothing else."""
+    test_client, root = client
+    (root / "pipeline-app" / "stage_templates" / "styleboard.md").unlink()
+    test_client.get("/skills/shorts-styleboard")
+    # obs.log writes to logs/app-YYYY-MM-DD.log; assert the file, not a print.
+    logs = sorted((root / "pipeline-app" / "logs").glob("app-*.log"))
+    assert logs and "skill_editor.template_file_missing" in logs[-1].read_text(encoding="utf-8")

@@ -9,6 +9,16 @@ from pipeline_app import git_helper, obs
 router = APIRouter()
 
 
+def _reject(request: Request, skill_name: str, reason: str, **detail) -> HTTPException:
+    """Record a rejection event and return an HTTPException."""
+    obs.record_event(
+        request.app.state.conn, kind="skill_editor.save_rejected", severity="warning",
+        source="routes.skills", message=f"{skill_name}: {reason}",
+        detail={"skill": skill_name, **detail},
+    )
+    return HTTPException(status_code=400, detail=reason)
+
+
 def _stage_id_by_skill(stage_defs) -> dict[str, str]:
     """Skill name -> stage id, derived from the loaded topology.
 
@@ -86,20 +96,20 @@ def _resolve_write_path(request: Request, skill_name: str, target: str) -> Path:
     elif target == "kickoff_template":
         stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
         if stage_id is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(f"Skill {skill_name!r} is not bound to a pipeline stage, so it has "
-                        f"no kickoff template to save."),
+            raise _reject(
+                request, skill_name,
+                (f"Skill {skill_name!r} is not bound to a pipeline stage, so it has "
+                 f"no kickoff template to save."),
             )
         root = repo_root / "pipeline-app" / "stage_templates"
         path = _template_path(repo_root, stage_id)
     else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unrecognized save target {target!r}; expected one of {VALID_TARGETS}.",
+        raise _reject(
+            request, skill_name,
+            f"Unrecognized save target {target!r}; expected one of {VALID_TARGETS}.",
         )
     if not path.resolve().is_relative_to(root.resolve()):
-        raise HTTPException(status_code=400, detail="Refusing to write outside the skill tree.")
+        raise _reject(request, skill_name, "Refusing to write outside the skill tree.")
     return path
 
 
@@ -185,7 +195,7 @@ def save_skill(request: Request, skill_name: str, target: str = Form(...), conte
     # Validate content before writing; raises 400 if blank.
     problem = _validate_content(target, normalized)
     if problem is not None:
-        raise HTTPException(status_code=400, detail=problem)
+        raise _reject(request, skill_name, problem)
 
     # Write the file.
     path.write_text(normalized, encoding="utf-8", newline="")
@@ -196,8 +206,31 @@ def save_skill(request: Request, skill_name: str, target: str = Form(...), conte
         stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
     label = skill_name if target == "SKILL.md" else f"{skill_name} kickoff ({stage_id})"
     result = git_helper.commit_skill_edit(repo_root, path, label)
+
+    # Record the save event (file write succeeded regardless of commit outcome)
+    obs.record_event(
+        request.app.state.conn, kind="skill_editor.saved", severity="info",
+        source="routes.skills", message=f"{skill_name}: saved",
+        detail={
+            "skill": skill_name,
+            "target": target,
+            "path": path.relative_to(repo_root).as_posix(),
+            "result_status": result.status,
+            "result_branch": result.branch,
+            "result_commit_sha": result.commit_sha,
+        },
+    )
+
     if result.ok:
         return RedirectResponse(url=f"/skills/{skill_name}", status_code=303)
+
+    # Record the commit failure
+    obs.record_event(
+        request.app.state.conn, kind="skill_editor.commit_failed", severity="error",
+        source="routes.skills", message=f"{skill_name}: {result.detail}",
+        detail={"skill": skill_name, "target": target, "result_status": result.status},
+    )
+
     warning = f"Saved, but not committed: {result.detail}"
     return RedirectResponse(
         url=f"/skills/{skill_name}?warning={quote(warning)}", status_code=303,
