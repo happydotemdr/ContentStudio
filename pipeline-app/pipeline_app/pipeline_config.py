@@ -54,12 +54,34 @@ def load_topology(path: Path, repo_root: Path | None = None) -> list[StageDef]:
     return stages
 
 
+def stage_template_path(repo_root: Path, stage_id: str) -> Path:
+    """The one place the kickoff-template location is spelled. _validate_topology,
+    prompt_builder's loader and the skill editor must all agree on it."""
+    return repo_root / "pipeline-app" / "stage_templates" / f"{stage_id}.md"
+
+
+def stage_id_by_skill(stage_defs: list[StageDef]) -> dict[str, str]:
+    """Derived, never stored. Safe to build as a plain dict only because
+    _validate_topology rejects a duplicate `skill:` -- otherwise last-wins would
+    bind a skill to the wrong stage's template."""
+    return {s.skill: s.id for s in stage_defs}
+
+
 def _validate_topology(stages: list[StageDef], repo_root: Path) -> None:
     seen: set[str] = set()
     for stage in stages:
         if stage.id in seen:
             raise ValueError(f"pipeline.yaml: duplicate stage id '{stage.id}'")
         seen.add(stage.id)
+    by_skill: dict[str, list[str]] = {}
+    for stage in stages:
+        by_skill.setdefault(stage.skill, []).append(stage.id)
+    for skill, stage_ids in by_skill.items():
+        if len(stage_ids) > 1:
+            raise ValueError(
+                f"pipeline.yaml: skill '{skill}' is declared by {len(stage_ids)} stages "
+                f"({', '.join(sorted(stage_ids))}); stage_id_by_skill would silently keep one"
+            )
     for stage in stages:
         for dep in stage.all_depends_on:
             if dep not in seen:
@@ -91,7 +113,7 @@ def _validate_topology(stages: list[StageDef], repo_root: Path) -> None:
                     f"pipeline.yaml: stage '{stage.id}' {field_name} '{name}' has no skill "
                     f"at {skill_md}"
                 )
-        template = templates_dir / f"{stage.id}.md"
+        template = stage_template_path(repo_root, stage.id)
         if not template.exists():
             raise ValueError(
                 f"pipeline.yaml: stage '{stage.id}' has no kickoff template at {template}"

@@ -2,7 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from pipeline_app.pipeline_config import StageDef, build_stage_nav, load_topology, stage_dir_name
+from pipeline_app.pipeline_config import (
+    StageDef,
+    build_stage_nav,
+    load_topology,
+    stage_dir_name,
+    stage_id_by_skill,
+    stage_template_path,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -224,7 +231,7 @@ def test_load_topology_rejects_dependency_cycle(tmp_path: Path):
         tmp_path,
         "stages:\n"
         "  - id: a\n    skill: x\n    dir_prefix: \"01\"\n    depends_on: [b]\n"
-        "  - id: b\n    skill: x\n    dir_prefix: \"02\"\n    depends_on: [a]\n",
+        "  - id: b\n    skill: y\n    dir_prefix: \"02\"\n    depends_on: [a]\n",
     )
     with pytest.raises(ValueError, match="dependency cycle"):
         load_topology(path)
@@ -389,3 +396,28 @@ def test_loading_a_topology_from_outside_the_repo_fails_loudly(tmp_path):
 def test_the_real_topology_loads_with_an_explicit_repo_root():
     stages = load_topology(REPO_ROOT / "pipeline.yaml", repo_root=REPO_ROOT)
     assert len(stages) == 9
+
+
+def test_stage_id_by_skill_maps_every_stage():
+    stages = load_topology(REPO_ROOT / "pipeline.yaml", repo_root=REPO_ROOT)
+    mapping = stage_id_by_skill(stages)
+    assert mapping["shorts-assembly"] == "assembly"
+    assert mapping["rgs-grounding"] == "grounding"
+    assert len(mapping) == len(stages)          # no collision swallowed a stage
+
+
+def test_two_stages_declaring_the_same_skill_are_rejected(tmp_path):
+    """A skill: collision makes {s.skill: s.id} last-wins, so P5's skill editor
+    would bind the skill to the WRONG stage's kickoff template with no error."""
+    _scaffold(tmp_path, skills=("shorts-ideation",), templates=("ideation", "ideation2"))
+    path = _write_topology(tmp_path,
+        'stages:\n'
+        '  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: "01"\n    depends_on: []\n'
+        '  - id: ideation2\n    skill: shorts-ideation\n    dir_prefix: "01b"\n    depends_on: []\n')
+    with pytest.raises(ValueError, match="skill 'shorts-ideation' is declared by 2 stages"):
+        load_topology(path, repo_root=tmp_path)
+
+
+def test_stage_template_path_points_at_the_stages_kickoff_file():
+    assert stage_template_path(REPO_ROOT, "assembly") == \
+        REPO_ROOT / "pipeline-app" / "stage_templates" / "assembly.md"
