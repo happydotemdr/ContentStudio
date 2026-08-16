@@ -1140,6 +1140,30 @@ def test_assembly_gate_flags_a_missing_zero_dollar_stack(tmp_path):
     assert any("$0" in f["message"] for f in results[0]["findings"])
 
 
+def test_assembly_gate_flags_zero_dollar_present_but_paid_missing(tmp_path):
+    """OA3 requires BOTH $0 and paid -- test AND logic: $0 alone is insufficient."""
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace("$0 stack: CapCut. Paid stack: Premiere Pro.\n\n",
+                                          "$0 stack: CapCut only.\n\n")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("$0" in f["message"] and "paid" in f["message"].lower()
+               for f in results[0]["findings"])
+
+
+def test_assembly_gate_flags_paid_present_but_zero_dollar_missing(tmp_path):
+    """OA3 requires BOTH $0 and paid -- test AND logic: paid alone is insufficient."""
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace("$0 stack: CapCut. Paid stack: Premiere Pro.\n\n",
+                                          "Paid stack: Premiere Pro only.\n\n")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("$0" in f["message"] and "paid" in f["message"].lower()
+               for f in results[0]["findings"])
+
+
 def test_assembly_gate_matches_the_real_unhyphenated_qa_gate_wording(tmp_path):
     """Real assembly artifacts write 'QA gate' with a space -- a check for
     the literal hyphenated 'qa-gate' would reject every correct one."""
