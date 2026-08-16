@@ -90,14 +90,48 @@ def test_enumerate_newest_first_no_filter_returns_all(monkeypatch):
     assert [i["id"] for i in items] == ["v1", "v2"]
 
 
-def test_enumerate_newest_first_returns_empty_on_failure(monkeypatch):
-    class FakeProc:
-        returncode = 1
-        stdout = ""
-        stderr = "channel not found"
+def test_enumerate_raises_when_the_videos_tab_fetch_fails(monkeypatch):
+    monkeypatch.setattr(yt, "_run_ytdlp",
+                        lambda *a, **k: _proc(1, "", "ERROR: unable to download API page: HTTP Error 429"))
+    with pytest.raises(yt.YouTubeEnumerationError) as exc:
+        yt.enumerate_newest_first("@dead-handle", keyword_filter=None)
+    assert "@dead-handle" in str(exc.value)
+    assert "429" in str(exc.value)
 
-    monkeypatch.setattr(yt.subprocess, "run", lambda *a, **k: FakeProc())
-    assert yt.enumerate_newest_first("@dead-handle", keyword_filter=None) == []
+
+def test_a_failed_fetch_is_distinguishable_from_a_channel_with_no_uploads(monkeypatch):
+    """The Three-Test Rule's distinguishability case, stated directly."""
+    monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {})
+    monkeypatch.setattr(yt, "_run_ytdlp", lambda *a, **k: _proc(0, json.dumps({"entries": []}), ""))
+    genuinely_empty = yt.enumerate_newest_first("@quiet", keyword_filter=None)
+    assert genuinely_empty == []
+
+    monkeypatch.setattr(yt, "_run_ytdlp", lambda *a, **k: _proc(1, "", "HTTP Error 503"))
+    with pytest.raises(yt.YouTubeEnumerationError):
+        yt.enumerate_newest_first("@quiet", keyword_filter=None)
+
+
+def test_enumerate_failure_is_surfaced_as_a_structured_error_event(monkeypatch, logged):
+    monkeypatch.setattr(yt, "_run_ytdlp", lambda *a, **k: _proc(1, "", "HTTP Error 503"))
+    with pytest.raises(yt.YouTubeEnumerationError):
+        yt.enumerate_newest_first("@c", keyword_filter=None)
+    (record,) = [r for r in logged if r["event"] == "adapter.enumerate_failed"]
+    assert record["level"] == "error"
+    assert record["platform"] == "youtube" and record["handle"] == "@c" and record["tab"] == "videos"
+
+
+def test_empty_stdout_with_a_zero_exit_raises_rather_than_reporting_a_quiet_day(monkeypatch):
+    """The B-10(a) aftermath: a dead reader thread now yields "" not None,
+    and "" from a supposedly successful run is a failure, not an empty channel."""
+    monkeypatch.setattr(yt, "_run_ytdlp", lambda *a, **k: _proc(0, "", ""))
+    with pytest.raises(yt.YouTubeEnumerationError):
+        yt.enumerate_newest_first("@c", keyword_filter=None)
+
+
+def test_unparseable_listing_json_raises_the_typed_error(monkeypatch):
+    monkeypatch.setattr(yt, "_run_ytdlp", lambda *a, **k: _proc(0, "{not json", ""))
+    with pytest.raises(yt.YouTubeEnumerationError):
+        yt.enumerate_newest_first("@c", keyword_filter=None)
 
 
 def test_peek_upload_date_reads_info_json(monkeypatch, tmp_path):
@@ -502,19 +536,28 @@ def test_without_api_dates_falls_back_to_videos_only_and_warns(monkeypatch, caps
     assert "Shorts are being skipped" in capsys.readouterr().err
 
 
-def test_missing_shorts_tab_is_not_an_error(monkeypatch, capsys):
+def test_absent_shorts_tab_is_still_a_legitimate_empty(monkeypatch, logged):
     def fake_run(args, *, label, binary=None):
-        url = args[-1]
-        return _proc(
-            1 if url.endswith("/shorts") else 0,
-            "" if url.endswith("/shorts") else json.dumps({"entries": [{"id": "v1", "title": "v"}]}),
-            "no shorts tab",
-        )
+        if args[-1].endswith("/shorts"):
+            return _proc(1, "", "ERROR: [youtube:tab] @c: This channel does not have a shorts tab")
+        return _proc(0, json.dumps({"entries": [{"id": "v1", "title": "v"}]}), "")
+
     monkeypatch.setattr(yt, "_run_ytdlp", fake_run)
     monkeypatch.setattr(yt.youtube_api, "fetch_upload_dates", lambda ids, **k: {"v1": "2026-07-01"})
-    items = yt.enumerate_newest_first("@c", None)
-    assert [i["id"] for i in items] == ["v1"]
-    assert "enumerate failed" not in capsys.readouterr().err
+    assert [i["id"] for i in yt.enumerate_newest_first("@c", None)] == ["v1"]
+    assert not [r for r in logged if r["level"] == "error"]
+
+
+def test_a_failing_shorts_tab_is_not_treated_as_an_absent_one(monkeypatch):
+    """A 429 on /shorts must never be laundered into "this channel has no Shorts"."""
+    def fake_run(args, *, label, binary=None):
+        if args[-1].endswith("/shorts"):
+            return _proc(1, "", "ERROR: unable to download API page: HTTP Error 429")
+        return _proc(0, json.dumps({"entries": [{"id": "v1", "title": "v"}]}), "")
+
+    monkeypatch.setattr(yt, "_run_ytdlp", fake_run)
+    with pytest.raises(yt.YouTubeEnumerationError):
+        yt.enumerate_newest_first("@c", None)
 
 
 _EMOJI_TITLE = "Playa \U0001F60D Ocotal \U0001F525 naïve wins"

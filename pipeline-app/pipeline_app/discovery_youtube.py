@@ -92,6 +92,35 @@ def on_disk_ids(repo_root: Path, handle: str) -> set[str]:
 _TABS = (("videos", "video"), ("shorts", "short"))
 
 
+class YouTubeEnumerationError(RuntimeError):
+    """A channel-tab listing could not be fetched.
+
+    Never raised for a tab that genuinely does not exist, and never for a tab
+    that exists and is empty -- those return []. brightdata_job.py:6-10 states
+    the invariant: an empty list means "the walk completed and there was
+    nothing there". Returning [] on a failed fetch made a bot-block, a DNS
+    outage and a quiet channel one indistinguishable state, which the engine
+    recorded as the healthy 'no_new_content' (B-11).
+    """
+
+
+# yt-dlp exits non-zero both for "this tab does not exist" and for "the fetch
+# failed". Only /shorts is legitimately absent -- every channel has /videos --
+# and only these stderr shapes mean absence. Anything else is a failure.
+_ABSENT_TAB_MARKERS = (
+    "does not have a shorts tab",
+    "this channel does not have",
+    "http error 404",
+)
+
+
+def _is_absent_tab(tab: str, stderr: str) -> bool:
+    if tab != "shorts":
+        return False
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _ABSENT_TAB_MARKERS)
+
+
 def _enumerate_tab(handle: str, tab: str, content_type: str) -> list[dict]:
     url = f"https://www.youtube.com/{handle}/{tab}"
     proc = _run_ytdlp(
@@ -99,13 +128,19 @@ def _enumerate_tab(handle: str, tab: str, content_type: str) -> list[dict]:
         label=f"enumerate {handle}/{tab}",
     )
     if proc.returncode != 0 or not proc.stdout.strip():
-        # A channel with no Shorts tab is normal, not an error -- only the
-        # /videos tab failing is worth reporting loudly.
-        if tab == "videos":
-            print(f"  ! yt-dlp enumerate failed for {handle}: {proc.stderr.strip()[:200]}",
-                  file=sys.stderr)
-        return []
-    data = json.loads(proc.stdout)
+        if _is_absent_tab(tab, proc.stderr):
+            return []
+        detail = proc.stderr.strip()[:200] or f"exit {proc.returncode}, empty stdout"
+        obs.log("adapter.enumerate_failed", level="error", platform="youtube",
+                handle=handle, tab=tab, returncode=proc.returncode, stderr=detail)
+        print(f"  !! yt-dlp enumerate failed for {handle}/{tab}: {detail}", file=sys.stderr)
+        raise YouTubeEnumerationError(f"{handle}/{tab}: {detail}")
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        obs.log("adapter.enumerate_failed", level="error", platform="youtube",
+                handle=handle, tab=tab, returncode=proc.returncode, stderr=str(exc)[:200])
+        raise YouTubeEnumerationError(f"{handle}/{tab}: unparseable listing JSON") from exc
     return [
         {"id": e["id"], "title": e.get("title") or e["id"], "published": None,
          "content_type": content_type}
