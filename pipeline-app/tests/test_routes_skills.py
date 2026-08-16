@@ -78,42 +78,57 @@ def test_skill_detail_shows_skill_md_content(client):
     assert "Body." in resp.text
 
 
-def test_save_skill_md_writes_file_and_commits(client, monkeypatch):
+def test_skill_md_save_produces_a_real_scoped_commit(client):
     test_client, tmp_path = client
-    calls = []
-    monkeypatch.setattr(
-        git_helper, "commit_skill_edit",
-        lambda repo_root, file_path, skill_name, now=None: (
-            calls.append((file_path, skill_name)),
-            git_helper.CommitResult(status="committed")
-        )[1],
-    )
-    edited_content = "---\nname: shorts-ideation\ndescription: edited description\n---\n\nedited body\n"
-    resp = test_client.post(
-        "/skills/shorts-ideation/save",
-        data={"target": "SKILL.md", "content": edited_content},
-    )
-    assert resp.status_code in (200, 303, 307)
-    saved = (tmp_path / ".claude" / "skills" / "shorts-ideation" / "SKILL.md").read_text(encoding="utf-8")
-    assert saved == edited_content
-    assert len(calls) == 1
+    body = SKILL_MD.format(name="shorts-ideation") + "edited content\n"
+
+    resp = test_client.post("/skills/shorts-ideation/save",
+                            data={"target": "SKILL.md", "content": body},
+                            follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert (tmp_path / ".claude" / "skills" / "shorts-ideation" / "SKILL.md").read_text(
+        encoding="utf-8") == body
+    files = subprocess.run(["git", "show", "--name-only", "--pretty=format:", "HEAD"],
+                           cwd=tmp_path, check=True, capture_output=True,
+                           encoding="utf-8", errors="replace").stdout.split()
+    assert files == [".claude/skills/shorts-ideation/SKILL.md"]
 
 
-def test_save_kickoff_template_does_not_commit(client, monkeypatch):
+def test_kickoff_template_save_is_committed_like_skill_md(client):
+    """Inverted from test_save_kickoff_template_does_not_commit (F-21), which
+    asserted `calls == []` with no rationale and thereby pinned A-52: a bad
+    kickoff-template save had no recovery path, while SKILL.md did."""
     test_client, tmp_path = client
-    calls = []
-    monkeypatch.setattr(
-        git_helper, "commit_skill_edit",
-        lambda *a, **k: calls.append(1),
-    )
-    resp = test_client.post(
-        "/skills/shorts-ideation/save",
-        data={"target": "kickoff_template", "content": "/shorts-ideation new kickoff"},
-    )
-    assert resp.status_code in (200, 303, 307)
-    saved = (tmp_path / "pipeline-app" / "stage_templates" / "ideation.md").read_text(encoding="utf-8")
-    assert saved == "/shorts-ideation new kickoff"
-    assert calls == []
+
+    resp = test_client.post("/skills/shorts-ideation/save",
+                            data={"target": "kickoff_template",
+                                  "content": "/shorts-ideation new kickoff\n"},
+                            follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert (tmp_path / "pipeline-app" / "stage_templates" / "ideation.md").read_text(
+        encoding="utf-8") == "/shorts-ideation new kickoff\n"
+    show = subprocess.run(
+        ["git", "show", "--name-only", "--pretty=format:%s", "HEAD"], cwd=tmp_path,
+        check=True, capture_output=True, encoding="utf-8", errors="replace").stdout
+    assert "ideation" in show.splitlines()[0]        # the message names the stage
+    assert show.split()[-1] == "pipeline-app/stage_templates/ideation.md"
+
+
+def test_both_editable_surfaces_have_the_same_durability(client):
+    """Distinguishability: before the fix, SKILL.md produced a commit and a
+    kickoff template produced none — the same UI, two different guarantees."""
+    test_client, tmp_path = client
+    test_client.post("/skills/shorts-ideation/save",
+                     data={"target": "SKILL.md",
+                           "content": SKILL_MD.format(name="shorts-ideation") + "edit\n"})
+    test_client.post("/skills/shorts-ideation/save",
+                     data={"target": "kickoff_template", "content": "/shorts-ideation v2\n"})
+
+    log = subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True,
+                         capture_output=True, encoding="utf-8", errors="replace").stdout
+    assert log.count("skill edit") == 2
 
 
 def test_save_rejects_unknown_skill_name(client):

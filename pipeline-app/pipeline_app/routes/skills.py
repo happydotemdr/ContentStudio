@@ -190,14 +190,15 @@ def save_skill(request: Request, skill_name: str, target: str = Form(...), conte
     # Write the file.
     path.write_text(normalized, encoding="utf-8", newline="")
 
-    # Commit only for SKILL.md (kickoff_template stays as-is today; A-52 fixes that).
-    if target == "SKILL.md":
-        result = git_helper.commit_skill_edit(repo_root, path, skill_name)
-        if result.ok:
-            return RedirectResponse(url=f"/skills/{skill_name}", status_code=303)
-        warning = f"Saved, but not committed: {result.detail}"
-        return RedirectResponse(
-            url=f"/skills/{skill_name}?warning={quote(warning)}", status_code=303,
-        )
-
-    return RedirectResponse(url=f"/skills/{skill_name}", status_code=303)
+    # Commit both SKILL.md and kickoff_template saves (A-52).
+    stage_id = None
+    if target == "kickoff_template":
+        stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
+    label = skill_name if target == "SKILL.md" else f"{skill_name} kickoff ({stage_id})"
+    result = git_helper.commit_skill_edit(repo_root, path, label)
+    if result.ok:
+        return RedirectResponse(url=f"/skills/{skill_name}", status_code=303)
+    warning = f"Saved, but not committed: {result.detail}"
+    return RedirectResponse(
+        url=f"/skills/{skill_name}?warning={quote(warning)}", status_code=303,
+    )
