@@ -379,3 +379,43 @@ def test_record_diagnostic_never_masks_the_thing_it_is_reporting(monkeypatch):
     monkeypatch.setattr(bd.obs, "log", _boom)
     bd.record_diagnostic(kind="k", severity="error", source="s", message="m")
     assert bd.drain_diagnostics()[0]["kind"] == "k"
+
+
+def test_resume_pending_collects_a_ready_snapshot_without_triggering_anything(monkeypatch, tmp_path):
+    monkeypatch.setattr(bd, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    bd.record_pending("x/CNN", "snap-abc")
+    rows = bd.resume_pending("x/CNN",
+                             poll_fn=lambda job_id: "ready",
+                             fetch_fn=lambda job_id: [{"id": "1"}])
+    assert rows == [{"id": "1"}]
+    assert bd.load_pending("x/CNN") is None      # collected, so no longer pending
+
+
+def test_resume_pending_returns_none_and_keeps_the_entry_while_still_running(monkeypatch, tmp_path):
+    monkeypatch.setattr(bd, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    bd.record_pending("x/CNN", "snap-abc")
+    assert bd.resume_pending("x/CNN",
+                             poll_fn=lambda job_id: "running",
+                             fetch_fn=lambda job_id: [{"id": "1"}]) is None
+    assert bd.load_pending("x/CNN")["snapshot_id"] == "snap-abc"
+
+
+def test_resume_pending_drops_a_failed_snapshot_and_says_so(monkeypatch, tmp_path):
+    monkeypatch.setattr(bd, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    bd.record_pending("x/CNN", "snap-dead")
+    bd.drain_diagnostics()
+    assert bd.resume_pending("x/CNN",
+                             poll_fn=lambda job_id: "failed",
+                             fetch_fn=lambda job_id: []) is None
+    assert bd.load_pending("x/CNN") is None
+    assert [d["kind"] for d in bd.drain_diagnostics()] == ["brightdata.resume_failed"]
+
+
+def test_resume_pending_is_a_no_op_when_nothing_is_pending(monkeypatch, tmp_path):
+    monkeypatch.setattr(bd, "PENDING_STORE_PATH", tmp_path / "pending.json")
+
+    def _fail_if_called(job_id):
+        raise AssertionError("the happy path must not poll anything")
+
+    assert bd.resume_pending("x/CNN", poll_fn=_fail_if_called,
+                             fetch_fn=_fail_if_called) is None

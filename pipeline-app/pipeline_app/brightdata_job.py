@@ -332,3 +332,46 @@ def await_results(trigger_fn, poll_fn, fetch_fn, *, label: str,
                 snapshot_id=job_id, label=label, poll_timeout_s=poll_timeout_s
             )
         time.sleep(poll_interval_s)
+
+
+def resume_pending(key: str, poll_fn, fetch_fn) -> list[dict] | None:
+    """One free attempt to collect a snapshot a previous run paid for and
+    abandoned (B-19).
+
+    Returns the rows if the snapshot is now ready, None otherwise. NEVER
+    triggers a new job: the whole point is that this data is already bought.
+    A poll error is swallowed into None -- deliberately, because this is a
+    best-effort recovery running before the real job, and failing here must
+    not fail a run that is otherwise fine. That is the ONE place in this
+    module where an error becomes None, and it is why it is loud in the
+    diagnostics buffer.
+    """
+    entry = load_pending(key)
+    if not entry:
+        return None
+    snapshot_id = entry["snapshot_id"]
+    try:
+        status = poll_fn(snapshot_id)
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        record_diagnostic(kind="brightdata.resume_poll_failed", severity="warning",
+                          source="brightdata_job",
+                          message=f"could not poll abandoned snapshot {snapshot_id}: {exc}",
+                          detail={"key": key, "snapshot_id": snapshot_id})
+        return None
+    if status == "ready":
+        rows = fetch_fn(snapshot_id)
+        clear_pending(key)
+        record_diagnostic(kind="brightdata.resumed", severity="warning",
+                          source="brightdata_job",
+                          message=(f"recovered {len(rows)} row(s) from snapshot "
+                                   f"{snapshot_id}, abandoned by an earlier run"),
+                          detail={"key": key, "snapshot_id": snapshot_id, "rows": len(rows)})
+        return rows
+    if status == "failed":
+        clear_pending(key)
+        record_diagnostic(kind="brightdata.resume_failed", severity="error",
+                          source="brightdata_job",
+                          message=(f"abandoned snapshot {snapshot_id} reported 'failed'; "
+                                   f"its records are lost"),
+                          detail={"key": key, "snapshot_id": snapshot_id})
+    return None
