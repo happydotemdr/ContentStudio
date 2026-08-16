@@ -109,9 +109,19 @@ def test_normalize_hidden_like_count_is_none_not_zero():
 # --------------------------------------------------------------------------- #
 # fetch_metadata
 
+def test_no_key_warning_is_printed_once_per_process(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv(api.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(api, "KEY_FILE", tmp_path / "absent.txt")
+    monkeypatch.setattr(api, "_NO_KEY_WARNED", False)
+    for _ in range(50):
+        api.fetch_metadata(["v1"])
+    assert capsys.readouterr().err.count("no YouTube Data API key") == 1
+
+
 def test_fetch_metadata_returns_empty_without_key(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv(api.KEY_ENV_VAR, raising=False)
     monkeypatch.setattr(api, "KEY_FILE", tmp_path / "absent.txt")
+    monkeypatch.setattr(api, "_NO_KEY_WARNED", False)
     assert api.fetch_metadata(["v1"]) == {}
     assert "no YouTube Data API key" in capsys.readouterr().err
 

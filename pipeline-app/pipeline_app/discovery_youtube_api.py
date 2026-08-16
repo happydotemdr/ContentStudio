@@ -33,6 +33,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from pipeline_app import obs
+
 API_URL = "https://www.googleapis.com/youtube/v3/videos"
 
 # Key lookup order: env var first (works for the scheduled task, which inherits
@@ -46,6 +48,24 @@ _DURATION_RE = re.compile(
     r"^P(?:(?P<days>\d+)D)?"
     r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?$"
 )
+
+# One fact about the environment, not a per-video event: fetch_one() calls
+# fetch_metadata() once per video from both download_item and
+# peek_upload_date, so an unguarded warning emits hundreds of identical lines
+# and drowns the escalations that matter (B-15). Mirrors
+# discovery_youtube._TRANSCRIPT_API_MISSING_WARNED.
+_NO_KEY_WARNED = False
+
+
+def _warn_no_key(caller: str) -> None:
+    global _NO_KEY_WARNED
+    obs.log("adapter.api_key_missing", level="warning", platform="youtube",
+            caller=caller, env_var=KEY_ENV_VAR)
+    if _NO_KEY_WARNED:
+        return
+    _NO_KEY_WARNED = True
+    print(f"  ! no YouTube Data API key ({KEY_ENV_VAR} env var or {KEY_FILE.name}) "
+          f"-- falling back to yt-dlp for metadata", file=sys.stderr)
 
 
 def api_key() -> str | None:
@@ -148,8 +168,7 @@ def fetch_metadata(video_ids: list[str], key: str | None = None) -> dict[str, di
     """
     key = key or api_key()
     if not key:
-        print(f"  ! no YouTube Data API key ({KEY_ENV_VAR} env var or {KEY_FILE.name}) "
-              f"-- falling back to yt-dlp for metadata", file=sys.stderr)
+        _warn_no_key("fetch_metadata")
         return {}
 
     unique_ids = list(dict.fromkeys(v for v in video_ids if v))
