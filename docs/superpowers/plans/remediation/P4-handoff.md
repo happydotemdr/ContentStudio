@@ -1121,6 +1121,14 @@ def _resume_failed(events: list[dict]) -> bool:
 
 ### T9 — An aborted turn restores the status it interrupted (A-46)
 
+> **Amendment (found before T9 dispatch).** The first test below calls
+> `_approved_chain(conn, tmp_path, statuses={"voiceover": StageStatus.STALE.value})`, but
+> `_build_approved_chain`/`_approved_chain`'s actual keyword (added in T5's amendment) is
+> `downstream_statuses`, not `statuses`. Use `downstream_statuses=` instead. The second test's `...`
+> elisions need filling in — it is the distinguishability twin of the first, using the DEFAULT chain
+> (no status override, so `voiceover` is `APPROVED` like every other stage `_approved_chain`
+> produces) and the same abort mechanics.
+
 - [ ] **Test first**, `test_turn_service.py`:
 
 ```python
@@ -1131,7 +1139,7 @@ async def test_aborting_a_turn_on_a_stale_stage_leaves_it_stale(conn, tmp_path, 
     chat on a stale stage and closing the tab erased the only cue that the
     artifact was built on a since-changed input."""
     project_id, run_dir = _approved_chain(conn, tmp_path,
-                                          statuses={"voiceover": StageStatus.STALE.value})
+                                          downstream_statuses={"voiceover": StageStatus.STALE.value})
     monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
                         _fake_stream([_INIT, _RESULT_OK]))
     agen = turn_service.run_stage_turn(
@@ -1143,10 +1151,18 @@ async def test_aborting_a_turn_on_a_stale_stage_leaves_it_stale(conn, tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_aborting_a_turn_on_an_approved_stage_leaves_it_approved(...):
+async def test_aborting_a_turn_on_an_approved_stage_leaves_it_approved(conn, tmp_path, monkeypatch):
     """Distinguishability: `approved -> running -> abort` laundered into
     awaiting_review too. Restoring the prior status must be exact, not a guess
     keyed to artifact existence."""
+    project_id, run_dir = _approved_chain(conn, tmp_path)   # no override -> voiceover starts APPROVED
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_INIT, _RESULT_OK]))
+    agen = turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("voiceover"), CHAIN_STAGES, "redo")
+    await agen.__anext__()
+    await agen.aclose()
     assert db.get_stage(conn, project_id, "voiceover")["status"] == StageStatus.APPROVED.value
 ```
 
