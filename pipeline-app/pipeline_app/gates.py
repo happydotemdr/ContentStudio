@@ -366,6 +366,33 @@ def run_styleboard_gate(
     return findings
 
 
+IDEATION_REQUIRED_HEADINGS = (
+    "## Angle / take",
+    "## Hook concept",
+    "## Packaging direction",
+    "## Validation",
+    "## Handoff",
+)
+
+
+def run_ideation_contract_gate(
+    repo_root: Path, artifact_path: Path, upstream: Mapping[str, Path]
+) -> list[dict]:
+    """Gate O-I: the concept brief's required sections are present.
+    `## Grounding` is genuinely conditional per shorts-ideation/SKILL.md's
+    own template ("omit this section entirely if no companion artifact was
+    provided") -- its absence is never checked."""
+    lines = {line.strip() for line in artifact_path.read_text(encoding="utf-8").splitlines()}
+    return [
+        {
+            "check": f"OI{i + 1}", "beat": None, "shot_index": None, "kind": "fail",
+            "message": f"{artifact_path.name} is missing the required {heading!r} section.",
+        }
+        for i, heading in enumerate(IDEATION_REQUIRED_HEADINGS)
+        if heading not in lines
+    ]
+
+
 # P2's migrations.py backfill (out of this package's file ownership) writes
 # synthetic styleboard artifacts with `gates: []`, on the strength of its own
 # comment there: "styleboard registers no gates (gates.GATE_REGISTRY), so []
@@ -379,6 +406,7 @@ GATE_REGISTRY: dict[str, list[tuple[str, GateRunner]]] = {
     "scripting": [("gate_d_script_language", run_script_language_gate)],
     "visual": [("gate_c_prompt_sheet", run_prompt_sheet_gate)],
     "styleboard": [("gate_s_styleboard", run_styleboard_gate)],
+    "ideation": [("gate_o_ideation_contract", run_ideation_contract_gate)],
 }
 
 

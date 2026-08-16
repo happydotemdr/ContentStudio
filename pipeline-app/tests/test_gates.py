@@ -232,7 +232,50 @@ def test_visual_stage_is_registered():
 def test_unregistered_stage_returns_no_results(tmp_path):
     path = tmp_path / "raw_output.md"
     path.write_text("anything\n", encoding="utf-8")
-    assert gates.run_gates_for_stage(REPO_ROOT, "ideation", path, {}) == []
+    assert gates.run_gates_for_stage(REPO_ROOT, "grounding", path, {}) == []
+
+
+IDEATION_HEADINGS = (
+    "## Angle / take\n[body]\n\n"
+    "## Hook concept\n[body]\n\n"
+    "## Packaging direction\n[body]\n\n"
+    "## Validation\n[body]\n\n"
+    "## Handoff\n[body]\n"
+)
+
+
+def test_ideation_stage_is_registered():
+    assert "ideation" in gates.GATE_REGISTRY
+
+
+def test_ideation_gate_passes_a_complete_brief(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text(IDEATION_HEADINGS, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "ideation", path, {})
+    assert len(results) == 1
+    assert results[0]["name"] == "gate_o_ideation_contract"
+    assert results[0]["status"] == "pass"
+    assert results[0]["findings"] == []
+
+
+def test_ideation_gate_flags_a_missing_required_heading(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = IDEATION_HEADINGS.replace("## Validation\n[body]\n\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "ideation", path, {})
+    assert results[0]["status"] == "fail"
+    checks = [f["check"] for f in results[0]["findings"]]
+    assert "OI1" in checks or "OI2" in checks or "OI3" in checks or "OI4" in checks
+    assert any("Validation" in f["message"] for f in results[0]["findings"])
+
+
+def test_ideation_gate_does_not_require_the_conditional_grounding_section(tmp_path):
+    """IDEATION_HEADINGS already omits '## Grounding' entirely -- confirms
+    its absence alone, with every required heading present, still passes."""
+    path = tmp_path / "raw_output.md"
+    path.write_text(IDEATION_HEADINGS, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "ideation", path, {})
+    assert results[0]["status"] == "pass"
 
 
 # --- Gate C: the world lock lives in the styleboard, not the sheet -----------
