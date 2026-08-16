@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from pathlib import Path
 
-from pipeline_app import git_helper
+from pipeline_app import git_helper, obs
 
 router = APIRouter()
 
@@ -15,6 +16,12 @@ def _stage_id_by_skill(stage_defs) -> dict[str, str]:
     so P5 is not blocked on P4, and T19 deletes it.
     """
     return {s.skill: s.id for s in stage_defs}
+
+
+def _template_path(repo_root: Path, stage_id: str) -> Path:
+    # Convention frozen with P4 -- see the P4 contract. T19 replaces this with
+    # pipeline_config.stage_template_path().
+    return repo_root / "pipeline-app" / "stage_templates" / f"{stage_id}.md"
 
 
 def _discovered_skill_names(repo_root) -> set[str]:
@@ -55,17 +62,24 @@ def skill_detail(request: Request, skill_name: str):
     skill_md_content = skill_md_path.read_text(encoding="utf-8") if skill_md_path.exists() else ""
 
     stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
-    kickoff_template_content = ""
-    if stage_id:
-        template_path = repo_root / "pipeline-app" / "stage_templates" / f"{stage_id}.md"
-        if template_path.exists():
-            kickoff_template_content = template_path.read_text(encoding="utf-8")
+    template_path = _template_path(repo_root, stage_id) if stage_id else None
+    kickoff_template_missing = bool(stage_id) and not template_path.is_file()
+    kickoff_template_content = (
+        template_path.read_text(encoding="utf-8")
+        if template_path is not None and template_path.is_file() else ""
+    )
+    if kickoff_template_missing:
+        obs.log("skill_editor.template_file_missing", level="warning",
+                skill=skill_name, stage_id=stage_id, path=str(template_path))
 
     return request.app.state.templates.TemplateResponse(
         request, "skill_editor.html",
         {
             "skill_name": skill_name,
             "skill_md_content": skill_md_content,
+            "stage_id": stage_id,
+            "kickoff_template_applies": stage_id is not None,
+            "kickoff_template_missing": kickoff_template_missing,
             "kickoff_template_content": kickoff_template_content,
             "active_nav": "skills",
             "cli_available": request.app.state.cli_available,

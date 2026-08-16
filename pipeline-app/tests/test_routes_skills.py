@@ -147,3 +147,28 @@ def test_styleboard_kickoff_template_is_editable(client):
     resp = test_client.get("/skills/shorts-styleboard")
     assert resp.status_code == 200
     assert "/shorts-styleboard" in resp.text
+
+
+def test_missing_template_file_is_distinguishable_from_no_template_at_all(client):
+    """Three states rendered identically as "" before this fix:
+      (a) skill has no stage    -> no kickoff form applies
+      (b) skill has a stage but the template file is absent
+      (c) the template file exists and is genuinely empty
+    """
+    test_client, tmp_path = client
+    (tmp_path / "pipeline-app" / "stage_templates" / "styleboard.md").unlink()
+
+    no_stage = test_client.get("/skills/rgs-pairing-review")
+    missing_file = test_client.get("/skills/shorts-styleboard")
+    present = test_client.get("/skills/shorts-ideation")
+
+    ctx_a = no_stage.context
+    ctx_b = missing_file.context
+    ctx_c = present.context
+    assert (ctx_a["stage_id"], ctx_a["kickoff_template_applies"]) == (None, False)
+    assert (ctx_b["stage_id"], ctx_b["kickoff_template_applies"],
+            ctx_b["kickoff_template_missing"]) == ("styleboard", True, True)
+    assert (ctx_c["stage_id"], ctx_c["kickoff_template_applies"],
+            ctx_c["kickoff_template_missing"]) == ("ideation", True, False)
+    assert ctx_b["kickoff_template_content"] == ctx_c["kickoff_template_content"] == "" \
+        or ctx_c["kickoff_template_content"] != ""
