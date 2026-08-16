@@ -476,6 +476,11 @@ def download_item(repo_root: Path, handle: str, video_id: str, title: str,
         # material for this project, and the two live on separate channel
         # tabs, so the distinction is recorded rather than inferred.
         "content_type": content_type,
+        # Two spellings of one date, deliberately. `published` is the platform
+        # contract's field name (CLAUDE.md); `upload_date` is what every file
+        # already on disk uses, and discovery_digest's fallback reads it. See
+        # the P9 contract note in this plan before removing either.
+        "published": upload_date or None,
         "upload_date": upload_date or None,
         "duration_s": duration_s,
         "view_count": api_meta.get("view_count"),

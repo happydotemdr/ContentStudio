@@ -705,6 +705,27 @@ def test_download_item_records_content_type(monkeypatch, tmp_path):
     assert meta["content_type"] == "short"
 
 
+def test_frontmatter_carries_both_published_and_upload_date(monkeypatch, tmp_path):
+    """The platform contract names `published`; YouTube only wrote upload_date,
+    which works solely because discovery_digest carries a YouTube-shaped
+    fallback. Emit both: `published` for the contract, `upload_date` so files
+    already on disk keep their spelling (B-04)."""
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({"upload_date": "20260415"}))
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+    yt.download_item(tmp_path, "@testhandle", "v1", "T")
+    meta, _ = _written(tmp_path, "v1")
+    assert meta["published"] == "2026-04-15"
+    assert meta["upload_date"] == "2026-04-15"
+
+
+def test_both_date_keys_are_none_together_when_no_date_is_known(monkeypatch, tmp_path):
+    monkeypatch.setattr(yt, "_run_ytdlp", _ytdlp_ok({}))
+    monkeypatch.setattr(yt, "_fetch_transcript_fallback", lambda *a, **k: None)
+    yt.download_item(tmp_path, "@testhandle", "v2", "T")
+    meta, _ = _written(tmp_path, "v2")
+    assert meta["published"] is None and meta["upload_date"] is None
+
+
 # --------------------------------------------------------------------------- #
 # _run_ytdlp() encoding and None-safety (B-10)
 
