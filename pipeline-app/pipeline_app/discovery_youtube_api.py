@@ -106,10 +106,19 @@ def _to_int(value: str | None) -> int | None:
         return None
 
 
-def _http_get_json(url: str) -> dict | None:
-    """Isolated for monkeypatching in tests."""
+def _http_get_json(url: str, key: str | None = None) -> dict | None:
+    """Isolated for monkeypatching in tests.
+
+    The key goes in X-goog-api-key, never in the query string: the two except
+    clauses below are careful not to print the URL, but any exception outside
+    them escapes with the full URL -- and therefore the live key -- in a
+    traceback the discovery cron writes to its log (D-52). Bright Data and
+    Resend are already header-borne; this was the one that was not.
+    """
+    headers = {"X-goog-api-key": key} if key else {}
+    request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(url, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=30) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -179,10 +188,9 @@ def fetch_metadata(video_ids: list[str], key: str | None = None) -> dict[str, di
         query = urllib.parse.urlencode({
             "part": "snippet,contentDetails,statistics",
             "id": ",".join(batch),
-            "key": key,
             "maxResults": MAX_IDS_PER_CALL,
         })
-        payload = _http_get_json(f"{API_URL}?{query}")
+        payload = _http_get_json(f"{API_URL}?{query}", key)
         if payload is None:
             continue
         for item in payload.get("items") or []:
@@ -219,10 +227,9 @@ def fetch_upload_dates(video_ids: list[str], key: str | None = None) -> dict[str
         query = urllib.parse.urlencode({
             "part": "snippet",
             "id": ",".join(batch),
-            "key": key,
             "maxResults": MAX_IDS_PER_CALL,
         })
-        payload = _http_get_json(f"{API_URL}?{query}")
+        payload = _http_get_json(f"{API_URL}?{query}", key)
         if payload is None:
             continue
         for item in payload.get("items") or []:
