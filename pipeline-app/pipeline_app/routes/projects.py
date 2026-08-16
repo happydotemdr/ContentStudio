@@ -1,7 +1,10 @@
+import sqlite3
+
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse
 
 from pipeline_app import db as db_mod
+from pipeline_app import obs
 from pipeline_app.pipeline_config import build_stage_nav
 from pipeline_app.project_service import create_project
 
@@ -33,6 +36,11 @@ def create_project_route(request: Request, slug: str = Form(...), brand: str = F
         # Unusable slug (nothing left after sanitisation, or a path that would
         # escape runs/) — an explicit client error, not a 500.
         return PlainTextResponse(str(exc), status_code=400)
+    except (OSError, sqlite3.DatabaseError) as exc:
+        obs.record_event(conn, kind="project.create_failed", severity="error",
+                         source="routes.projects", message=str(exc),
+                         detail={"slug": slug, "brand": brand})
+        return PlainTextResponse(f"Could not create the project: {exc}", status_code=500)
     return RedirectResponse(url=f"/projects/{result['project_id']}", status_code=303)
 
 

@@ -148,3 +148,19 @@ def test_overlong_slug_returns_400_not_500(client: TestClient):
                        follow_redirects=False)
     assert resp.status_code == 400
     assert "60" in resp.text
+
+
+def test_a_failed_creation_is_a_named_error_and_leaves_an_events_row(client, monkeypatch):
+    real_mkdir = Path.mkdir
+    monkeypatch.setattr(Path, "mkdir",
+                        lambda self, *a, **k: (_ for _ in ()).throw(OSError(28, "no space")))
+
+    resp = client.post("/projects", data={"slug": "why-kids-quit", "brand": "generic"},
+                       follow_redirects=False)
+    monkeypatch.undo()
+
+    assert resp.status_code == 500
+    assert "no space" in resp.text            # not a bare traceback
+    rows = client.app.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'project.create_failed'").fetchall()
+    assert len(rows) == 1 and rows[0]["severity"] == "error"

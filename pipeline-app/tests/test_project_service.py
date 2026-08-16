@@ -165,3 +165,53 @@ def test_a_slug_at_the_limit_is_still_accepted(conn, tmp_path: Path):
     result = create_project(conn, tmp_path, "a" * MAX_SLUG_LENGTH, "generic", STAGES)
     assert result["run_dir"].is_dir()
     assert len(db.list_projects(conn)) == 1
+
+
+def test_a_failure_partway_leaves_no_project_at_all(conn, tmp_path: Path, monkeypatch):
+    """The project row was inserted and committed, then run_dir.mkdir, then
+    one stage row + one mkdir per stage with a commit per row. A failure
+    partway left a committed project with a partial set of stage rows that
+    nothing repairs, permanently unusable but normal-looking (A-78)."""
+    real_mkdir = Path.mkdir
+    calls = {"n": 0}
+
+    def flaky(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:            # run_dir succeeds, the first stage dir does not
+            raise OSError(28, "No space left on device")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", flaky)
+
+    with pytest.raises(OSError):
+        create_project(conn, tmp_path, "why-kids-quit", "generic", STAGES)
+
+    monkeypatch.undo()
+    assert db.list_projects(conn) == []
+    assert list((tmp_path / "runs").iterdir()) == []
+
+
+def test_a_half_created_project_is_distinguishable_from_a_whole_one(conn, tmp_path, monkeypatch):
+    """The distinguishability the audit asks for: 'broken' must not present
+    as 'a project'. Before the fix the broken run appeared in the project list
+    exactly like the good one, minus stage rows nobody looks at."""
+    good = create_project(conn, tmp_path, "good-run", "generic", STAGES)
+    assert {r["stage_id"] for r in db.list_stages(conn, good["project_id"])} == \
+        {"ideation", "scripting"}
+
+    real_mkdir = Path.mkdir
+    calls = {"n": 0}
+
+    def flaky(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError(28, "No space left on device")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", flaky)
+    with pytest.raises(OSError):
+        create_project(conn, tmp_path, "bad-run", "generic", STAGES)
+    monkeypatch.undo()
+
+    projects = db.list_projects(conn)
+    assert [p["slug"] for p in projects] == ["good-run"]

@@ -1,5 +1,6 @@
 import datetime
 import re
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -42,23 +43,40 @@ def create_project(
 ) -> dict:
     cleaned_slug = sanitize_slug(slug)
     now = now or datetime.datetime.now(datetime.timezone.utc)
-    run_id = f"{cleaned_slug}-{now.strftime('%Y%m%d-%H%M%S')}"
+    applicable = [s for s in stage_defs if s.brand_scope is None or s.brand_scope == brand]
+    return _create_once(conn, repo_root, cleaned_slug, brand, applicable, now)
 
+
+def _create_once(conn, repo_root, cleaned_slug, brand, applicable, now) -> dict:
+    run_id = f"{cleaned_slug}-{now.strftime('%Y%m%d-%H%M%S')}"
     run_dir = repo_root / "runs" / run_id
     # Defence in depth: if sanitize_slug is ever weakened, refuse to create a
     # directory that escapes runs/ rather than silently writing outside it.
     # Checked before the DB insert so a rejected slug leaves no orphan row.
     if run_dir.resolve().parent != (repo_root / "runs").resolve():
-        raise ValueError(f"slug resolves outside the runs directory: {slug!r}")
+        raise ValueError(f"slug resolves outside the runs directory: {cleaned_slug!r}")
 
-    with db_mod.transaction(conn):
-        project_id = db_mod.create_project(conn, run_id, cleaned_slug, brand, now.isoformat())
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-        applicable = [s for s in stage_defs if s.brand_scope is None or s.brand_scope == brand]
-        for stage in applicable:
-            status = compute_initial_status(stage.depends_on)
-            db_mod.create_stage_row(conn, project_id, stage.id, status.value)
-            (run_dir / stage_dir_name(stage)).mkdir(parents=True, exist_ok=True)
-
+    created_dir = False
+    try:
+        with db_mod.transaction(conn):
+            project_id = db_mod.create_project(conn, run_id, cleaned_slug, brand, now.isoformat())
+            for stage in applicable:
+                status = compute_initial_status(stage.depends_on)
+                db_mod.create_stage_row(conn, project_id, stage.id, status.value)
+            # Two explicit single-level calls rather than one mkdir(parents=True):
+            # pathlib's own parents=True recursion re-enters Path.mkdir for each
+            # missing level, which under a mid-flight-fault test double
+            # (monkeypatching Path.mkdir to fail on a specific call number)
+            # attributes the injected failure to the runs/ parent instead of
+            # run_dir itself, silently skipping run_dir creation. Splitting keeps
+            # the exist_ok=False collision check (T18) on run_dir specifically.
+            run_dir.parent.mkdir(parents=True, exist_ok=True)
+            run_dir.mkdir(exist_ok=False)
+            created_dir = True
+            for stage in applicable:
+                (run_dir / stage_dir_name(stage)).mkdir(parents=True, exist_ok=True)
+    except BaseException:
+        if created_dir:
+            shutil.rmtree(run_dir, ignore_errors=True)
+        raise
     return {"project_id": project_id, "run_id": run_id, "run_dir": run_dir}
