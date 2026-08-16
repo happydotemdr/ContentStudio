@@ -1020,7 +1020,13 @@ def _resumed_prompt(conn, stage_dir: Path, run_dir: Path, stage_def: StageDef,
     changed = sorted(sid for sid in current if seen.get(sid) != current[sid])
     dropped = sorted(sid for sid in seen if sid not in current)
     lines = ["UPSTREAM CHANGED SINCE THIS SESSION LAST READ IT."]
-    lines += [f"- {sid}: now `{inputs[sid]}` (was `{seen.get(sid, 'absent')}`)" for sid in changed]
+    # `current[sid]`, not `inputs[sid]`: `inputs` holds raw absolute paths
+    # (backslashes on Windows), `current` the `_relpath`-normalized
+    # forward-slash form the test asserts against and `seen` is keyed in.
+    # Amendment (found during T7 execution): the brief originally showed
+    # `inputs[sid]` here, which would have mixed path separator styles in
+    # the same message. Fixed in commit f290d30.
+    lines += [f"- {sid}: now `{current[sid]}` (was `{seen.get(sid, 'absent')}`)" for sid in changed]
     lines += [f"- {sid}: no longer available (was `{seen[sid]}`)" for sid in dropped]
     lines.append("Re-read every path above before answering; do not rely on the earlier version.")
     obs.record_event(
