@@ -39,10 +39,6 @@ def _utcnow() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def _relpath(path: Path, run_dir: Path) -> str:
-    return str(path.relative_to(run_dir)).replace("\\", "/")
-
-
 def _current_upstream_hashes(
     run_dir: Path, upstream_defs: list[StageDef], repo_root: Path | None = None
 ) -> dict[str, str]:
@@ -69,7 +65,7 @@ def _current_upstream_hashes(
         else:
             up_latest = artifacts.latest_artifact_path(up_dir)
         if up_latest is not None:
-            hashes[_relpath(up_latest, run_dir)] = artifacts.compute_sha256(up_latest)
+            hashes[artifacts.relpath_in_run(up_latest, run_dir)] = artifacts.compute_sha256(up_latest)
     return hashes
 
 
@@ -104,7 +100,20 @@ def propagate_staleness(
         latest = artifacts.latest_artifact_path(stage_dir)
         if latest is None:
             continue
-        meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+        try:
+            meta, _body = artifacts.read_artifact(latest)
+        except artifacts.MalformedArtifactError as exc:
+            # Contained PER DEPENDENT, deliberately. Letting this propagate would
+            # abort the cascade mid-iteration: dependents earlier in the list end
+            # up stale, later ones stay approved, and nothing says why (P2 §6.3).
+            obs.record_event(
+                conn, kind="staleness.dependent_unreadable", severity="error",
+                source="turn_service.propagate_staleness",
+                message=f"cannot read {exc.path}: {exc.reason}; "
+                        f"stage '{dep_stage.id}' left at {row['status']}",
+                detail={"stage": dep_stage.id, "path": str(exc.path), "reason": exc.reason},
+            )
+            continue
         recorded = meta.get("depends_on") or []
         dep_upstream_defs = [s for s in all_stage_defs if s.id in dep_stage.all_depends_on]
         current_hashes = _current_upstream_hashes(run_dir, dep_upstream_defs, repo_root=repo_root)
@@ -142,7 +151,12 @@ def propagate_grounding_staleness(
     artifact recorded a brief path that is no longer the pointer target was built
     on a superseded thinker/research pairing (A-13). Public because the grounding
     turn route is what repoints the pointer and should call it there too."""
-    current = grounding_service.read_pointer(run_dir / "00-grounding")
+    try:
+        current = grounding_service.read_pointer(run_dir / "00-grounding")
+    except grounding_service.InvalidPointerError as exc:
+        obs.record_event(conn, kind="grounding.pointer_invalid", severity="error",
+                         source="turn_service", message=str(exc), detail={"run_dir": str(run_dir)})
+        return []
     if current is None:
         return []
     stale: list[str] = []
@@ -155,7 +169,20 @@ def propagate_grounding_staleness(
         latest = artifacts.latest_artifact_path(run_dir / stage_dir_name(stage_def))
         if latest is None:
             continue
-        meta, _body = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+        try:
+            meta, _body = artifacts.read_artifact(latest)
+        except artifacts.MalformedArtifactError as exc:
+            # Contained PER CANDIDATE for the same reason as propagate_staleness:
+            # a damaged v3 must not hide an intact approved v2, nor abort the
+            # rest of the stages still to be checked.
+            obs.record_event(
+                conn, kind="grounding.dependent_unreadable", severity="error",
+                source="turn_service.propagate_grounding_staleness",
+                message=f"cannot read {exc.path}: {exc.reason}; "
+                        f"stage '{stage_def.id}' left at {row['status']}",
+                detail={"stage": stage_def.id, "path": str(exc.path), "reason": exc.reason},
+            )
+            continue
         briefs = [d.get("path") for d in (meta.get("depends_on") or [])
                   if str(d.get("path", "")).startswith("rgs-briefs/")]
         if briefs and current not in briefs:
@@ -178,7 +205,7 @@ def _write_session_inputs(stage_dir: Path, run_dir: Path, inputs: dict[str, str]
     """What the CLI session for this stage has actually been shown. Kept beside
     the events log rather than in the DB so no schema change is needed."""
     stage_dir.mkdir(parents=True, exist_ok=True)
-    snapshot = {sid: _relpath(Path(p), run_dir) for sid, p in inputs.items()}
+    snapshot = {sid: artifacts.relpath_in_run(Path(p), run_dir) for sid, p in inputs.items()}
     _session_inputs_path(stage_dir).write_text(
         json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -202,7 +229,7 @@ def _resumed_prompt(conn, stage_dir: Path, run_dir: Path, stage_def: StageDef,
     otherwise the model answers from the old paths while the artifact it writes
     records the new ones as its provenance (A-05)."""
     seen = _read_session_inputs(stage_dir)
-    current = {sid: _relpath(Path(p), run_dir) for sid, p in inputs.items()}
+    current = {sid: artifacts.relpath_in_run(Path(p), run_dir) for sid, p in inputs.items()}
     if seen == current:
         return user_message
     changed = sorted(sid for sid in current if seen.get(sid) != current[sid])
@@ -421,11 +448,9 @@ async def run_stage_turn(
         db_mod.update_stage_status(conn, stage_row["id"], StageStatus.NO_ARTIFACT.value)
         return
 
-    version = artifacts.next_version_number(stage_dir)
-    depends_on = [
-        {"path": _relpath(p, run_dir), "sha256": artifacts.compute_sha256(p)}
-        for p in upstream_paths
-    ]
+    reservation = artifacts.reserve_version(stage_dir)
+    version = reservation.version
+    depends_on = artifacts.compute_depends_on(run_dir, upstream_paths)
     # The grounding brief is a real input that arrives out-of-band (routes.stages
     # resolves the pointer and passes it as grounding_pointer), so it never
     # appears in upstream_paths. Recording it here is what lets a re-pointed
@@ -444,23 +469,27 @@ async def run_stage_turn(
                         f"'{grounding_pointer}' but no such file exists",
                 detail={"stage": stage_def.id, "pointer": grounding_pointer},
             )
-    gate_results = gates.run_gates_for_stage(
-        repo_root, stage_def.id, raw_output_path, upstream_by_stage
-    )
-    body = raw_output_path.read_text(encoding="utf-8")
-    meta = {
-        "schema_version": 1,
-        "run_id": run_id,
-        "stage": stage_def.skill,
-        "version": version,
-        "status": "draft",
-        "created_at": _utcnow(),
-        "finalized_at": None,
-        "supersedes": f"artifact.v{version - 1}.md" if version > 1 else None,
-        "depends_on": depends_on,
-        "gates": gate_results,
-    }
-    artifacts.write_artifact(stage_dir, version, meta, body)
+    try:
+        gate_results = gates.run_gates_for_stage(
+            repo_root, stage_def.id, raw_output_path, upstream_by_stage
+        )
+        body = raw_output_path.read_text(encoding="utf-8")
+        meta = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "stage": stage_def.skill,
+            "version": version,
+            "status": "draft",
+            "created_at": _utcnow(),
+            "finalized_at": None,
+            "supersedes": f"artifact.v{version - 1}.md" if version > 1 else None,
+            "depends_on": depends_on,
+            "gates": gate_results,
+        }
+        artifacts.write_reserved_artifact(reservation, meta, body)
+    except BaseException:
+        artifacts.release_version(reservation)
+        raise
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.AWAITING_REVIEW.value)
     propagate_staleness(conn, run_dir, all_stage_defs, project_id, stage_def.id, repo_root=repo_root)
     propagate_grounding_staleness(conn, repo_root, run_dir, all_stage_defs, project_id)

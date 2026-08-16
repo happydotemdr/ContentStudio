@@ -78,7 +78,7 @@ async def test_first_turn_writes_artifact_v1_and_sets_awaiting_review(conn, proj
     stage_dir = project["run_dir"] / "01-ideation"
     v1 = stage_dir / "artifact.v1.md"
     assert v1.exists()
-    meta, body = artifacts.parse_frontmatter(v1.read_text(encoding="utf-8"))
+    meta, body = artifacts.read_artifact(v1)
     assert meta["stage"] == "shorts-ideation"
     assert meta["version"] == 1
     assert meta["depends_on"] == []
@@ -465,6 +465,91 @@ def test_regenerating_the_bed_arc_marks_assembly_stale(conn, tmp_path):
     assert db.get_stage(conn, project_id, "assembly")["status"] == StageStatus.STALE.value
 
 
+def test_one_malformed_dependent_does_not_abort_the_staleness_cascade(conn, tmp_path):
+    """P2 §6.3 item 5. parse_frontmatter now RAISES instead of returning {}, so
+    an unguarded loop stops at the first damaged artifact -- leaving the stages
+    before it stale and the stages after it silently approved. Worse than the
+    bug it replaced, unless every per-dependent read is contained."""
+    project_id, run_dir = _build_approved_chain(conn, tmp_path)
+    (run_dir / "03-voiceover" / "artifact.v1.md").write_text(
+        "---\nthis frontmatter never terminates\n", encoding="utf-8")
+    artifacts.write_artifact(run_dir / "02-scripting", 2, {"stage": "shorts-scripting"}, "v2")
+
+    turn_service.propagate_staleness(conn, run_dir, CHAIN_STAGES, project_id, "scripting",
+                                     repo_root=tmp_path)
+
+    # visual is AFTER voiceover in CHAIN_STAGES order -- it must still be reached.
+    assert db.get_stage(conn, project_id, "visual")["status"] == StageStatus.STALE.value
+
+
+def test_a_malformed_dependent_is_recorded_not_skipped_in_silence(conn, tmp_path):
+    """Distinguishability + surfacing: 'this dependent is fine' and 'this
+    dependent is unreadable' must not both produce a no-op."""
+    project_id, run_dir = _build_approved_chain(conn, tmp_path)
+    (run_dir / "03-voiceover" / "artifact.v1.md").write_text(
+        "---\nthis frontmatter never terminates\n", encoding="utf-8")
+    artifacts.write_artifact(run_dir / "02-scripting", 2, {"stage": "shorts-scripting"}, "v2")
+
+    turn_service.propagate_staleness(conn, run_dir, CHAIN_STAGES, project_id, "scripting",
+                                     repo_root=tmp_path)
+
+    rows = conn.execute(
+        "SELECT severity, message FROM events WHERE kind = 'staleness.dependent_unreadable'"
+    ).fetchall()
+    assert rows and rows[0]["severity"] == "error" and "03-voiceover" in rows[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_depends_on_is_computed_by_the_shared_helper(conn, tmp_path, monkeypatch):
+    """P2 §6.1: one implementation of the [{path, sha256}] shape, not two."""
+    calls = []
+    real = artifacts.compute_depends_on
+    monkeypatch.setattr(artifacts, "compute_depends_on",
+                        lambda run_dir, paths: calls.append(list(paths)) or real(run_dir, paths))
+    project_id, run_dir = _approved_chain(conn, tmp_path)
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_RESULT_OK], run_dir / "04-assembly" / "raw_output.md"))
+
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("assembly"), CHAIN_STAGES, "cut it",
+    ))
+
+    assert calls and len(calls[0]) == 4
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_version_allocation_does_not_lose_the_write(conn, tmp_path, monkeypatch):
+    """next_version_number is ADVISORY ONLY under P2 (A-65). run_stage_turn must
+    reserve, write, and release -- leaving it on next_version_number + write_artifact
+    turns a silent lost write into an ArtifactExistsError 500, which is better but
+    not closed."""
+    project_id, run_dir = _approved_chain(conn, tmp_path)
+    stage_dir = run_dir / "03-voiceover"
+
+    # Simulate a concurrent turn that has already reserved the next version slot
+    # but not yet written it -- run_stage_turn's own allocation must skip past
+    # the live reservation rather than colliding with it or losing either write.
+    concurrent = artifacts.reserve_version(stage_dir)
+    assert concurrent.version == 2
+
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_RESULT_OK], stage_dir / "raw_output.md"))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("voiceover"), CHAIN_STAGES, "brief it",
+    ))
+
+    # run_stage_turn moved past the still-live reservation to v3, leaving the
+    # concurrent turn's reserved slot untouched.
+    assert not (stage_dir / "artifact.v2.md").exists()
+    assert (stage_dir / "artifact.v3.md").exists()
+
+    artifacts.release_version(concurrent)
+    with pytest.raises(artifacts.ArtifactExistsError):
+        artifacts.write_artifact(stage_dir, 3, {"stage": "x"}, "clobber")
+
+
 def test_staleness_hashing_without_a_repo_root_says_so_for_a_pointer_backed_upstream(tmp_path, capsys):
     """A-14: latest_artifact_path cannot see grounding's pointer indirection, so
     a depends_on edge onto grounding would silently drop it from BOTH input
@@ -574,7 +659,7 @@ async def test_scripting_turn_records_gate_results_in_frontmatter(conn, tmp_path
 
     latest = artifacts.latest_artifact_path(stage_dir)
     assert latest is not None
-    meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+    meta, _ = artifacts.read_artifact(latest)
     assert meta["gates"][0]["status"] == "fail"
     assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.AWAITING_REVIEW.value
 
@@ -785,7 +870,7 @@ async def test_a_turn_records_the_grounding_brief_it_was_built_on(conn, tmp_path
         scripting_def, stage_defs, "go",
         grounding_pointer="rgs-briefs/2026-08-08-a.md"))
     latest = artifacts.latest_artifact_path(run_dir / "02-scripting")
-    meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+    meta, _ = artifacts.read_artifact(latest)
     assert {"path": "rgs-briefs/2026-08-08-a.md", "sha256": ANY} in meta["depends_on"]
 
 
