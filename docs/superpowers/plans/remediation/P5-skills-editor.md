@@ -1280,6 +1280,62 @@ MAX_SLUG_LENGTH = 60
 
 ---
 
+> **Amendment (P5 kickoff session, verified live against the P5 worktree at origin/main
+> `ed93875`):** this task's shown implementation is stale. It assumes `db.py`'s
+> `create_project`/`create_stage_row` commit per row with no way to batch them, and has
+> `_create_once` bypass `db_mod` entirely with hand-rolled `conn.execute` + `conn.commit()`/
+> `conn.rollback()`. That is no longer true. Live `db.py` now ships `db.transaction(conn)` (a
+> reentrant context manager, `db.py:70-`) and `commit_unless_in_transaction` (`db.py:42-67`),
+> which `create_project`/`create_stage_row` already call instead of a raw `conn.commit()`
+> (`db.py:1511-1533`, confirmed). Wrapping the whole per-row sequence in `with
+> db_mod.transaction(conn):` already makes the DB half of A-78 atomic — on any exception inside
+> the block, `transaction()` itself rolls back and emits its own `db.transaction_rolled_back`
+> event, which is strictly better observability than anything this task would add by hand. This
+> infrastructure did not exist when this task's code was drafted; it must not be bypassed or
+> reimplemented — routes/projects.py and routes/stages.py already rely on the same mechanism for
+> other invariants (see `db.py`'s `transaction()` docstring), and hand-rolling a parallel
+> commit/rollback path here would fight it, not fix it. **Corrected implementation:** keep calling
+> `db_mod.create_project` / `db_mod.create_stage_row` exactly as `project_service.py` already
+> does today; do not import `sqlite3` for INSERTs and do not add `conn.commit()`/`conn.rollback()`
+> calls. `_create_once`'s only real job is the filesystem half, which `transaction()` cannot see:
+>
+> ```python
+> import shutil
+>
+> def _create_once(conn, repo_root, cleaned_slug, brand, applicable, now) -> dict:
+>     run_id = f"{cleaned_slug}-{now.strftime('%Y%m%d-%H%M%S')}"
+>     run_dir = repo_root / "runs" / run_id
+>     if run_dir.resolve().parent != (repo_root / "runs").resolve():
+>         raise ValueError(f"slug resolves outside the runs directory: {cleaned_slug!r}")
+>
+>     created_dir = False
+>     try:
+>         with db_mod.transaction(conn):
+>             project_id = db_mod.create_project(conn, run_id, cleaned_slug, brand, now.isoformat())
+>             for stage in applicable:
+>                 status = compute_initial_status(stage.depends_on)
+>                 db_mod.create_stage_row(conn, project_id, stage.id, status.value)
+>             run_dir.mkdir(parents=True, exist_ok=False)
+>             created_dir = True
+>             for stage in applicable:
+>                 (run_dir / stage_dir_name(stage)).mkdir(parents=True, exist_ok=True)
+>     except BaseException:
+>         if created_dir:
+>             shutil.rmtree(run_dir, ignore_errors=True)
+>         raise
+>     return {"project_id": project_id, "run_id": run_id, "run_dir": run_dir}
+> ```
+>
+> `from pipeline_app import db as db_mod` and the `compute_initial_status`/`stage_dir_name`
+> imports project_service.py already has stay as they are — do not drop the `db_mod` import, the
+> plan body's instruction to "stop using the auto-committing db_mod helpers" no longer applies.
+> `exist_ok=False` on `run_dir.mkdir` (not the plan's original omission) matters here:
+> `_create_once` is retried by T18's caller with a new `run_id` per attempt, so a stale `run_dir`
+> from an earlier partial failure must never be silently reused. The two tests below still exercise
+> exactly the failure shape they describe (`Path.mkdir` raising on the 2nd call captures the
+> stage-dir loop start today the same as it did against the plan's original code — this is a
+> behavior-preserving correction, not a test change).
+
 ### T17 — A-78: project creation is all-or-nothing
 
 - [ ] Add to `tests/test_project_service.py`:
