@@ -1806,8 +1806,21 @@ MUTATIONS = [
     ("plate-relabel",           "· Register B · WORLD ·",    "· Register PLATE · PLATE ·","C14"),
     ("venue-synonym",           "a municipal club soccer",   "a vacant gym, a municipal club soccer", "C9"),
     ("registerb-photographic",  "luminous oil painting",     "photorealistic bokeh render", "C10"),
-    ("fenced-heading",          "PER-SHOT PROMPTS",          "PER-SHOT PROMPTS\n\n```text\n### Shot 99 — X · Register A · DETAIL · MACRO · LOW\n```", ""),
-    # "world-blank-line" used to live here, but its anchor ("  register_b_thinker:")
+    # "fenced-heading" used to live here: injecting a fake "### Shot 99 ..."
+    # heading inside a ```text fence right after PER-SHOT PROMPTS. It is no
+    # longer a corruption the gate should reject -- parse_sheet was later
+    # (deliberately) taught to skip every line inside ANY fence, specifically
+    # so a documented example heading doesn't produce a false-positive PARSE
+    # finding (see FENCED_EXAMPLE below). A fence-scoped heading is now
+    # indistinguishable, by design, from a legitimate worked example, so this
+    # mutation can no longer be told apart from the exact pattern
+    # test_a_fenced_heading_produces_no_parse_finding_either requires to pass
+    # cleanly. That test (and its two siblings, just below) is this case's
+    # replacement coverage: it proves the accepted-safe behavior directly
+    # instead of failing it through this shared "always fails" harness, which
+    # is the same resolution "world-blank-line" got, below.
+    #
+    # "world-blank-line" used to live here too, but its anchor ("  register_b_thinker:")
     # exists only in worked_example_styleboard.md, never in the sheet -- every other
     # case in this table mutates the sheet. It is exercised on its own below, against
     # the styleboard, because that mutation is no longer a corruption the gate should
