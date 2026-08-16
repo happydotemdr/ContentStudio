@@ -2478,11 +2478,27 @@ async def test_a_concurrent_version_allocation_does_not_lose_the_write(conn, tmp
         artifacts.write_artifact(stage_dir, 1, {"stage": "x"}, "clobber")
 ```
 
+> **Amendment (found before T18 dispatch).** T17 (already landed, immediately before this task)
+> deleted `turn_service._approved_artifact_path` entirely — approved-artifact resolution now lives
+> only in `gates.py`, behind `gates.resolve_upstream_by_stage(approved_only=True)`. Item 2 below's
+> "`_approved_artifact_path` (T6)" half is therefore moot — there is no such function left in
+> `turn_service.py` to wrap. Only `propagate_grounding_staleness`'s per-candidate read needs the
+> `try/except MalformedArtifactError` treatment. Every `:LINE` reference below is now stale (T5-T17
+> shifted the file substantially) — read the live function bodies to find the real locations rather
+> than trusting any line number in this section. Confirmed live shapes at dispatch time:
+> `propagate_staleness`'s frontmatter read is `meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))`
+> inside its first loop; `depends_on` construction is `[{"path": _relpath(p, run_dir), ...} for p in upstream_paths]`
+> inside `run_stage_turn`, after the `artifact_written` check; version allocation is
+> `version = artifacts.next_version_number(stage_dir)` immediately above that; `_relpath` is used in
+> four places (`_write_session_inputs`, `_resumed_prompt`, `_current_upstream_hashes`, and the
+> `depends_on` comprehension) — find and convert all four, not just the ones item 5 names.
+
 - [ ] **Run** → fails: `MalformedArtifactError` escapes `propagate_staleness`; no
       `compute_depends_on` call; `next_version_number` still in use.
 - [ ] **Implement**, `turn_service.py`:
 
-1. **`propagate_staleness` phase-1 loop** (`:74`) — the load-bearing wrap:
+1. **`propagate_staleness` phase-1 loop** (line number stale, see Amendment — find the real
+   location) — the load-bearing wrap:
 
 ```python
         try:
@@ -2501,10 +2517,11 @@ async def test_a_concurrent_version_allocation_does_not_lose_the_write(conn, tmp
             continue
 ```
 
-2. **`_approved_artifact_path`** (T6) and **`propagate_grounding_staleness`** (T11) — same
-   `try/except artifacts.MalformedArtifactError` + `continue` around each candidate read, with
-   kinds `handoff.artifact_unreadable` and `grounding.dependent_unreadable`. A damaged `v3` must
-   not hide an intact approved `v2`.
+2. **`propagate_grounding_staleness`** (T11) — same `try/except artifacts.MalformedArtifactError` +
+   `continue` around each candidate read, kind `grounding.dependent_unreadable`. A damaged `v3` must
+   not hide an intact approved `v2`. (The `_approved_artifact_path` half of this item no longer
+   applies — see Amendment above; `gates.py`'s own `_approved_artifact_path`, inside P3's separately
+   owned file, is out of scope for P4 to touch here regardless.)
 
 3. **`depends_on` construction** (`:234-237`) — replace the comprehension with P2's helper, keeping
    the A-13 grounding record appended:
