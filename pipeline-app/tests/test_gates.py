@@ -1253,3 +1253,13 @@ def test_repurpose_gate_passes_a_youtube_only_package(tmp_path):
     path.write_text("## YouTube\nTitle: [C] grounded.\n", encoding="utf-8")
     results = gates.run_gates_for_stage(REPO_ROOT, "repurpose", path, {})
     assert results[0]["status"] == "pass"
+
+
+def test_all_five_new_stages_are_registered_and_grounding_still_is_not():
+    for stage_id in ("ideation", "voiceover", "music", "assembly", "repurpose"):
+        assert stage_id in gates.GATE_REGISTRY, f"{stage_id} should be registered"
+    assert "grounding" not in gates.GATE_REGISTRY, (
+        "grounding is explicitly out of scope per the design spec §3 -- it has no path "
+        "to attach a gate result (finalize_artifact=False), and registering one would "
+        "block every grounding approval forever"
+    )
