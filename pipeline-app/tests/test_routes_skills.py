@@ -490,11 +490,12 @@ def test_a_failed_commit_is_findable_at_error_severity(client, monkeypatch):
 
 
 def test_a_stage_with_no_editor_binding_is_findable(client, tmp_path):
-    """A-48 surfacing: a stage in pipeline.yaml whose template file is absent
-    used to render as a blank box and nothing else."""
+    from pipeline_app import obs
     test_client, root = client
     (root / "pipeline-app" / "stage_templates" / "styleboard.md").unlink()
     test_client.get("/skills/shorts-styleboard")
-    # obs.log writes to logs/app-YYYY-MM-DD.log; assert the file, not a print.
-    logs = sorted((root / "pipeline-app" / "logs").glob("app-*.log"))
+    # obs.log's LOG_DIR is fixed to the real pipeline-app/logs/, not repo_root -- it is NOT
+    # sandboxed per-test, so assert against the real location and only check for the event's
+    # presence (not exclusivity: other tests running in the same process may also log here).
+    logs = sorted(obs.LOG_DIR.glob("app-*.log"))
     assert logs and "skill_editor.template_file_missing" in logs[-1].read_text(encoding="utf-8")
