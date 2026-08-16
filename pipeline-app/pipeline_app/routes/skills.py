@@ -5,6 +5,7 @@ from urllib.parse import quote
 import yaml
 
 from pipeline_app import git_helper, obs
+from pipeline_app.pipeline_config import stage_id_by_skill, stage_template_path
 
 router = APIRouter()
 
@@ -17,23 +18,6 @@ def _reject(request: Request, skill_name: str, reason: str, **detail) -> HTTPExc
         detail={"skill": skill_name, **detail},
     )
     return HTTPException(status_code=400, detail=reason)
-
-
-def _stage_id_by_skill(stage_defs) -> dict[str, str]:
-    """Skill name -> stage id, derived from the loaded topology.
-
-    Replaces a hand-maintained dict that had already drifted from
-    pipeline.yaml (A-48). P4 owns the canonical version of this function --
-    see the P4 contract in this package's plan; this private copy exists only
-    so P5 is not blocked on P4, and T19 deletes it.
-    """
-    return {s.skill: s.id for s in stage_defs}
-
-
-def _template_path(repo_root: Path, stage_id: str) -> Path:
-    # Convention frozen with P4 -- see the P4 contract. T19 replaces this with
-    # pipeline_config.stage_template_path().
-    return repo_root / "pipeline-app" / "stage_templates" / f"{stage_id}.md"
 
 
 def _discovered_skill_names(repo_root) -> set[str]:
@@ -94,7 +78,7 @@ def _resolve_write_path(request: Request, skill_name: str, target: str) -> Path:
         root = repo_root / ".claude" / "skills"
         path = root / skill_name / "SKILL.md"
     elif target == "kickoff_template":
-        stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
+        stage_id = stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
         if stage_id is None:
             raise _reject(
                 request, skill_name,
@@ -102,7 +86,7 @@ def _resolve_write_path(request: Request, skill_name: str, target: str) -> Path:
                  f"no kickoff template to save."),
             )
         root = repo_root / "pipeline-app" / "stage_templates"
-        path = _template_path(repo_root, stage_id)
+        path = stage_template_path(repo_root, stage_id)
     else:
         raise _reject(
             request, skill_name,
@@ -147,8 +131,8 @@ def skill_detail(request: Request, skill_name: str, warning: str | None = None):
         obs.log("skill_editor.skill_md_missing", level="warning",
                 skill=skill_name, path=str(skill_md_path))
 
-    stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
-    template_path = _template_path(repo_root, stage_id) if stage_id else None
+    stage_id = stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
+    template_path = stage_template_path(repo_root, stage_id) if stage_id else None
     kickoff_template_missing = bool(stage_id) and not template_path.is_file()
     kickoff_template_content = (
         template_path.read_text(encoding="utf-8")
@@ -203,7 +187,7 @@ def save_skill(request: Request, skill_name: str, target: str = Form(...), conte
     # Commit both SKILL.md and kickoff_template saves (A-52).
     stage_id = None
     if target == "kickoff_template":
-        stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
+        stage_id = stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
     label = skill_name if target == "SKILL.md" else f"{skill_name} kickoff ({stage_id})"
     result = git_helper.commit_skill_edit(repo_root, path, label)
 

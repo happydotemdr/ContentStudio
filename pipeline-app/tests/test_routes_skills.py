@@ -78,6 +78,15 @@ def test_skill_detail_shows_skill_md_content(client):
     assert "Body." in resp.text
 
 
+def test_the_editor_reads_the_same_mapping_pipeline_config_publishes(client):
+    from pipeline_app.pipeline_config import stage_id_by_skill
+    test_client, _ = client
+    defs = test_client.app.state.stage_defs
+    assert stage_id_by_skill(defs) == {"shorts-ideation": "ideation",
+                                       "shorts-scripting": "scripting",
+                                       "shorts-styleboard": "styleboard"}
+
+
 def test_skill_md_save_produces_a_real_scoped_commit(client):
     test_client, tmp_path = client
     body = SKILL_MD.format(name="shorts-ideation") + "edited content\n"
