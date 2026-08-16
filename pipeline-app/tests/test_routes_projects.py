@@ -7,6 +7,18 @@ from fastapi.testclient import TestClient
 from pipeline_app.main import create_app
 
 
+def _scaffold_skill(root: Path, name: str) -> None:
+    skill_dir = root / ".claude" / "skills" / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("x", encoding="utf-8")
+
+
+def _scaffold_template(root: Path, stage_id: str) -> None:
+    tdir = root / "pipeline-app" / "stage_templates"
+    tdir.mkdir(parents=True, exist_ok=True)
+    (tdir / f"{stage_id}.md").write_text("/x", encoding="utf-8")
+
+
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -16,6 +28,10 @@ def client(tmp_path: Path, monkeypatch):
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: [ideation]\n",
         encoding="utf-8",
     )
+    _scaffold_skill(tmp_path, "shorts-ideation")
+    _scaffold_skill(tmp_path, "shorts-scripting")
+    _scaffold_template(tmp_path, "ideation")
+    _scaffold_template(tmp_path, "scripting")
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     return TestClient(app)
 
@@ -82,6 +98,12 @@ def test_project_home_groups_parallel_stages_and_shows_specialist(tmp_path: Path
     (tmp_path / ".claude" / "skills" / "midjourney-prompting" / "SKILL.md").write_text(
         "---\nname: midjourney-prompting\n---\n", encoding="utf-8",
     )
+    _scaffold_skill(tmp_path, "shorts-scripting")
+    _scaffold_skill(tmp_path, "voiceover-brief")
+    _scaffold_skill(tmp_path, "visual-prompts")
+    _scaffold_template(tmp_path, "scripting")
+    _scaffold_template(tmp_path, "voiceover")
+    _scaffold_template(tmp_path, "visual")
     (tmp_path / "pipeline.yaml").write_text(
         "stages:\n"
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n    depends_on: []\n"

@@ -2,7 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from pipeline_app.pipeline_config import StageDef, build_stage_nav, load_topology, stage_dir_name
+from pipeline_app.pipeline_config import (
+    StageDef,
+    build_stage_nav,
+    load_topology,
+    stage_dir_name,
+    stage_id_by_skill,
+    stage_template_path,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -50,10 +57,24 @@ def test_voiceover_and_visual_are_a_parallel_pair():
     assert voiceover.dir_prefix == visual.dir_prefix == "03"
 
 
-def test_assembly_depends_on_both_branch_stages():
+def test_assembly_depends_on_every_artifact_its_skill_requires():
+    """shorts-assembly/SKILL.md:16-29 requires the script, the voiceover brief and the
+    prompt sheet, and :31-39 requires the styleboard's BINDINGS line to resolve slot
+    tokens. depends_on used to carry only [voiceover, visual] (A-01/A-03)."""
     stages = load_topology(REPO_ROOT / "pipeline.yaml")
     assembly = next(s for s in stages if s.id == "assembly")
-    assert set(assembly.depends_on) == {"voiceover", "visual"}
+    assert set(assembly.depends_on) == {"scripting", "styleboard", "voiceover", "visual"}
+    # The bed arc is a real edge but not a gate: SKILL.md calls it "genuinely
+    # optional and its absence is never a blocker" (A-02).
+    assert assembly.optional_depends_on == ["music"]
+
+
+def test_repurpose_depends_on_the_script_and_the_packaging_direction():
+    """social-repurpose/SKILL.md:12-13 needs the script text and the ideation
+    packaging direction, not just the edit plan (A-01)."""
+    stages = load_topology(REPO_ROOT / "pipeline.yaml")
+    repurpose = next(s for s in stages if s.id == "repurpose")
+    assert repurpose.depends_on == ["ideation", "scripting", "assembly"]
 
 
 def test_grounding_is_brand_scoped_to_raisinggoodsports():
@@ -167,6 +188,22 @@ def _write_topology(tmp_path: Path, yaml_text: str) -> Path:
     return path
 
 
+def _scaffold(root: Path, skills: tuple[str, ...] = (), templates: tuple[str, ...] = ()) -> Path:
+    # Always create .claude/skills itself, even with an empty `skills` tuple --
+    # otherwise a test that scaffolds zero skill dirs (to exercise the
+    # missing-skill check) would instead trip the "not a ContentStudio
+    # checkout" check, since that dir would never get created at all.
+    (root / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
+    for name in skills:
+        (root / ".claude" / "skills" / name).mkdir(parents=True, exist_ok=True)
+        (root / ".claude" / "skills" / name / "SKILL.md").write_text("x", encoding="utf-8")
+    tdir = root / "pipeline-app" / "stage_templates"
+    tdir.mkdir(parents=True, exist_ok=True)
+    for name in templates:
+        (tdir / f"{name}.md").write_text("/x", encoding="utf-8")
+    return root
+
+
 def test_load_topology_rejects_duplicate_stage_id(tmp_path: Path):
     path = _write_topology(
         tmp_path,
@@ -194,13 +231,14 @@ def test_load_topology_rejects_dependency_cycle(tmp_path: Path):
         tmp_path,
         "stages:\n"
         "  - id: a\n    skill: x\n    dir_prefix: \"01\"\n    depends_on: [b]\n"
-        "  - id: b\n    skill: x\n    dir_prefix: \"02\"\n    depends_on: [a]\n",
+        "  - id: b\n    skill: y\n    dir_prefix: \"02\"\n    depends_on: [a]\n",
     )
     with pytest.raises(ValueError, match="dependency cycle"):
         load_topology(path)
 
 
 def test_load_topology_accepts_valid_graph(tmp_path: Path):
+    _scaffold(tmp_path, skills=("shorts-ideation", "shorts-scripting"), templates=("ideation", "scripting"))
     path = _write_topology(
         tmp_path,
         "stages:\n"
@@ -208,27 +246,25 @@ def test_load_topology_accepts_valid_graph(tmp_path: Path):
         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n"
         "    depends_on: [ideation]\n",
     )
-    stages = load_topology(path)
+    stages = load_topology(path, repo_root=tmp_path)
     assert [s.id for s in stages] == ["ideation", "scripting"]
 
 
 def test_load_topology_accepts_specialist_that_has_a_skill_dir(tmp_path: Path):
-    (tmp_path / ".claude" / "skills" / "some-specialist").mkdir(parents=True)
-    (tmp_path / ".claude" / "skills" / "some-specialist" / "SKILL.md").write_text(
-        "---\nname: some-specialist\n---\n", encoding="utf-8",
-    )
+    _scaffold(tmp_path, skills=("visual-prompts", "some-specialist"), templates=("visual",))
     path = _write_topology(
         tmp_path,
         "stages:\n"
         "  - id: visual\n    skill: visual-prompts\n    dir_prefix: \"03\"\n    depends_on: []\n"
         "    specialist: some-specialist\n    specialist_mode: auto\n",
     )
-    stages = load_topology(path)
+    stages = load_topology(path, repo_root=tmp_path)
     assert stages[0].specialist == "some-specialist"
     assert stages[0].specialist_mode == "auto"
 
 
 def test_load_topology_rejects_specialist_with_no_skill_dir(tmp_path: Path):
+    _scaffold(tmp_path, skills=("visual-prompts",), templates=("visual",))
     path = _write_topology(
         tmp_path,
         "stages:\n"
@@ -236,7 +272,7 @@ def test_load_topology_rejects_specialist_with_no_skill_dir(tmp_path: Path):
         "    specialist: ghost-specialist\n",
     )
     with pytest.raises(ValueError, match="ghost-specialist"):
-        load_topology(path)
+        load_topology(path, repo_root=tmp_path)
 
 
 def test_load_topology_rejects_specialist_with_no_specialist_mode(tmp_path: Path):
@@ -245,10 +281,7 @@ def test_load_topology_rejects_specialist_with_no_specialist_mode(tmp_path: Path
     wrong claim. A stage that declares a specialist but no specialist_mode
     must fail loudly at load time instead of silently rendering the wrong
     claim."""
-    (tmp_path / ".claude" / "skills" / "some-specialist").mkdir(parents=True)
-    (tmp_path / ".claude" / "skills" / "some-specialist" / "SKILL.md").write_text(
-        "---\nname: some-specialist\n---\n", encoding="utf-8",
-    )
+    _scaffold(tmp_path, skills=("visual-prompts", "some-specialist"), templates=("visual",))
     path = _write_topology(
         tmp_path,
         "stages:\n"
@@ -256,17 +289,14 @@ def test_load_topology_rejects_specialist_with_no_specialist_mode(tmp_path: Path
         "    specialist: some-specialist\n",
     )
     with pytest.raises(ValueError, match="visual"):
-        load_topology(path)
+        load_topology(path, repo_root=tmp_path)
 
 
 def test_load_topology_rejects_invalid_specialist_mode_value(tmp_path: Path):
     """A typo like "Manual" (wrong case) must not silently fall through to
     sidebar.html's else-branch ("(auto-delegated)") -- it must fail loudly at
     load time instead."""
-    (tmp_path / ".claude" / "skills" / "some-specialist").mkdir(parents=True)
-    (tmp_path / ".claude" / "skills" / "some-specialist" / "SKILL.md").write_text(
-        "---\nname: some-specialist\n---\n", encoding="utf-8",
-    )
+    _scaffold(tmp_path, skills=("visual-prompts", "some-specialist"), templates=("visual",))
     path = _write_topology(
         tmp_path,
         "stages:\n"
@@ -274,7 +304,7 @@ def test_load_topology_rejects_invalid_specialist_mode_value(tmp_path: Path):
         "    specialist: some-specialist\n    specialist_mode: Manual\n",
     )
     with pytest.raises(ValueError, match="Manual"):
-        load_topology(path)
+        load_topology(path, repo_root=tmp_path)
 
 
 def test_real_topology_has_styleboard_between_scripting_and_visual():
@@ -299,3 +329,95 @@ def test_every_stage_has_a_kickoff_template():
     templates_dir = repo_root / "pipeline-app" / "stage_templates"
     missing = [s.id for s in stages if not (templates_dir / f"{s.id}.md").exists()]
     assert missing == []
+
+
+def test_a_stage_whose_skill_directory_does_not_exist_is_rejected(tmp_path):
+    """A-11: `specialist` got a hard existence check; `skill` -- the one every
+    template renders as `/{{ skill }}` -- got none. A typo produced a slash
+    command resolving to nothing, so the stage ran with NO skill loaded and
+    answered from general knowledge: exactly what the anti-generic guarantee
+    exists to prevent, with no marker in the output to detect it by."""
+    _scaffold(tmp_path, skills=(), templates=("ideation",))
+    path = _write_topology(tmp_path,
+        'stages:\n  - id: ideation\n    skill: shorts-ideatoin\n    dir_prefix: "01"\n    depends_on: []\n')
+    with pytest.raises(ValueError, match="skill 'shorts-ideatoin' has no skill at"):
+        load_topology(path, repo_root=tmp_path)
+
+
+def test_a_stage_with_no_kickoff_template_is_rejected_at_load_time(tmp_path):
+    """A-10: the check existed only as a test. At runtime, TemplateNotFound was
+    raised inside the SSE body generator -- after a 200 and event-stream headers
+    were already committed, so the operator saw a broken stream, not an error."""
+    _scaffold(tmp_path, skills=("shorts-ideation",), templates=())
+    path = _write_topology(tmp_path,
+        'stages:\n  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: "01"\n    depends_on: []\n')
+    with pytest.raises(ValueError, match="has no kickoff template"):
+        load_topology(path, repo_root=tmp_path)
+
+
+def test_an_unknown_brand_scope_is_rejected(tmp_path):
+    """A-12: project_service materialises a stage row only when
+    `brand_scope is None or brand_scope == brand`, so `raisingoodsports` yields a
+    stage that exists in the topology, has a row on no project, vanishes from nav
+    and is never runnable -- with no error anywhere."""
+    _scaffold(tmp_path, skills=("shorts-ideation",), templates=("ideation",))
+    path = _write_topology(tmp_path,
+        'stages:\n  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: "01"\n'
+        '    depends_on: []\n    brand_scope: raisingoodsports\n')
+    with pytest.raises(ValueError, match="brand_scope 'raisingoodsports' is not one of"):
+        load_topology(path, repo_root=tmp_path)
+
+
+def test_an_unscoped_stage_may_not_depend_on_a_brand_scoped_one(tmp_path):
+    """A-12's worse half: stages_to_unlock requires every declared dependency
+    approved, so such an edge leaves the dependent permanently `locked` on every
+    out-of-scope project. migrations.py:166-170 records that exact wedge as a
+    real incident."""
+    _scaffold(tmp_path, skills=("shorts-ideation", "shorts-scripting"), templates=("grounding", "scripting"))
+    path = _write_topology(tmp_path,
+        'stages:\n'
+        '  - id: grounding\n    skill: shorts-ideation\n    dir_prefix: "00"\n'
+        '    depends_on: []\n    brand_scope: raisinggoodsports\n'
+        '  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: "02"\n'
+        '    depends_on: [grounding]\n')
+    with pytest.raises(ValueError, match="would sit locked forever"):
+        load_topology(path, repo_root=tmp_path)
+
+
+def test_loading_a_topology_from_outside_the_repo_fails_loudly(tmp_path):
+    """A-17: load_topology passed `path.parent` into a parameter named repo_root,
+    so skill validation silently followed the YAML file's location."""
+    path = _write_topology(tmp_path, 'stages:\n  - id: ideation\n    skill: shorts-ideation\n'
+                                     '    dir_prefix: "01"\n    depends_on: []\n')
+    with pytest.raises(ValueError, match="is not a ContentStudio checkout"):
+        load_topology(path)                       # no scaffold -> derived root is wrong
+
+
+def test_the_real_topology_loads_with_an_explicit_repo_root():
+    stages = load_topology(REPO_ROOT / "pipeline.yaml", repo_root=REPO_ROOT)
+    assert len(stages) == 9
+
+
+def test_stage_id_by_skill_maps_every_stage():
+    stages = load_topology(REPO_ROOT / "pipeline.yaml", repo_root=REPO_ROOT)
+    mapping = stage_id_by_skill(stages)
+    assert mapping["shorts-assembly"] == "assembly"
+    assert mapping["rgs-grounding"] == "grounding"
+    assert len(mapping) == len(stages)          # no collision swallowed a stage
+
+
+def test_two_stages_declaring_the_same_skill_are_rejected(tmp_path):
+    """A skill: collision makes {s.skill: s.id} last-wins, so P5's skill editor
+    would bind the skill to the WRONG stage's kickoff template with no error."""
+    _scaffold(tmp_path, skills=("shorts-ideation",), templates=("ideation", "ideation2"))
+    path = _write_topology(tmp_path,
+        'stages:\n'
+        '  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: "01"\n    depends_on: []\n'
+        '  - id: ideation2\n    skill: shorts-ideation\n    dir_prefix: "01b"\n    depends_on: []\n')
+    with pytest.raises(ValueError, match="skill 'shorts-ideation' is declared by 2 stages"):
+        load_topology(path, repo_root=tmp_path)
+
+
+def test_stage_template_path_points_at_the_stages_kickoff_file():
+    assert stage_template_path(REPO_ROOT, "assembly") == \
+        REPO_ROOT / "pipeline-app" / "stage_templates" / "assembly.md"

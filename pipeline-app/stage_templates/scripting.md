@@ -1,6 +1,6 @@
 /{{ skill }}
 
-Read the concept brief at `{{ input_file }}` and write the shot-ready script per
+Read the concept brief at `{{ inputs['ideation'] }}` and write the shot-ready script per
 shorts-scripting.
 {% if grounding_pointer %}
 A companion grounding artifact is available at `{{ grounding_pointer }}` — carry forward any

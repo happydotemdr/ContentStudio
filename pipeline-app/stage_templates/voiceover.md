@@ -1,6 +1,6 @@
 /{{ skill }}
 
-Read the script at `{{ input_file }}` and produce the ElevenLabs voiceover production brief.
+Read the script at `{{ inputs['scripting'] }}` and produce the ElevenLabs voiceover production brief.
 {% if grounding_pointer %}
 A companion grounding artifact is available at `{{ grounding_pointer }}` — carry forward any
 citations or constraints it names.

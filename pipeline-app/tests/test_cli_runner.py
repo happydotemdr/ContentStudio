@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sys
 import time
@@ -273,7 +274,7 @@ async def test_stream_claude_turn_denies_bash_and_web_tools_by_default(monkeypat
     disallowed = argv[idx + 1].split(",")
     for tool in (
         "Bash", "PowerShell", "WebFetch", "WebSearch", "NotebookEdit",
-        "Write(docs/**)", "Write(.claude/skills/**)",
+        "Write(docs/**)", "Write(.claude/**)",
     ):
         assert tool in disallowed, tool
 
@@ -299,6 +300,54 @@ async def test_stream_claude_turn_passes_strict_mcp_config(monkeypatch, tmp_path
         pass
 
     assert "--strict-mcp-config" in captured["argv"]
+
+
+def test_child_env_strips_the_apps_vendor_keys(monkeypatch):
+    """D-46: stream_claude_turn passed `dict(os.environ)` straight through, so a
+    turn -- and any PreToolUse hook it induced -- inherited RESEND_API_KEY,
+    YOUTUBE_API_KEY and BRIGHTDATA_API_KEY."""
+    from pipeline_app import cli_runner
+    for name in ("RESEND_API_KEY", "YOUTUBE_API_KEY", "BRIGHTDATA_API_KEY"):
+        monkeypatch.setenv(name, "secret")
+    env = cli_runner.child_env()
+    assert "RESEND_API_KEY" not in env
+    assert "YOUTUBE_API_KEY" not in env
+    assert "BRIGHTDATA_API_KEY" not in env
+
+
+def test_child_env_keeps_the_credentials_the_cli_needs_to_authenticate(monkeypatch):
+    """Distinguishability: 'stripped a vendor key' must not become 'stripped the
+    key the CLI logs in with'. A blanket *_API_KEY filter would break the app."""
+    from pipeline_app import cli_runner
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-x")
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "secret")
+    env = cli_runner.child_env()
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-x"
+    assert "BRIGHTDATA_API_KEY" not in env
+    assert env["PYTHONIOENCODING"] == "utf-8"
+
+
+@pytest.mark.asyncio
+async def test_stream_claude_turn_launches_with_the_scrubbed_env(monkeypatch, tmp_path: Path):
+    """Surfacing/binding: assert the scrub is what the subprocess actually gets,
+    not merely that a helper exists."""
+    from pipeline_app import cli_runner
+
+    monkeypatch.setattr(cli_runner, "resolve_claude_binary", lambda *a, **k: "claude")
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "secret")
+
+    captured: dict = {}
+
+    async def fake_exec(*argv, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _FakeProcess([b'{"type": "result", "result": "ok"}\n'])
+
+    monkeypatch.setattr(cli_runner.asyncio, "create_subprocess_exec", fake_exec)
+
+    async for _ in cli_runner.stream_claude_turn("prompt", tmp_path, None):
+        pass
+
+    assert "BRIGHTDATA_API_KEY" not in captured["env"]
 
 
 def test_injection_shaped_prompt_never_reaches_cmd_shim_command_line(monkeypatch):
@@ -455,16 +504,62 @@ def test_kill_process_tree_uses_plain_kill_off_windows(monkeypatch):
     assert proc.killed is True
 
 
-def test_scoped_permissions_settings_scopes_write_edit_to_runs_and_rgs_briefs():
-    from pipeline_app.cli_runner import scoped_permissions_settings
-    import json as _json
+@pytest.mark.parametrize("path,allowed", [
+    ("runs/abc-1/02-scripting/raw_output.md", True),
+    ("rgs-briefs/2026-08-08-a.md", True),
+    ("scripts/lint_prompt_sheet.py", False),      # D-45: gates.py exec_module's this in-process
+    ("scripts/lint_script_language.py", False),
+    (".claude/hooks/protect_briefs.py", False),   # D-46: runs as an unrestricted subprocess
+    (".claude/settings.json", False),
+    (".claude/skills/shorts-assembly/SKILL.md", False),
+    ("docs/style-library.md", False),
+    ("output/brand-intel/x.json", False),
+    ("pipeline.yaml", False),
+    ("pipeline-app/pipeline_app/cli_runner.py", False),   # its own runner
+    ("../FamilyBrain/anything.md", False),
+    ("C:/Windows/System32/x.dll", False),
+])
+def test_pipeline_turn_write_scope(path, allowed):
+    """Effect, not echo. F-11's predecessor deserialized the JSON literal the
+    function hard-codes and asserted the four strings survived -- so it could
+    never have caught that `permissions.allow` grants rather than restricts."""
+    from pipeline_app import cli_runner
+    assert cli_runner.permits_write(path) is allowed
 
-    data = _json.loads(scoped_permissions_settings())
-    allow = data["permissions"]["allow"]
-    assert "Write(runs/**)" in allow
-    assert "Edit(runs/**)" in allow
-    assert "Write(rgs-briefs/**)" in allow
-    assert "Edit(rgs-briefs/**)" in allow
+
+def test_the_shipped_flags_are_derived_from_the_policy_permits_write_evaluates():
+    """Binds the behavioral test above to what actually ships: a future widening
+    of the flags without widening the policy would break here."""
+    from pipeline_app import cli_runner
+
+    argv = cli_runner.build_claude_argv(
+        "p", None, cli_runner.PIPELINE_ALLOWED_TOOLS, cli_runner.pipeline_permissions_settings(),
+        cli_runner.PIPELINE_DISALLOWED_TOOLS, which_fn=lambda _n: "/usr/bin/claude")
+    allowed = argv[argv.index("--allowedTools") + 1].split(",")
+    assert "Write" not in allowed and "Edit" not in allowed      # never unpatterned
+    assert {t for t in allowed if t.startswith(("Write(", "Edit("))} == {
+        f"{tool}({pattern})"
+        for pattern in cli_runner.WRITE_ALLOW_PATTERNS for tool in ("Write", "Edit")
+    }
+    denied = argv[argv.index("--disallowedTools") + 1]
+    for pattern in cli_runner.WRITE_DENY_PATTERNS:
+        assert f"Write({pattern})" in denied and f"Edit({pattern})" in denied
+
+
+def test_settings_json_carries_a_deny_block_not_just_an_allow_list():
+    """D-43: the only key emitted was `permissions.allow`, which grants."""
+    from pipeline_app import cli_runner
+    data = json.loads(cli_runner.pipeline_permissions_settings())
+    assert data["permissions"]["deny"], "an allow-only settings blob restricts nothing"
+    assert "Write(scripts/**)" in data["permissions"]["deny"]
+    assert "Write(.claude/**)" in data["permissions"]["deny"]
+
+
+def test_scoped_permissions_settings_is_gone():
+    """The old name asserted a control that did not exist; a reviewer grepping
+    for it must find nothing rather than a renamed shim."""
+    from pipeline_app import cli_runner
+    assert not hasattr(cli_runner, "scoped_permissions_settings")
 
 
 def test_default_allowed_tools_includes_task():

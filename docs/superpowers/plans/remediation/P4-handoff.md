@@ -34,6 +34,17 @@ the SKILL.md prose that must follow is handed to P13 as a contract (§6), not ed
 - `pipeline-app/tests/test_pipeline_config.py`
 - `pipeline-app/tests/test_routes_chat_sse.py`
 
+> **Scope amendment (operator-authorized, 2026-08-16, T13 only):** T13's topology-validation
+> tightening broke test fixtures in files P4 does not otherwise own. The operator authorized T13
+> to also touch whichever of `tests/conftest.py`, `tests/test_header.py`, `tests/test_main.py`,
+> `tests/test_obs.py`, `tests/test_routes_approve_edit.py`, `tests/test_routes_browse.py`,
+> `tests/test_routes_discovery.py`, `tests/test_routes_doctor.py`, `tests/test_routes_inspector.py`,
+> `tests/test_routes_projects.py`, `tests/test_routes_stages.py`, and
+> `tests/integration/test_stubbed_cli_e2e.py` need it — strictly limited to adding
+> skill/kickoff-template scaffolding (or a topology-validation guard) to their EXISTING fixtures, so
+> the suite returns to its pre-T13 baseline. No other change to any of these files is authorized by
+> this amendment, and no other task in this package may rely on it.
+
 **Finding IDs (26):** A-01, A-02, A-03, A-04, A-05, A-06, A-07, A-08, A-09, A-10, A-11, A-12,
 A-13, A-14, A-15, A-16, A-17, A-32, A-44, A-46, D-43, D-44, D-45, D-46, F-11, F-15.
 
@@ -275,13 +286,22 @@ Also update the seven single-input tests in that file from `"input_file": "..."`
       plain `AssertionError` — the assembly prompt contains neither the script path nor a bed line.
 - [ ] **Implement.** Rewrite the templates. Full new bodies for the four that change materially:
 
+> **Amendment (found during T2 execution):** this section's own shown `assembly.md` body
+> ("script (beat timing, Delivery notes): `path`") does not contain the substring
+> §3 Task 2's own `test_assembly_template_names_the_script_and_the_styleboard` asserts
+> ("script: `path`"), because "(beat timing, Delivery notes)" sits between "script" and
+> the colon. T2's implementer resolved this by rewording the line to
+> `` - script: `{{ inputs['scripting'] }}` (beat timing, Delivery notes) `` — same
+> information, colon immediately after "script" so the assertion's literal substring
+> match succeeds. Landed in commit 94458f0. No other content changed.
+
 `pipeline-app/stage_templates/assembly.md`:
 
 ```jinja
 /{{ skill }}
 
 Read these upstream artifacts and produce the assembly/edit plan:
-- script (beat timing, Delivery notes): `{{ inputs['scripting'] }}`
+- script: `{{ inputs['scripting'] }}` (beat timing, Delivery notes)
 - styleboard — its BINDINGS line resolves every `{style:...}` / `{char:...}` slot in the
   prompt sheet against `docs/style-library.md`: `{{ inputs['styleboard'] }}`
 - voiceover brief: `{{ inputs['voiceover'] }}`
@@ -373,6 +393,15 @@ Inherit the WORLD LOCK; do not re-emit it into your sheet, and write every style
 This is the highest-value test in the package. It is data-driven over all nine stages, so the
 whole class of defect cannot be reintroduced.
 
+> **Amendment (found during T3 execution):** this block's own `load_topology(REPO_ROOT /
+> "pipeline.yaml", repo_root=REPO_ROOT)` call passes a `repo_root=` kwarg `load_topology`
+> does not accept yet — that parameter is added by T13, sequenced after T3. Fixed by
+> dropping the kwarg here; `load_topology(REPO_ROOT / "pipeline.yaml")` is correct at T3's
+> point in the sequence. Landed in commit 444e93d. T3 also added
+> `KICKOFF_CONTEXT_KEYS` (frozenset only) to `prompt_builder.py` as a minimal addition so
+> this test file can import it — T4 supplies the rest of that file's content and will find
+> the constant already present.
+
 - [ ] **Test first.** New block at the top of `pipeline-app/tests/test_prompt_builder.py`:
 
 ```python
@@ -383,7 +412,7 @@ from pipeline_app.pipeline_config import load_topology
 from pipeline_app.prompt_builder import KICKOFF_CONTEXT_KEYS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REAL_STAGES = load_topology(REPO_ROOT / "pipeline.yaml", repo_root=REPO_ROOT)
+REAL_STAGES = load_topology(REPO_ROOT / "pipeline.yaml")  # `repo_root=` kwarg lands in T13, not yet
 
 
 def _ast(stage_id: str) -> nodes.Template:
@@ -593,6 +622,104 @@ def validate_template_source(source: str, context: dict) -> None:
 
 ---
 
+> **Amendment (found before T5 dispatch).** `test_turn_service.py`'s existing `CHAIN_STAGES` /
+> `_build_approved_chain` fixtures predate T1's `pipeline.yaml` changes: `assembly` there still
+> only depends on `[voiceover, visual]`, with no `styleboard` stage modelled at all — inconsistent
+> with the real graph (`scripting, styleboard, voiceover, visual` + optional `music`). None of the
+> shared test helpers this task's and later tasks' (T6-T11, T16) shown code assume already
+> exist — `capture` fixture, `_fake_stream`'s `captured=` param, `_INIT`/`_RESULT_OK` constants,
+> `_by_id`, `_approved_chain` — are present yet. T5 is the first task to need them, so T5 adds this
+> shared infrastructure once; T6 onward find it already there and reuse it (same pattern as T3
+> pre-supplying `KICKOFF_CONTEXT_KEYS` for T4). The exact additions, applied to
+> `pipeline-app/tests/test_turn_service.py`:
+>
+> ```python
+> CHAIN_STAGES = [
+>     StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02", depends_on=[]),
+>     StageDef(id="styleboard", skill="shorts-styleboard", dir_prefix="02b", depends_on=["scripting"]),
+>     StageDef(id="voiceover", skill="voiceover-brief", dir_prefix="03", depends_on=["scripting"]),
+>     StageDef(id="visual", skill="visual-prompts", dir_prefix="03", depends_on=["scripting", "styleboard"]),
+>     StageDef(
+>         id="assembly", skill="shorts-assembly", dir_prefix="04",
+>         depends_on=["scripting", "styleboard", "voiceover", "visual"],
+>         optional_depends_on=["music"],
+>     ),
+>     StageDef(id="repurpose", skill="social-repurpose", dir_prefix="05", depends_on=["assembly"]),
+> ]
+> ```
+>
+> `repurpose`'s `depends_on` is deliberately left as `["assembly"]` here (not widened to match
+> `pipeline.yaml`'s real `[ideation, scripting, assembly]`) — no task through T11 exercises
+> repurpose's own chain, and `state_machine.is_stale` only checks RECORDED dependency paths against
+> current hashes (never flags an unrecorded upstream), so this simplification cannot cause a false
+> pass/fail in any currently-shown test. Widen it only if a later task's own tests actually need it,
+> documented the same way.
+>
+> `_build_approved_chain` gains a styleboard artifact and records it in `visual`'s and `assembly`'s
+> `depends_on` metadata (the `03-visual` dir prefix stays `"03"`, shared with `voiceover`, matching
+> the real topology):
+>
+> ```python
+>     artifacts.write_artifact(run_dir / "02-scripting", 1, {"stage": "shorts-scripting"}, "script v1")
+>     script_dep = [_dep(run_dir, "02-scripting/artifact.v1.md")]
+>     artifacts.write_artifact(run_dir / "02b-styleboard", 1,
+>                              {"stage": "shorts-styleboard", "depends_on": script_dep}, "styleboard v1")
+>     styleboard_dep = [_dep(run_dir, "02b-styleboard/artifact.v1.md")]
+>     artifacts.write_artifact(run_dir / "03-voiceover", 1, {"stage": "voiceover-brief", "depends_on": script_dep}, "vo v1")
+>     artifacts.write_artifact(run_dir / "03-visual", 1,
+>                              {"stage": "visual-prompts", "depends_on": script_dep + styleboard_dep}, "vis v1")
+>     assembly_dep = [
+>         *script_dep, *styleboard_dep,
+>         _dep(run_dir, "03-voiceover/artifact.v1.md"),
+>         _dep(run_dir, "03-visual/artifact.v1.md"),
+>     ]
+>     artifacts.write_artifact(run_dir / "04-assembly", 1, {"stage": "shorts-assembly", "depends_on": assembly_dep}, "asm v1")
+>     # repurpose's write is unchanged from today
+> ```
+>
+> Plus three small additions:
+>
+> ```python
+> def _by_id(stage_id: str) -> StageDef:
+>     return next(s for s in CHAIN_STAGES if s.id == stage_id)
+>
+>
+> _approved_chain = _build_approved_chain
+>
+>
+> _INIT = {"type": "system", "subtype": "init", "session_id": "session-1"}
+> _RESULT_OK = {"type": "result", "result": "done", "total_cost_usd": 0.01, "is_error": False}
+>
+>
+> @pytest.fixture
+> def capture() -> list[dict]:
+>     return []
+> ```
+>
+> And `_fake_stream` (the existing one at the top of the file) gains one new optional keyword,
+> backward-compatible with every existing call site:
+>
+> ```python
+> def _fake_stream(events, writes_file=None, content="generated body", captured=None):
+>     async def _gen(prompt, cwd, resume_session_id, **kwargs):
+>         if captured is not None:
+>             captured.append({"prompt": prompt, "cwd": cwd,
+>                              "resume_session_id": resume_session_id, "kwargs": kwargs})
+>         if writes_file is not None:
+>             writes_file.parent.mkdir(parents=True, exist_ok=True)
+>             writes_file.write_text(content, encoding="utf-8")
+>         for event in events:
+>             yield event
+>     return _gen
+> ```
+>
+> Verified this does not disturb the two currently-passing cascade tests
+> (`test_propagate_staleness_cascades_past_direct_dependents`,
+> `test_propagate_staleness_cascade_stops_at_a_non_approved_stage`): the first checks final status
+> only (mechanism-agnostic to the added direct edges), and the second's `assembly` override to
+> `AWAITING_REVIEW` is filtered out by the `row["status"] != APPROVED` guard before any hash
+> comparison runs, regardless of what's newly in `depends_on`.
+
 ### T5 — A required dependency with no artifact refuses the turn (A-07)
 
 - [ ] **Test first**, `pipeline-app/tests/test_turn_service.py`:
@@ -704,6 +831,26 @@ Add `from pipeline_app import obs` to the imports.
 - [ ] **Commit:** `fix(handoff): refuse a turn whose required upstream artifact is missing`
 
 ---
+
+> **Amendment (found before T6 dispatch).** This task's own shown test code calls
+> `_draft_artifact(stage_dir, version, stage_name, body)` and
+> `_final_artifact(stage_dir, version, stage_name, body)`, neither of which exists yet in
+> `test_turn_service.py`. Add both (T6 is the first task to need them; T7/T10/T11/T16 reuse them):
+>
+> ```python
+> def _draft_artifact(stage_dir: Path, version: int, stage_name: str, body: str) -> Path:
+>     return artifacts.write_artifact(stage_dir, version, {"stage": stage_name}, body)
+>
+>
+> def _final_artifact(stage_dir: Path, version: int, stage_name: str, body: str) -> Path:
+>     path = _draft_artifact(stage_dir, version, stage_name, body)
+>     artifacts.stamp_final(path, "2026-08-08T00:00:00Z")
+>     return path
+> ```
+>
+> `artifacts.stamp_final(path, finalized_at, gate_override_reason=None, *, actor=None)` already
+> exists (`pipeline_app/artifacts.py:445`) and sets `meta["status"] = "final"` — exactly what T6's
+> own `_approved_artifact_path` checks for.
 
 ### T6 — Resolve upstreams to the approved artifact, not the newest draft (A-32)
 
@@ -884,7 +1031,13 @@ def _resumed_prompt(conn, stage_dir: Path, run_dir: Path, stage_def: StageDef,
     changed = sorted(sid for sid in current if seen.get(sid) != current[sid])
     dropped = sorted(sid for sid in seen if sid not in current)
     lines = ["UPSTREAM CHANGED SINCE THIS SESSION LAST READ IT."]
-    lines += [f"- {sid}: now `{inputs[sid]}` (was `{seen.get(sid, 'absent')}`)" for sid in changed]
+    # `current[sid]`, not `inputs[sid]`: `inputs` holds raw absolute paths
+    # (backslashes on Windows), `current` the `_relpath`-normalized
+    # forward-slash form the test asserts against and `seen` is keyed in.
+    # Amendment (found during T7 execution): the brief originally showed
+    # `inputs[sid]` here, which would have mixed path separator styles in
+    # the same message. Fixed in commit f290d30.
+    lines += [f"- {sid}: now `{current[sid]}` (was `{seen.get(sid, 'absent')}`)" for sid in changed]
     lines += [f"- {sid}: no longer available (was `{seen[sid]}`)" for sid in dropped]
     lines.append("Re-read every path above before answering; do not rely on the earlier version.")
     obs.record_event(
@@ -979,6 +1132,14 @@ def _resume_failed(events: list[dict]) -> bool:
 
 ### T9 — An aborted turn restores the status it interrupted (A-46)
 
+> **Amendment (found before T9 dispatch).** The first test below calls
+> `_approved_chain(conn, tmp_path, statuses={"voiceover": StageStatus.STALE.value})`, but
+> `_build_approved_chain`/`_approved_chain`'s actual keyword (added in T5's amendment) is
+> `downstream_statuses`, not `statuses`. Use `downstream_statuses=` instead. The second test's `...`
+> elisions need filling in — it is the distinguishability twin of the first, using the DEFAULT chain
+> (no status override, so `voiceover` is `APPROVED` like every other stage `_approved_chain`
+> produces) and the same abort mechanics.
+
 - [ ] **Test first**, `test_turn_service.py`:
 
 ```python
@@ -989,7 +1150,7 @@ async def test_aborting_a_turn_on_a_stale_stage_leaves_it_stale(conn, tmp_path, 
     chat on a stale stage and closing the tab erased the only cue that the
     artifact was built on a since-changed input."""
     project_id, run_dir = _approved_chain(conn, tmp_path,
-                                          statuses={"voiceover": StageStatus.STALE.value})
+                                          downstream_statuses={"voiceover": StageStatus.STALE.value})
     monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
                         _fake_stream([_INIT, _RESULT_OK]))
     agen = turn_service.run_stage_turn(
@@ -1001,10 +1162,18 @@ async def test_aborting_a_turn_on_a_stale_stage_leaves_it_stale(conn, tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_aborting_a_turn_on_an_approved_stage_leaves_it_approved(...):
+async def test_aborting_a_turn_on_an_approved_stage_leaves_it_approved(conn, tmp_path, monkeypatch):
     """Distinguishability: `approved -> running -> abort` laundered into
     awaiting_review too. Restoring the prior status must be exact, not a guess
     keyed to artifact existence."""
+    project_id, run_dir = _approved_chain(conn, tmp_path)   # no override -> voiceover starts APPROVED
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_INIT, _RESULT_OK]))
+    agen = turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("voiceover"), CHAIN_STAGES, "redo")
+    await agen.__anext__()
+    await agen.aclose()
     assert db.get_stage(conn, project_id, "voiceover")["status"] == StageStatus.APPROVED.value
 ```
 
@@ -1034,6 +1203,56 @@ and in the `except BaseException:` block, replace the `resolve_latest_artifact` 
 ---
 
 ### T10 — Staleness sees drafts, optional edges and pointers (A-44, A-14, A-02 half)
+
+> **Amendment (found before T10 dispatch).** Two real gaps in this section's own shown code:
+>
+> 1. **`with_music=True`** — `_build_approved_chain` has no such kwarg yet, and `CHAIN_STAGES` has
+>    no `music` `StageDef` at all. Without a `music` entry, `propagate_staleness`'s
+>    `dep_upstream_defs = [s for s in all_stage_defs if s.id in dep_stage.all_depends_on]` can never
+>    include it (there's no `StageDef` with `id="music"` to match), so the bed-arc regenerate test
+>    could never detect staleness no matter how the rest of this task is implemented. Add a `music`
+>    stage to `CHAIN_STAGES` and the `with_music` kwarg to `_build_approved_chain`:
+>
+> ```python
+> # In CHAIN_STAGES, add:
+>     StageDef(id="music", skill="music-brief", dir_prefix="03", depends_on=["scripting", "voiceover"]),
+> ```
+>
+> ```python
+> def _build_approved_chain(conn, tmp_path: Path, downstream_statuses=None, with_music=False):
+>     ...  # unchanged through the assembly_dep construction
+>     if with_music:
+>         music_dep = script_dep + [_dep(run_dir, "03-voiceover/artifact.v1.md")]
+>         _stamp(artifacts.write_artifact(run_dir / "03-music", 1,
+>                                         {"stage": "music-brief", "depends_on": music_dep}, "bed v1"))
+>         assembly_dep = [*assembly_dep, _dep(run_dir, "03-music/artifact.v1.md")]
+>     _stamp(artifacts.write_artifact(run_dir / "04-assembly", 1,
+>                                     {"stage": "shorts-assembly", "depends_on": assembly_dep}, "asm v1"))
+>     ...  # repurpose write unchanged
+> ```
+>    (Write the music artifact — and append its dep entry into `assembly_dep` — before the existing
+>    `04-assembly` write, not after; the assembly artifact must record it in the same call.)
+>
+> 2. **The pointer-unresolvable test is unwritable as shown.** `obs.log` (`pipeline_app/obs.py:54`)
+>    prints a JSON line to stderr and a log file — it does not go through Python's `logging` module,
+>    so pytest's `caplog` fixture (which hooks `logging`) captures nothing from it, and the shown
+>    `obs_records`/`r.kind` shape doesn't correspond to any real `caplog` API. Test via `capsys`
+>    instead, and call `_current_upstream_hashes` directly rather than the full
+>    `propagate_staleness` (no dependent chain needed to exercise this one function):
+>
+> ```python
+> def test_staleness_hashing_without_a_repo_root_says_so_for_a_pointer_backed_upstream(tmp_path, capsys):
+>     """A-14: latest_artifact_path cannot see grounding's pointer indirection, so
+>     a depends_on edge onto grounding would silently drop it from BOTH input
+>     collection and staleness hashing. It must warn, not shrug."""
+>     grounding = StageDef(id="grounding", skill="rgs-grounding", dir_prefix="00", depends_on=[])
+>     hashes = turn_service._current_upstream_hashes(tmp_path, [grounding], repo_root=None)
+>     assert hashes == {}
+>     events = [json.loads(line) for line in capsys.readouterr().err.strip().splitlines() if line.strip()]
+>     assert any(e.get("event") == "staleness.pointer_upstream_unresolvable" for e in events)
+> ```
+>
+>    Add `import json` to `test_turn_service.py`'s imports if not already present.
 
 - [ ] **Test first**, `test_turn_service.py`. **Invert**
       `test_propagate_staleness_cascade_stops_at_a_non_approved_stage`
@@ -1074,12 +1293,9 @@ def test_regenerating_the_bed_arc_marks_assembly_stale(conn, tmp_path):
     assert db.get_stage(conn, project_id, "assembly")["status"] == StageStatus.STALE.value
 
 
-def test_staleness_hashing_without_a_repo_root_says_so_for_a_pointer_backed_upstream(conn, tmp_path, caplog):
-    """A-14: latest_artifact_path cannot see grounding's pointer indirection, so
-    a depends_on edge onto grounding would silently drop it from BOTH input
-    collection and staleness hashing. It must warn, not shrug."""
-    ...
-    assert any(r.kind == "staleness.pointer_upstream_unresolvable" for r in obs_records)
+# test_staleness_hashing_without_a_repo_root_says_so_for_a_pointer_backed_upstream:
+# see this section's own Amendment above for the real (capsys-based) test body —
+# caplog cannot see obs.log's output.
 ```
 
 - [ ] **Run** → the inverted test fails (assembly stays `awaiting_review`), the music test fails
@@ -1146,22 +1362,84 @@ def _current_upstream_hashes(
 
 ### T11 — Grounding re-runs invalidate what was built on the old brief (A-13)
 
+> **Amendment (found before T11 dispatch).** Several real gaps in this section's own shown code:
+>
+> 1. `grounding_service.write_pointer(stage_dir, rgs_brief_relpath, repo_root)` takes THREE required
+>    positional args (confirmed live, `grounding_service.py:76`) — both call sites below are missing
+>    `repo_root`. It also requires the target file (`repo_root / rgs_brief_relpath`) to actually
+>    exist on disk (it hashes and stats it) — every brief path used in a test must be created first.
+> 2. `_rgs_chain(conn, tmp_path, brief)` does not exist yet. Add it (mirrors `_build_approved_chain`
+>    but for an RGS-brand project with a grounding pointer already set and recorded in `scripting`'s
+>    own `depends_on`, matching what this task's own `turn_service.py` change produces):
+>
+> ```python
+> def _rgs_chain(conn, tmp_path: Path, brief: str):
+>     project_id = db.create_project(conn, "rgs-1", "rgs", "raisinggoodsports", "2026-08-08T00:00:00Z")
+>     for stage in CHAIN_STAGES:
+>         db.create_stage_row(conn, project_id, stage.id, StageStatus.APPROVED.value)
+>     run_dir = tmp_path / "runs" / "rgs-1"
+>     brief_path = tmp_path / brief
+>     brief_path.parent.mkdir(parents=True, exist_ok=True)
+>     if not brief_path.exists():
+>         brief_path.write_text("brief content", encoding="utf-8")
+>     grounding_service.write_pointer(run_dir / "00-grounding", brief, tmp_path)
+>     script_dep = [{"path": brief, "sha256": artifacts.compute_sha256(brief_path)}]
+>     artifacts.stamp_final(
+>         artifacts.write_artifact(run_dir / "02-scripting", 1,
+>                                  {"stage": "shorts-scripting", "depends_on": script_dep}, "script v1"),
+>         "2026-08-08T00:00:00Z",
+>     )
+>     return project_id, run_dir
+> ```
+>
+> 3. The first and fourth tests below are shown elided (`...`) or incomplete in the source material.
+>    Full bodies, using the `_rgs_chain`/`write_pointer` fixes above (needs
+>    `from unittest.mock import ANY` added to the test file's imports):
+>
+> ```python
+> @pytest.mark.asyncio
+> async def test_a_turn_records_the_grounding_brief_it_was_built_on(conn, tmp_path, monkeypatch, capture):
+>     """A-13: re-running grounding repoints rgs-briefs/ and leaves every downstream
+>     stage `approved` with the previous thinker/research pairing baked in. Nothing
+>     could detect it, because no artifact recorded which brief it used."""
+>     project_id = db.create_project(conn, "rgs-1", "rgs", "raisinggoodsports", "2026-08-08T00:00:00Z")
+>     db.create_stage_row(conn, project_id, "scripting", StageStatus.READY.value)
+>     run_dir = tmp_path / "runs" / "rgs-1"
+>     brief_path = tmp_path / "rgs-briefs" / "2026-08-08-a.md"
+>     brief_path.parent.mkdir(parents=True, exist_ok=True)
+>     brief_path.write_text("brief content", encoding="utf-8")
+>     monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+>                         _fake_stream([_RESULT_OK], run_dir / "02-scripting" / "raw_output.md",
+>                                      captured=capture))
+>     await _drain(turn_service.run_stage_turn(
+>         conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "rgs-1",
+>         _by_id("scripting"), CHAIN_STAGES, "go",
+>         grounding_pointer="rgs-briefs/2026-08-08-a.md"))
+>     latest = artifacts.latest_artifact_path(run_dir / "02-scripting")
+>     meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+>     assert {"path": "rgs-briefs/2026-08-08-a.md", "sha256": ANY} in meta["depends_on"]
+> ```
+>
+> ```python
+> def test_repointing_grounding_records_a_warning_event(conn, tmp_path):
+>     project_id, run_dir = _rgs_chain(conn, tmp_path, brief="rgs-briefs/2026-08-08-a.md")
+>     brief_b = tmp_path / "rgs-briefs" / "2026-08-08-b.md"
+>     brief_b.write_text("brief b content", encoding="utf-8")
+>     grounding_service.write_pointer(run_dir / "00-grounding", "rgs-briefs/2026-08-08-b.md", tmp_path)
+>     turn_service.propagate_grounding_staleness(conn, tmp_path, run_dir, CHAIN_STAGES, project_id)
+>     rows = conn.execute(
+>         "SELECT severity FROM events WHERE kind = 'handoff.grounding_repointed'").fetchall()
+>     assert rows and rows[0]["severity"] == "warning"
+> ```
+
 - [ ] **Test first**, `test_turn_service.py`:
 
 ```python
-@pytest.mark.asyncio
-async def test_a_turn_records_the_grounding_brief_it_was_built_on(conn, tmp_path, monkeypatch):
-    """A-13: re-running grounding repoints rgs-briefs/ and leaves every downstream
-    stage `approved` with the previous thinker/research pairing baked in. Nothing
-    could detect it, because no artifact recorded which brief it used."""
-    ...
-    meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
-    assert {"path": "rgs-briefs/2026-08-08-a.md", "sha256": ANY} in meta["depends_on"]
-
-
 def test_repointing_grounding_marks_downstream_stale(conn, tmp_path):
     project_id, run_dir = _rgs_chain(conn, tmp_path, brief="rgs-briefs/2026-08-08-a.md")
-    grounding_service.write_pointer(run_dir / "00-grounding", "rgs-briefs/2026-08-08-b.md")
+    brief_b = tmp_path / "rgs-briefs" / "2026-08-08-b.md"
+    brief_b.write_text("brief b content", encoding="utf-8")
+    grounding_service.write_pointer(run_dir / "00-grounding", "rgs-briefs/2026-08-08-b.md", tmp_path)
     stale = turn_service.propagate_grounding_staleness(
         conn, tmp_path, run_dir, CHAIN_STAGES, project_id)
     assert "scripting" in stale
@@ -1175,13 +1453,9 @@ def test_a_generic_project_with_no_brief_is_not_marked_stale(conn, tmp_path):
     assert turn_service.propagate_grounding_staleness(
         conn, tmp_path, run_dir, CHAIN_STAGES, project_id) == []
     assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.APPROVED.value
-
-
-def test_repointing_grounding_records_a_warning_event(conn, tmp_path):
-    rows = conn.execute(
-        "SELECT severity FROM events WHERE kind = 'handoff.grounding_repointed'").fetchall()
-    assert rows and rows[0]["severity"] == "warning"
 ```
+
+(`test_a_turn_records_the_grounding_brief_it_was_built_on` and `test_repointing_grounding_records_a_warning_event` are given in full in the Amendment above — write them as shown there.)
 
 - [ ] **Run** → fails: no `propagate_grounding_staleness`; `depends_on` carries no brief.
 - [ ] **Implement**, `turn_service.py`. In the `depends_on` construction at `:234-237`:
@@ -1291,6 +1565,36 @@ async def test_run_stage_turn_rejects_a_stage_the_project_has_no_row_for(conn, p
 ---
 
 ### T13 — Topology validation catches what it silently allowed (A-10, A-11, A-12, A-17)
+
+> **Amendment (found during T13 execution, operator decision recorded 2026-08-16).** T13's own
+> mandatory skill/kickoff-template-existence checks in `_validate_topology` — correct and required
+> by A-10/A-11 — break 184 tests across 12 files P4 does not own: `tests/conftest.py`'s shared
+> `client` fixture (used by ~9 files) writes `stages: []` with an empty `.claude/skills/` and no
+> `pipeline-app/stage_templates/` at all, and ~10 files' own local `client`/`two_stage_client`
+> fixtures declare real, non-empty stage lists with no matching skill/template scaffolding at all.
+> None of this was reachable before T13 tightened the check from "check `specialist` only" to
+> "check `skill` and require a kickoff template for every stage."
+>
+> **Operator decision:** widen T13's scope to fix these fixtures too, rather than accept the
+> regression or defer the finding. Two parts:
+>
+> 1. **Guard the checkout-sanity check with `if stages:`** in `_validate_topology` (in
+>    `pipeline_config.py`, already inside P4's owned scope) — an empty topology has nothing to
+>    validate, so it needs no scaffolding at all. This alone fixes every fixture that writes
+>    `stages: []` (`conftest.py`'s shared fixture and its ~9 dependents, plus several files' own
+>    `stages: []`-only local fixtures) with a one-line, in-scope change.
+> 2. **Scaffold the remaining fixtures that declare real, non-empty stages** with no matching
+>    `.claude/skills/<skill>/SKILL.md` / `pipeline-app/stage_templates/<id>.md` — mirroring the
+>    pattern `tests/test_routes_skills.py`'s own fixture already uses correctly (create a minimal
+>    skill dir + `SKILL.md`, and a minimal `stage_templates/<id>.md`, for each stage id/skill the
+>    fixture's `pipeline.yaml` text declares). This part DOES touch files outside P4's originally
+>    declared scope (`tests/conftest.py` is unaffected by part 2, but several `tests/test_routes_*.py`
+>    and `tests/test_header.py`/`test_main.py`/`test_obs.py` files may still need scaffolding after
+>    part 1's guard is applied) — explicitly authorized by the operator for this task only, scoped
+>    strictly to adding scaffolding to existing fixtures, never to changing what those files test.
+>
+> After both parts, re-run the FULL app suite and confirm it is back to exactly the pre-T13
+> baseline (31 failed, same test names) — not just that `test_pipeline_config.py` is green.
 
 - [ ] **Test first**, `pipeline-app/tests/test_pipeline_config.py`:
 
@@ -1440,6 +1744,16 @@ still guarded by it; otherwise leave it as-is.
 - [ ] **Run** the whole file → pass. **Commit:** `fix(topology): validate skill, template, brand scope and repo root at load time`
 
 ---
+
+> **Amendment (found during T14 execution).** Renaming `scoped_permissions_settings` to
+> `pipeline_permissions_settings` (this task's own change) breaks
+> `pipeline-app/tests/integration/test_stubbed_cli_e2e.py`'s `stub_cli` fixture
+> (`monkeypatch.setattr(cli_runner, "scoped_permissions_settings", lambda: None)`, line 81) — a
+> genuine regression (one test flips from passing to erroring), not a pre-existing failure. Unlike
+> T13's 184-file structural conflict, this is a single mechanical reference update in a single file,
+> directly and unambiguously caused by this task's own rename — authorized as part of T14 without
+> a separate operator decision. Fix: change the attribute name in that one `monkeypatch.setattr`
+> call to `"pipeline_permissions_settings"`. No other change to that file.
 
 ### T14 — The write scope becomes real, and the tautological test dies (D-43, D-44, D-45, F-11)
 
@@ -1680,6 +1994,141 @@ and in `stream_claude_turn` replace the two `env = dict(os.environ)` /
 
 ---
 
+> **Amendment (found before T16 dispatch).** Several gaps in this section's own shown code:
+>
+> 1. `_fake_stream`/`capture`/`_INIT`/`_RESULT_OK` in `test_turn_service.py` **already exist**
+>    (added by T5's own amendment, reused since) — do not re-add them; the brief's "replace
+>    `_fake_stream`" instruction is already satisfied. Only add the two new per-stage assertion
+>    tests there.
+> 2. `test_repurpose_kickoff_prompt_carries_the_script_and_packaging_direction` is shown with an
+>    elided `(...)` signature/body. Full version, mirroring the assembly test immediately above it:
+>
+> ```python
+> @pytest.mark.asyncio
+> async def test_repurpose_kickoff_prompt_carries_the_script_and_packaging_direction(
+>         conn, tmp_path, monkeypatch, capture):
+>     project_id, run_dir = _rgs_chain(conn, tmp_path, brief="rgs-briefs/2026-08-08-a.md")
+>     monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+>                         _fake_stream([_INIT, _RESULT_OK],
+>                                      run_dir / "05-repurpose" / "raw_output.md", captured=capture))
+>     await _drain(turn_service.run_stage_turn(
+>         conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+>         _by_id("repurpose"), CHAIN_STAGES, "post it",
+>         grounding_pointer="rgs-briefs/2026-08-08-a.md"))
+>     prompt = capture[0]["prompt"]
+>     for fragment in ("01-ideation/artifact.v1.md", "02-scripting/artifact.v1.md",
+>                      "04-assembly/artifact.v1.md"):
+>         assert fragment in prompt, fragment
+>     assert "rgs-briefs/2026-08-08-a.md" in prompt
+> ```
+>    Note `_rgs_chain` (T11's fixture) writes only `scripting`'s artifact, not the full downstream
+>    chain — but `repurpose`'s `depends_on` in `CHAIN_STAGES` is `["assembly"]` only (T5's amendment
+>    deliberately left it un-widened; see T5's own amendment note). Since this test needs
+>    `01-ideation` and `04-assembly` artifacts too for the real handoff to work end to end,
+>    `CHAIN_STAGES`'s `repurpose` entry needs widening to `depends_on=["ideation", "scripting",
+>    "assembly"]` (matching real `pipeline.yaml`) for THIS test to be meaningful, and `_rgs_chain`
+>    needs an `ideation` artifact added alongside its existing `scripting` write. Widen both — this
+>    is safe now that T5-T15 are all landed and none of their tests rely on `repurpose`'s old
+>    under-specified `depends_on` in `CHAIN_STAGES` (verify this empirically by running the full
+>    `test_turn_service.py` suite after the widening, before proceeding).
+>
+> 3. `test_routes_chat_sse.py` has NO `capture` fixture of its own (fixtures aren't shared across
+>    test files without a `conftest.py` entry, and none exists there) — add a local one, identical in
+>    shape to `test_turn_service.py`'s. That file's existing `client` fixture (shared by 5 of its own
+>    tests) only declares `grounding` + `ideation` stages, neither suited to a missing-required-upstream
+>    scenario. Follow the file's own established pattern (see
+>    `test_chat_endpoint_returns_409_for_locked_stage`, which already builds its own standalone
+>    `pipeline.yaml`/app/client inline rather than reusing the shared fixture) for both new tests
+>    rather than trying to extend the shared fixture. Full bodies:
+>
+> ```python
+> @pytest.fixture
+> def capture() -> list[dict]:
+>     return []
+>
+>
+> def test_chat_on_a_stage_with_a_missing_required_upstream_leaves_an_error_event(tmp_path, monkeypatch):
+>     """Surfacing: the refusal must be findable after the fact. The route raises
+>     inside the SSE body generator, so the events row is the only durable signal."""
+>     monkeypatch.chdir(tmp_path)
+>     (tmp_path / "pipeline.yaml").write_text(
+>         "stages:\n"
+>         "  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n"
+>         "  - id: scripting\n    skill: shorts-scripting\n    dir_prefix: \"02\"\n"
+>         "    depends_on: [ideation]\n",
+>         encoding="utf-8",
+>     )
+>     for skill in ("shorts-ideation", "shorts-scripting"):
+>         skill_dir = tmp_path / ".claude" / "skills" / skill
+>         skill_dir.mkdir(parents=True)
+>         (skill_dir / "SKILL.md").write_text("x", encoding="utf-8")
+>     tdir = tmp_path / "pipeline-app" / "stage_templates"
+>     tdir.mkdir(parents=True)
+>     (tdir / "ideation.md").write_text("/x", encoding="utf-8")
+>     (tdir / "scripting.md").write_text("Read `{{ inputs['ideation'] }}`.\n", encoding="utf-8")
+>     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+>     test_client = TestClient(app, follow_redirects=False)
+>     resp = test_client.post("/projects", data={"slug": "abc", "brand": "generic"})
+>     project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+>     # ideation is left at its default "ready" status -- no approved artifact --
+>     # so scripting's one required upstream is genuinely missing.
+>     with pytest.raises(Exception):
+>         with test_client.stream("POST", f"/projects/{project_id}/stages/scripting/chat",
+>                                 data={"message": "go"}) as response:
+>             list(response.iter_lines())
+>     rows = app.state.conn.execute(
+>         "SELECT severity, message FROM events WHERE kind = 'handoff.upstream_missing'").fetchall()
+>     assert rows and rows[0]["severity"] == "error"
+>
+>
+> def test_chat_kickoff_prompt_reaches_the_cli_with_the_grounding_pointer(client, monkeypatch, tmp_path, capture):
+>     """A-04 through the real route: routes/stages.py resolves a pointer for every
+>     non-grounding stage on an RGS project and hands it to run_stage_turn."""
+>     test_client, app = client
+>     (tmp_path / "rgs-briefs").mkdir()
+>     (tmp_path / "rgs-briefs" / "2026-07-25-abc.md").write_text("brief content", encoding="utf-8")
+>     resp = test_client.post("/projects", data={"slug": "abc", "brand": "raisinggoodsports"})
+>     project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+>     project = app.state.conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+>     from pipeline_app import grounding_service
+>     run_dir = tmp_path / "runs" / project["run_id"]
+>     grounding_service.write_pointer(run_dir / "00-grounding", "rgs-briefs/2026-07-25-abc.md", tmp_path)
+>     app.state.conn.execute(
+>         "UPDATE stages SET status = 'approved' WHERE project_id = ? AND stage_id = 'grounding'",
+>         (project_id,))
+>     app.state.conn.commit()
+>     # Overwrite the shared client fixture's stub ideation.md with one that
+>     # actually renders grounding_pointer, so this test can observe it reaching
+>     # the prompt -- the fixture's default template is an unconditional "/x".
+>     (tmp_path / "pipeline-app" / "stage_templates" / "ideation.md").write_text(
+>         "/{{ skill }}\n{% if grounding_pointer %}pointer: `{{ grounding_pointer }}`{% endif %}\n",
+>         encoding="utf-8",
+>     )
+>     monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+>                         lambda prompt, cwd, resume_session_id, **kw: _fake_stream_route(
+>                             prompt, capture))
+>     with test_client.stream("POST", f"/projects/{project_id}/stages/ideation/chat",
+>                             data={"message": "go"}) as response:
+>         list(response.iter_text())
+>     assert "rgs-briefs/" in capture[0]["prompt"]
+> ```
+>
+>    where `_fake_stream_route` is a small local async-generator helper (add it above the tests):
+>
+> ```python
+> async def _fake_stream_route(prompt, captured):
+>     captured.append({"prompt": prompt})
+>     yield {"type": "result", "result": "done", "total_cost_usd": 0.01, "is_error": False}
+> ```
+>
+>    Add `from pipeline_app import turn_service` at module level if not already present (it already
+>    is, per the file's existing imports), and `import pytest` (already present).
+>
+> Verify all of this empirically against the live `routes/stages.py` chat route before trusting it
+> — that file is NOT owned by P4 (read-only), so if its actual behavior around pointer resolution or
+> exception propagation differs from what's assumed here, adapt the test to match the real behavior
+> and document the deviation; do not modify `routes/stages.py` itself under any circumstance.
+
 ### T16 — The test doubles stop discarding the prompt (F-15)
 
 `turn_service.py:133-159` — upstream resolution, `is_first_turn`, the whole kickoff render —
@@ -1864,26 +2313,105 @@ async def test_an_unapproved_upstream_is_not_reported_as_a_missing_one(conn, tmp
     assert kinds == ["handoff.upstream_missing", "handoff.upstream_unapproved"]
 ```
 
+> **Amendment (found before T17 dispatch).** Two real gaps, both confirmed against the live,
+> already-landed `gates.py` (P3 merged with the required widening — confirmed):
+>
+> 1. `turn_service._upstream_by_stage` does not exist — T5-T16 built upstream resolution inline
+>    inside `run_stage_turn`, never as a separately-callable function. The first test above calls
+>    it directly, so this task must extract one. Add it as a thin wrapper:
+>
+> ```python
+> def _upstream_by_stage(repo_root, run_dir, all_stage_defs, stage_def):
+>     """The exact gates.resolve_upstream_by_stage call run_stage_turn makes, pulled
+>     into its own function so a parity test can call it directly without re-deriving
+>     the kwargs (P3 Handoff H2)."""
+>     return gates.resolve_upstream_by_stage(
+>         run_dir, all_stage_defs, stage_def,
+>         repo_root=repo_root, approved_only=True, include_optional=True,
+>     )
+> ```
+>
+> 2. `gates.UpstreamMap` (confirmed live, `gates.py:67-109`) is `dict` subclass with a real third
+>    state, not the plain `dict[str, Path]` this section's own shown `run_stage_turn` snippet
+>    assumes. `dep_id not in resolved` for an EXCLUDED key (an artifact that exists but failed
+>    `approved_only`) does not silently read as "absent" the way the shown code implies — `__contains__`
+>    is overridden and RAISES `gates.UpstreamExcludedError` on any lookup of an excluded key. The
+>    map has a `state_of(key) -> "resolved" | "excluded" | "absent"` method built exactly to avoid
+>    catching that exception. The shown `missing = [... if dep_id not in resolved]` line would crash
+>    the very first time it hit an unapproved-but-present upstream — which is precisely the scenario
+>    the three-state test below exists to prove is handled, not crashed on. Corrected
+>    implementation, replacing the shown snippet in full:
+>
+> ```python
+>     resolved = _upstream_by_stage(repo_root, run_dir, all_stage_defs, stage_def)
+>     missing: list[str] = []
+>     unapproved_id: str | None = None
+>     for dep_id in stage_def.depends_on:
+>         state = resolved.state_of(dep_id)
+>         if state == "resolved":
+>             continue
+>         if state == "excluded" and unapproved_id is None:
+>             unapproved_id = dep_id
+>         else:
+>             missing.append(dep_id)
+>     if missing:
+>         obs.record_event(
+>             conn, kind="handoff.upstream_missing", severity="error", source="turn_service",
+>             message=(f"stage '{stage_def.id}' cannot start: no approved artifact for "
+>                      f"{', '.join(missing)}"),
+>             detail={"stage": stage_def.id, "missing": missing},
+>         )
+>         raise MissingUpstreamArtifactError(
+>             f"Stage '{stage_def.id}' requires {missing} but no approved artifact exists for "
+>             "them. Approve or regenerate the upstream stage first."
+>         )
+>     if unapproved_id is not None:
+>         excluded = resolved.excluded[unapproved_id]
+>         obs.record_event(
+>             conn, kind="handoff.upstream_unapproved", severity="error", source="turn_service",
+>             message=(f"stage '{stage_def.id}' requires an approved '{unapproved_id}' but "
+>                      f"{excluded.path.name} was never approved"),
+>             detail={"stage": stage_def.id, "upstream": unapproved_id, "path": str(excluded.path)},
+>         )
+>         raise UnapprovedUpstreamError(
+>             f"Stage '{stage_def.id}' requires an approved '{unapproved_id}' but only "
+>             f"{excluded.path.name} exists, unapproved. Approve it, or regenerate it."
+>         )
+>     inputs = {sid: str(p) for sid, p in resolved.items()}
+> ```
+>
+>    Add near the other exceptions:
+>
+> ```python
+> class UnapprovedUpstreamError(StageNotRunnableError):
+>     """A required dependency has an artifact but it was never approved -- distinct
+>     from MissingUpstreamArtifactError: this is one operator action (approve, or
+>     regenerate) away, not a genuine gap (A-32's turn_service-side half)."""
+> ```
+>
+>    T5's SEPARATE optional-upstream loop (the second `for up in optional_defs: path =
+>    _resolve_upstream(...)` block, `turn_service.py:~312-320`) is now fully redundant and should be
+>    DELETED, not kept: `include_optional=True` already walks `optional_depends_on` inside
+>    `resolve_upstream_by_stage`, so any resolved optional id is already in `resolved`/`inputs`.
+>    An optional upstream that is absent OR excluded is equally non-blocking either way, and the
+>    template's own `{% if 'music' in inputs %}` guard already handles "not present" without needing
+>    to know which of the two it was — so no replacement logic is needed for the deleted loop, only
+>    its removal.
+
 - [ ] **Run** → fails: `AttributeError: module 'pipeline_app.gates' has no attribute
       'resolve_upstream_by_stage'` (P3 not yet merged) or `TypeError: unexpected keyword argument
       'approved_only'` (P3 merged without the widening). **Either failure is the signal to stop and
       hand back to P3** — do not work around it by keeping the local copy. Once P3 has landed, the
       three-state test fails next: both paths raise the same `MissingUpstreamArtifactError`.
 - [ ] **Implement**, `turn_service.py`. Delete `_resolve_upstream` and the inline loop from T5, and
-      replace with a single call plus the required/optional split P4 still owns:
+      replace with the corrected code from the Amendment above.
 
-```python
-    resolved = gates.resolve_upstream_by_stage(
-        run_dir, all_stage_defs, stage_def,
-        repo_root=repo_root, approved_only=True, include_optional=True,
-    )
-    missing = [dep_id for dep_id in stage_def.depends_on if dep_id not in resolved]
-    inputs = {sid: str(p) for sid, p in resolved.items()}
-```
-
-The `missing` refusal, the `handoff.upstream_missing` event and the optional-absent `obs.log` from
-T5 are unchanged — only the *resolution* moves. `_approved_artifact_path` (T6) moves to `gates.py`
-as the implementation behind `approved_only=True`; delete P4's copy so there is one.
+`_approved_artifact_path` (T6, turn_service.py's own copy) is now dead code — `gates.py` already has
+its OWN distinct `_approved_artifact_path(repo_root, stage_id, stage_dir)` (3-arg, confirmed live,
+not the same symbol) backing `approved_only=True` inside `resolve_upstream_by_stage`. There is
+nothing to "move" — just delete T6's now-unused `turn_service._approved_artifact_path` and the T6
+tests that called it directly (`test_approved_artifact_path_distinguishes_no_artifact_from_only_drafts`),
+since its behavior is now exercised indirectly through `resolve_upstream_by_stage` instead.
 
 - [ ] **Run** the full app suite. T5's, T6's and T10's tests must still pass unmodified — that is
       the proof the swap is behaviour-preserving.
@@ -1950,11 +2478,27 @@ async def test_a_concurrent_version_allocation_does_not_lose_the_write(conn, tmp
         artifacts.write_artifact(stage_dir, 1, {"stage": "x"}, "clobber")
 ```
 
+> **Amendment (found before T18 dispatch).** T17 (already landed, immediately before this task)
+> deleted `turn_service._approved_artifact_path` entirely — approved-artifact resolution now lives
+> only in `gates.py`, behind `gates.resolve_upstream_by_stage(approved_only=True)`. Item 2 below's
+> "`_approved_artifact_path` (T6)" half is therefore moot — there is no such function left in
+> `turn_service.py` to wrap. Only `propagate_grounding_staleness`'s per-candidate read needs the
+> `try/except MalformedArtifactError` treatment. Every `:LINE` reference below is now stale (T5-T17
+> shifted the file substantially) — read the live function bodies to find the real locations rather
+> than trusting any line number in this section. Confirmed live shapes at dispatch time:
+> `propagate_staleness`'s frontmatter read is `meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))`
+> inside its first loop; `depends_on` construction is `[{"path": _relpath(p, run_dir), ...} for p in upstream_paths]`
+> inside `run_stage_turn`, after the `artifact_written` check; version allocation is
+> `version = artifacts.next_version_number(stage_dir)` immediately above that; `_relpath` is used in
+> four places (`_write_session_inputs`, `_resumed_prompt`, `_current_upstream_hashes`, and the
+> `depends_on` comprehension) — find and convert all four, not just the ones item 5 names.
+
 - [ ] **Run** → fails: `MalformedArtifactError` escapes `propagate_staleness`; no
       `compute_depends_on` call; `next_version_number` still in use.
 - [ ] **Implement**, `turn_service.py`:
 
-1. **`propagate_staleness` phase-1 loop** (`:74`) — the load-bearing wrap:
+1. **`propagate_staleness` phase-1 loop** (line number stale, see Amendment — find the real
+   location) — the load-bearing wrap:
 
 ```python
         try:
@@ -1973,10 +2517,11 @@ async def test_a_concurrent_version_allocation_does_not_lose_the_write(conn, tmp
             continue
 ```
 
-2. **`_approved_artifact_path`** (T6) and **`propagate_grounding_staleness`** (T11) — same
-   `try/except artifacts.MalformedArtifactError` + `continue` around each candidate read, with
-   kinds `handoff.artifact_unreadable` and `grounding.dependent_unreadable`. A damaged `v3` must
-   not hide an intact approved `v2`.
+2. **`propagate_grounding_staleness`** (T11) — same `try/except artifacts.MalformedArtifactError` +
+   `continue` around each candidate read, kind `grounding.dependent_unreadable`. A damaged `v3` must
+   not hide an intact approved `v2`. (The `_approved_artifact_path` half of this item no longer
+   applies — see Amendment above; `gates.py`'s own `_approved_artifact_path`, inside P3's separately
+   owned file, is out of scope for P4 to touch here regardless.)
 
 3. **`depends_on` construction** (`:234-237`) — replace the comprehension with P2's helper, keeping
    the A-13 grounding record appended:

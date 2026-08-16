@@ -13,6 +13,11 @@ def client(tmp_path: Path, monkeypatch):
         "stages:\n  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n",
         encoding="utf-8",
     )
+    skill_dir = tmp_path / ".claude" / "skills" / "shorts-ideation"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("x", encoding="utf-8")
+    (tmp_path / "pipeline-app" / "stage_templates").mkdir(parents=True)
+    (tmp_path / "pipeline-app" / "stage_templates" / "ideation.md").write_text("/x", encoding="utf-8")
     app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
     return TestClient(app, follow_redirects=False)
 
