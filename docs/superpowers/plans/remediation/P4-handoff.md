@@ -611,6 +611,104 @@ def validate_template_source(source: str, context: dict) -> None:
 
 ---
 
+> **Amendment (found before T5 dispatch).** `test_turn_service.py`'s existing `CHAIN_STAGES` /
+> `_build_approved_chain` fixtures predate T1's `pipeline.yaml` changes: `assembly` there still
+> only depends on `[voiceover, visual]`, with no `styleboard` stage modelled at all — inconsistent
+> with the real graph (`scripting, styleboard, voiceover, visual` + optional `music`). None of the
+> shared test helpers this task's and later tasks' (T6-T11, T16) shown code assume already
+> exist — `capture` fixture, `_fake_stream`'s `captured=` param, `_INIT`/`_RESULT_OK` constants,
+> `_by_id`, `_approved_chain` — are present yet. T5 is the first task to need them, so T5 adds this
+> shared infrastructure once; T6 onward find it already there and reuse it (same pattern as T3
+> pre-supplying `KICKOFF_CONTEXT_KEYS` for T4). The exact additions, applied to
+> `pipeline-app/tests/test_turn_service.py`:
+>
+> ```python
+> CHAIN_STAGES = [
+>     StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02", depends_on=[]),
+>     StageDef(id="styleboard", skill="shorts-styleboard", dir_prefix="02b", depends_on=["scripting"]),
+>     StageDef(id="voiceover", skill="voiceover-brief", dir_prefix="03", depends_on=["scripting"]),
+>     StageDef(id="visual", skill="visual-prompts", dir_prefix="03", depends_on=["scripting", "styleboard"]),
+>     StageDef(
+>         id="assembly", skill="shorts-assembly", dir_prefix="04",
+>         depends_on=["scripting", "styleboard", "voiceover", "visual"],
+>         optional_depends_on=["music"],
+>     ),
+>     StageDef(id="repurpose", skill="social-repurpose", dir_prefix="05", depends_on=["assembly"]),
+> ]
+> ```
+>
+> `repurpose`'s `depends_on` is deliberately left as `["assembly"]` here (not widened to match
+> `pipeline.yaml`'s real `[ideation, scripting, assembly]`) — no task through T11 exercises
+> repurpose's own chain, and `state_machine.is_stale` only checks RECORDED dependency paths against
+> current hashes (never flags an unrecorded upstream), so this simplification cannot cause a false
+> pass/fail in any currently-shown test. Widen it only if a later task's own tests actually need it,
+> documented the same way.
+>
+> `_build_approved_chain` gains a styleboard artifact and records it in `visual`'s and `assembly`'s
+> `depends_on` metadata (the `03-visual` dir prefix stays `"03"`, shared with `voiceover`, matching
+> the real topology):
+>
+> ```python
+>     artifacts.write_artifact(run_dir / "02-scripting", 1, {"stage": "shorts-scripting"}, "script v1")
+>     script_dep = [_dep(run_dir, "02-scripting/artifact.v1.md")]
+>     artifacts.write_artifact(run_dir / "02b-styleboard", 1,
+>                              {"stage": "shorts-styleboard", "depends_on": script_dep}, "styleboard v1")
+>     styleboard_dep = [_dep(run_dir, "02b-styleboard/artifact.v1.md")]
+>     artifacts.write_artifact(run_dir / "03-voiceover", 1, {"stage": "voiceover-brief", "depends_on": script_dep}, "vo v1")
+>     artifacts.write_artifact(run_dir / "03-visual", 1,
+>                              {"stage": "visual-prompts", "depends_on": script_dep + styleboard_dep}, "vis v1")
+>     assembly_dep = [
+>         *script_dep, *styleboard_dep,
+>         _dep(run_dir, "03-voiceover/artifact.v1.md"),
+>         _dep(run_dir, "03-visual/artifact.v1.md"),
+>     ]
+>     artifacts.write_artifact(run_dir / "04-assembly", 1, {"stage": "shorts-assembly", "depends_on": assembly_dep}, "asm v1")
+>     # repurpose's write is unchanged from today
+> ```
+>
+> Plus three small additions:
+>
+> ```python
+> def _by_id(stage_id: str) -> StageDef:
+>     return next(s for s in CHAIN_STAGES if s.id == stage_id)
+>
+>
+> _approved_chain = _build_approved_chain
+>
+>
+> _INIT = {"type": "system", "subtype": "init", "session_id": "session-1"}
+> _RESULT_OK = {"type": "result", "result": "done", "total_cost_usd": 0.01, "is_error": False}
+>
+>
+> @pytest.fixture
+> def capture() -> list[dict]:
+>     return []
+> ```
+>
+> And `_fake_stream` (the existing one at the top of the file) gains one new optional keyword,
+> backward-compatible with every existing call site:
+>
+> ```python
+> def _fake_stream(events, writes_file=None, content="generated body", captured=None):
+>     async def _gen(prompt, cwd, resume_session_id, **kwargs):
+>         if captured is not None:
+>             captured.append({"prompt": prompt, "cwd": cwd,
+>                              "resume_session_id": resume_session_id, "kwargs": kwargs})
+>         if writes_file is not None:
+>             writes_file.parent.mkdir(parents=True, exist_ok=True)
+>             writes_file.write_text(content, encoding="utf-8")
+>         for event in events:
+>             yield event
+>     return _gen
+> ```
+>
+> Verified this does not disturb the two currently-passing cascade tests
+> (`test_propagate_staleness_cascades_past_direct_dependents`,
+> `test_propagate_staleness_cascade_stops_at_a_non_approved_stage`): the first checks final status
+> only (mechanism-agnostic to the added direct edges), and the second's `assembly` override to
+> `AWAITING_REVIEW` is filtered out by the `row["status"] != APPROVED` guard before any hash
+> comparison runs, regardless of what's newly in `depends_on`.
+
 ### T5 — A required dependency with no artifact refuses the turn (A-07)
 
 - [ ] **Test first**, `pipeline-app/tests/test_turn_service.py`:
