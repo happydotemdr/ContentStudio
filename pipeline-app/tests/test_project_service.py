@@ -141,3 +141,27 @@ def test_create_project_leaves_nothing_behind_when_it_fails_partway(conn, tmp_pa
     # legitimate-empty baseline above -- same zero projects, but ONE rollback
     # event where there were zero. "Nothing was created" and "creation blew up
     # halfway" are no longer the same database.
+
+
+def test_an_overlong_slug_is_rejected_before_anything_is_created(conn, tmp_path: Path):
+    """Nothing bounded the slug, and the deepest run path is
+    runs/<slug>-<ts>/02b-styleboard/events/<ms>.jsonl — an OSError partway
+    through left a committed project with a partial set of stage rows (A-78)."""
+    from pipeline_app.project_service import MAX_SLUG_LENGTH
+
+    with pytest.raises(ValueError) as exc:
+        create_project(conn, tmp_path, "a" * (MAX_SLUG_LENGTH + 1), "generic", STAGES)
+
+    assert str(MAX_SLUG_LENGTH) in str(exc.value)
+    assert db.list_projects(conn) == []
+    assert not (tmp_path / "runs").exists()
+
+
+def test_a_slug_at_the_limit_is_still_accepted(conn, tmp_path: Path):
+    """Distinguishability: the bound must reject the overlong case only, not
+    quietly narrow what a legitimate project may be called."""
+    from pipeline_app.project_service import MAX_SLUG_LENGTH
+
+    result = create_project(conn, tmp_path, "a" * MAX_SLUG_LENGTH, "generic", STAGES)
+    assert result["run_dir"].is_dir()
+    assert len(db.list_projects(conn)) == 1

@@ -12,11 +12,23 @@ from pipeline_app.state_machine import compute_initial_status
 # and separators that make up `../..` — collapses to a hyphen.
 _SLUG_RE = re.compile(r"[^a-z0-9-]+")
 
+# The deepest path a run directory carries is
+#   <repo_root>/runs/<slug>-YYYYmmdd-HHMMSS/02b-styleboard/events/<ms>.jsonl
+# ~47 characters below the run directory. Windows' default MAX_PATH is 260,
+# so an unbounded slug fails halfway through creation with an OSError and
+# leaves a committed project with a partial set of stage rows (A-78).
+MAX_SLUG_LENGTH = 60
+
 
 def sanitize_slug(slug: str) -> str:
     cleaned = _SLUG_RE.sub("-", slug.strip().lower()).strip("-")
     if not cleaned:
         raise ValueError("slug must contain at least one alphanumeric character")
+    if len(cleaned) > MAX_SLUG_LENGTH:
+        raise ValueError(
+            f"slug is {len(cleaned)} characters after cleaning; the limit is "
+            f"{MAX_SLUG_LENGTH} so the deepest run path stays within the platform limit"
+        )
     return cleaned
 
 

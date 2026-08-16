@@ -141,3 +141,10 @@ def test_project_home_nav_has_no_current_highlight(client: TestClient):
     # current-highlight class — checked as the exact class token (not a bare
     # "current" substring, which could false-positive on unrelated text).
     assert 'class="pipeline-stage current"' not in home.text
+
+
+def test_overlong_slug_returns_400_not_500(client: TestClient):
+    resp = client.post("/projects", data={"slug": "x" * 200, "brand": "generic"},
+                       follow_redirects=False)
+    assert resp.status_code == 400
+    assert "60" in resp.text
