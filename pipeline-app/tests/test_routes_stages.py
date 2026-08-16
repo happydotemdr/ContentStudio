@@ -415,6 +415,14 @@ def test_stage_page_shows_stale_override_cue_near_approve_button(client):
 def test_stage_page_hides_stale_override_cue_for_non_stale_stage(client):
     test_client, tmp_path, app = client
     project_id = _generic_project_id(test_client)
+    project = db_mod.get_project(app.state.conn, project_id)
+    run_dir = tmp_path / "runs" / project["run_id"]
+    artifacts.write_artifact(
+        run_dir / "01-ideation", 1,
+        {"stage": "shorts-ideation",
+         "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]},
+        "concept v1",
+    )
 
     page = test_client.get(f"/projects/{project_id}/stages/ideation")
     assert page.status_code == 200
@@ -990,7 +998,7 @@ def test_a_gate_block_re_renders_the_stage_page_with_a_banner(two_stage_client):
     return the page."""
     test_client, tmp_path, app = two_stage_client
     project_id, run_dir = _new_project(test_client, app, tmp_path)
-    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1")
     assert test_client.post(f"/projects/{project_id}/stages/ideation/approve").status_code == 303
 
     artifacts.write_artifact(
@@ -1167,7 +1175,7 @@ def test_the_page_flag_the_per_gate_tag_and_the_approve_decision_never_disagree(
     one classifier; this asserts it."""
     test_client, tmp_path, app = two_stage_client
     project_id, run_dir = _new_project(test_client, app, tmp_path)
-    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1")
     assert test_client.post(f"/projects/{project_id}/stages/ideation/approve").status_code == 303
     artifacts.write_artifact(
         run_dir / "02-scripting", 1,
@@ -1198,7 +1206,7 @@ def test_a_never_ran_gate_is_visible_on_the_page_not_just_in_the_context(two_sta
     template must read `gate_view`, which is non-empty even here."""
     test_client, tmp_path, app = two_stage_client
     project_id, run_dir = _new_project(test_client, app, tmp_path)
-    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1")
     assert test_client.post(f"/projects/{project_id}/stages/ideation/approve").status_code == 303
     artifacts.write_artifact(
         run_dir / "02-scripting", 1,
@@ -1223,7 +1231,7 @@ def test_a_malformed_gates_value_shows_a_sensible_notice_not_garbage(two_stage_c
     stating "malformed", never a wall of empty spans."""
     test_client, tmp_path, app = two_stage_client
     project_id, run_dir = _new_project(test_client, app, tmp_path)
-    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation", "gates": [{"name": "gate_o_ideation_contract", "status": "pass", "findings": []}]}, "concept v1")
     assert test_client.post(f"/projects/{project_id}/stages/ideation/approve").status_code == 303
     artifacts.write_artifact(
         run_dir / "02-scripting", 1,
