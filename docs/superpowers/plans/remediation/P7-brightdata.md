@@ -1702,6 +1702,14 @@ Nothing else in the six files asserts a defective behavior. `test_await_results_
 **Bright Data is billed per record.** Every item below is a change in this plan that could
 move spend. The operator approves or declines each one before T1 starts.
 
+> **Operator decision recorded 2026-08-16 (P7 kickoff session).** C1, C2, and C3 are all
+> **approved**, each at the table's own stated default (C1: knob ships, stays at 10 until an
+> operator sets an env var; C2: on by default; C3: on by default). C4-C9 need no approval and
+> proceed per plan. Separately, the §7 residual #4 (`discovery_youtube.USER_AGENT`) is approved
+> as a tiny flagged exception: T22 (or the final review) may make a one-line unreferenced-string
+> removal in P6's `discovery_youtube.py`, called out explicitly in the PR body as an
+> out-of-scope-file exception — not a silent scope creep.
+
 ### Increases spend — approval required
 
 | # | Change | Task | Effect | Default |
