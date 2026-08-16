@@ -1351,22 +1351,84 @@ def _current_upstream_hashes(
 
 ### T11 — Grounding re-runs invalidate what was built on the old brief (A-13)
 
+> **Amendment (found before T11 dispatch).** Several real gaps in this section's own shown code:
+>
+> 1. `grounding_service.write_pointer(stage_dir, rgs_brief_relpath, repo_root)` takes THREE required
+>    positional args (confirmed live, `grounding_service.py:76`) — both call sites below are missing
+>    `repo_root`. It also requires the target file (`repo_root / rgs_brief_relpath`) to actually
+>    exist on disk (it hashes and stats it) — every brief path used in a test must be created first.
+> 2. `_rgs_chain(conn, tmp_path, brief)` does not exist yet. Add it (mirrors `_build_approved_chain`
+>    but for an RGS-brand project with a grounding pointer already set and recorded in `scripting`'s
+>    own `depends_on`, matching what this task's own `turn_service.py` change produces):
+>
+> ```python
+> def _rgs_chain(conn, tmp_path: Path, brief: str):
+>     project_id = db.create_project(conn, "rgs-1", "rgs", "raisinggoodsports", "2026-08-08T00:00:00Z")
+>     for stage in CHAIN_STAGES:
+>         db.create_stage_row(conn, project_id, stage.id, StageStatus.APPROVED.value)
+>     run_dir = tmp_path / "runs" / "rgs-1"
+>     brief_path = tmp_path / brief
+>     brief_path.parent.mkdir(parents=True, exist_ok=True)
+>     if not brief_path.exists():
+>         brief_path.write_text("brief content", encoding="utf-8")
+>     grounding_service.write_pointer(run_dir / "00-grounding", brief, tmp_path)
+>     script_dep = [{"path": brief, "sha256": artifacts.compute_sha256(brief_path)}]
+>     artifacts.stamp_final(
+>         artifacts.write_artifact(run_dir / "02-scripting", 1,
+>                                  {"stage": "shorts-scripting", "depends_on": script_dep}, "script v1"),
+>         "2026-08-08T00:00:00Z",
+>     )
+>     return project_id, run_dir
+> ```
+>
+> 3. The first and fourth tests below are shown elided (`...`) or incomplete in the source material.
+>    Full bodies, using the `_rgs_chain`/`write_pointer` fixes above (needs
+>    `from unittest.mock import ANY` added to the test file's imports):
+>
+> ```python
+> @pytest.mark.asyncio
+> async def test_a_turn_records_the_grounding_brief_it_was_built_on(conn, tmp_path, monkeypatch, capture):
+>     """A-13: re-running grounding repoints rgs-briefs/ and leaves every downstream
+>     stage `approved` with the previous thinker/research pairing baked in. Nothing
+>     could detect it, because no artifact recorded which brief it used."""
+>     project_id = db.create_project(conn, "rgs-1", "rgs", "raisinggoodsports", "2026-08-08T00:00:00Z")
+>     db.create_stage_row(conn, project_id, "scripting", StageStatus.READY.value)
+>     run_dir = tmp_path / "runs" / "rgs-1"
+>     brief_path = tmp_path / "rgs-briefs" / "2026-08-08-a.md"
+>     brief_path.parent.mkdir(parents=True, exist_ok=True)
+>     brief_path.write_text("brief content", encoding="utf-8")
+>     monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+>                         _fake_stream([_RESULT_OK], run_dir / "02-scripting" / "raw_output.md",
+>                                      captured=capture))
+>     await _drain(turn_service.run_stage_turn(
+>         conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "rgs-1",
+>         _by_id("scripting"), CHAIN_STAGES, "go",
+>         grounding_pointer="rgs-briefs/2026-08-08-a.md"))
+>     latest = artifacts.latest_artifact_path(run_dir / "02-scripting")
+>     meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
+>     assert {"path": "rgs-briefs/2026-08-08-a.md", "sha256": ANY} in meta["depends_on"]
+> ```
+>
+> ```python
+> def test_repointing_grounding_records_a_warning_event(conn, tmp_path):
+>     project_id, run_dir = _rgs_chain(conn, tmp_path, brief="rgs-briefs/2026-08-08-a.md")
+>     brief_b = tmp_path / "rgs-briefs" / "2026-08-08-b.md"
+>     brief_b.write_text("brief b content", encoding="utf-8")
+>     grounding_service.write_pointer(run_dir / "00-grounding", "rgs-briefs/2026-08-08-b.md", tmp_path)
+>     turn_service.propagate_grounding_staleness(conn, tmp_path, run_dir, CHAIN_STAGES, project_id)
+>     rows = conn.execute(
+>         "SELECT severity FROM events WHERE kind = 'handoff.grounding_repointed'").fetchall()
+>     assert rows and rows[0]["severity"] == "warning"
+> ```
+
 - [ ] **Test first**, `test_turn_service.py`:
 
 ```python
-@pytest.mark.asyncio
-async def test_a_turn_records_the_grounding_brief_it_was_built_on(conn, tmp_path, monkeypatch):
-    """A-13: re-running grounding repoints rgs-briefs/ and leaves every downstream
-    stage `approved` with the previous thinker/research pairing baked in. Nothing
-    could detect it, because no artifact recorded which brief it used."""
-    ...
-    meta, _ = artifacts.parse_frontmatter(latest.read_text(encoding="utf-8"))
-    assert {"path": "rgs-briefs/2026-08-08-a.md", "sha256": ANY} in meta["depends_on"]
-
-
 def test_repointing_grounding_marks_downstream_stale(conn, tmp_path):
     project_id, run_dir = _rgs_chain(conn, tmp_path, brief="rgs-briefs/2026-08-08-a.md")
-    grounding_service.write_pointer(run_dir / "00-grounding", "rgs-briefs/2026-08-08-b.md")
+    brief_b = tmp_path / "rgs-briefs" / "2026-08-08-b.md"
+    brief_b.write_text("brief b content", encoding="utf-8")
+    grounding_service.write_pointer(run_dir / "00-grounding", "rgs-briefs/2026-08-08-b.md", tmp_path)
     stale = turn_service.propagate_grounding_staleness(
         conn, tmp_path, run_dir, CHAIN_STAGES, project_id)
     assert "scripting" in stale
@@ -1380,13 +1442,9 @@ def test_a_generic_project_with_no_brief_is_not_marked_stale(conn, tmp_path):
     assert turn_service.propagate_grounding_staleness(
         conn, tmp_path, run_dir, CHAIN_STAGES, project_id) == []
     assert db.get_stage(conn, project_id, "scripting")["status"] == StageStatus.APPROVED.value
-
-
-def test_repointing_grounding_records_a_warning_event(conn, tmp_path):
-    rows = conn.execute(
-        "SELECT severity FROM events WHERE kind = 'handoff.grounding_repointed'").fetchall()
-    assert rows and rows[0]["severity"] == "warning"
 ```
+
+(`test_a_turn_records_the_grounding_brief_it_was_built_on` and `test_repointing_grounding_records_a_warning_event` are given in full in the Amendment above — write them as shown there.)
 
 - [ ] **Run** → fails: no `propagate_grounding_staleness`; `depends_on` carries no brief.
 - [ ] **Implement**, `turn_service.py`. In the `depends_on` construction at `:234-237`:
