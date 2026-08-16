@@ -367,6 +367,30 @@ def run_styleboard_gate(
     return findings
 
 
+def _heading_satisfied(lines: set[str], heading: str) -> bool:
+    """Is `heading` present, allowing the qualifiers real skill output writes?
+
+    Exact-line equality was too strict. Skills routinely qualify a required
+    heading in place -- "## Packaging direction (written first)",
+    "## Settings — narrator (per beat)" -- and the section IS there; a
+    live-corpus scan found 4 of 12 heading-gated artifacts failing purely on
+    that. A heading counts as present when a line equals it, or extends it
+    with a space (which covers the spaced em-dash form) or with an em-dash
+    directly.
+
+    Deliberately a PREFIX of the full required heading, never a fuzzy match:
+    the required string is compared byte-for-byte up to its own end, so
+    "## Script, reformatted for TTS" still demands its literal comma and
+    "## Script reformatted for TTS" still fails. Requiring a space (or an
+    em-dash) after the prefix is what stops "## Settingsomething" counting as
+    "## Settings".
+    """
+    return any(
+        line == heading or line.startswith(heading + " ") or line.startswith(heading + "—")
+        for line in lines
+    )
+
+
 IDEATION_REQUIRED_HEADINGS = (
     "## Angle / take",
     "## Hook concept",
@@ -390,7 +414,7 @@ def run_ideation_contract_gate(
             "message": f"{artifact_path.name} is missing the required {heading!r} section.",
         }
         for i, heading in enumerate(IDEATION_REQUIRED_HEADINGS)
-        if heading not in lines
+        if not _heading_satisfied(lines, heading)
     ]
 
 
@@ -416,7 +440,7 @@ def run_voiceover_contract_gate(
             "message": f"{artifact_path.name} is missing the required {heading!r} section.",
         }
         for i, heading in enumerate(VOICEOVER_REQUIRED_HEADINGS)
-        if heading not in lines
+        if not _heading_satisfied(lines, heading)
     ]
 
 
@@ -440,7 +464,7 @@ def run_music_contract_gate(
             "message": f"{artifact_path.name} is missing the required {heading!r} section.",
         }
         for i, heading in enumerate(MUSIC_REQUIRED_HEADINGS)
-        if heading not in lines
+        if not _heading_satisfied(lines, heading)
     ]
 
 

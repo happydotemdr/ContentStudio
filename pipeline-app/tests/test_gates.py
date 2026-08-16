@@ -269,6 +269,20 @@ def test_ideation_gate_flags_a_missing_required_heading(tmp_path):
     assert any("Validation" in f["message"] for f in results[0]["findings"])
 
 
+def test_ideation_gate_accepts_a_parenthetically_qualified_heading(tmp_path):
+    """Real briefs qualify a required heading in place -- the live-corpus scan
+    found '## Packaging direction (written first)'. The section IS present, so
+    exact-line equality was reporting a false failure."""
+    path = tmp_path / "raw_output.md"
+    text = IDEATION_HEADINGS.replace(
+        "## Packaging direction", "## Packaging direction (written first)"
+    )
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "ideation", path, {})
+    assert results[0]["status"] == "pass"
+    assert results[0]["findings"] == []
+
+
 def test_ideation_gate_does_not_require_the_conditional_grounding_section(tmp_path):
     """IDEATION_HEADINGS already omits '## Grounding' entirely -- confirms
     its absence alone, with every required heading present, still passes."""
@@ -311,6 +325,20 @@ def test_voiceover_gate_requires_the_literal_comma_in_the_tts_heading(tmp_path):
     results = gates.run_gates_for_stage(REPO_ROOT, "voiceover", path, {})
     assert results[0]["status"] == "fail"
     assert any("reformatted for TTS" in f["message"] for f in results[0]["findings"])
+
+
+def test_voiceover_gate_accepts_an_em_dash_qualified_heading(tmp_path):
+    """'## Settings — per beat (mixed-tone script)' is how a real brief writes
+    it when the settings differ beat to beat. The section is present; the gate
+    must not read the qualifier as an absence."""
+    path = tmp_path / "raw_output.md"
+    text = VOICEOVER_HEADINGS.replace(
+        "## Settings", "## Settings — per beat (mixed-tone script)"
+    )
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "voiceover", path, {})
+    assert results[0]["status"] == "pass"
+    assert results[0]["findings"] == []
 
 
 def test_voiceover_gate_flags_a_missing_downstream_section(tmp_path):
@@ -364,6 +392,18 @@ def test_music_gate_flags_a_missing_tone_contradiction_check(tmp_path):
     results = gates.run_gates_for_stage(REPO_ROOT, "music", path, {})
     assert results[0]["status"] == "fail"
     assert any("Tone-contradiction check" in f["message"] for f in results[0]["findings"])
+
+
+def test_music_gate_accepts_a_qualified_bed_arc_heading(tmp_path):
+    """'## Bed arc (revised)' after a second pass over the script -- same
+    qualified-heading shape the live-corpus scan found on the other two
+    heading gates, and the three must behave identically."""
+    path = tmp_path / "raw_output.md"
+    text = MUSIC_HEADINGS.replace("## Bed arc", "## Bed arc (revised)")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "music", path, {})
+    assert results[0]["status"] == "pass"
+    assert results[0]["findings"] == []
 
 
 def test_music_gate_flags_all_five_missing_sections_independently(tmp_path):
@@ -1096,8 +1136,6 @@ def test_the_app_suite_declares_the_repo_root_paths_it_reads():
 
 
 # --- Gate O-A: assembly content checks ----------------------------------------
-
-import re
 
 COMPLETE_ASSEMBLY_PLAN = (
     "Shot-by-shot table: [rows]\n\n"
