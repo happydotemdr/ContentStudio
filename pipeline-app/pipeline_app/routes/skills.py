@@ -29,7 +29,15 @@ def _discovered_skill_names(repo_root) -> set[str]:
     skills_dir = repo_root / ".claude" / "skills"
     if not skills_dir.exists():
         return set()
-    return {p.name for p in skills_dir.iterdir() if p.is_dir()}
+    return {
+        p.name for p in skills_dir.iterdir()
+        # is_dir() follows symlinks, so without the is_symlink() exclusion a
+        # link placed in .claude/skills/ becomes a legitimate member of the
+        # discovered set and the save route writes through it to wherever it
+        # points, outside the repo included (A-56). The set-membership check
+        # is otherwise the right defence and stays exactly as it is.
+        if p.is_dir() and not p.is_symlink()
+    }
 
 
 VALID_TARGETS = ("SKILL.md", "kickoff_template")

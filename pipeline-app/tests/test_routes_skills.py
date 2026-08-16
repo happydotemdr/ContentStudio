@@ -54,6 +54,16 @@ def client(tmp_path: Path, monkeypatch):
     return TestClient(app), tmp_path
 
 
+@pytest.fixture
+def symlink_or_skip(tmp_path):
+    def make(link: Path, target: Path):
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks not permitted on this host: {exc}")
+    return make
+
+
 def test_skill_list_shows_discovered_skill(client):
     test_client, tmp_path = client
     resp = test_client.get("/skills")
@@ -325,3 +335,24 @@ def test_browser_crlf_is_written_as_lf_not_doubled(client, target, rel):
     assert b"\r\r\n" not in raw
     assert b"\r" not in raw
     assert raw.decode("utf-8").endswith("line two\n")
+
+
+def test_a_symlinked_skill_directory_is_not_discovered(client, symlink_or_skip, tmp_path):
+    """is_dir() follows symlinks, so a link in .claude/skills/ joined the
+    discovered set and the save route wrote THROUGH it (A-56)."""
+    outside = tmp_path.parent / "outside-the-repo"
+    outside.mkdir(exist_ok=True)
+    (outside / "SKILL.md").write_text("victim\n", encoding="utf-8")
+    test_client, root = client
+    symlink_or_skip(root / ".claude" / "skills" / "escape", outside)
+
+    listing = test_client.get("/skills")
+    detail = test_client.get("/skills/escape")
+    save = test_client.post("/skills/escape/save",
+                            data={"target": "SKILL.md", "content": "pwned\n"},
+                            follow_redirects=False)
+
+    assert "escape" not in listing.text
+    assert detail.status_code == 404
+    assert save.status_code == 404
+    assert (outside / "SKILL.md").read_text(encoding="utf-8") == "victim\n"
