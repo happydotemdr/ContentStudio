@@ -236,3 +236,37 @@ def test_a_complete_short_walk_is_not_a_failure(monkeypatch):
     pages = [{"feed": [_post("rkey1", "2026-07-29")]}]
     monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(pages[0]).encode("utf-8"))
     assert [i["id"] for i in bsky.enumerate_newest_first("x.bsky.social", None)] == ["rkey1"]
+
+
+def test_validate_shaped_call_raises_on_a_transient_failure(monkeypatch):
+    """process_handle_validate treats an empty enumerate as ok:False and
+    run_discovery then sets status='invalid' AND included=False, permanently,
+    with nothing ever retrying it. A blip must therefore never look empty."""
+    def blip(url):
+        raise ConnectionResetError("reset by peer")
+
+    monkeypatch.setattr(bsky, "_http_get", blip)
+    with pytest.raises(bsky.BlueskyFetchError):
+        bsky.enumerate_newest_first("valid.bsky.social", keyword_filter=None, page_limit=1)
+
+
+def test_a_genuinely_nonexistent_actor_still_returns_empty(monkeypatch):
+    """The legitimate invalid-handle case the auto-exclude exists for: the
+    AppView answers, with an empty feed. This must NOT raise, or a real typo
+    would be recorded as an infrastructure error."""
+    monkeypatch.setattr(bsky, "_http_get",
+                        lambda url: json.dumps({"feed": []}).encode("utf-8"))
+    assert bsky.enumerate_newest_first("typo.bsky.social", keyword_filter=None) == []
+
+
+def test_the_two_validate_outcomes_have_different_types(monkeypatch):
+    monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps({"feed": []}).encode("utf-8"))
+    empty = bsky.enumerate_newest_first("typo.bsky.social", None)
+
+    def blip(url):
+        raise ConnectionResetError("reset by peer")
+
+    monkeypatch.setattr(bsky, "_http_get", blip)
+    with pytest.raises(bsky.BlueskyFetchError) as exc:
+        bsky.enumerate_newest_first("valid.bsky.social", None)
+    assert empty == [] and isinstance(exc.value, bsky.BlueskyFetchError)
