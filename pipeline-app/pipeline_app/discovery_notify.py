@@ -9,6 +9,13 @@ point, and notify() adding its own would be a second, redundant failure
 boundary. The collaborators carry the burden instead -- comment_draft never
 raises, and per-item parse failures are contained inside collect_new_items.
 
+notify() now fans out per brand internally (one select_spotlight call per
+entry in email_render.BRAND_SECTION_ORDER, and one draft_comments call per
+DISTINCT spotlighted item -- a post spotlighted in two sections is drafted
+once and reused), but that fan-out is still inside notify()'s own no-catch
+contract: any of those calls raising propagates exactly like the
+single-brand path did.
+
 See docs/superpowers/specs/2026-08-08-morning-email-social-expansion-design.md.
 """
 from __future__ import annotations
@@ -134,18 +141,45 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
 
 
 def notify(conn, repo_root: Path, run_row_id: int) -> bool:
-    summary = build_summary(conn, repo_root, run_row_id)
+    overall = build_summary(conn, repo_root, run_row_id)
 
-    spotlight = discovery_digest.select_spotlight(summary["items"])
-    # draft_comments never raises and returns [] on every failure path, so a
-    # drafting problem costs three drafts, never the day's inventory.
-    summary["spotlight"] = spotlight
-    summary["drafts"] = comment_draft.draft_comments(spotlight) if spotlight else []
+    # Cache keyed by (platform, handle, item_id): `guru` is a superset of the
+    # other brands' items, so the same post is frequently the best spotlight
+    # both globally and within its specific brand. Without this cache,
+    # comment_draft.draft_comments -- a ~90s `claude -p` subprocess call --
+    # would run twice for identical input (High finding #2, pre-execution
+    # review).
+    draft_cache: dict[tuple, list[str]] = {}
+
+    def _drafts_for(spotlight):
+        if spotlight is None:
+            return []
+        key = (spotlight["platform"], spotlight["handle"], spotlight["item_id"])
+        if key not in draft_cache:
+            draft_cache[key] = comment_draft.draft_comments(spotlight)
+        return draft_cache[key]
+
+    sections = {}
+    for brand in email_render.BRAND_SECTION_ORDER:
+        brand_items = [i for i in overall["items"] if brand in i["brands"]]
+        spotlight = discovery_digest.select_spotlight(brand_items)
+        # draft_comments never raises and returns [] on every failure path, so a
+        # drafting problem costs three drafts for this post, never the
+        # section's inventory or the other two sections.
+        drafts = _drafts_for(spotlight)
+        sections[brand] = {
+            "run_status": overall["run_status"],
+            "has_issues": overall["has_issues"],
+            "items": brand_items,
+            "errored": overall["errored"],
+            "spotlight": spotlight,
+            "drafts": drafts,
+        }
 
     run_row = db_mod.get_run(conn, run_row_id)
     timezone_name = db_mod.get_settings(conn)["timezone"]
     started_at = _dt.datetime.fromisoformat(run_row["started_at"])
     run_date = started_at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
 
-    rendered = email_render.render_email(summary, run_date)
+    rendered = email_render.render_brand_digest(overall, sections, run_date)
     return send_email(rendered["subject"], rendered["text"], rendered["html"])
