@@ -117,15 +117,6 @@ def test_detail_rejects_unknown_skill_name(client):
     assert resp.status_code == 404
 
 
-def test_stage_id_by_skill_maps_music_brief_but_not_the_specialist():
-    """STAGE_ID_BY_SKILL is a duplicate registry that fails silently in the in-app
-    skill editor when a stage skill is missing. Specialists are deliberately absent
-    from it — elevenlabs-audio and midjourney-prompting are not keys either."""
-    from pipeline_app.routes.skills import STAGE_ID_BY_SKILL
-    assert STAGE_ID_BY_SKILL["music-brief"] == "music"
-    assert "elevenlabs-music" not in STAGE_ID_BY_SKILL
-
-
 def test_save_rejects_unknown_skill_name_clean_segment(client, monkeypatch):
     # Unlike the `..%2f...`-encoded case above (which may 404 purely from
     # route/path normalization before ever reaching our handler), this uses a
@@ -146,3 +137,13 @@ def test_save_rejects_unknown_skill_name_clean_segment(client, monkeypatch):
     assert resp.status_code == 404
     assert not (tmp_path / ".claude" / "skills" / "not-a-real-skill").exists()
     assert calls == []
+
+
+def test_styleboard_kickoff_template_is_editable(client):
+    """shorts-styleboard is a real stage in pipeline.yaml with a real template
+    on disk. The hardcoded STAGE_ID_BY_SKILL omitted it, so its editor showed
+    an empty box over a populated file (A-48)."""
+    test_client, _ = client
+    resp = test_client.get("/skills/shorts-styleboard")
+    assert resp.status_code == 200
+    assert "/shorts-styleboard" in resp.text

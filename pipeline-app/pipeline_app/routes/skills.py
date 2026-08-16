@@ -5,17 +5,16 @@ from pipeline_app import git_helper
 
 router = APIRouter()
 
-STAGE_ID_BY_SKILL = {
-    "rgs-grounding": "grounding",
-    "shorts-ideation": "ideation",
-    "shorts-scripting": "scripting",
-    "voiceover-brief": "voiceover",
-    "visual-prompts": "visual",
-    "music-brief": "music",
-    "shorts-assembly": "assembly",
-    "social-repurpose": "repurpose",
-    "rgs-pairing-review": None,
-}
+
+def _stage_id_by_skill(stage_defs) -> dict[str, str]:
+    """Skill name -> stage id, derived from the loaded topology.
+
+    Replaces a hand-maintained dict that had already drifted from
+    pipeline.yaml (A-48). P4 owns the canonical version of this function --
+    see the P4 contract in this package's plan; this private copy exists only
+    so P5 is not blocked on P4, and T19 deletes it.
+    """
+    return {s.skill: s.id for s in stage_defs}
 
 
 def _discovered_skill_names(repo_root) -> set[str]:
@@ -55,7 +54,7 @@ def skill_detail(request: Request, skill_name: str):
     skill_md_path = repo_root / ".claude" / "skills" / skill_name / "SKILL.md"
     skill_md_content = skill_md_path.read_text(encoding="utf-8") if skill_md_path.exists() else ""
 
-    stage_id = STAGE_ID_BY_SKILL.get(skill_name)
+    stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
     kickoff_template_content = ""
     if stage_id:
         template_path = repo_root / "pipeline-app" / "stage_templates" / f"{stage_id}.md"
@@ -89,7 +88,7 @@ def save_skill(request: Request, skill_name: str, target: str = Form(...), conte
         path.write_text(content, encoding="utf-8")
         git_helper.commit_skill_edit(repo_root, path, skill_name)
     elif target == "kickoff_template":
-        stage_id = STAGE_ID_BY_SKILL.get(skill_name)
+        stage_id = _stage_id_by_skill(request.app.state.stage_defs).get(skill_name)
         path = repo_root / "pipeline-app" / "stage_templates" / f"{stage_id}.md"
         path.write_text(content, encoding="utf-8")
     return RedirectResponse(url=f"/skills/{skill_name}", status_code=303)
