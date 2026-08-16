@@ -35,6 +35,13 @@ def _discovered_skill_names(repo_root) -> set[str]:
 VALID_TARGETS = ("SKILL.md", "kickoff_template")
 
 
+def _normalized(content: str) -> str:
+    """HTML form submission normalizes a <textarea> to CRLF; combined with
+    write_text's newline=None translation that becomes \\r\\r\\n on Windows and
+    every save is a whole-file diff (A-55)."""
+    return content.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _validate_content(target: str, content: str) -> str | None:
     """Return an operator-facing rejection reason, or None if the body is
     safe to write. A blank textarea used to write a zero-byte file and 303 as
@@ -161,13 +168,17 @@ def save_skill(request: Request, skill_name: str, target: str = Form(...), conte
     # Resolve and validate the target path first; raises 400 if invalid or out of bounds.
     path = _resolve_write_path(request, skill_name, target)
 
+    # Normalize line endings: HTML form submission uses CRLF; write_text(newline=None)
+    # translates every \n to os.linesep, producing \r\r\n on Windows (A-55).
+    normalized = _normalized(content)
+
     # Validate content before writing; raises 400 if blank.
-    problem = _validate_content(target, content)
+    problem = _validate_content(target, normalized)
     if problem is not None:
         raise HTTPException(status_code=400, detail=problem)
 
     # Write the file.
-    path.write_text(content, encoding="utf-8")
+    path.write_text(normalized, encoding="utf-8", newline="")
 
     # Commit only for SKILL.md (kickoff_template stays as-is today; A-52 fixes that).
     if target == "SKILL.md":

@@ -304,3 +304,24 @@ def test_detail_flags_a_missing_skill_md_instead_of_rendering_empty(client):
     assert present.context["skill_md_missing"] is False
     assert absent.context["skill_md_missing"] is True
     assert absent.context["skill_md_content"] == ""
+
+
+@pytest.mark.parametrize("target, rel", [
+    ("SKILL.md", (".claude", "skills", "shorts-ideation", "SKILL.md")),
+    ("kickoff_template", ("pipeline-app", "stage_templates", "ideation.md")),
+])
+def test_browser_crlf_is_written_as_lf_not_doubled(client, target, rel):
+    """A <textarea> submits CRLF; write_text(newline=None) then translated
+    every \\n to os.linesep, producing \\r\\r\\n on Windows (A-55)."""
+    test_client, tmp_path = client
+    body = ("---\r\nname: shorts-ideation\r\ndescription: d\r\n---\r\n\r\nline one\r\nline two\r\n"
+            if target == "SKILL.md" else "/shorts-ideation\r\nline two\r\n")
+
+    resp = test_client.post(f"/skills/shorts-ideation/save",
+                            data={"target": target, "content": body}, follow_redirects=False)
+
+    assert resp.status_code == 303
+    raw = tmp_path.joinpath(*rel).read_bytes()
+    assert b"\r\r\n" not in raw
+    assert b"\r" not in raw
+    assert raw.decode("utf-8").endswith("line two\n")
