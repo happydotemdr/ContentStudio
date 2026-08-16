@@ -275,13 +275,22 @@ Also update the seven single-input tests in that file from `"input_file": "..."`
       plain `AssertionError` — the assembly prompt contains neither the script path nor a bed line.
 - [ ] **Implement.** Rewrite the templates. Full new bodies for the four that change materially:
 
+> **Amendment (found during T2 execution):** this section's own shown `assembly.md` body
+> ("script (beat timing, Delivery notes): `path`") does not contain the substring
+> §3 Task 2's own `test_assembly_template_names_the_script_and_the_styleboard` asserts
+> ("script: `path`"), because "(beat timing, Delivery notes)" sits between "script" and
+> the colon. T2's implementer resolved this by rewording the line to
+> `` - script: `{{ inputs['scripting'] }}` (beat timing, Delivery notes) `` — same
+> information, colon immediately after "script" so the assertion's literal substring
+> match succeeds. Landed in commit 94458f0. No other content changed.
+
 `pipeline-app/stage_templates/assembly.md`:
 
 ```jinja
 /{{ skill }}
 
 Read these upstream artifacts and produce the assembly/edit plan:
-- script (beat timing, Delivery notes): `{{ inputs['scripting'] }}`
+- script: `{{ inputs['scripting'] }}` (beat timing, Delivery notes)
 - styleboard — its BINDINGS line resolves every `{style:...}` / `{char:...}` slot in the
   prompt sheet against `docs/style-library.md`: `{{ inputs['styleboard'] }}`
 - voiceover brief: `{{ inputs['voiceover'] }}`
