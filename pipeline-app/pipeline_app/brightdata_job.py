@@ -7,7 +7,9 @@ job that times out or reports 'failed' MUST raise, never return []. An empty
 list means "the job completed and there was genuinely nothing", which
 discovery_engine records as the healthy status 'no_new_content'. Returning []
 on failure would make a paid, failed job indistinguishable from a quiet day --
-the exact bug that shipped in the first Instagram adapter.
+the exact bug that shipped in the first Instagram adapter. The tests that pin
+this invariant are test_brightdata_job.py's *_never_fetches_* and
+*_distinguishable_* pair -- deleting them re-opens D-03.
 
 This module knows nothing about any particular dataset. Callers supply the
 dataset id, the query params that select the product mode, and the request

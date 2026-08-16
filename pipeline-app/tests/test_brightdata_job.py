@@ -131,3 +131,43 @@ def test_await_results_never_fetches_when_job_fails(monkeypatch):
             fetch_fn=_fail_if_called,
             label="for someone", poll_timeout_s=300, poll_interval_s=5,
         )
+
+
+def test_await_results_raises_and_never_fetches_on_timeout(monkeypatch):
+    """Fault test. A timeout must raise, not fall through to a fetch whose
+    empty result the engine records as the healthy status 'no_new_content'."""
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+    monkeypatch.setattr(bd.time, "monotonic", lambda: 10_000.0)
+
+    def _fail_if_called(job_id):
+        raise AssertionError("fetch must not run for a timed-out job")
+
+    with pytest.raises(bd.BrightDataJobTimeout):
+        bd.await_results(
+            trigger_fn=lambda: "job1",
+            poll_fn=lambda job_id: "running",
+            fetch_fn=_fail_if_called,
+            label="for someone", poll_timeout_s=0, poll_interval_s=5,
+        )
+
+
+def test_failed_job_is_distinguishable_from_a_genuinely_empty_one(monkeypatch):
+    """Distinguishability test. The whole discipline is that these two
+    outcomes must NOT look the same to the caller."""
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+
+    empty = bd.await_results(
+        trigger_fn=lambda: "job-empty",
+        poll_fn=lambda job_id: "ready",
+        fetch_fn=lambda job_id: [],
+        label="for quiet-account", poll_timeout_s=300, poll_interval_s=5,
+    )
+    assert empty == []
+
+    with pytest.raises(bd.BrightDataJobFailed):
+        bd.await_results(
+            trigger_fn=lambda: "job-failed",
+            poll_fn=lambda job_id: "failed",
+            fetch_fn=lambda job_id: [],
+            label="for broken-account", poll_timeout_s=300, poll_interval_s=5,
+        )
