@@ -102,6 +102,17 @@ def _run_collection_job(handle: str) -> list[dict]:
             "Bright Data API key not configured "
             f"(set {KEY_ENV_VAR} or {KEY_FILE.name})"
         )
+    pending_key = f"instagram/{handle}"
+    # Free recovery before any billed call: a snapshot an earlier run paid for
+    # and abandoned on timeout (B-19). None means "nothing pending", which is
+    # the ordinary case.
+    resumed = brightdata_job.resume_pending(
+        pending_key,
+        poll_fn=lambda job_id: _poll_job_status(job_id, key),
+        fetch_fn=lambda job_id: _fetch_job_results(job_id, key),
+    )
+    if resumed is not None:
+        return resumed
     # The three lambdas resolve _trigger_job/_poll_job_status/_fetch_job_results
     # through module globals when they run, which is what keeps the existing
     # monkeypatch-based tests working after the extraction.
@@ -112,6 +123,7 @@ def _run_collection_job(handle: str) -> list[dict]:
         label=f"for {handle}",
         poll_timeout_s=POLL_TIMEOUT_S,
         poll_interval_s=POLL_INTERVAL_S,
+        pending_key=pending_key,
     )
 
 

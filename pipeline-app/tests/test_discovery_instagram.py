@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pipeline_app import brightdata_job
 from pipeline_app import discovery_instagram as ig
 
 
@@ -81,6 +82,23 @@ def test_run_collection_job_raises_clear_error_when_key_missing(monkeypatch):
     monkeypatch.setattr(ig, "_trigger_job", _fail_if_called)
     with pytest.raises(RuntimeError, match="Bright Data API key not configured"):
         ig._run_collection_job("somehandle")
+
+
+def test_run_collection_job_prefers_a_pending_snapshot_over_a_new_billed_job(monkeypatch, tmp_path):
+    """Bright Data bills per record. If the previous run paid for a snapshot
+    and timed out before collecting it, this run must take that data rather
+    than pay again."""
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    brightdata_job.record_pending("instagram/somehandle", "snap-abc")
+    _fake_key(monkeypatch)
+
+    def _fail_if_called(handle, key):
+        raise AssertionError("must not trigger a new job while a snapshot is pending")
+
+    monkeypatch.setattr(ig, "_trigger_job", _fail_if_called)
+    monkeypatch.setattr(ig, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(ig, "_fetch_job_results", lambda job_id, key: [{"post_id": "p1"}])
+    assert ig._run_collection_job("somehandle") == [{"post_id": "p1"}]
 
 
 def test_enumerate_newest_first_ready_with_empty_results_returns_empty_list(monkeypatch):
