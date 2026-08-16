@@ -134,6 +134,22 @@ CREATE TABLE IF NOT EXISTS handles_quarantine (
     last_seen_published_at TEXT
 );
 
+-- Which brand(s) a handle's content serves in the daily digest email.
+-- Many-to-many: one handle can be relevant to more than one brand (e.g. a
+-- parenting-psychology account can serve both freedom2beu and the general
+-- guru roundup), and the digest renders the same item once per brand section
+-- it belongs to. `guru` is a real row here, not inferred from
+-- handles.cohort -- see the 2026-08-15 design note for why. `brand` carries
+-- no CHECK: it is an open, operator-curated taxonomy expected to grow, and
+-- widening a CHECK later means the same create-copy-drop-rename rebuild the
+-- `handles` table's CHECK columns already cost this codebase once.
+CREATE TABLE IF NOT EXISTS handle_brands (
+    handle_id INTEGER NOT NULL REFERENCES handles(id) ON DELETE CASCADE,
+    brand TEXT NOT NULL,
+    PRIMARY KEY (handle_id, brand)
+);
+CREATE INDEX IF NOT EXISTS idx_handle_brands_brand ON handle_brands(brand);
+
 CREATE TABLE IF NOT EXISTS discovery_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL UNIQUE,
