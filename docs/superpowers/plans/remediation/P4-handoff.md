@@ -1193,6 +1193,56 @@ and in the `except BaseException:` block, replace the `resolve_latest_artifact` 
 
 ### T10 — Staleness sees drafts, optional edges and pointers (A-44, A-14, A-02 half)
 
+> **Amendment (found before T10 dispatch).** Two real gaps in this section's own shown code:
+>
+> 1. **`with_music=True`** — `_build_approved_chain` has no such kwarg yet, and `CHAIN_STAGES` has
+>    no `music` `StageDef` at all. Without a `music` entry, `propagate_staleness`'s
+>    `dep_upstream_defs = [s for s in all_stage_defs if s.id in dep_stage.all_depends_on]` can never
+>    include it (there's no `StageDef` with `id="music"` to match), so the bed-arc regenerate test
+>    could never detect staleness no matter how the rest of this task is implemented. Add a `music`
+>    stage to `CHAIN_STAGES` and the `with_music` kwarg to `_build_approved_chain`:
+>
+> ```python
+> # In CHAIN_STAGES, add:
+>     StageDef(id="music", skill="music-brief", dir_prefix="03", depends_on=["scripting", "voiceover"]),
+> ```
+>
+> ```python
+> def _build_approved_chain(conn, tmp_path: Path, downstream_statuses=None, with_music=False):
+>     ...  # unchanged through the assembly_dep construction
+>     if with_music:
+>         music_dep = script_dep + [_dep(run_dir, "03-voiceover/artifact.v1.md")]
+>         _stamp(artifacts.write_artifact(run_dir / "03-music", 1,
+>                                         {"stage": "music-brief", "depends_on": music_dep}, "bed v1"))
+>         assembly_dep = [*assembly_dep, _dep(run_dir, "03-music/artifact.v1.md")]
+>     _stamp(artifacts.write_artifact(run_dir / "04-assembly", 1,
+>                                     {"stage": "shorts-assembly", "depends_on": assembly_dep}, "asm v1"))
+>     ...  # repurpose write unchanged
+> ```
+>    (Write the music artifact — and append its dep entry into `assembly_dep` — before the existing
+>    `04-assembly` write, not after; the assembly artifact must record it in the same call.)
+>
+> 2. **The pointer-unresolvable test is unwritable as shown.** `obs.log` (`pipeline_app/obs.py:54`)
+>    prints a JSON line to stderr and a log file — it does not go through Python's `logging` module,
+>    so pytest's `caplog` fixture (which hooks `logging`) captures nothing from it, and the shown
+>    `obs_records`/`r.kind` shape doesn't correspond to any real `caplog` API. Test via `capsys`
+>    instead, and call `_current_upstream_hashes` directly rather than the full
+>    `propagate_staleness` (no dependent chain needed to exercise this one function):
+>
+> ```python
+> def test_staleness_hashing_without_a_repo_root_says_so_for_a_pointer_backed_upstream(tmp_path, capsys):
+>     """A-14: latest_artifact_path cannot see grounding's pointer indirection, so
+>     a depends_on edge onto grounding would silently drop it from BOTH input
+>     collection and staleness hashing. It must warn, not shrug."""
+>     grounding = StageDef(id="grounding", skill="rgs-grounding", dir_prefix="00", depends_on=[])
+>     hashes = turn_service._current_upstream_hashes(tmp_path, [grounding], repo_root=None)
+>     assert hashes == {}
+>     events = [json.loads(line) for line in capsys.readouterr().err.strip().splitlines() if line.strip()]
+>     assert any(e.get("event") == "staleness.pointer_upstream_unresolvable" for e in events)
+> ```
+>
+>    Add `import json` to `test_turn_service.py`'s imports if not already present.
+
 - [ ] **Test first**, `test_turn_service.py`. **Invert**
       `test_propagate_staleness_cascade_stops_at_a_non_approved_stage`
       (`test_turn_service.py:294-308`) — see §5 — and add:
@@ -1232,12 +1282,9 @@ def test_regenerating_the_bed_arc_marks_assembly_stale(conn, tmp_path):
     assert db.get_stage(conn, project_id, "assembly")["status"] == StageStatus.STALE.value
 
 
-def test_staleness_hashing_without_a_repo_root_says_so_for_a_pointer_backed_upstream(conn, tmp_path, caplog):
-    """A-14: latest_artifact_path cannot see grounding's pointer indirection, so
-    a depends_on edge onto grounding would silently drop it from BOTH input
-    collection and staleness hashing. It must warn, not shrug."""
-    ...
-    assert any(r.kind == "staleness.pointer_upstream_unresolvable" for r in obs_records)
+# test_staleness_hashing_without_a_repo_root_says_so_for_a_pointer_backed_upstream:
+# see this section's own Amendment above for the real (capsys-based) test body —
+# caplog cannot see obs.log's output.
 ```
 
 - [ ] **Run** → the inverted test fails (assembly stays `awaiting_review`), the music test fails
