@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from pipeline_app import db as db_mod
+from pipeline_app import obs
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
 from pipeline_app.state_machine import compute_initial_status
 
@@ -19,6 +20,16 @@ _SLUG_RE = re.compile(r"[^a-z0-9-]+")
 # so an unbounded slug fails halfway through creation with an OSError and
 # leaves a committed project with a partial set of stage rows (A-78).
 MAX_SLUG_LENGTH = 60
+
+# run_id's shape is frozen: browse_service._RUN_ID_TIMESTAMP_RE anchors
+# `-(\d{8}-\d{6})$` at the END of the directory name, so a disambiguating
+# suffix would silently stop /browse dating the run. Collisions are resolved
+# by advancing the timestamp, never by appending to it (A-79).
+_MAX_RUN_ID_ATTEMPTS = 5
+
+
+class RunIdCollision(RuntimeError):
+    """Every candidate run_id inside the retry window was already taken."""
 
 
 def sanitize_slug(slug: str) -> str:
@@ -44,7 +55,17 @@ def create_project(
     cleaned_slug = sanitize_slug(slug)
     now = now or datetime.datetime.now(datetime.timezone.utc)
     applicable = [s for s in stage_defs if s.brand_scope is None or s.brand_scope == brand]
-    return _create_once(conn, repo_root, cleaned_slug, brand, applicable, now)
+    for attempt in range(_MAX_RUN_ID_ATTEMPTS):
+        try:
+            return _create_once(conn, repo_root, cleaned_slug, brand, applicable, now)
+        except sqlite3.IntegrityError:
+            obs.log("project.run_id_collision", level="warning",
+                    slug=cleaned_slug, attempt=attempt + 1)
+            now = now + datetime.timedelta(seconds=1)
+    raise RunIdCollision(
+        f"could not allocate a unique run_id for {cleaned_slug!r} after "
+        f"{_MAX_RUN_ID_ATTEMPTS} attempts — please retry in a moment"
+    )
 
 
 def _create_once(conn, repo_root, cleaned_slug, brand, applicable, now) -> dict:

@@ -164,3 +164,18 @@ def test_a_failed_creation_is_a_named_error_and_leaves_an_events_row(client, mon
     rows = client.app.state.conn.execute(
         "SELECT * FROM events WHERE kind = 'project.create_failed'").fetchall()
     assert len(rows) == 1 and rows[0]["severity"] == "error"
+
+
+def test_a_run_id_collision_returns_409_with_retry_advice_not_500(client, monkeypatch):
+    import pipeline_app.routes.projects as projects_route
+    from pipeline_app.project_service import RunIdCollision
+
+    monkeypatch.setattr(
+        projects_route, "create_project",
+        lambda *a, **k: (_ for _ in ()).throw(RunIdCollision("retry in a moment")),
+    )
+    resp = client.post("/projects", data={"slug": "dup", "brand": "generic"},
+                       follow_redirects=False)
+
+    assert resp.status_code == 409
+    assert "retry" in resp.text.lower()

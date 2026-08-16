@@ -215,3 +215,39 @@ def test_a_half_created_project_is_distinguishable_from_a_whole_one(conn, tmp_pa
 
     projects = db.list_projects(conn)
     assert [p["slug"] for p in projects] == ["good-run"]
+
+
+def test_two_projects_created_in_the_same_second_both_succeed(conn, tmp_path: Path):
+    """run_id uniqueness rested entirely on second-resolution, so a
+    double-submitted form raised sqlite3.IntegrityError (A-79)."""
+    now = datetime.datetime(2026, 7, 25, 14, 32, 0, tzinfo=datetime.timezone.utc)
+
+    first = create_project(conn, tmp_path, "My Topic", "generic", STAGES, now=now)
+    second = create_project(conn, tmp_path, "my_topic", "generic", STAGES, now=now)
+
+    assert first["run_id"] == "my-topic-20260725-143200"
+    assert second["run_id"] == "my-topic-20260725-143201"      # advanced, not suffixed
+    assert first["run_dir"].is_dir() and second["run_dir"].is_dir()
+    assert len(db.list_projects(conn)) == 2
+
+
+def test_run_id_keeps_the_shape_browse_service_anchors_on(conn, tmp_path: Path):
+    """browse_service._RUN_ID_TIMESTAMP_RE is `-(\\d{8}-\\d{6})$` — anchored at
+    the END. A disambiguating suffix would silently stop /browse dating the
+    run, so collisions advance the timestamp instead."""
+    import re
+    now = datetime.datetime(2026, 7, 25, 14, 32, 0, tzinfo=datetime.timezone.utc)
+    for _ in range(3):
+        result = create_project(conn, tmp_path, "dup", "generic", STAGES, now=now)
+        assert re.search(r"-(\d{8}-\d{6})$", result["run_id"])
+
+
+def test_an_exhausted_retry_window_raises_a_named_error_not_IntegrityError(conn, tmp_path):
+    from pipeline_app.project_service import _MAX_RUN_ID_ATTEMPTS, RunIdCollision
+    now = datetime.datetime(2026, 7, 25, 14, 32, 0, tzinfo=datetime.timezone.utc)
+    for i in range(_MAX_RUN_ID_ATTEMPTS):
+        create_project(conn, tmp_path, "dup", "generic", STAGES,
+                       now=now + datetime.timedelta(seconds=i))
+
+    with pytest.raises(RunIdCollision):
+        create_project(conn, tmp_path, "dup", "generic", STAGES, now=now)
