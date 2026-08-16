@@ -6,6 +6,11 @@ import pytest
 from pipeline_app import discovery_bluesky as bsky
 
 
+def _post(rkey: str, day: str, text: str = "hello") -> dict:
+    return {"post": {"uri": f"at://did/app.bsky.feed.post/{rkey}",
+                     "record": {"text": text, "createdAt": f"{day}T10:00:00Z"}}}
+
+
 @pytest.fixture
 def logged(monkeypatch):
     """Captures every bsky.obs.log() call this test makes, as a list of dicts.
@@ -202,3 +207,32 @@ def test_download_item_writes_parseable_frontmatter(tmp_path, monkeypatch):
     assert isinstance(meta["fetched_at"], str)
     assert meta["fetched_at"].endswith("+00:00")
     assert body.strip() == "Hello there, full post text."
+
+
+def test_a_failure_mid_pagination_raises_rather_than_truncating_the_walk(monkeypatch):
+    """A failure on page 3 of 5 used to return pages 1-2 as if the walk had
+    completed, silently shortening a new handle's 90-day lookback."""
+    pages = [
+        {"feed": [_post("rkey1", "2026-07-29")], "cursor": "p2"},
+        {"feed": [_post("rkey2", "2026-07-28")], "cursor": "p3"},
+    ]
+    calls = {"n": 0}
+
+    def flaky(url):
+        calls["n"] += 1
+        if calls["n"] > len(pages):
+            raise TimeoutError("appview timeout")
+        return json.dumps(pages[calls["n"] - 1]).encode("utf-8")
+
+    monkeypatch.setattr(bsky, "_http_get", flaky)
+    with pytest.raises(bsky.BlueskyFetchError) as exc:
+        bsky.enumerate_newest_first("x.bsky.social", keyword_filter=None)
+    assert "page 3" in str(exc.value)
+
+
+def test_a_complete_short_walk_is_not_a_failure(monkeypatch):
+    """Distinguishability: a feed that runs out of cursor before page_limit is
+    a completed walk, and must still return normally."""
+    pages = [{"feed": [_post("rkey1", "2026-07-29")]}]
+    monkeypatch.setattr(bsky, "_http_get", lambda url: json.dumps(pages[0]).encode("utf-8"))
+    assert [i["id"] for i in bsky.enumerate_newest_first("x.bsky.social", None)] == ["rkey1"]
