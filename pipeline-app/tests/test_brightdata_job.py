@@ -219,6 +219,42 @@ def test_timeout_exception_carries_the_snapshot_id_as_data_not_only_prose(monkey
     assert exc.value.poll_timeout_s == 0
 
 
+def test_timeout_persists_the_snapshot_for_a_later_free_fetch(monkeypatch, tmp_path):
+    monkeypatch.setattr(bd, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+    monkeypatch.setattr(bd.time, "monotonic", lambda: 10_000.0)
+    with pytest.raises(bd.BrightDataJobTimeout):
+        bd.await_results(trigger_fn=lambda: "snap-abc",
+                         poll_fn=lambda job_id: "running",
+                         fetch_fn=lambda job_id: [],
+                         label="for x/CNN", poll_timeout_s=0, poll_interval_s=5,
+                         pending_key="x/CNN")
+    assert bd.load_pending("x/CNN")["snapshot_id"] == "snap-abc"
+
+
+def test_a_failed_job_is_not_persisted_because_there_is_nothing_to_recover(monkeypatch, tmp_path):
+    monkeypatch.setattr(bd, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+    with pytest.raises(bd.BrightDataJobFailed):
+        bd.await_results(trigger_fn=lambda: "snap-dead",
+                         poll_fn=lambda job_id: "failed",
+                         fetch_fn=lambda job_id: [],
+                         label="for x/CNN", poll_timeout_s=300, poll_interval_s=5,
+                         pending_key="x/CNN")
+    assert bd.load_pending("x/CNN") is None
+
+
+def test_pending_store_survives_a_corrupt_file(monkeypatch, tmp_path):
+    """The store is a recovery aid, never a dependency: a truncated write from
+    a killed process must not take the next run down with it."""
+    store = tmp_path / "pending.json"
+    store.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(bd, "PENDING_STORE_PATH", store)
+    assert bd.load_pending("x/CNN") is None
+    bd.record_pending("x/CNN", "snap-1")
+    assert bd.load_pending("x/CNN")["snapshot_id"] == "snap-1"
+
+
 def test_await_results_never_fetches_when_job_fails(monkeypatch):
     """A failed job must raise, not fall through to an empty fetch -- an empty
     return would be recorded by the engine as the healthy status

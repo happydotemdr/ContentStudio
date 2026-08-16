@@ -17,6 +17,8 @@ body.
 """
 from __future__ import annotations
 
+import datetime as _dt
+import json
 import os
 import time
 from pathlib import Path
@@ -29,6 +31,57 @@ BRIGHTDATA_API_BASE = "https://api.brightdata.com/datasets/v3"
 REQUEST_TIMEOUT_S = 30
 
 _DIAGNOSTICS: list[dict] = []
+
+PENDING_STORE_PATH = Path(__file__).resolve().parent.parent / "logs" / "brightdata-pending.json"
+PENDING_MAX_AGE_H = 48
+
+
+def _read_store() -> dict:
+    try:
+        payload = json.loads(PENDING_STORE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_store(payload: dict) -> None:
+    # Write-temp-then-rename, same as every adapter's download_item: a killed
+    # process must never leave a half-written store that reads as valid.
+    PENDING_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = PENDING_STORE_PATH.with_name(PENDING_STORE_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(PENDING_STORE_PATH)
+
+
+def record_pending(key: str, snapshot_id: str) -> None:
+    """Remember a snapshot that was paid for and not collected (B-19)."""
+    store = _read_store()
+    store[key] = {
+        "snapshot_id": snapshot_id,
+        "recorded_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    }
+    _write_store(store)
+
+
+def load_pending(key: str) -> dict | None:
+    """The pending entry for this platform/handle, or None if absent or older
+    than PENDING_MAX_AGE_H (Bright Data snapshots do not live forever, and a
+    stale entry would cost one wasted poll every run)."""
+    entry = _read_store().get(key)
+    if not entry:
+        return None
+    try:
+        recorded = _dt.datetime.fromisoformat(entry["recorded_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    age_h = (_dt.datetime.now(_dt.timezone.utc) - recorded).total_seconds() / 3600
+    return None if age_h > PENDING_MAX_AGE_H else entry
+
+
+def clear_pending(key: str) -> None:
+    store = _read_store()
+    if store.pop(key, None) is not None:
+        _write_store(store)
 
 
 def record_diagnostic(*, kind: str, severity: str, source: str, message: str,
@@ -238,13 +291,19 @@ def fetch_results(api_base: str, job_id: str, key: str) -> list[dict]:
 
 
 def await_results(trigger_fn, poll_fn, fetch_fn, *, label: str,
-                  poll_timeout_s: float, poll_interval_s: float) -> list[dict]:
+                  poll_timeout_s: float, poll_interval_s: float,
+                  pending_key: str | None = None) -> list[dict]:
     """Run one full trigger -> poll -> fetch cycle.
 
     The three callables are injected rather than called directly so each
     adapter keeps its own module-level trigger/poll/fetch functions -- which
     is what lets adapter tests monkeypatch them. `label` is interpolated into
     error messages (e.g. "for nike") so a failure names the handle.
+
+    `pending_key` identifies this platform/handle for the durable pending-
+    snapshot store (B-19). On timeout the job's snapshot id is persisted so a
+    later run can fetch it for free instead of abandoning paid-for data. A
+    failed job is not persisted -- there is nothing to recover.
     """
     job_id = trigger_fn()
     deadline = time.monotonic() + poll_timeout_s
@@ -258,6 +317,16 @@ def await_results(trigger_fn, poll_fn, fetch_fn, *, label: str,
                 snapshot_id=job_id, label=label, poll_timeout_s=poll_timeout_s
             )
         if time.monotonic() >= deadline:
+            if pending_key:
+                record_pending(pending_key, job_id)
+            record_diagnostic(
+                kind="brightdata.snapshot_abandoned", severity="error",
+                source=label,
+                message=f"Bright Data job {job_id} {label} timed out after "
+                         f"{poll_timeout_s}s -- snapshot {job_id} left uncollected",
+                detail={"snapshot_id": job_id, "label": label,
+                        "poll_timeout_s": poll_timeout_s, "pending_key": pending_key},
+            )
             raise BrightDataJobTimeout(
                 f"Bright Data job {job_id} {label} timed out after {poll_timeout_s}s",
                 snapshot_id=job_id, label=label, poll_timeout_s=poll_timeout_s
