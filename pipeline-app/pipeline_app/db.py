@@ -1697,6 +1697,34 @@ def set_handle_included(conn: sqlite3.Connection, handle_id: int, included: bool
     commit_unless_in_transaction(conn)
 
 
+def set_handle_brands(conn: sqlite3.Connection, handle_id: int, brands: list[str]) -> None:
+    """Replace handle_id's brand tags with exactly `brands` (order-insensitive,
+    duplicates collapsed). Delete-then-insert rather than a diff: with at most
+    a handful of tags per handle the atomicity is worth more than the extra
+    writes, and the caller never needs to know which tags were already there.
+
+    Wrapped in transaction(conn), not a bare commit_unless_in_transaction after
+    both statements: this connection is shared across Starlette's threadpool,
+    and an uncommitted DELETE sitting on it between the two execute() calls
+    would be flushed early by an unrelated leaf helper's commit on the same
+    connection if the INSERT ever raised in between -- silently clearing the
+    handle's tags with no INSERT to replace them.
+    """
+    with transaction(conn):
+        conn.execute("DELETE FROM handle_brands WHERE handle_id = ?", (handle_id,))
+        conn.executemany(
+            "INSERT INTO handle_brands (handle_id, brand) VALUES (?, ?)",
+            [(handle_id, b) for b in dict.fromkeys(brands)],
+        )
+
+
+def get_handle_brands(conn: sqlite3.Connection, handle_id: int) -> list[str]:
+    rows = conn.execute(
+        "SELECT brand FROM handle_brands WHERE handle_id = ? ORDER BY brand", (handle_id,)
+    ).fetchall()
+    return [r["brand"] for r in rows]
+
+
 def set_handle_last_seen(conn: sqlite3.Connection, handle_id: int, last_seen_published_at: str) -> None:
     conn.execute(
         "UPDATE handles SET last_seen_published_at = ? WHERE id = ?",

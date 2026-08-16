@@ -228,6 +228,37 @@ def test_upsert_handle_from_migration_is_idempotent(conn):
     assert db.get_handle(conn, first_id)["status"] == "invalid"  # not clobbered by re-running
 
 
+def test_set_and_get_handle_brands(conn):
+    handle_id = db.create_handle(conn, "instagram", "aspenprojectplay", None, "guru", None, "2026-08-15T00:00:00Z")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports"])
+    assert db.get_handle_brands(conn, handle_id) == ["guru", "raisinggoodsports"]
+
+
+def test_get_handle_brands_is_empty_for_an_untagged_handle(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-15T00:00:00Z")
+    assert db.get_handle_brands(conn, handle_id) == []
+
+
+def test_set_handle_brands_replaces_rather_than_accumulates(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-15T00:00:00Z")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports"])
+    db.set_handle_brands(conn, handle_id, ["freedom2beu"])
+    assert db.get_handle_brands(conn, handle_id) == ["freedom2beu"]
+
+
+def test_set_handle_brands_dedupes_repeated_values(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-15T00:00:00Z")
+    db.set_handle_brands(conn, handle_id, ["guru", "guru", "freedom2beu"])
+    assert db.get_handle_brands(conn, handle_id) == ["freedom2beu", "guru"]
+
+
+def test_set_handle_brands_to_empty_list_clears_all_tags(conn):
+    handle_id = db.create_handle(conn, "youtube", "@a", None, "guru", None, "2026-08-15T00:00:00Z")
+    db.set_handle_brands(conn, handle_id, ["guru"])
+    db.set_handle_brands(conn, handle_id, [])
+    assert db.get_handle_brands(conn, handle_id) == []
+
+
 def test_insert_running_run_then_second_raises(conn):
     db.insert_running_run(conn, "run-1", "manual", "incremental", "2026-07-30T06:00:00Z")
     with pytest.raises(sqlite3.IntegrityError):
