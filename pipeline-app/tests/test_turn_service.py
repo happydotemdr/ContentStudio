@@ -475,6 +475,78 @@ async def test_upstream_resolves_to_the_approved_version_not_an_unapproved_draft
     assert "artifact.v2.md" not in capture[0]["prompt"]
 
 
+@pytest.mark.asyncio
+async def test_resumed_turn_names_the_new_upstream_version(conn, tmp_path, monkeypatch, capture):
+    """A-05: is_first_turn is `claude_session_id is None` and nothing ever clears
+    it, so a re-run after an upstream regenerated sent only the operator's chat
+    text with --resume. The transcript still named artifact.v1.md while the new
+    artifact's frontmatter asserted it was built on v2."""
+    project_id, run_dir = _approved_chain(conn, tmp_path)
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_INIT, _RESULT_OK],
+                                     run_dir / "03-voiceover" / "raw_output.md", captured=capture))
+    await _drain(turn_service.run_stage_turn(          # first turn -- records what it saw
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("voiceover"), CHAIN_STAGES, "brief it"))
+
+    _final_artifact(run_dir / "02-scripting", 2, "shorts-scripting", "script v2")
+    capture.clear()
+    await _drain(turn_service.run_stage_turn(          # resumed turn
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("voiceover"), CHAIN_STAGES, "tighten the pacing"))
+
+    prompt = capture[0]["prompt"]
+    assert capture[0]["resume_session_id"] == "session-1"
+    assert "UPSTREAM CHANGED" in prompt
+    assert "02-scripting/artifact.v2.md" in prompt
+    assert "was `02-scripting/artifact.v1.md`" in prompt
+    assert "tighten the pacing" in prompt
+
+
+@pytest.mark.asyncio
+async def test_resumed_turn_with_unchanged_upstream_sends_only_the_message(
+        conn, tmp_path, monkeypatch, capture):
+    """Distinguishability: 'nothing changed' must not look like 'we failed to
+    notice a change'. An unchanged chain sends the bare message, with no notice."""
+    project_id, run_dir = _approved_chain(conn, tmp_path)
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_INIT, _RESULT_OK],
+                                     run_dir / "03-voiceover" / "raw_output.md", captured=capture))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("voiceover"), CHAIN_STAGES, "brief it"))
+
+    capture.clear()
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("voiceover"), CHAIN_STAGES, "tighten the pacing"))
+
+    assert capture[0]["prompt"] == "tighten the pacing"
+
+
+@pytest.mark.asyncio
+async def test_upstream_change_on_a_resumed_turn_records_a_warning_event(
+        conn, tmp_path, monkeypatch, capture):
+    project_id, run_dir = _approved_chain(conn, tmp_path)
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_INIT, _RESULT_OK],
+                                     run_dir / "03-voiceover" / "raw_output.md", captured=capture))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("voiceover"), CHAIN_STAGES, "brief it"))
+
+    _final_artifact(run_dir / "02-scripting", 2, "shorts-scripting", "script v2")
+    capture.clear()
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("voiceover"), CHAIN_STAGES, "tighten the pacing"))
+
+    rows = conn.execute(
+        "SELECT severity, detail FROM events WHERE kind = 'handoff.upstream_changed'").fetchall()
+    assert len(rows) == 1 and rows[0]["severity"] == "warning"
+    assert "scripting" in rows[0]["detail"]
+
+
 def test_approved_artifact_path_distinguishes_no_artifact_from_only_drafts(tmp_path):
     """Distinguishability: a stage with three unapproved drafts is not the same
     as a stage with nothing -- but both must resolve to None, and the caller

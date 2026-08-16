@@ -127,6 +127,57 @@ def _approved_artifact_path(stage_dir: Path) -> Path | None:
     return None
 
 
+def _session_inputs_path(stage_dir: Path) -> Path:
+    return stage_dir / "session_inputs.json"
+
+
+def _write_session_inputs(stage_dir: Path, run_dir: Path, inputs: dict[str, str]) -> None:
+    """What the CLI session for this stage has actually been shown. Kept beside
+    the events log rather than in the DB so no schema change is needed."""
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = {sid: _relpath(Path(p), run_dir) for sid, p in inputs.items()}
+    _session_inputs_path(stage_dir).write_text(
+        json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _read_session_inputs(stage_dir: Path) -> dict[str, str]:
+    path = _session_inputs_path(stage_dir)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        obs.log("handoff.session_inputs_unreadable", level="warning", path=str(path))
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _resumed_prompt(conn, stage_dir: Path, run_dir: Path, stage_def: StageDef,
+                    inputs: dict[str, str], user_message: str) -> str:
+    """A resumed session's transcript still names the artifact versions it was
+    opened on. If any upstream has since been superseded, say so in the prompt --
+    otherwise the model answers from the old paths while the artifact it writes
+    records the new ones as its provenance (A-05)."""
+    seen = _read_session_inputs(stage_dir)
+    current = {sid: _relpath(Path(p), run_dir) for sid, p in inputs.items()}
+    if seen == current:
+        return user_message
+    changed = sorted(sid for sid in current if seen.get(sid) != current[sid])
+    dropped = sorted(sid for sid in seen if sid not in current)
+    lines = ["UPSTREAM CHANGED SINCE THIS SESSION LAST READ IT."]
+    lines += [f"- {sid}: now `{current[sid]}` (was `{seen.get(sid, 'absent')}`)" for sid in changed]
+    lines += [f"- {sid}: no longer available (was `{seen[sid]}`)" for sid in dropped]
+    lines.append("Re-read every path above before answering; do not rely on the earlier version.")
+    obs.record_event(
+        conn, kind="handoff.upstream_changed", severity="warning", source="turn_service",
+        message=f"stage '{stage_def.id}' resumed against changed upstream(s): {changed + dropped}",
+        detail={"stage": stage_def.id, "changed": changed, "dropped": dropped,
+                "seen": seen, "current": current},
+    )
+    _write_session_inputs(stage_dir, run_dir, inputs)
+    return "\n".join(lines) + "\n\n" + user_message
+
+
 def _resolve_upstream(repo_root: Path, run_dir: Path, up: StageDef) -> Path | None:
     """The artifact an upstream stage hands downstream. Grounding's real output
     lives in rgs-briefs/ behind a pointer, so it needs the pointer-aware
@@ -213,8 +264,9 @@ async def run_stage_turn(
             "raw_output_path": str(raw_output_path),
         })
         resume_id = None
+        _write_session_inputs(stage_dir, run_dir, inputs)
     else:
-        prompt = user_message
+        prompt = _resumed_prompt(conn, stage_dir, run_dir, stage_def, inputs, user_message)
         resume_id = stage_row["claude_session_id"]
 
     before_mtime = raw_output_path.stat().st_mtime if raw_output_path.exists() else None
