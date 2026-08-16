@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, is_dataclass
@@ -443,6 +444,35 @@ def run_music_contract_gate(
     ]
 
 
+def run_assembly_contract_gate(
+    repo_root: Path, artifact_path: Path, upstream: Mapping[str, Path]
+) -> list[dict]:
+    """Gate O-A: shorts-assembly/SKILL.md has no heading template
+    (verified :57-88), so this checks the five content elements its
+    'Writing the plan for a real request' section (:72-81) actually
+    mandates, by keyword presence. The QA-checklist check is a regex, not a
+    literal substring: real assembly artifacts write "QA gate" with a
+    space, never the hyphenated "qa-gate" the skill's own prose uses."""
+    text = artifact_path.read_text(encoding="utf-8")
+    checks = [
+        ("OA1", "1080" in text, "an aspect ratio statement (e.g. 1080x1920 / 9:16)"),
+        ("OA2", "LUFS" in text, "a stated loudness target (LUFS)"),
+        ("OA3", "$0" in text and "paid" in text.lower(),
+         "both a $0 and a paid tool-stack path"),
+        ("OA4", re.search(r"qa[\s-]?gate", text, re.IGNORECASE) is not None,
+         "the QA-gate + publish-gate checklist"),
+        ("OA5", "social-repurpose" in text, "the explicit hand-off to social-repurpose"),
+    ]
+    return [
+        {
+            "check": code, "beat": None, "shot_index": None, "kind": "fail",
+            "message": f"{artifact_path.name} is missing {description}.",
+        }
+        for code, present, description in checks
+        if not present
+    ]
+
+
 # P2's migrations.py backfill (out of this package's file ownership) writes
 # synthetic styleboard artifacts with `gates: []`, on the strength of its own
 # comment there: "styleboard registers no gates (gates.GATE_REGISTRY), so []
@@ -459,6 +489,7 @@ GATE_REGISTRY: dict[str, list[tuple[str, GateRunner]]] = {
     "ideation": [("gate_o_ideation_contract", run_ideation_contract_gate)],
     "voiceover": [("gate_o_voiceover_contract", run_voiceover_contract_gate)],
     "music": [("gate_o_music_contract", run_music_contract_gate)],
+    "assembly": [("gate_o_assembly_contract", run_assembly_contract_gate)],
 }
 
 

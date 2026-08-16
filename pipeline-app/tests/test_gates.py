@@ -1093,3 +1093,76 @@ def test_the_app_suite_declares_the_repo_root_paths_it_reads():
         "the pipeline-app suite reads these repo-root paths and cannot run without "
         f"them: {missing}. See F-73 -- this suite is not independently relocatable."
     )
+
+
+# --- Gate O-A: assembly content checks ----------------------------------------
+
+import re
+
+COMPLETE_ASSEMBLY_PLAN = (
+    "Shot-by-shot table: [rows]\n\n"
+    "Aspect ratio: 1080x1920 (9:16).\n\n"
+    "Loudness target: -14 LUFS, ducking to -22 dB under voice.\n\n"
+    "$0 stack: CapCut. Paid stack: Premiere Pro.\n\n"
+    "Run the QA gate + publish gate checklist before scheduling.\n\n"
+    "This edit plan feeds social-repurpose next.\n"
+)
+
+
+def test_assembly_stage_is_registered():
+    assert "assembly" in gates.GATE_REGISTRY
+
+
+def test_assembly_gate_passes_a_complete_plan(tmp_path):
+    path = tmp_path / "raw_output.md"
+    path.write_text(COMPLETE_ASSEMBLY_PLAN, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert len(results) == 1
+    assert results[0]["name"] == "gate_o_assembly_contract"
+    assert results[0]["status"] == "pass"
+
+
+def test_assembly_gate_flags_a_missing_aspect_ratio_statement(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace("Aspect ratio: 1080x1920 (9:16).\n\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("aspect ratio" in f["message"].lower() for f in results[0]["findings"])
+
+
+def test_assembly_gate_flags_a_missing_zero_dollar_stack(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace("$0 stack: CapCut. Paid stack: Premiere Pro.\n\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("$0" in f["message"] for f in results[0]["findings"])
+
+
+def test_assembly_gate_matches_the_real_unhyphenated_qa_gate_wording(tmp_path):
+    """Real assembly artifacts write 'QA gate' with a space -- a check for
+    the literal hyphenated 'qa-gate' would reject every correct one."""
+    path = tmp_path / "raw_output.md"
+    path.write_text(COMPLETE_ASSEMBLY_PLAN, encoding="utf-8")  # already uses "QA gate"
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "pass"
+
+
+def test_assembly_gate_flags_a_missing_qa_gate_checklist(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace(
+        "Run the QA gate + publish gate checklist before scheduling.\n\n", ""
+    )
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
+    assert any("QA-gate" in f["message"] for f in results[0]["findings"])
+
+
+def test_assembly_gate_flags_a_missing_repurpose_handoff(tmp_path):
+    path = tmp_path / "raw_output.md"
+    text = COMPLETE_ASSEMBLY_PLAN.replace("This edit plan feeds social-repurpose next.\n", "")
+    path.write_text(text, encoding="utf-8")
+    results = gates.run_gates_for_stage(REPO_ROOT, "assembly", path, {})
+    assert results[0]["status"] == "fail"
