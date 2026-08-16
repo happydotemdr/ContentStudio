@@ -27,8 +27,12 @@ def conn(tmp_path: Path):
     connection.close()
 
 
-def _fake_stream(events: list[dict], writes_file: Path | None = None, content: str = "generated body"):
+def _fake_stream(events: list[dict], writes_file: Path | None = None, content: str = "generated body",
+                  captured: list[dict] | None = None):
     async def _gen(prompt, cwd, resume_session_id, **kwargs):
+        if captured is not None:
+            captured.append({"prompt": prompt, "cwd": cwd,
+                             "resume_session_id": resume_session_id, "kwargs": kwargs})
         if writes_file is not None:
             writes_file.parent.mkdir(parents=True, exist_ok=True)
             writes_file.write_text(content, encoding="utf-8")
@@ -232,11 +236,20 @@ async def test_aborted_turn_persists_cost_when_a_result_event_was_captured(conn,
 
 CHAIN_STAGES = [
     StageDef(id="scripting", skill="shorts-scripting", dir_prefix="02", depends_on=[]),
+    StageDef(id="styleboard", skill="shorts-styleboard", dir_prefix="02b", depends_on=["scripting"]),
     StageDef(id="voiceover", skill="voiceover-brief", dir_prefix="03", depends_on=["scripting"]),
-    StageDef(id="visual", skill="visual-prompts", dir_prefix="03", depends_on=["scripting"]),
-    StageDef(id="assembly", skill="shorts-assembly", dir_prefix="04", depends_on=["voiceover", "visual"]),
+    StageDef(id="visual", skill="visual-prompts", dir_prefix="03", depends_on=["scripting", "styleboard"]),
+    StageDef(
+        id="assembly", skill="shorts-assembly", dir_prefix="04",
+        depends_on=["scripting", "styleboard", "voiceover", "visual"],
+        optional_depends_on=["music"],
+    ),
     StageDef(id="repurpose", skill="social-repurpose", dir_prefix="05", depends_on=["assembly"]),
 ]
+
+
+def _by_id(stage_id: str) -> StageDef:
+    return next(s for s in CHAIN_STAGES if s.id == stage_id)
 
 
 def _dep(run_dir: Path, relpath: str) -> dict:
@@ -245,9 +258,9 @@ def _dep(run_dir: Path, relpath: str) -> dict:
 
 
 def _build_approved_chain(conn, tmp_path: Path, downstream_statuses: dict[str, str] | None = None):
-    """Full scripting -> {voiceover, visual} -> assembly -> repurpose chain,
-    every stage approved and every artifact's frontmatter recording the real
-    hashes of the upstream artifacts it was built on. downstream_statuses
+    """Full scripting -> styleboard -> {voiceover, visual} -> assembly -> repurpose
+    chain, every stage approved and every artifact's frontmatter recording the
+    real hashes of the upstream artifacts it was built on. downstream_statuses
     overrides individual stage statuses."""
     statuses = {s.id: StageStatus.APPROVED.value for s in CHAIN_STAGES}
     statuses.update(downstream_statuses or {})
@@ -258,9 +271,14 @@ def _build_approved_chain(conn, tmp_path: Path, downstream_statuses: dict[str, s
     run_dir = tmp_path / "runs" / "abc-1"
     artifacts.write_artifact(run_dir / "02-scripting", 1, {"stage": "shorts-scripting"}, "script v1")
     script_dep = [_dep(run_dir, "02-scripting/artifact.v1.md")]
+    artifacts.write_artifact(run_dir / "02b-styleboard", 1,
+                             {"stage": "shorts-styleboard", "depends_on": script_dep}, "styleboard v1")
+    styleboard_dep = [_dep(run_dir, "02b-styleboard/artifact.v1.md")]
     artifacts.write_artifact(run_dir / "03-voiceover", 1, {"stage": "voiceover-brief", "depends_on": script_dep}, "vo v1")
-    artifacts.write_artifact(run_dir / "03-visual", 1, {"stage": "visual-prompts", "depends_on": script_dep}, "vis v1")
+    artifacts.write_artifact(run_dir / "03-visual", 1,
+                             {"stage": "visual-prompts", "depends_on": script_dep + styleboard_dep}, "vis v1")
     assembly_dep = [
+        *script_dep, *styleboard_dep,
         _dep(run_dir, "03-voiceover/artifact.v1.md"),
         _dep(run_dir, "03-visual/artifact.v1.md"),
     ]
@@ -271,6 +289,18 @@ def _build_approved_chain(conn, tmp_path: Path, downstream_statuses: dict[str, s
         "rep v1",
     )
     return project_id, run_dir
+
+
+_approved_chain = _build_approved_chain
+
+
+_INIT = {"type": "system", "subtype": "init", "session_id": "session-1"}
+_RESULT_OK = {"type": "result", "result": "done", "total_cost_usd": 0.01, "is_error": False}
+
+
+@pytest.fixture
+def capture() -> list[dict]:
+    return []
 
 
 def test_propagate_staleness_cascades_past_direct_dependents(conn, tmp_path: Path):
@@ -309,6 +339,62 @@ def test_propagate_staleness_cascade_stops_at_a_non_approved_stage(conn, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_missing_required_upstream_refuses_the_turn(conn, tmp_path, monkeypatch):
+    """A-07: input_file was passed as Python None, so scripting.md rendered
+    ``Read the concept brief at `None` `` -- a plausible path the model tries,
+    fails on, and works around."""
+    project_id = db.create_project(conn, "m-1", "m", "generic", "2026-08-08T00:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", StageStatus.APPROVED.value)
+    db.create_stage_row(conn, project_id, "scripting", StageStatus.READY.value)
+    run_dir = tmp_path / "runs" / "m-1"
+    (run_dir / "01-ideation").mkdir(parents=True)   # approved, but the file is gone
+
+    with pytest.raises(turn_service.MissingUpstreamArtifactError, match="ideation"):
+        await _drain(turn_service.run_stage_turn(
+            conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "m-1",
+            STAGES[1], STAGES, "go",
+        ))
+    assert turn_service.any_turn_running(conn) is False   # no wedged turn row
+
+
+@pytest.mark.asyncio
+async def test_missing_optional_upstream_renders_a_valid_prompt(conn, tmp_path, monkeypatch, capture):
+    """Distinguishability: 'the bed arc was never produced' (legitimate) must be
+    observably different from 'the script is gone' (fault). One renders, one raises."""
+    project_id, run_dir = _approved_chain(conn, tmp_path)   # no music artifact
+    monkeypatch.setattr(turn_service.cli_runner, "stream_claude_turn",
+                        _fake_stream([_RESULT_OK], run_dir / "04-assembly" / "raw_output.md",
+                                     captured=capture))
+    await _drain(turn_service.run_stage_turn(
+        conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "abc-1",
+        _by_id("assembly"), CHAIN_STAGES, "cut it",
+    ))
+    assert "No music bed brief" in capture[0]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_missing_required_upstream_records_an_error_event(conn, tmp_path):
+    """Surfacing: the refusal must leave a row a human can find, not just an
+    exception inside an SSE body generator."""
+    project_id = db.create_project(conn, "m-2", "m", "generic", "2026-08-08T00:00:00Z")
+    db.create_stage_row(conn, project_id, "ideation", StageStatus.APPROVED.value)
+    db.create_stage_row(conn, project_id, "scripting", StageStatus.READY.value)
+    run_dir = tmp_path / "runs" / "m-2"
+    (run_dir / "01-ideation").mkdir(parents=True)   # approved, but the file is gone
+
+    with pytest.raises(turn_service.MissingUpstreamArtifactError):
+        await _drain(turn_service.run_stage_turn(
+            conn, tmp_path, run_dir, TEMPLATES_DIR, project_id, "m-2",
+            STAGES[1], STAGES, "go",
+        ))
+    rows = conn.execute(
+        "SELECT kind, severity, message FROM events WHERE kind = 'handoff.upstream_missing'"
+    ).fetchall()
+    assert len(rows) == 1 and rows[0]["severity"] == "error"
+    assert "ideation" in rows[0]["message"]
+
+
+@pytest.mark.asyncio
 async def test_scripting_turn_records_gate_results_in_frontmatter(conn, tmp_path, monkeypatch):
     """A failing gate must not hide the artifact that failed it -- the stage
     still reaches awaiting_review with the file on disk."""
@@ -319,6 +405,7 @@ async def test_scripting_turn_records_gate_results_in_frontmatter(conn, tmp_path
     run_dir = tmp_path / "runs" / "gate-1"
     stage_dir = run_dir / "02-scripting"
     raw = stage_dir / "raw_output.md"
+    artifacts.write_artifact(run_dir / "01-ideation", 1, {"stage": "shorts-ideation"}, "concept v1")
 
     monkeypatch.setattr(
         turn_service.cli_runner,

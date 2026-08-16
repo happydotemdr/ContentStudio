@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import AsyncIterator
 
-from pipeline_app import artifacts, cli_runner, db as db_mod, gates, prompt_builder
+from pipeline_app import artifacts, cli_runner, db as db_mod, gates, obs, prompt_builder
 from pipeline_app.pipeline_config import StageDef, stage_dir_name
 from pipeline_app.state_machine import StageStatus, is_locked_or_running, is_stale
 
@@ -17,6 +17,12 @@ class TurnAlreadyRunningError(Exception):
 
 class StageNotRunnableError(Exception):
     pass
+
+
+class MissingUpstreamArtifactError(StageNotRunnableError):
+    """A declared, required dependency resolved to no artifact on disk. Refusing
+    is the point: rendering a prompt that names a nonexistent path (or the
+    literal string "None") makes the model invent its way around the gap."""
 
 
 def any_turn_running(conn: sqlite3.Connection) -> bool:
@@ -100,6 +106,10 @@ def _dependents_of(all_stage_defs: list[StageDef], stage_id: str) -> list[StageD
     return [s for s in all_stage_defs if stage_id in s.depends_on]
 
 
+def _resolve_upstream(repo_root: Path, run_dir: Path, up: StageDef) -> Path | None:
+    return artifacts.latest_artifact_path(run_dir / stage_dir_name(up))
+
+
 async def run_stage_turn(
     conn: sqlite3.Connection,
     repo_root: Path,
@@ -122,6 +132,43 @@ async def run_stage_turn(
             f"Stage '{stage_def.id}' is {stage_row['status']} and cannot accept chat messages yet."
         )
     stage_dir = run_dir / stage_dir_name(stage_def)
+    raw_output_path = stage_dir / "raw_output.md"
+
+    required_defs = [s for s in all_stage_defs if s.id in stage_def.depends_on]
+    optional_defs = [s for s in all_stage_defs if s.id in stage_def.optional_depends_on]
+
+    # Keyed by stage id, not a list: templates address upstreams by name
+    # (prompt_builder.KICKOFF_CONTEXT_KEYS), so positional drift when an
+    # upstream drops out is structurally impossible (A-09/A-16).
+    inputs: dict[str, str] = {}
+    missing: list[str] = []
+    for up in required_defs:
+        path = _resolve_upstream(repo_root, run_dir, up)
+        if path is None:
+            missing.append(up.id)
+        else:
+            inputs[up.id] = str(path)
+    if missing:
+        obs.record_event(
+            conn, kind="handoff.upstream_missing", severity="error", source="turn_service",
+            message=(f"stage '{stage_def.id}' cannot start: no approved artifact for "
+                     f"{', '.join(missing)}"),
+            detail={"stage": stage_def.id, "missing": missing},
+        )
+        raise MissingUpstreamArtifactError(
+            f"Stage '{stage_def.id}' requires {missing} but no approved artifact exists for "
+            "them. Approve or regenerate the upstream stage first."
+        )
+    for up in optional_defs:
+        path = _resolve_upstream(repo_root, run_dir, up)
+        if path is None:
+            obs.log("handoff.optional_upstream_absent", level="info",
+                    stage=stage_def.id, upstream=up.id)
+        else:
+            inputs[up.id] = str(path)
+    upstream_paths = [Path(p) for p in inputs.values()]
+    upstream_by_stage = {sid: Path(p) for sid, p in inputs.items()}
+
     events_dir = stage_dir / "events"
     events_dir.mkdir(parents=True, exist_ok=True)
     events_path = events_dir / f"{int(time.time() * 1000)}.jsonl"
@@ -129,22 +176,8 @@ async def run_stage_turn(
     turn_id = db_mod.create_turn(conn, stage_row["id"], "running", _utcnow(), str(events_path))
     db_mod.update_stage_status(conn, stage_row["id"], StageStatus.RUNNING.value)
 
-    raw_output_path = stage_dir / "raw_output.md"
-    upstream_stage_defs = [s for s in all_stage_defs if s.id in stage_def.depends_on]
-    # Keyed by stage id, not just a list: a gate may need one specific upstream
-    # artifact (Gate C needs the styleboard's world lock), and positional
-    # recovery from the list would break the moment an upstream has no artifact
-    # yet and drops out of it.
-    upstream_by_stage: dict[str, Path] = {}
-    for up in upstream_stage_defs:
-        path = artifacts.latest_artifact_path(run_dir / stage_dir_name(up))
-        if path is not None:
-            upstream_by_stage[up.id] = path
-    upstream_paths = list(upstream_by_stage.values())
-
     is_first_turn = stage_row["claude_session_id"] is None
     if is_first_turn:
-        inputs = {up_id: str(p) for up_id, p in upstream_by_stage.items()}
         prompt = prompt_builder.render_kickoff_prompt(templates_dir, stage_def.id, {
             "skill": stage_def.skill,
             "user_message": user_message,
