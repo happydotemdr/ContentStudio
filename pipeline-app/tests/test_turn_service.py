@@ -140,6 +140,19 @@ async def test_run_stage_turn_rejects_running_stage(conn, project, monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_run_stage_turn_rejects_a_stage_the_project_has_no_row_for(conn, project, tmp_path):
+    """db.get_stage returns None for a brand-scoped stage on an out-of-scope
+    project -- the exact case migrations.py exists to repair. Indexing it gave a
+    TypeError and a 500, while propagate_staleness handles the same case at :67."""
+    with pytest.raises(turn_service.StageNotRunnableError, match="no row for stage 'grounding'"):
+        await _drain(turn_service.run_stage_turn(
+            conn, tmp_path, project["run_dir"], TEMPLATES_DIR,
+            project["project_id"], "abc-20260725-120000",
+            StageDef(id="grounding", skill="rgs-grounding", dir_prefix="00"),
+            STAGES, "topic"))
+
+
+@pytest.mark.asyncio
 async def test_disconnected_turn_is_marked_aborted_not_left_running(conn, project, monkeypatch, tmp_path):
     """Simulates an SSE client disconnect: the caller stops draining the
     generator (calls aclose()) instead of consuming it to completion. The

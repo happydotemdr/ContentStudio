@@ -275,6 +275,11 @@ async def run_stage_turn(
         raise TurnAlreadyRunningError("Another stage turn is already running.")
 
     stage_row = db_mod.get_stage(conn, project_id, stage_def.id)
+    if stage_row is None:
+        raise StageNotRunnableError(
+            f"Project {project_id} has no row for stage '{stage_def.id}' — it is out of the "
+            "project's brand scope, or the project predates the stage (see migrations.py)."
+        )
     if is_locked_or_running(stage_row["status"]):
         raise StageNotRunnableError(
             f"Stage '{stage_def.id}' is {stage_row['status']} and cannot accept chat messages yet."
