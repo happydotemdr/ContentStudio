@@ -257,3 +257,15 @@ def test_x_adapter_satisfies_the_platform_adapter_protocol():
     inspect.signature(adapter.peek_upload_date).bind("1")
     inspect.signature(adapter.download_item).bind(
         Path("."), "CNN", "1", "title", "post")
+
+
+def test_every_exit_code_is_unique_and_documented():
+    """The contract table in docs/superpowers/plans/remediation/P8-engine-cron.md
+    is only as good as its enforcement. Two states sharing a code, or a code
+    with no operator-facing reason string, silently re-creates B-40."""
+    values = [member.value for member in cron.Exit]
+    assert len(values) == len(set(values)), "two terminal states share one exit code"
+    assert cron.Exit.OK == 0
+    assert {1, 2} & set(values) == set(), "1 and 2 belong to CPython and argparse"
+    for member in cron.Exit:
+        assert cron.EXIT_REASON[member], f"{member.name} has no reason string"

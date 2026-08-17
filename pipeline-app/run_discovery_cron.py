@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import enum
 import sys
 from pathlib import Path
 
@@ -27,6 +28,31 @@ from pipeline_app.discovery_notify import notify
 from pipeline_app.discovery_scheduling import is_due
 
 HERE = Path(__file__).resolve().parent
+
+
+class Exit(enum.IntEnum):
+    OK                  = 0
+    LOCKED              = 10
+    NO_WORK             = 11
+    NOTIFY_FAILED       = 12
+    HANDLES_ERRORED     = 13
+    ALL_HANDLES_ERRORED = 14
+    RUN_FAILED          = 15
+    SCHEDULER_WEDGED    = 16
+    STARTUP_FAILED      = 17
+
+
+EXIT_REASON: dict[Exit, str] = {
+    Exit.OK: "clean run, or nothing was due",
+    Exit.LOCKED: "another discovery run holds the single-flight lock",
+    Exit.NO_WORK: "every included handle was skipped -- no adapter call was made",
+    Exit.NOTIFY_FAILED: "the run finished but the notification email was not sent",
+    Exit.HANDLES_ERRORED: "one or more handles errored",
+    Exit.ALL_HANDLES_ERRORED: "every handle this run attempted errored",
+    Exit.RUN_FAILED: "the run crashed or exceeded its deadline",
+    Exit.SCHEDULER_WEDGED: "the stored schedule settings cannot be evaluated",
+    Exit.STARTUP_FAILED: "startup failed before any run could be recorded",
+}
 
 
 def build_adapters():
