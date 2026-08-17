@@ -1189,12 +1189,26 @@ def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(mo
     assert "no backfill" in record["message"]
 ```
 
+> **Plan correction, recorded during T17's task review (2026-08-16).** The snippet below
+> measures saturation on `len(kept)` — the list AFTER unusable/foreign-author rows are
+> filtered out — not on the raw API response count (`len(raw_rows)`). This is a false
+> negative on B-02 itself: if Bright Data truncates a batch at exactly the cap (e.g. 10)
+> but one of those 10 rows is unusable or by another author, `len(kept)` becomes 9 and the
+> saturation alarm never fires, even though the same cap-truncation data-loss occurred. X is
+> the most exposed adapter (it filters both unusable rows and foreign-author rows).
+> **Corrected requirement: measure saturation on `len(raw_rows)` (the count Bright Data
+> actually returned before any local filtering), not `len(kept)`.** `detail["collected"]`
+> should report `len(kept)` still (what was actually retained) alongside a
+> `detail["raw_count"]` field carrying `len(raw_rows)`, so the diagnostic shows both numbers.
+> Operator-approved fix, not a silent implementer discretion — see the T17 task review in
+> `.superpowers/sdd/P7-brightdata/`.
+
 - [ ] Implement in each `enumerate_newest_first`, computed on the pre-truncation count and
       placed immediately before the client-side cap:
 
 ```python
     cap = max_items()
-    if brightdata_job.is_saturated(len(kept), cap=cap):
+    if brightdata_job.is_saturated(len(raw_rows), cap=cap):
         oldest = min((n["published_ts"] for n in kept), default=None)
         brightdata_job.record_diagnostic(
             kind="adapter.batch_saturated", severity="error",
