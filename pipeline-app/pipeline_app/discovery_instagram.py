@@ -56,6 +56,13 @@ DATASET_ID = "gd_lk5ns7kz21pck8jpis"
 AUTHOR_FIELD_CANDIDATES = ("user_posted", "profile_name", "owner_username",
                            "user_username_raw", "username")
 
+# Same unverified-field-name treatment as AUTHOR_FIELD_CANDIDATES above: the
+# appendix records that Instagram Reels carry a view count in this dataset,
+# but the exact field name was not confirmed against a live snapshot. Unlike
+# author, view_count is an OPTIONAL contract field -- a photo post genuinely
+# has no views, so a miss here means "omit the key", not "report loudly".
+VIEW_COUNT_FIELD_CANDIDATES = ("video_play_count", "video_view_count", "views")
+
 
 def _first_present(row: dict, candidates: tuple[str, ...]):
     for name in candidates:
@@ -257,6 +264,7 @@ def _normalize_row(row: dict) -> dict | None:
         "author": str(_first_present(row, AUTHOR_FIELD_CANDIDATES)[1] or "").strip(),
         "like_count": row.get("likes"),
         "comment_count": row.get("num_comments"),
+        "view_count": _first_present(row, VIEW_COUNT_FIELD_CANDIDATES)[1],
     }
 
 
@@ -419,6 +427,12 @@ def download_item(repo_root: Path, handle: str, item_id: str, title: str,
         "comment_count": cached["comment_count"],
         "fetched_at": fetched_at,
     }
+    # Optional contract field: a photo post genuinely has no view count, so
+    # the key must be OMITTED, not written as 'view_count: null' (which would
+    # assert a measured zero-ish value) -- fetched_at above stays unconditional
+    # regardless (contract invariant 3).
+    if cached["view_count"] is not None:
+        meta["view_count"] = cached["view_count"]
     body = cached["caption"] or "(empty)"
 
     dest = out_dir / f"{item_id}.md"

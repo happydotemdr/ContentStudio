@@ -447,6 +447,30 @@ def test_download_item_writes_the_author_to_frontmatter(tmp_path, monkeypatch):
     assert "author: nike" in text
 
 
+def test_normalize_row_maps_a_reel_view_count_when_present():
+    row = {"post_id": "p1", "description": "x", "date_posted": "07/23/2026 16:00:22",
+           "content_type": "Reel", "video_play_count": 88381}
+    assert ig._normalize_row(row)["view_count"] == 88381
+
+
+def test_view_count_is_omitted_not_nulled_when_the_row_has_none():
+    """The contract makes view_count optional. A photo post has no views;
+    writing 'view_count: null' would assert a measured zero-ish value."""
+    row = {"post_id": "p1", "description": "x", "date_posted": "07/23/2026 16:00:22",
+           "content_type": "Post"}
+    assert ig._normalize_row(row)["view_count"] is None
+
+
+def test_download_item_omits_view_count_for_a_non_video_post(tmp_path, monkeypatch):
+    monkeypatch.setattr(ig, "_run_collection_job",
+                        lambda handle: [_raw_row("p1", "2026-08-01")])
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    ig.download_item(tmp_path, "somehandle", "p1", "t")
+    text = (tmp_path / "output" / "brand-intel" / "instagram" / "somehandle" / "p1.md"
+            ).read_text(encoding="utf-8")
+    assert "view_count" not in text
+
+
 def test_enumerate_newest_first_caps_retained_items(monkeypatch):
     """Consequence of truncation: the returned list itself is bounded to the
     cap, independent of whether the diagnostic above also fires."""
