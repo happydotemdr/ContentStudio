@@ -29,6 +29,7 @@ def test_scheduled_mode_runs_when_due(monkeypatch, repo_root):
     monkeypatch.setattr(cron, "_is_due_now", lambda repo_root_arg: True)
     calls = []
     monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: (calls.append(k), {"run_row_id": 1, "status": "completed"})[1])
+    monkeypatch.setattr(cron, "notify", lambda *a, **k: True)
     exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
     assert exit_code == cron.Exit.OK
     assert calls[0]["trigger"] == "scheduled"
@@ -152,20 +153,49 @@ def test_validate_handle_mode_does_not_call_notify(monkeypatch, repo_root):
     assert calls == []
 
 
-def test_notify_exception_does_not_propagate_or_change_exit_code(monkeypatch, repo_root, capsys):
-    monkeypatch.setattr(cron, "_is_due_now", lambda repo_root_arg: True)
-    monkeypatch.setattr(cron, "run_discovery",
-                         lambda *a, **k: {"run_row_id": 5, "status": "completed"})
+def test_a_failed_send_exits_notify_failed(monkeypatch, repo_root):
+    monkeypatch.setattr(cron, "_is_due_now", lambda conn: True)
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: _result("completed", total=1, attempted=1))
+    monkeypatch.setattr(cron, "notify", lambda *a, **k: False)   # send_email's documented False
+    assert cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)]) == cron.Exit.NOTIFY_FAILED
+
+
+def test_a_sent_and_an_unsent_email_do_not_share_an_exit_code(monkeypatch, repo_root):
+    monkeypatch.setattr(cron, "_is_due_now", lambda conn: True)
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: _result("completed", total=1, attempted=1))
+    monkeypatch.setattr(cron, "notify", lambda *a, **k: True)
+    sent = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+    monkeypatch.setattr(cron, "notify", lambda *a, **k: False)
+    unsent = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+    assert sent != unsent
+
+
+def test_a_notify_exception_does_not_propagate_but_does_change_the_exit_code(monkeypatch, repo_root):
+    """Replaces test_notify_exception_does_not_propagate_or_change_exit_code.
+    The 'does not propagate' half was right; the 'does not change the exit
+    code' half was the defect (B-41/D-01)."""
+    monkeypatch.setattr(cron, "_is_due_now", lambda conn: True)
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: _result("completed", total=1, attempted=1))
 
     def raising_notify(*a, **k):
         raise RuntimeError("resend is down")
 
     monkeypatch.setattr(cron, "notify", raising_notify)
+    assert cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)]) == cron.Exit.NOTIFY_FAILED
 
-    exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
 
-    assert exit_code == 0
-    assert "discovery notification failed" in capsys.readouterr().err
+def test_an_unsent_email_leaves_an_error_event(monkeypatch, repo_root):
+    monkeypatch.setattr(cron, "_is_due_now", lambda conn: True)
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: _result("completed", total=1, attempted=1))
+    monkeypatch.setattr(cron, "notify", lambda *a, **k: False)
+    cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+    conn = db.get_connection(repo_root / "pipeline-app" / "pipeline.db")
+    try:
+        rows = conn.execute(
+            "SELECT kind, severity FROM events WHERE kind = 'discovery.notify_failed'").fetchall()
+        assert [r["severity"] for r in rows] == ["error"]
+    finally:
+        conn.close()
 
 
 def test_build_adapters_includes_every_platform():

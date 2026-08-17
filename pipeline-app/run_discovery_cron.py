@@ -20,7 +20,7 @@ import enum
 import sys
 from pathlib import Path
 
-from pipeline_app import db
+from pipeline_app import db, obs
 from pipeline_app import (discovery_bluesky, discovery_facebook, discovery_instagram,
                           discovery_linkedin, discovery_x, discovery_youtube)
 from pipeline_app.discovery_engine import run_discovery
@@ -157,9 +157,20 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.mode == "scheduled" and result["status"] != "locked":
             try:
-                notify(conn, repo_root, result["run_row_id"])
-            except Exception as exc:  # noqa: BLE001 - notification must never affect run status/exit code
-                print(f"discovery notification failed: {exc}", file=sys.stderr)
+                notify_ok = bool(notify(conn, repo_root, result["run_row_id"]))
+                if not notify_ok:
+                    message = "notification email was not sent (no API key, or the send failed)"
+            except Exception as exc:  # noqa: BLE001 - notification must never abort the run,
+                # but it must not be invisible either: the email is the only push
+                # channel this system has, so a failure to send is exactly the
+                # failure that cannot announce itself (D-01).
+                notify_ok = False
+                message = f"notification raised: {type(exc).__name__}: {exc}"
+            if not notify_ok:
+                print(f"discovery notification failed: {message}", file=sys.stderr)
+                obs.record_event(conn, kind="discovery.notify_failed", severity="error",
+                                 source="run_discovery_cron", message=message,
+                                 run_id=result["run_row_id"])
     finally:
         conn.close()
     code = classify_exit(result, notify_ok=notify_ok)
