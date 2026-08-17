@@ -3,11 +3,17 @@ Ported from download_brandintel.py's slugify (that script is left unmodified
 -- see the design spec's "Relationship to the existing manual script")."""
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
+
+WINDOWS_RESERVED = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
+)
 
 
 def slugify(value: str, maxlen: int = 80) -> str:
@@ -33,8 +39,22 @@ def handle_slug(handle: str) -> str:
     directories, on_disk_ids() would return an empty set, and the engine would
     re-download and re-pay for each account's whole back-catalogue. So the
     collision is fenced off at registration instead of being encoded away.
+
+    B-62: slugify()'s \\w preserves Windows reserved device names --
+    con/prn/aux/nul/com1..com9/lpt1..lpt9 -- which cannot exist as directory
+    names on Windows; mkdir fails on every run and records an opaque OS
+    error. It also collapses any all-punctuation handle to the fixed
+    fallback 'untitled', so two such handles would collide. Both cases get a
+    short sha1-of-handle suffix appended here to disambiguate. The audit's
+    other proposal -- also reject reserved names at registration with a 400
+    -- is deliberately NOT implemented: disambiguating makes the handle work,
+    so a 400 would refuse a registration that is now perfectly serviceable.
+    The two are alternatives; this is the better one.
     """
-    return slugify(handle.lstrip("@"))
+    slug = slugify(handle.lstrip("@"))
+    if slug in WINDOWS_RESERVED or slug == "untitled":
+        slug = f"{slug}-{hashlib.sha1(handle.encode('utf-8')).hexdigest()[:8]}"
+    return slug
 
 
 def find_slug_collision(handle: str, existing_handles: Iterable[str]) -> str | None:

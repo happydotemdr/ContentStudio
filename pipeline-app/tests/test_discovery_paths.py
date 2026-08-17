@@ -1,6 +1,9 @@
 from pathlib import Path
 
+import pytest
+
 from pipeline_app.discovery_paths import (
+    WINDOWS_RESERVED,
     find_slug_collision,
     group_slug_collisions,
     handle_dir,
@@ -125,3 +128,25 @@ def test_run_owner_path_is_namespaced_and_does_not_collide_with_run_records(tmp_
 def test_spawn_log_path_is_namespaced_under_discovery_runs(tmp_path: Path):
     assert (spawn_log_path(tmp_path, "abc123")
             == tmp_path / "output" / "discovery-runs" / "spawn-logs" / "abc123.log")
+
+
+@pytest.mark.parametrize("handle", ["con", "AUX", "@nul", "com1", "lpt9", "prn"])
+def test_a_handle_slugging_to_a_windows_device_name_gets_a_disambiguator(handle):
+    """B-62: \\w preserves con/aux/nul/prn/com1..lpt9, which cannot exist as
+    directory names on Windows -- mkdir fails on every run and records a
+    per-handle error with an opaque OS message."""
+    slug = handle_slug(handle)
+    assert slug not in WINDOWS_RESERVED
+    assert slug.startswith(handle.lstrip("@").lower())
+
+
+def test_two_all_punctuation_handles_no_longer_share_the_untitled_bucket():
+    assert handle_slug("!!!") != handle_slug("???")
+
+
+def test_the_frozen_mapping_for_existing_handles_is_unchanged():
+    """The suffix must not repoint a directory that already holds captured
+    content -- on_disk_ids() would return empty and the engine would re-download
+    and re-pay for each account's whole back-catalogue."""
+    assert handle_slug("adamgrant.bsky.social") == "adamgrantbskysocial"
+    assert handle_slug("@Romayroh") == "romayroh"
