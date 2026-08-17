@@ -801,7 +801,19 @@ def build_task_xml(python_exe: Path, cron_script: Path, *, log_path: Path,
 """
 ```
 
-(`from xml.sax.saxutils import escape`. `LogonType S4U` is the "runs whether the user is logged
+> **Plan correction, task implementation session.** The `escape(build_task_action(...))` call
+> shown above is self-contradicting with `test_task_xml_redirects_stdout_and_stderr_to_a_log_file`
+> in this same task: `escape()` turns `2>&1` into `2&gt;&amp;1`, so the literal substring `"2>&1"`
+> the test asserts for is never present in the output. Verified empirically this session.
+> **Fix:** wrap the `<Arguments>` element's text in a CDATA section instead of calling `escape()`
+> — `ElementTree.fromstring` parses CDATA-wrapped text identically to escaped text (`.text`
+> returns the literal content either way), so the other elements' assertions are unaffected. A
+> CDATA section is corrupted only by a literal `]]>` inside it; the only inputs that flow into
+> `Arguments` are Windows filesystem paths, and Windows forbids `>` in any path component, so the
+> collision is structurally impossible for this call site, not merely unlikely. Drop the
+> `from xml.sax.saxutils import escape` import (unused once `Arguments` no longer calls it).
+
+`LogonType S4U` is the "runs whether the user is logged
 on or not, without storing a password" model B-44 asks to be chosen and documented — state it in
 the module docstring.)
 
