@@ -600,3 +600,55 @@ def test_run_discovery_result_carries_per_status_counts(engine_conn, tmp_path):
     assert result["counts"]["attempted"] == 2
     assert result["counts"]["failed"] == 1
     assert result["counts"]["skipped"] == 0
+
+
+def test_a_heartbeat_write_failure_leaves_an_event_not_only_a_print(engine_conn, tmp_path, monkeypatch):
+    """D-02: this print is the sole detector of the condition that lets B-50's
+    double-run happen, and on the scheduled path it goes nowhere."""
+    monkeypatch.setattr(db, "update_run_heartbeat",
+                        lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("locked")))
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SlowFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]}, sleep_s=0.2)
+    run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual",
+                  mode="incremental", heartbeat_interval_s=0.05)
+    rows = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.heartbeat_failed'").fetchall()
+    assert rows and rows[0]["severity"] == "error"
+
+
+def test_a_directory_collision_leaves_an_event_naming_both_handles(engine_conn, tmp_path):
+    db.create_handle(engine_conn, "youtube", "john.doe.5", "A", "guru", None, now_iso())
+    db.create_handle(engine_conn, "youtube", "johndoe5", "B", "guru", None, now_iso())
+    run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({})},
+                  trigger="manual", mode="incremental")
+    row = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.slug_collision'").fetchone()
+    assert row is not None
+    assert "john.doe.5" in row["message"] and "johndoe5" in row["message"]
+
+
+def test_a_backfill_skip_leaves_an_event(engine_conn, tmp_path):
+    db.create_handle(engine_conn, "instagram", "@ig_handle", "IG", "guru", None, now_iso())
+
+    class ExplodingAdapter:
+        def on_disk_ids(self, repo_root, handle):
+            raise AssertionError("must not be called for a backfill-unsupported platform")
+
+        def enumerate_newest_first(self, handle, keyword_filter):
+            raise AssertionError("must not be called for a backfill-unsupported platform")
+
+        def peek_upload_date(self, item_id):
+            raise AssertionError("must not be called for a backfill-unsupported platform")
+
+        def download_item(self, repo_root, handle, item_id, title, content_type=None):
+            raise AssertionError("must not be called for a backfill-unsupported platform")
+
+    run_discovery(
+        engine_conn, tmp_path, {"instagram": ExplodingAdapter()},
+        trigger="manual", mode="backfill",
+        backfill_start="2026-06-01", backfill_end="2026-06-30",
+    )
+    row = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.backfill_unsupported'").fetchone()
+    assert row is not None
+    assert row["severity"] == "warning"

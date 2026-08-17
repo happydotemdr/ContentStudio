@@ -119,6 +119,7 @@ import sys
 import threading
 
 from pipeline_app import db as db_mod
+from pipeline_app import obs
 from pipeline_app.discovery_paths import group_slug_collisions
 from pipeline_app.discovery_records import write_run_record
 
@@ -206,6 +207,9 @@ def _run_heartbeat_loop(conn: sqlite3.Connection, run_row_id: int, interval_s: f
             # single-flight lock -- so log and keep ticking instead of letting
             # the exception propagate out of the thread target.
             print(f"heartbeat update failed: {exc}", file=sys.stderr)
+            obs.record_event(conn, kind="discovery.heartbeat_failed", severity="error",
+                             source="discovery_engine", message=f"heartbeat update failed: {exc}",
+                             run_id=run_row_id)
 
 
 def _process_one_handle(adapters: dict, repo_root, handle_row, mode, backfill_start, backfill_end, now):
@@ -219,7 +223,7 @@ def _process_one_handle(adapters: dict, repo_root, handle_row, mode, backfill_st
     return process_handle(adapter, repo_root, handle_row, now=now)
 
 
-def _warn_on_directory_collisions(handle_rows) -> None:
+def _warn_on_directory_collisions(conn: sqlite3.Connection, handle_rows) -> None:
     """Name any two handles in this run that write to one output directory.
 
     slugify() is lossy (it strips periods and lowercases), so two distinct
@@ -238,11 +242,15 @@ def _warn_on_directory_collisions(handle_rows) -> None:
         by_platform.setdefault(row["platform"], []).append(row["handle"])
     for platform, handles in sorted(by_platform.items()):
         for slug, colliding in sorted(group_slug_collisions(handles).items()):
-            print(f"  !! {platform}: handles {', '.join(colliding)} all share one "
-                  f"output directory (output/brand-intel/{platform}/{slug}). Each is "
-                  f"billed separately while writing to the same files, so all but "
-                  f"one will report 'no_new_content' after reading the others' "
-                  f"captures. Rename or remove all but one.", file=sys.stderr)
+            message = (f"  !! {platform}: handles {', '.join(colliding)} all share one "
+                      f"output directory (output/brand-intel/{platform}/{slug}). Each is "
+                      f"billed separately while writing to the same files, so all but "
+                      f"one will report 'no_new_content' after reading the others' "
+                      f"captures. Rename or remove all but one.")
+            print(message, file=sys.stderr)
+            obs.record_event(conn, kind="discovery.slug_collision", severity="warning",
+                             source="discovery_engine", message=message,
+                             detail={"platform": platform, "handles": colliding, "slug": slug})
 
 
 def run_discovery(
@@ -357,13 +365,19 @@ def run_discovery(
     outer_crash: Exception | None = None
     try:
         handles = db_mod.list_handles(conn, included_only=True)
-        _warn_on_directory_collisions(handles)
+        _warn_on_directory_collisions(conn, handles)
         for handle_row in handles:
             try:
                 if mode == "backfill" and handle_row["platform"] not in BACKFILL_SUPPORTED_PLATFORMS:
-                    print(f"  ! backfill not supported for platform '{handle_row['platform']}' "
-                          f"(handle {handle_row['handle']}) -- skipping, no adapter call made",
-                          file=sys.stderr)
+                    skip_message = (f"  ! backfill not supported for platform "
+                                    f"'{handle_row['platform']}' (handle {handle_row['handle']}) "
+                                    f"-- skipping, no adapter call made")
+                    print(skip_message, file=sys.stderr)
+                    obs.record_event(conn, kind="discovery.backfill_unsupported", severity="warning",
+                                     source="discovery_engine", message=skip_message,
+                                     run_id=run_row_id,
+                                     detail={"platform": handle_row["platform"],
+                                             "handle": handle_row["handle"]})
                     status = "skipped"
                     db_mod.record_handle_result(conn, run_row_id, handle_row["id"], status, 0)
                     handle_results.append({
