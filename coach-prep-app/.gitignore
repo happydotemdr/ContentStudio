@@ -5,4 +5,5 @@ coach_prep.db
 coach_prep.db-*
 client_secret.json
 token.json
+resend_api_key.txt
 .pytest_cache/
