@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 from pipeline_app import db as db_mod
 from pipeline_app import discovery_engine
+from pipeline_app import discovery_scheduling
 from pipeline_app import email_render
 from pipeline_app.discovery_paths import find_slug_collision, handle_slug
 
@@ -178,7 +179,15 @@ def run_now_backfill(request: Request, start: str = Form(...), end: str = Form(.
 
 
 @router.post("/discovery/settings")
-def update_settings(request: Request, time_of_day: str = Form(...), timezone: str = Form(...)) -> RedirectResponse:
+def update_settings(request: Request, time_of_day: str = Form(...), timezone: str = Form(...)):
+    # B-47: validate against the exact same parsers is_due() uses at runtime, so
+    # the route's 400 and the scheduler's own due-check can never drift apart --
+    # a value the form accepts must be a value the cron can actually evaluate.
+    try:
+        discovery_scheduling.parse_time_of_day(time_of_day)
+        discovery_scheduling.resolve_timezone(timezone)
+    except discovery_scheduling.ScheduleConfigError as exc:
+        return PlainTextResponse(str(exc), status_code=400)
     conn = request.app.state.conn
     db_mod.update_settings(conn, "daily", time_of_day, timezone)
     return RedirectResponse(url="/discovery/handles", status_code=303)

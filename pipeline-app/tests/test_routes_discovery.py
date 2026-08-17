@@ -244,6 +244,24 @@ def test_update_settings_persists_time_and_timezone(client: TestClient):
     assert row["timezone"] == "America/New_York"
 
 
+def test_settings_route_rejects_an_unknown_timezone(client: TestClient):
+    response = client.post("/discovery/settings",
+                           data={"time_of_day": "06:00", "timezone": "America/Chicgo"})
+    assert response.status_code == 400
+    assert "America/Chicgo" in response.text
+
+
+def test_settings_route_rejects_a_non_hhmm_time(client: TestClient):
+    assert client.post("/discovery/settings",
+                       data={"time_of_day": "6am", "timezone": "America/Chicago"}).status_code == 400
+
+
+def test_a_rejected_setting_is_not_persisted(client: TestClient):
+    client.post("/discovery/settings", data={"time_of_day": "06:00", "timezone": "America/Chicago"})
+    client.post("/discovery/settings", data={"time_of_day": "06:00", "timezone": "America/Chicgo"})
+    assert db_mod.get_settings(client.app.state.conn)["timezone"] == "America/Chicago"
+
+
 def test_handles_page_shows_current_schedule(client: TestClient):
     client.post("/discovery/settings", data={"time_of_day": "07:30", "timezone": "America/New_York"})
     listing = client.get("/discovery/handles")
