@@ -32,6 +32,20 @@
 **Interfaces:**
 - Produces: a `clients` table (`slug` PK, `display_name`, `primary_email`, `alias_emails_json`, `session_outlines_dir`, `drive_folder_id`, `status`, `created_at`) and a nullable `conversions.client TEXT` column, both reachable via any `conn` returned by `db.init_db`/`db.get_connection`.
 
+**Pre-existing bug this task exposes and must fix first:** `_MIGRATIONS` has been empty since `db.py` was written, so `apply_migrations`'s `BEGIN IMMEDIATE` / `executescript` / `COMMIT` sequence (`db.py:154-158`) has never actually run. It is broken: under `isolation_level=None`, `sqlite3.Connection.executescript` implicitly commits any open transaction *before* running its statements, so by the time the explicit `conn.execute("COMMIT")` runs, no transaction is active and it raises `sqlite3.OperationalError: cannot commit - no transaction is active`. Reproduced directly against this repo's Python:
+
+```python
+>>> import sqlite3
+>>> conn = sqlite3.connect(":memory:", isolation_level=None)
+>>> conn.execute("CREATE TABLE t (id INTEGER)")
+>>> conn.execute("BEGIN IMMEDIATE")
+>>> conn.executescript("INSERT INTO t VALUES (1);")
+>>> conn.execute("COMMIT")
+sqlite3.OperationalError: cannot commit - no transaction is active
+```
+
+This task is the first thing to ever populate `_MIGRATIONS`, so it is the first thing that would hit this. Fixing it is in scope here, not a separate task, because Task 1's own migration cannot be verified without it.
+
 - [ ] **Step 1: Write the failing test**
 
 ```python
@@ -79,16 +93,53 @@ def test_clients_primary_email_is_unique(tmp_db_path):
             )
     finally:
         conn.close()
+
+
+def test_apply_migrations_advances_schema_version_without_raising(tmp_db_path):
+    """Direct regression test for the apply_migrations bug this task fixes:
+    a migration DDL running through executescript inside an explicit
+    BEGIN/COMMIT must not raise 'cannot commit - no transaction is active'."""
+    conn = db.init_db(tmp_db_path)
+    try:
+        version = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
+        assert version == 2  # SCHEMA_VERSION (1) + this task's one migration to 2
+    finally:
+        conn.close()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run (from `doc-ingest-app/`): `python -m pytest tests/test_db_migrations.py -v`
-Expected: FAIL — `sqlite3.OperationalError: no such table: clients`
+Expected: FAIL — `sqlite3.OperationalError: no such table: clients` (and, once the migration below is added without the `apply_migrations` fix, `sqlite3.OperationalError: cannot commit - no transaction is active`)
 
-- [ ] **Step 3: Add the migration**
+- [ ] **Step 3: Fix `apply_migrations`, then add the migration**
 
-In `doc_ingest/db.py`, replace the empty migrations list:
+First, fix the transaction bug in `doc_ingest/db.py`. `executescript` implicitly commits any open transaction before it runs, so the explicit `BEGIN IMMEDIATE` / `COMMIT` wrapped around it is not just redundant but actively wrong — replace `apply_migrations` with:
+
+```python
+def apply_migrations(conn: sqlite3.Connection) -> None:
+    current = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
+    for target_version, ddl in _MIGRATIONS:
+        if target_version <= current:
+            continue
+        # executescript runs its own implicit COMMIT before executing, so it
+        # cannot be wrapped in a BEGIN/COMMIT pair -- it establishes its own
+        # transaction boundary per statement under isolation_level=None. The
+        # UPDATE afterward is therefore a separate, second autocommit
+        # statement, not part of the same transaction as the DDL. That is an
+        # accepted gap for a single-operator local tool: a crash between the
+        # two would leave the DDL applied but schema_version stale, which
+        # apply_migrations' own IF NOT EXISTS / ADD COLUMN idempotence
+        # already tolerates on the next run (a second CREATE TABLE IF NOT
+        # EXISTS is a no-op; re-running ADD COLUMN on an already-altered
+        # table is the one non-idempotent case migrations must avoid, so
+        # every ALTER TABLE ADD COLUMN in this codebase's migrations must be
+        # a one-time, never-repeated entry).
+        conn.executescript(ddl)
+        conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (target_version,))
+```
+
+Then replace the empty migrations list:
 
 ```python
 _MIGRATIONS: list[tuple[int, str]] = [
@@ -116,6 +167,8 @@ Leave `_SCHEMA` and the module-level `SCHEMA_VERSION = 1` untouched — `apply_m
 
 Run: `python -m pytest tests/test_db_migrations.py -v`
 Expected: PASS
+
+Also run the full existing suite once here, since this is a fix to shared infrastructure every other test's `conn` fixture depends on: `python -m pytest -v`. Expected: PASS (no regressions — `_MIGRATIONS` was empty before this task, so no other test could have depended on the old, broken behavior).
 
 - [ ] **Step 5: Commit**
 
@@ -742,16 +795,14 @@ def test_get_event_attendees_handles_no_attendees_key():
     assert attendees == []
 
 
-def test_build_default_service_raises_clearly_with_no_cached_token(tmp_path, monkeypatch):
-    import doc_ingest.calendar_client as cc
-    monkeypatch.setattr(cc.Path, "resolve", cc.Path.resolve)  # no-op, keeps real behavior
-    # Point app_root resolution at an empty tmp dir with no calendar_token.json.
-    monkeypatch.setattr(
-        cc, "build_default_service",
-        lambda cfg=None: (_ for _ in ()).throw(
-            RuntimeError("doc-ingest-app has no cached Calendar token")
-        ),
-    )
+def test_build_default_service_raises_clearly_with_no_cached_token(monkeypatch, tmp_path):
+    from doc_ingest import calendar_client as cc
+    # build_default_service resolves app_root from the module's own __file__
+    # (parents[1]); redirecting __file__ at an empty tmp dir with no
+    # calendar_token.json is what actually exercises the "not set up yet"
+    # path, rather than mocking the function under test to throw the exact
+    # thing being asserted.
+    monkeypatch.setattr(cc, "__file__", str(tmp_path / "doc_ingest" / "calendar_client.py"))
     import pytest
     with pytest.raises(RuntimeError, match="Calendar token"):
         cc.build_default_service()
@@ -816,18 +867,6 @@ def build_default_service(cfg=None):
 def get_event_attendees(service, event_id: str, calendar_id: str) -> list[str]:
     event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
     return [a["email"] for a in event.get("attendees", []) if "email" in a]
-```
-
-Simplify the third test in Step 1 once the module exists — it was written to fail cleanly before the module exists; once `calendar_client.py` is real, replace that monkeypatch test with a direct one:
-
-```python
-def test_build_default_service_raises_clearly_with_no_cached_token(monkeypatch, tmp_path):
-    from doc_ingest import calendar_client as cc
-    monkeypatch.setattr(cc, "__file__", str(tmp_path / "doc_ingest" / "calendar_client.py"))
-    # app_root resolves from __file__'s parents[1]; tmp_path has no calendar_token.json.
-    import pytest
-    with pytest.raises(RuntimeError, match="Calendar token"):
-        cc.build_default_service()
 ```
 
 Add to `doc-ingest-app/.gitignore`:
@@ -1074,10 +1113,9 @@ git commit -m "feat(doc-ingest): add per-file client classification orchestratio
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `tests/test_worker.py` (reuses that file's existing `conn`/`tmp_path` fixtures and `worker.process_job` call shape — see `test_process_job_happy_path_writes_commits_locks_and_indexes` for the staging pattern this mirrors):
+Append to `tests/test_worker.py` (reuses that file's existing `conn`/`tmp_path` fixtures, its already-imported `patch`, and `worker.process_job` call shape — see `test_process_job_happy_path_writes_commits_locks_and_indexes` for both the staging pattern and the `lock.*` mocking pattern these mirror: every existing test in this file patches `doc_ingest.lock.apply_readonly_lock`/`verify_locked` rather than letting the real `icacls` subprocess run, which also avoids leaving a locked file under `tmp_path` that pytest's own cleanup cannot remove — `tests/conftest.py`'s `lock_test_dir` fixture documents exactly that hazard):
 
 ```python
-@pytest.mark.allow_subprocess  # process_job's write path reaches lock.apply_readonly_lock's real icacls call
 def test_process_job_tags_a_session_outlines_file_with_its_client(conn, tmp_path):
     from doc_ingest import clients_db, worker
     clients_db.register_client(
@@ -1105,7 +1143,8 @@ def test_process_job_tags_a_session_outlines_file_with_its_client(conn, tmp_path
     job_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
 
-    worker.process_job(conn, job_id, cfg, "w1", calendar_service_factory=lambda: None)
+    with patch("doc_ingest.lock.apply_readonly_lock"), patch("doc_ingest.lock.verify_locked", return_value=True):
+        worker.process_job(conn, job_id, cfg, "w1", calendar_service_factory=lambda: None)
 
     row = conn.execute("SELECT client FROM conversions WHERE source_file_id = ?", (source_file_id,)).fetchone()
     assert row[0] == "sean"
@@ -1116,7 +1155,6 @@ def test_process_job_tags_a_session_outlines_file_with_its_client(conn, tmp_path
     assert "client: sean" in content
 
 
-@pytest.mark.allow_subprocess  # process_job's write path reaches lock.apply_readonly_lock's real icacls call
 def test_process_job_does_not_tag_a_non_client_file(conn, tmp_path):
     from doc_ingest import worker
     input_root = tmp_path / "input"
@@ -1141,7 +1179,8 @@ def test_process_job_does_not_tag_a_non_client_file(conn, tmp_path):
     job_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
 
-    worker.process_job(conn, job_id, cfg, "w1", calendar_service_factory=lambda: None)
+    with patch("doc_ingest.lock.apply_readonly_lock"), patch("doc_ingest.lock.verify_locked", return_value=True):
+        worker.process_job(conn, job_id, cfg, "w1", calendar_service_factory=lambda: None)
 
     row = conn.execute("SELECT client FROM conversions WHERE source_file_id = ?", (source_file_id,)).fetchone()
     assert row[0] is None
@@ -1362,7 +1401,6 @@ Expected: PASS
 Also add one worker-level regression test to `tests/test_worker.py`:
 
 ```python
-@pytest.mark.allow_subprocess  # process_job's write path reaches lock.apply_readonly_lock's real icacls call
 def test_process_job_logs_drift_for_an_unlisted_program_doc(conn, tmp_path):
     from doc_ingest import worker
     input_root = tmp_path / "input"
@@ -1387,7 +1425,8 @@ def test_process_job_logs_drift_for_an_unlisted_program_doc(conn, tmp_path):
     job_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
 
-    worker.process_job(conn, job_id, cfg, "w1", calendar_service_factory=lambda: None)
+    with patch("doc_ingest.lock.apply_readonly_lock"), patch("doc_ingest.lock.verify_locked", return_value=True):
+        worker.process_job(conn, job_id, cfg, "w1", calendar_service_factory=lambda: None)
 
     event = conn.execute(
         "SELECT event_type FROM events WHERE source_file_id = ? AND event_type = 'program_source_drift'",
@@ -1765,13 +1804,27 @@ import yaml
 
 _ENV_PREFIX = "COACH_PREP_"
 
+# coach-prep-app's own directory, wherever it actually lives on disk right
+# now -- this worktree during development, the main checkout after merge.
+# Defaults below are computed relative to this rather than hardcoded as an
+# absolute path, so cross-app imports and doc_ingest.db/converted_root
+# lookups resolve correctly in BOTH locations with no override needed. A
+# hardcoded main-checkout path here would silently point every test at the
+# wrong checkout until this branch merges.
+_APP_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = _APP_ROOT.parent
+
 
 @dataclasses.dataclass(frozen=True)
 class Config:
-    doc_ingest_app_root: Path = Path(r"C:\Projects\ContentStudio\doc-ingest-app")
-    doc_ingest_db_path: Path = Path(r"C:\Projects\ContentStudio\doc-ingest-app\doc_ingest.db")
-    converted_root: Path = Path(r"C:\Projects\ContentStudio\Freedom2BeU\converted")
-    program_sources_path: Path = Path(r"C:\Projects\ContentStudio\doc-ingest-app\program_sources.yaml")
+    doc_ingest_app_root: Path = dataclasses.field(default_factory=lambda: _REPO_ROOT / "doc-ingest-app")
+    doc_ingest_db_path: Path = dataclasses.field(
+        default_factory=lambda: _REPO_ROOT / "doc-ingest-app" / "doc_ingest.db"
+    )
+    converted_root: Path = dataclasses.field(default_factory=lambda: _REPO_ROOT / "Freedom2BeU" / "converted")
+    program_sources_path: Path = dataclasses.field(
+        default_factory=lambda: _REPO_ROOT / "doc-ingest-app" / "program_sources.yaml"
+    )
     coach_email: str = "admin@freedom2beu.com"
     pending_review_drive_folder_id: str = ""
     notify_recipient: str = "brian@happydotemdr.com"
@@ -2291,13 +2344,15 @@ import pytest
 
 from coach_prep_app import config, doc_ingest_reader
 
+# Config's doc_ingest_app_root default resolves relative to coach-prep-app's
+# own on-disk location (Task 11), so this correctly points at the sibling
+# doc-ingest-app in THIS checkout -- the worktree during development, the
+# main checkout after merge -- with no override needed.
 config.ensure_doc_ingest_importable(config.Config().doc_ingest_app_root)
 
 
 @pytest.fixture
 def doc_ingest_conn(tmp_path):
-    import sys
-    sys.path.insert(0, str(config.Config().doc_ingest_app_root))
     from doc_ingest import db as doc_ingest_db
     conn = doc_ingest_db.init_db(tmp_path / "doc_ingest_test.db")
     yield conn
@@ -2383,7 +2438,16 @@ def test_get_program_sources_reads_each_allowlisted_file(tmp_path):
     items = doc_ingest_reader.get_program_sources(cfg)
     assert len(items) == 1
     assert "vision content" in items[0]["text"]
-    assert items[0]["source_label"] == "vision-&-passion"
+    assert items[0]["source_label"] == "vision-passion"
+
+
+def test_slugify_source_label_strips_both_suffixes_and_special_characters():
+    # "Vision & Passion.gdoc.md" has TWO suffixes (the original extension
+    # doc-ingest-app preserves, plus ".md") -- Path.stem only strips one, so
+    # a naive Path(...).stem-based label would still carry ".gdoc" and "&",
+    # neither of which gates.py's citation regex ([a-z0-9-]+) can match.
+    assert doc_ingest_reader.slugify_source_label("Vision & Passion.gdoc.md") == "vision-passion"
+    assert doc_ingest_reader.slugify_source_label("F2BU_Module_00_The_Judge.docx.md") == "f2bu-module-00-the-judge"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2398,23 +2462,32 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'coach_prep_app.doc_ing
 """Read-only queries into doc-ingest-app's doc_ingest.db and converted_root.
 coach-prep-app NEVER writes to doc-ingest-app's database -- opened via
 SQLite's read-only URI mode as a second layer of enforcement beyond just
-"don't call .execute() with a write statement"."""
+"don't call .execute() with a write statement".
+
+Imports from doc_ingest are deferred into each function rather than done at
+module-import time. The caller (a cron script, or a test) is responsible for
+calling config.ensure_doc_ingest_importable(<the actual doc-ingest-app root
+on disk>) first -- Task 11's Config.doc_ingest_app_root default now resolves
+relative to coach-prep-app's own location (see that task), so in practice
+this "just works" without any override, in this worktree during development
+and in the main checkout after merge alike."""
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
-from coach_prep_app import config
-
-config.ensure_doc_ingest_importable(config.Config().doc_ingest_app_root)
-
-from doc_ingest import frontmatter as doc_ingest_frontmatter  # noqa: E402
-from doc_ingest import program_sources as doc_ingest_program_sources  # noqa: E402
-
 
 def open_readonly(db_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    # busy_timeout and foreign_keys are connection-level PRAGMAs -- neither
+    # requires write access to the database file, so both apply cleanly to a
+    # read-only URI connection. Matches this plan's own Global Constraint
+    # that every new SQLite connection sets both.
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
 
 
 def get_active_clients(conn: sqlite3.Connection) -> list[dict]:
@@ -2430,6 +2503,8 @@ def get_active_clients(conn: sqlite3.Connection) -> list[dict]:
 
 
 def get_latest_tagged_meeting_note(conn: sqlite3.Connection, cfg, client_slug: str) -> dict:
+    from doc_ingest import frontmatter as doc_ingest_frontmatter
+
     row = conn.execute(
         "SELECT c.output_path, c.version_number FROM conversions c "
         "JOIN source_files sf ON sf.id = c.source_file_id "
@@ -2449,7 +2524,24 @@ def get_latest_tagged_meeting_note(conn: sqlite3.Connection, cfg, client_slug: s
     return {"source_label": "last-meeting-note", "rel_path": output_path, "version": version, "text": body}
 
 
+def slugify_source_label(filename: str) -> str:
+    """A citable source label: lowercase letters, digits, and hyphens only
+    -- exactly what gates.py's citation regex (`[a-z0-9-]+`) can match.
+    Strips ALL suffixes: doc-ingest-app always names a converted file
+    "<original name>.<original extension>.md" (e.g. "Vision & Passion.gdoc.md"),
+    and Path.stem only strips the last one, leaving ".gdoc" (and any
+    punctuation in the original name, e.g. "&") in a naive label -- both of
+    which the citation regex would then silently fail to recognize as part
+    of the tag at all, defeating the check."""
+    stem = filename.split(".", 1)[0]
+    slug = re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
+    return slug or "source"
+
+
 def get_program_sources(cfg) -> list[dict]:
+    from doc_ingest import frontmatter as doc_ingest_frontmatter
+    from doc_ingest import program_sources as doc_ingest_program_sources
+
     paths = doc_ingest_program_sources.load_program_sources(cfg.program_sources_path)
     items = []
     for rel_path in paths:
@@ -2457,7 +2549,7 @@ def get_program_sources(cfg) -> list[dict]:
         if not final_path.exists():
             continue
         _, body = doc_ingest_frontmatter.parse(final_path.read_text(encoding="utf-8"))
-        label = Path(rel_path).stem.lower().replace(" ", "-")
+        label = slugify_source_label(Path(rel_path).name)
         items.append({"source_label": label, "rel_path": rel_path, "version": None, "text": body})
     return items
 ```
@@ -3597,7 +3689,10 @@ def test_process_candidate_happy_path_publishes_and_notifies(conn, cfg, monkeypa
     assert run == ("notified", "drive-file-1")
 
 
-def test_process_candidate_gate_failure_never_publishes(conn, cfg, monkeypatch):
+def test_process_candidate_gate_failure_never_publishes_and_never_retries(conn, cfg, monkeypatch):
+    """Spec: a gate failure is 'a hard stop, never auto-retried silently' --
+    not just 'don't publish this once', but 'don't keep re-generating and
+    re-alerting on every future wake for this same meeting' either."""
     bundle_mod, generate, publish = _patch_pipeline_ok(monkeypatch)
     # Generated text leaks another client's display name.
     monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180: "mentions Josh directly [last-meeting-email]")
@@ -3620,10 +3715,63 @@ def test_process_candidate_gate_failure_never_publishes(conn, cfg, monkeypatch):
     result = orchestrator.process_candidate(conn, _FakeDocIngestConn(), None, None, None, cfg, CLIENT, event, now)
     assert result == "gate_failed"
     assert publish_calls == []
-    assert any("ALERT" in a for a in alerts)
+    assert len(alerts) == 1
+    assert "ALERT" in alerts[0]
 
     run = conn.execute("SELECT status FROM generation_runs").fetchone()
     assert run[0] == "failed"
+
+    # A later wake for the SAME event must not re-generate or re-alert --
+    # the watermark is set on gate failure specifically to make this true.
+    later = now + dt.timedelta(hours=4)
+    result2 = orchestrator.process_candidate(conn, _FakeDocIngestConn(), None, None, None, cfg, CLIENT, event, later)
+    assert result2 == "not_due"
+    assert len(alerts) == 1  # unchanged -- no second ALERT
+
+
+def test_process_candidate_retries_notify_only_after_a_publish_that_failed_to_notify(conn, cfg, monkeypatch):
+    """A publish that succeeds but whose notification email fails must NOT
+    cause the next wake to regenerate and re-publish a second, orphaned
+    draft -- it should retry sending the notification for the SAME draft."""
+    bundle_mod, generate, publish = _patch_pipeline_ok(monkeypatch)
+    generate_calls = []
+    original_generate = generate.generate_draft
+    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180: generate_calls.append(1) or original_generate(b))
+    publish_calls = []
+    monkeypatch.setattr(publish, "publish_draft", lambda *a, **k: publish_calls.append(1) or "drive-file-1")
+
+    from coach_prep_app import notify
+    send_results = [False, True]  # first attempt fails, second succeeds
+    sent_subjects = []
+    monkeypatch.setattr(
+        notify, "send_email",
+        lambda subject, text, recipient=notify.RECIPIENT: sent_subjects.append(subject) or send_results.pop(0),
+    )
+
+    import coach_prep_app.doc_ingest_reader as reader
+    monkeypatch.setattr(reader, "get_active_clients", lambda conn: [CLIENT, OTHER_CLIENT])
+
+    event = {"instance_id": "evt1", "start_utc": dt.datetime(2026, 8, 20, 15, 0, tzinfo=dt.timezone.utc)}
+    now = dt.datetime(2026, 8, 19, 13, 0, tzinfo=dt.timezone.utc)
+
+    class _FakeDocIngestConn:
+        pass
+
+    result1 = orchestrator.process_candidate(conn, _FakeDocIngestConn(), None, None, None, cfg, CLIENT, event, now)
+    assert result1 == "publish_ok_notify_failed"
+    assert len(publish_calls) == 1
+
+    later = now + dt.timedelta(hours=4)
+    result2 = orchestrator.process_candidate(conn, _FakeDocIngestConn(), None, None, None, cfg, CLIENT, event, later)
+    assert result2 == "published"
+
+    # The second wake must reuse the existing draft -- not regenerate or republish it.
+    assert len(generate_calls) == 1
+    assert len(publish_calls) == 1
+    assert len(sent_subjects) == 2
+
+    run = conn.execute("SELECT status, draft_drive_file_id FROM generation_runs").fetchone()
+    assert run == ("notified", "drive-file-1")
 
 
 def test_run_once_classifies_events_and_skips_unmatched(conn, cfg, monkeypatch):
@@ -3675,6 +3823,22 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
                            now_utc, cfg.timezone_name, cfg.daily_ready_hour_local):
         return "not_due"
 
+    # A prior wake may have published the draft but failed to send the
+    # notification email -- retry ONLY the notify step against that SAME
+    # draft. Without this check, a notify failure (watermark deliberately
+    # left unset so the run isn't silently lost) would cause the next wake
+    # to regenerate and republish a second, orphaned draft with no dedup.
+    existing = _find_published_unnotified_run(conn, client["slug"], event["instance_id"])
+    if existing is not None:
+        run_id, file_id = existing
+        subject, text = notify.render_review_email(client["display_name"], event["start_utc"].date(), file_id)
+        sent = notify.send_email(subject, text)
+        if not sent:
+            return "publish_ok_notify_failed"
+        trigger.mark_done(conn, client["slug"], event["instance_id"], _now_iso())
+        _mark_notified(conn, run_id)
+        return "published"
+
     run_id = _start_run(conn, client["slug"], event["instance_id"], event["start_utc"])
 
     all_clients = doc_ingest_reader.get_active_clients(doc_ingest_conn)
@@ -3686,7 +3850,7 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
     generated = generate.generate_draft(the_bundle)
     if generated is None:
         _fail_run(conn, run_id, "generation_failed")
-        return "generation_failed"
+        return "generation_failed"  # watermark deliberately NOT set -- a transient failure, retried next wake
 
     allowed_labels = {
         the_bundle["last_meeting_email"]["source_label"],
@@ -3697,10 +3861,17 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
     leaked = gates.leakage_scan(generated, other_clients)
     if bad_citations or leaked:
         _fail_run(conn, run_id, f"gate_failed: bad_citations={bad_citations} leaked={leaked}")
+        # Terminal, per spec: "a hard stop, never auto-retried silently."
+        # Setting the watermark HERE too (not only on success) is what makes
+        # is_due() return False on every later wake for this event -- a gate
+        # failure is a content-safety stop, not a transient error worth
+        # re-attempting (and re-alerting on) every 4 hours until the meeting.
+        trigger.mark_done(conn, client["slug"], event["instance_id"], _now_iso())
         notify.send_email(
             f"ALERT: coach-prep isolation gate failed for {client['display_name']}",
             f"Run {run_id} failed its mechanical gates. bad_citations={bad_citations} leaked={leaked}\n"
-            f"No draft was published or sent.",
+            f"No draft was published or sent. This will NOT be retried automatically -- "
+            f"investigate and re-run by hand if appropriate.",
         )
         return "gate_failed"
 
@@ -3713,11 +3884,21 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
     subject, text = notify.render_review_email(client["display_name"], event["start_utc"].date(), file_id)
     sent = notify.send_email(subject, text)
     if not sent:
-        return "publish_ok_notify_failed"  # watermark deliberately NOT set -- retried next wake
+        return "publish_ok_notify_failed"  # watermark deliberately NOT set -- next wake retries notify only (see the existing-run check above)
 
     trigger.mark_done(conn, client["slug"], event["instance_id"], _now_iso())
     _mark_notified(conn, run_id)
     return "published"
+
+
+def _find_published_unnotified_run(conn, client_slug: str, event_instance_id: str) -> tuple[int, str] | None:
+    row = conn.execute(
+        "SELECT id, draft_drive_file_id FROM generation_runs "
+        "WHERE client_slug = ? AND calendar_event_instance_id = ? AND status = 'published' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (client_slug, event_instance_id),
+    ).fetchone()
+    return (row[0], row[1]) if row is not None else None
 
 
 def _start_run(conn, client_slug, event_instance_id, meeting_start_utc) -> int:
