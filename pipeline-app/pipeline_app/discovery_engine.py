@@ -395,13 +395,18 @@ def run_discovery(
     single-flight lock -- forever.
 
     Honest caveat: `future.result(timeout=...)` abandons the worker thread,
-    it does not kill it. The thread is a daemon so it will not block process
-    exit, but if the adapter call is truly wedged on a socket with no
-    client-side timeout of its own, that thread keeps running (and the
-    connection stays open) for as long as the underlying call takes to fail
-    or the process exits. This unwedges the *run*, not the thread. The
-    durable fix is socket-level timeouts inside the adapters themselves (T4 /
-    packages P6-P7) -- this deadline is a backstop, not a substitute for that.
+    it does not kill it. That thread is NOT a daemon -- ThreadPoolExecutor
+    workers are created non-daemon, and concurrent.futures.thread registers
+    an atexit hook (_python_exit) that JOINS any still-running worker thread
+    before the interpreter exits. So if the adapter call is truly wedged on a
+    socket with no client-side timeout of its own, that thread doesn't just
+    run quietly in the background -- it keeps running (connection still open)
+    for as long as the underlying call takes to fail, AND it can block this
+    process's own shutdown/exit until that happens. This unwedges the *run*
+    (the DB row and the single-flight lock are released), not the thread and
+    not necessarily the process. The durable fix is socket-level timeouts
+    inside the adapters themselves (T4 / packages P6-P7) -- this deadline is
+    a backstop, not a substitute for that.
     """
     now = now or _dt.datetime.now(_dt.timezone.utc)
     started_at = now_iso(now)
