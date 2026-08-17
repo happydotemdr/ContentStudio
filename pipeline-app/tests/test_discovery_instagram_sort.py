@@ -12,7 +12,26 @@ silently dropping the newer post forever.
 This file is separate from test_discovery_instagram.py, which is pinned
 byte-for-byte by the fix-wave brief and must not be edited.
 """
+import pytest
+
+from pipeline_app import brightdata_job
 from pipeline_app import discovery_instagram as ig
+
+
+@pytest.fixture(autouse=True)
+def _isolate_instagram_state(monkeypatch, tmp_path):
+    """F-67 + F-69, belt and braces with the repo-wide conftest guard (P0).
+    Clears the process-global cache and the diagnostics buffer, points the
+    pending store at tmp_path, and makes sure no test can see the real
+    BRIGHTDATA_API_KEY that is set in this machine's environment."""
+    monkeypatch.delenv(ig.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(ig, "KEY_FILE", tmp_path / "no-brightdata_api_key.txt")
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    ig.reset_caches()
+    brightdata_job.reset_state()
+    yield
+    ig.reset_caches()
+    brightdata_job.reset_state()
 
 
 def _raw_row(post_id, date_posted, caption="hello", content_type="post"):

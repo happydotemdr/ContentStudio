@@ -1,5 +1,23 @@
+import pytest
+
 from pipeline_app import brightdata_job
 from pipeline_app import discovery_facebook as fb
+
+
+@pytest.fixture(autouse=True)
+def _isolate_facebook_state(monkeypatch, tmp_path):
+    """F-67 + F-69, belt and braces with the repo-wide conftest guard (P0).
+    Clears the process-global cache and the diagnostics buffer, points the
+    pending store at tmp_path, and makes sure no test can see the real
+    BRIGHTDATA_API_KEY that is set in this machine's environment."""
+    monkeypatch.delenv(fb.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(fb, "KEY_FILE", tmp_path / "no-brightdata_api_key.txt")
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    fb.reset_caches()
+    brightdata_job.reset_state()
+    yield
+    fb.reset_caches()
+    brightdata_job.reset_state()
 
 
 def _raw_row(**overrides):

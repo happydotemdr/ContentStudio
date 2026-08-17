@@ -115,6 +115,16 @@ def drain_diagnostics() -> list[dict]:
     return drained
 
 
+def reset_state() -> None:
+    """Clear the buffered diagnostics without returning them.
+
+    F-67: like the per-adapter enumerate caches, _DIAGNOSTICS is a process
+    global no fixture cleared. Test isolation fixtures call this (as well as
+    each adapter's reset_caches) before and after every test.
+    """
+    _DIAGNOSTICS.clear()
+
+
 def config_int(name: str, default: int) -> int:
     """An operational knob: environment override, module literal as default.
 

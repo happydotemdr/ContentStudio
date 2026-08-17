@@ -1,5 +1,26 @@
+import pytest
+
 from pipeline_app import brightdata_job
 from pipeline_app import discovery_linkedin as li
+
+
+@pytest.fixture(autouse=True)
+def _isolate_linkedin_state(monkeypatch, tmp_path):
+    """F-67 + F-69, belt and braces with the repo-wide conftest guard (P0).
+    Unlike the module adapters, LinkedInAdapter's enumerate cache is
+    per-instance (self._cache) and profile_adapter()/company_adapter() hand
+    back a fresh instance every call, so there is no module-global cache
+    here to clear -- only the shared credential lookup and the diagnostics
+    buffer/pending store that brightdata_job owns on every adapter's
+    behalf. Points the pending store at tmp_path and makes sure no test can
+    see the real BRIGHTDATA_API_KEY that is set in this machine's
+    environment."""
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(li, "KEY_FILE", tmp_path / "no-brightdata_api_key.txt")
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    brightdata_job.reset_state()
+    yield
+    brightdata_job.reset_state()
 
 
 def test_parse_published_accepts_the_verified_iso_format():

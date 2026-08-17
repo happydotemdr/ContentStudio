@@ -169,6 +169,25 @@ class LinkedInAdapter:
         # again per item would double-pay for posts already collected.
         self._cache: dict[str, dict[str, dict]] = {}
 
+    def reset_caches(self) -> None:
+        """Clear this instance's per-process enumerate cache.
+
+        F-67: the cache is a process global (per instance) that no fixture
+        cleared, so the suite passed only because each test file happened to
+        use distinct handle names. The repo-wide conftest fixture calls this
+        before every test.
+        """
+        self._cache.clear()
+
+    def cached_ids(self, handle: str) -> set[str]:
+        """The item ids this handle's last enumerate retained. A read-only
+        view so tests never reach into self._cache directly."""
+        return set(self._cache.get(handle, {}))
+
+    def cached_row(self, handle: str, item_id: str) -> dict:
+        """One retained row. KeyError if absent -- same contract download_item has."""
+        return self._cache[handle][item_id]
+
     # -- credentials and request shape -----------------------------------
 
     def api_key(self) -> str | None:

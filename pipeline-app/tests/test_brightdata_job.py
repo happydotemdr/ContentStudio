@@ -6,6 +6,18 @@ import requests
 from pipeline_app import brightdata_job as bd
 
 
+@pytest.fixture(autouse=True)
+def _isolate_brightdata_job_state(monkeypatch, tmp_path):
+    """F-67 + F-69, belt and braces with the repo-wide conftest guard (P0).
+    Points the pending store at tmp_path and clears the diagnostics buffer
+    so no test can see another test's queued snapshot or buffered
+    diagnostics."""
+    monkeypatch.setattr(bd, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    bd.reset_state()
+    yield
+    bd.reset_state()
+
+
 def _http_error(status: int) -> requests.HTTPError:
     response = requests.Response()
     response.status_code = status
@@ -492,3 +504,16 @@ def test_a_short_batch_is_not_saturated():
     truncated one must not compute the same."""
     assert bd.is_saturated(9, cap=10) is False
     assert bd.is_saturated(0, cap=10) is False
+
+
+def test_every_bright_data_adapter_exposes_a_cache_reset(monkeypatch, tmp_path):
+    """The conftest autouse fixture (P0) needs one hook per adapter. A new
+    adapter that forgets it silently re-opens F-67."""
+    from pipeline_app import (discovery_facebook, discovery_instagram,
+                              discovery_linkedin, discovery_x)
+    for module in (discovery_instagram, discovery_facebook, discovery_x):
+        module.reset_caches()
+        assert module.cached_ids("nobody") == set()
+    adapter = discovery_linkedin.profile_adapter()
+    adapter.reset_caches()
+    assert adapter.cached_ids("nobody") == set()

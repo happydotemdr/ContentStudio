@@ -284,6 +284,27 @@ def _error_codes(raw_rows: list[dict]) -> list[str]:
 _ENUMERATE_CACHE: dict[str, dict[str, dict]] = {}
 
 
+def reset_caches() -> None:
+    """Clear this module's per-process enumerate cache.
+
+    F-67: the cache is a process global that no fixture cleared, so the suite
+    passed only because each test file happened to use distinct handle names.
+    The repo-wide conftest fixture calls this before every test.
+    """
+    _ENUMERATE_CACHE.clear()
+
+
+def cached_ids(handle: str) -> set[str]:
+    """The item ids this handle's last enumerate retained. A read-only view so
+    tests never reach into _ENUMERATE_CACHE directly."""
+    return set(_ENUMERATE_CACHE.get(handle, {}))
+
+
+def cached_row(handle: str, item_id: str) -> dict:
+    """One retained row. KeyError if absent -- same contract download_item has."""
+    return _ENUMERATE_CACHE[handle][item_id]
+
+
 def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
     raw_rows = _run_collection_job(handle)  # raises BrightDataJobTimeout/Failed -- never swallowed here
     normalized = [_normalize_row(r) for r in raw_rows]
