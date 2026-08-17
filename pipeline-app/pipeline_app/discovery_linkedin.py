@@ -165,6 +165,22 @@ class LinkedInAdapter:
     def api_key(self) -> str | None:
         return brightdata_job.read_key(KEY_ENV_VAR, KEY_FILE)
 
+    def preflight(self) -> str | None:
+        """None if this platform can run; one operator-facing message if it
+        cannot.
+
+        B-21: the per-job guard in _run_collection_job stays as a backstop,
+        but it fires once per handle, so one unset token used to produce
+        twenty identical error rows and a run that finished
+        'completed_with_errors' rather than refusing to start.
+        run_discovery_cron calls this once before the handle loop (P8).
+        """
+        if self.api_key() is None:
+            return (f"{self.platform}: Bright Data API key not configured "
+                    f"(set {KEY_ENV_VAR} or {KEY_FILE.name}) -- every "
+                    f"{self.platform} handle in this run will fail")
+        return None
+
     def profile_url(self, handle: str) -> str:
         return self.mode.url_template.format(slug=handle.lstrip("@").strip())
 

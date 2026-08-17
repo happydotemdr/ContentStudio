@@ -26,6 +26,28 @@ def test_api_key_none_when_unconfigured(monkeypatch, tmp_path):
     assert ig.api_key() is None
 
 
+def test_preflight_reports_a_missing_key_once_without_calling_bright_data(monkeypatch, tmp_path):
+    monkeypatch.delenv(ig.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(ig, "KEY_FILE", tmp_path / "absent.txt")
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("preflight must not touch the network")
+
+    monkeypatch.setattr(ig.requests, "post", _fail_if_called)
+    message = ig.preflight()
+    assert message is not None
+    assert ig.KEY_ENV_VAR in message
+    assert "instagram" in message
+
+
+def test_preflight_returns_none_when_the_key_is_configured(monkeypatch, tmp_path):
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("k", encoding="utf-8")
+    monkeypatch.delenv(ig.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(ig, "KEY_FILE", key_file)
+    assert ig.preflight() is None
+
+
 import pytest
 
 

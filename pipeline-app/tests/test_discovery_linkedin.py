@@ -21,6 +21,32 @@ def test_parse_published_rejects_unusable_values():
     assert li._parse_published("07/08/2026 14:00:09") is None
 
 
+def test_preflight_reports_a_missing_key_once_without_calling_bright_data(monkeypatch, tmp_path):
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(li, "KEY_FILE", tmp_path / "absent.txt")
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("preflight must not touch the network")
+
+    # discovery_linkedin has no module-level `requests` import -- its HTTP
+    # calls all go through brightdata_job, so that is what must not be hit.
+    monkeypatch.setattr(brightdata_job.requests, "post", _fail_if_called)
+    for adapter in (li.profile_adapter(), li.company_adapter()):
+        message = adapter.preflight()
+        assert message is not None
+        assert li.KEY_ENV_VAR in message
+        assert adapter.platform in message
+
+
+def test_preflight_returns_none_when_the_key_is_configured(monkeypatch, tmp_path):
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("k", encoding="utf-8")
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(li, "KEY_FILE", key_file)
+    assert li.profile_adapter().preflight() is None
+    assert li.company_adapter().preflight() is None
+
+
 def test_run_collection_job_prefers_a_pending_snapshot_over_a_new_billed_job(monkeypatch, tmp_path):
     """Bright Data bills per record. If the previous run paid for a snapshot
     and timed out before collecting it, this run must take that data rather

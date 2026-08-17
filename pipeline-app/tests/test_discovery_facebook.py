@@ -50,6 +50,30 @@ def test_parse_published_accepts_the_verified_iso_format():
     assert fb._parse_published("2026-07-06") == "2026-07-06"
 
 
+def test_preflight_reports_a_missing_key_once_without_calling_bright_data(monkeypatch, tmp_path):
+    monkeypatch.delenv(fb.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(fb, "KEY_FILE", tmp_path / "absent.txt")
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("preflight must not touch the network")
+
+    # discovery_facebook has no module-level `requests` import -- its HTTP
+    # calls all go through brightdata_job, so that is what must not be hit.
+    monkeypatch.setattr(brightdata_job.requests, "post", _fail_if_called)
+    message = fb.preflight()
+    assert message is not None
+    assert fb.KEY_ENV_VAR in message
+    assert "facebook" in message
+
+
+def test_preflight_returns_none_when_the_key_is_configured(monkeypatch, tmp_path):
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("k", encoding="utf-8")
+    monkeypatch.delenv(fb.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(fb, "KEY_FILE", key_file)
+    assert fb.preflight() is None
+
+
 def test_parse_published_rejects_unusable_values():
     assert fb._parse_published("") is None
     assert fb._parse_published(None) is None
