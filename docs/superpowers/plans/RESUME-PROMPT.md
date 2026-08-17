@@ -1,23 +1,29 @@
-# Resume prompt — audit-remediation programme, start P7 (Wave B4, second of four)
+# Resume prompt — audit-remediation programme, start P8 (Wave B4, third of four)
 
 Paste everything below the line into a fresh session. It is self-contained and assumes zero prior
 context. `EXECUTION-KICKOFF-PROMPT.md` beside this file is the original programme brief and is
 still binding verbatim; this document is the delta — where execution got to, what the next session
 must do, and everything learned the hard way that is written down nowhere else.
 
-Last updated 2026-08-16. **P6 (native adapters: YouTube, Bluesky) is merged into `main`**
-([PR #41](https://github.com/happydotemdr/ContentStudio/pull/41), merge commit `6d2bfdd`).
-Combined with P0, P1, P2, P3, P4, P5, P10, P11, P12 already in `main`, **Wave B3 and the first
-package of Wave B4 (P6) are done. P7 is next.**
+Last updated 2026-08-17. **P7 (Bright Data adapters) is merged into `main`**
+([PR #45](https://github.com/happydotemdr/ContentStudio/pull/45), merge commit `e23851c`).
+Combined with P0, P1, P2, P3, P4, P5, P6, P10, P11, P12 already in `main`, **Wave B3 and the first
+two packages of Wave B4 (P6, P7) are done. P8 is next.**
 
-**One unrelated PR landed in the same window** ([PR #40](https://github.com/happydotemdr/ContentStudio/pull/40),
-merge commit `f8388c4`, "pipeline-architecture-eval") — merged to `main` immediately before P6's
-own merge commit. Not part of this remediation programme; re-confirmed again this session that it
-doesn't touch any file P7/P8/P9/P13/P14/P15 own (it touches `gates.py`, `migrations.py`, `main.py`
-and gate-related test files only). Its own final whole-branch review found three real issues in
-`migrations.py`/`pipeline_config.py` — files no remaining package in this programme owns — so they
-have no natural P-package home and are carried forward in this document instead; see items 12-14 in
-"Carried-forward open items" below.
+**Business value of P8, in one paragraph:** every prior package (P0–P7) made the discovery
+subsystem's individual *adapters* trustworthy — each platform now fails loudly and distinguishably
+instead of silently returning empty. P8 is where that trustworthiness becomes *operationally real*:
+today a scheduled Bright Data/YouTube/Bluesky discovery run can fail in eight distinct ways and
+Windows Task Scheduler still reports success (`run_discovery_cron.py:110` is an unconditional
+`return 0`), and 35 stderr diagnostics vanish because the registered task has no output redirection.
+That means the person running this pipeline has **no reliable signal that a night's discovery run
+actually worked** — an operator finds out days later, from a content gap, not from a health check.
+P8 replaces the constant `0` with a real exit-code contract Task Scheduler can alert on, gives every
+adapter failure a durable home in the `events` table, closes the run-locking race that can spawn two
+concurrent Bright Data jobs (a real double-bill risk), and wires up the `preflight()`/
+`drain_diagnostics()` seams P7 already built but left unconsumed. In short: P8 turns "the adapters
+are honest" into "the operator finds out when something is wrong" — the actual point of the whole
+programme's Discovery wave.
 
 ---
 
@@ -32,7 +38,7 @@ plan. Instruct every one of them explicitly not to let scope creep. Keep the doc
 accurate and the plan updated at every step. When you find a new gap or defect, **file it in the
 relevant plan for review/validation before addressing it**, and only fix it inline if it is a
 critical or important blocker. This has happened in every package executed so far — expect it in
-P7 too; the mitigation that has worked every time is in "The recurring bug class" below.
+P8 too; the mitigation that has worked every time is in "The recurring bug class" below.
 
 ## The repo
 
@@ -41,45 +47,46 @@ Windows 11, PowerShell primary. Python is `C:/Python314/python.exe`.
 Two commits must never be altered: `1d39c9d` (the audit) and `6c61f14` (the remediation
 programme).
 
-**Start P7 in a fresh worktree off `origin/main`** via `superpowers:using-git-worktrees` — do not
-reuse P6's worktree/branch (`worktree-pipeline-audit-p6`), which is now fully merged and should be
-left alone (its own PR is closed; its SDD workspace has been deleted, its git history survives in
-`main`'s log). `origin/main` at merge commit `6d2bfdd` already contains every fix P6 landed.
+**Start P8 in a fresh worktree off `origin/main`** via `superpowers:using-git-worktrees` — do not
+reuse P7's worktree/branch (`claude/p7-audit-remediation-2aca46`), which is merged, closed, and
+already cleaned up (worktree removed, branch deleted). `origin/main` at merge commit `e23851c`
+already contains every fix P7 landed.
 
-**If you are already inside a worktree session when you start** (e.g. resuming this same
-conversation), `EnterWorktree` refuses to create a second one directly — `ExitWorktree` first
-(pass `action: "keep"` if the current worktree's branch is not yet merged and you might need it
-again; `"remove"` only after confirming its branch is merged, and even then the tool will refuse
-and ask for confirmation if the branch has unmerged commits it thinks you might lose — when in
-doubt, `"keep"` costs nothing but a little disk).
+**If you are already inside a worktree session when you start**, `EnterWorktree` refuses to create
+a second one directly — `ExitWorktree` first (`action: "keep"` if the current worktree's branch is
+not yet merged and you might need it again; `"remove"` only after confirming its branch is merged).
 
 **The separate MAIN CHECKOUT** (`C:\Projects\ContentStudio`, where `pipeline-app` is installed
-editable) may have uncommitted operator work in progress — re-run the fetch+status check yourself
-at the start of your session (`cd C:\Projects\ContentStudio && git fetch origin main && git status
---short && git log --oneline -3`) to see its current state before assuming anything about it; **do
-not `git pull`/`merge`/`reset` there yourself** — ask the operator rather than acting on it. Note:
-from inside a worktree-isolated session, you cannot `cd` out to the main checkout at all (the
-harness refuses it) — if you need to inspect main-checkout state, ask the operator to run the
-check, or accept you cannot verify it directly this session.
+editable) **is now caught up to `origin/main`** as of this session (fast-forwarded to `e23851c`,
+verified clean fast-forward, no conflicts). It may still have uncommitted operator work in
+progress unrelated to this programme — re-run the fetch+status check yourself at the start of your
+session before assuming anything (`git -C "C:/Projects/ContentStudio" fetch origin main &&
+git -C "C:/Projects/ContentStudio" status --short && git -C "C:/Projects/ContentStudio" log
+--oneline -3`) — **do not `git pull`/`merge`/`reset` there yourself if it has uncommitted changes
+that look like real work; ask the operator.** From inside a worktree-isolated session you cannot
+`cd` out to the main checkout, but `git -C "C:/Projects/ContentStudio" <command>` and absolute-path
+Read/Write/Edit calls both work fine without violating the harness's cd restriction — use those to
+inspect or (with explicit operator sign-off) modify the main checkout without leaving your worktree.
+As of this session, the main checkout carries one known unrelated WIP: a Firecrawl retry/backoff
+change in `doc-ingest-app/` (uncommitted, reviewed and mostly ready — see
+`docs/superpowers/plans/2026-08-17-doc-ingest-retry-backoff-closeout.md` for its own standalone
+close-out prompt if the operator wants it finished). Not part of this programme; leave it alone
+unless the operator asks.
 
-**Baseline suite counts, verified this session at `origin/main`'s `6d2bfdd` (P6 merged):**
-- Root suite (`python -m pytest tests/ -q` from repo root): **445 passed, 1 failed, 1 skipped** —
-  the same documented, deliberately-deferred pre-existing exception as every prior session
-  (`test_lint_prompt_sheet.py::test_a_single_mutation_of_a_green_sheet_always_fails_gate_c[fenced-heading]`,
-  unowned by P6 or P7). Re-verify the count yourself rather than trusting this as gospel — it has
-  fluctuated by ±1 across sessions for reasons not yet diagnosed.
-- App suite (`cd pipeline-app && python -m pytest -q`): **31 failed, 1489 passed, 4 skipped.** All
-  31 failures are the SAME pre-existing failures every resume prompt since P3 has documented (by
-  test name, not just count) — `write_pointer()` missing a required `repo_root` argument in test
-  setup code across `test_approval_service.py`, `test_browse_service.py`,
-  `test_discovery_digest.py`, `test_routes_browse.py`, `test_routes_stages.py`, plus one unrelated
-  `AttributeError` on a removed `grounding_service.identify_new_brief` function in
-  `tests/integration/test_stubbed_cli_e2e.py`. **P7 does not own or need to fix these.** The passed
-  count (1489) is higher than P6's own final count (1449, per its PR) purely because that PR's own
-  20 landed tasks plus its final-review fix wave added their own regression tests — not because
-  anything outside the remediation programme changed this time.
-- CI (`gh run list --branch main --limit 5`): **still not green** — same standing gap, see
-  "Definition of done" below. Re-run yourself, don't trust this note.
+**Baseline suite counts, verified this session at `origin/main`'s `e23851c` (P7 merged):**
+- Root suite (`python -m pytest tests/ -q` from repo root): **445 passed, 1 skipped, 0 failed.**
+  Fully green — no pre-existing exception. (The historically-carried `T6R-02` fenced-heading
+  exception was retired by a separate PR, `#44`, before P7 even started; confirmed this session
+  the test file no longer has that mutation case.)
+- App suite (`cd pipeline-app && python -m pytest -q`): **1628 passed, 4 skipped, 0 failed.**
+  Fully green — the historically-carried 31 pre-existing failures (`write_pointer()` missing
+  `repo_root`, a removed `grounding_service.identify_new_brief`) were also fixed by PR #44.
+  **There is no longer a documented pre-existing-failure baseline to tolerate on either suite.**
+  Any failure you see is new — treat it as a real regression, not "the same old ones."
+- CI (`gh run list --branch main --limit 5`): **green** — for the first time in this programme's
+  history, the merge commits for both P7 (`e23851c`) and the PR #44 fix (`d52409d`) show `success`
+  on all three jobs (`app-suite`, `root-suite`, `no-live-credentials`). Re-verify yourself at
+  session start; don't trust this as gospel across sessions.
 
 ## Where execution is — the landing order (unchanged from the original brief, reproduced here for convenience)
 
@@ -89,181 +96,165 @@ check, or accept you cannot verify it directly this session.
 | B1 | P2, then P10 | **merged** |
 | B2 | P3 + P11 + P12 together | **merged** |
 | B3 | P4, then P5 | **merged** |
-| B4 | P6 (**merged**), **P7**, then P8, and P9 | **P6 done. P7 has not started — start it now.** |
+| B4 | P6 (**merged**), P7 (**merged**), **P8**, then P9 | **P6 and P7 done. P8 has not started — start it now.** |
 | B5 | P15 | not started |
 | C | P13, then P14 | not started |
 
-**Why P7 is next, precisely:** the master plan's wave table
+**Why P8 is next, precisely:** the master plan's wave table
 (`docs/superpowers/plans/2026-08-08-audit-remediation.md`, search "Wave B4") puts P6/P7/P8/P9 in
-one wave, with a real ordering constraint inside it: *"P8 consumes seams from P6 (`BlueskyFetchError`
+one wave, with a real ordering constraint: *"P8 consumes seams from P6 (`BlueskyFetchError`
 reaching the engine) and P7 (`drain_diagnostics`, `preflight`), so land P6 and P7 before P8; P9 is
-independent."* P6 is now done. Nothing in the master plan requires P7 before P9 specifically (P9
-has no dependency), but this programme has executed one package per session throughout, so the
-recommended order for the remainder of this wave is **P7, then P8, then P9** — keep it simple, no
-reason to reorder. Confirm this reasoning still holds by re-reading the master plan's wave table
-yourself before committing to the order — "verify, don't inherit" applies to this resume prompt's
-own claims too.
+independent."* Both P6 and P7 are now merged, so that constraint is satisfied. P8 is also, by a
+wide margin, the largest single package in this programme (**40 tasks**, 31 owned findings + 5
+inbound seam obligations) — budget accordingly; this will likely take longer than any prior
+package's session.
 
-**Unlike P4→P5, there is no cross-package contract handoff gating P7 from P6.** P7 does not depend
-on anything P6 delivered — they don't share files (verified: P6 owned
-`discovery_{youtube,youtube_api,bluesky}.py`; P7 owns `brightdata_job.py` and
-`discovery_{instagram,linkedin,facebook,x}.py`). P7's own plan file is otherwise self-contained,
-**except for one operator-approval gate** — see immediately below, this is new to P7 and did not
-exist in P6.
-
-## STOP — an operator decision gates T1. Do not dispatch until this is resolved.
-
-**P7 is billed per record** (Bright Data charges per data item collected), and its own plan states
-plainly: *"No task in this plan adds a blind retry of a billing call. The operator approves or
-declines each item [in §6 Cost note] before execution starts."* This is a new kind of gate — every
-prior package in this programme (P0 through P6) had no real-world cost attached to any task. Read
-`docs/superpowers/plans/remediation/P7-brightdata.md` §6 in full and present its three tables to
-your human partner as one batched question before dispatching Task 1, the same way you'd present a
-plan-conflict scan:
-
-- **C1** (increases spend, requires approval): a per-platform item-cap override
-  `BRIGHTDATA_MAX_ITEMS_<PLATFORM>` — the knob only exists if approved; raising a cap raises
-  records collected **proportionally** (the plan's own example: setting Instagram to 50 quintuples
-  Instagram spend). Default if declined: stays at 10, B-02's truncation has no operator-accessible
-  remedy.
-- **C2** (reporting only, on by default, no direct cost): a saturation escalation message that
-  itself says "this increases Bright Data spend per run" when it fires — this is the mechanism that
-  would prompt someone to raise C1 later; approve/decline is really about whether the message ships
-  at all.
-- **C3** (net saving, on by default): resume-pending re-fetch, recovering an already-paid-for
-  snapshot instead of triggering a second billed job, with a 48-hour expiry
-  (`PENDING_MAX_AGE_H`) and a one-run-stale-data tradeoff when it resumes.
-
-C4 through C9 either have no billing effect or reduce spend and don't need approval, but skim them
-too so you can answer questions about the full picture. **Do not silently default anything here** —
-an approved-by-silence C1 could genuinely 5x a platform's Bright Data bill. If your human partner
-is not available to answer before you'd otherwise start, treat this exactly like a plan conflict:
-stop and ask, don't proceed on an assumption.
-
-## What P7 is — read `docs/superpowers/plans/remediation/P7-brightdata.md` in full before dispatching Task 1
+## What P8 is — read `docs/superpowers/plans/remediation/P8-engine-cron.md` in full before dispatching Task 1
 
 **Do not act from this summary alone** — it is oriented for triage, not execution, and the plan
-file is long (1777 lines, 25 tasks). Read the actual plan file yourself, following this programme's
-Sub-agent output contract (never hand a sub-agent the whole plan file — extract only what each
-task needs, same discipline every prior package used).
+file is long (2563 lines, 40 tasks across 7 groups). Read the actual plan file yourself, following
+this programme's Sub-agent output contract (never hand a sub-agent the whole plan file — extract
+only what each task needs, same discipline every prior package used).
 
-**The question P7 answers:** `brightdata_job.py` is this codebase's *good* example — its own module
-docstring (`:6-10`) already states the "empty ≠ failed" invariant P6 spent its whole scope bringing
-YouTube and Bluesky into line with, and `await_results` already raises typed errors rather than
-returning `[]`. P7 **extends** that already-correct module and its four downstream adapters
-(Instagram, LinkedIn, Facebook, X) with the harder edges the audit found: unbounded/unretried
-polling, an unpinned invariant (nothing tests it, so nothing guards against regression), billing-
-sensitive retry boundaries, and platform-specific field-mapping gaps.
+**The defect P8 exists to kill:** a scheduled discovery run exits `0` in **eight distinct
+real-failure states**. `run_discovery_cron.py:110` is an unconditional `return 0`. The test suite
+contains 12 assertions of `exit_code == 0` and zero assertions of any other value — one of them
+named for the defect. Everything else in this package is downstream of two amplifiers: that
+constant exit code (B-40/D-01) and the registered `schtasks` action's total lack of output
+redirection (D-02), which destroys all 35 stderr diagnostics on the scheduled path.
 
 **Scope — files owned by this package, no other package may touch them:**
 ```
-pipeline-app/pipeline_app/brightdata_job.py
-pipeline-app/pipeline_app/discovery_instagram.py
-pipeline-app/pipeline_app/discovery_linkedin.py
-pipeline-app/pipeline_app/discovery_facebook.py
-pipeline-app/pipeline_app/discovery_x.py
-pipeline-app/tests/test_brightdata_job.py
-pipeline-app/tests/test_discovery_instagram.py
-pipeline-app/tests/test_discovery_instagram_sort.py
-pipeline-app/tests/test_discovery_linkedin.py
-pipeline-app/tests/test_discovery_facebook.py
-pipeline-app/tests/test_discovery_x.py
+pipeline-app/pipeline_app/discovery_engine.py
+pipeline-app/pipeline_app/discovery_scheduling.py
+pipeline-app/pipeline_app/discovery_records.py
+pipeline-app/pipeline_app/discovery_paths.py
+pipeline-app/pipeline_app/routes/discovery.py
+pipeline-app/run_discovery_cron.py
+pipeline-app/scripts/setup_discovery_task.py
+pipeline-app/tests/test_discovery_engine.py
+pipeline-app/tests/test_discovery_scheduling.py
+pipeline-app/tests/test_discovery_records.py
+pipeline-app/tests/test_discovery_paths.py
+pipeline-app/tests/test_routes_discovery.py
+pipeline-app/tests/test_run_discovery_cron.py
+pipeline-app/tests/test_setup_discovery_task.py
 ```
 
-**Findings closed here (14):** B-01, B-02, B-03, B-18 through B-25, D-03, F-67, F-69. B-02 is the
-one S1; the rest are S2-S4. Full finding→task map in the plan's §2.
+**Findings closed here (31):** B-40 through B-64 (not sequential — see the plan's own §2 table),
+D-01, D-02, D-06, E-11, F-16, F-68. Three of these are **S1**: B-47 (unvalidated tz/time_of_day
+wedges the scheduler), B-50 (sleep/wedged heartbeat → two concurrent runs — the double-billing-risk
+one), F-16 (no test asserts a nonzero exit on any unattended path), plus F-68 (**S1**, the suite
+can spawn a real billed Bright Data run if a stub is forgotten).
 
-**Four invariants this package must preserve** (plan's own §1, read the full rationale there
-before touching any of these):
-1. "Empty ≠ failed" — a transport/vendor/timeout failure raises; `[]` means only a genuinely empty
-   result.
-2. **LinkedIn stays two adapter instances** (`profile_adapter()` / `company_adapter()`, each with
-   its own `LinkedInAdapter._cache`) — a person and a company can share a URL slug, and collapsing
-   the caches into module globals would let one mode's paid batch serve the other's `download_item`.
-3. Frontmatter contract: `fetched_at` mandatory (aware UTC, `isoformat(timespec="seconds")`); `url`
-   strongly expected; metrics/`published` optional. No task may make `fetched_at` conditional.
-4. `discovery_x.POLL_TIMEOUT_S = 600`, not 300 — the comment at `discovery_x.py:40-43` records a
-   real measurement (243s at production `limit_per_input`). Do not "make the constants consistent"
-   by shrinking it.
+**Boundary notes — audit-proposed fixes that name other packages' files, re-planned to land inside
+P8's own scope with the residual handed off explicitly** (full detail in the plan's §1 table):
+- B-50: the atomic `WHERE status='running'` guard belongs to P1's `db.py`; P8 ships
+  `_finish_run_guarded()` as a narrower wrapper and documents the residual race.
+- B-63: P1/P10 must call `discovery_paths.assert_no_slug_collision()` (P8 delivers it); P8 proves
+  a durable runtime detector fires for rows inserted by the non-route path.
+- B-43, E-11: P8 computes `health`/`pending_spawns` into the route context; **P15** renders them.
 
-**Depends on P0** (the conftest network/subprocess guard — P7's tests must never reach
-`api.brightdata.com`, every test stubs `bd.requests.post`/`get`/`delete` or the adapter's own
-trigger/poll/fetch methods) **and P1** (`pipeline_app/obs.py`, the `events` table). Both are long
-merged.
+**Inbound seam obligations — other packages' findings whose closing half lands here** (not counted
+in the 31, each has its own task):
 
-**Suite: app suite only** — run the six owned test files together
-(`cd pipeline-app && python -m pytest tests/test_brightdata_job.py tests/test_discovery_instagram.py
-tests/test_discovery_instagram_sort.py tests/test_discovery_linkedin.py
-tests/test_discovery_facebook.py tests/test_discovery_x.py -q`), never a bare `pytest`, never from
-the repo root. P7 touches no root-suite files. Its own definition of done (§8) additionally wants
-these six files to pass under `python -m pytest tests/ -n auto` (parallel/random-order execution,
-F-67's real acceptance test for the ordering-hazard fix) — treat that as part of the final
-whole-branch review's job, not every task's.
+| Owner | Finding | What P8 must do | Task |
+|---|---|---|---|
+| P6 | B-06 (S1) | `BlueskyFetchError` (and every typed adapter error) must reach `discovery_engine.py:272`'s error branch WITHOUT `:255` converting it to `status='invalid'`+`included=False`. **P6's own final review found "route it to the other branch" is NOT sufficient by itself** — the `:272` branch's own auto-exclude behavior must change for a transport exception too; see P6's plan §7 amendment. | 36 |
+| P7 | B-01 | Call `brightdata_job.drain_diagnostics()` in the run loop, write each record via `obs.record_event`. | 37 |
+| P7 | B-21 | Call each adapter's `preflight()` once per run, before the handle loop. | 38 |
+| P1 | B-73 (S2) | Route-level `platform` rejection ahead of P1's storage `CHECK`. | 27 |
+| P1 | B-82 (S2) | Call `db.record_handle_failure()`/`db.clear_handle_failures()` from the per-handle branches. | 39 |
+| P0 | F-64 (S2) | Move `setup_discovery_task.py` into `pipeline-app/tools/`, **one atomic commit with P10's six file updates and the directory move.** | 40 |
 
-**25 tasks, T1-T25 — full detail in the plan file, one line each here:**
-1. **T1** — pin the "empty ≠ failed" invariant with the two missing Three-Test-Rule roles: a
-   timeout-never-fetches test, and a distinguishability test (D-03).
-2. **T2** — typed response validation instead of trusting vendor JSON shape (B-20).
-3. **T3** — one shared unprovisioned-dataset guard, preventing a trigger against a placeholder
-   dataset id (B-24, also cost item C7).
-4. **T4** — bounded retry on `poll_status`, part 1 (B-18).
-5. **T5** — retry `fetch_results`; **`trigger` is explicitly NOT retried** and this must stay
-   pinned by its own test — a retried trigger that reached Bright Data on attempt 1 would start
-   and bill a second collection job (B-18 part 2, cost items C4/C5).
-6. **T6** — (per finding→task map) contributes to B-01 alongside T21; read both before touching
-   either.
-7-12. **T7-T12** — all six map to B-19 in the finding→task table; read the plan's §2 and §3
-   together for how they divide the work (this resume prompt does not re-derive the six-way split
-   — the plan's own task descriptions are the source of truth). T12 includes `delete_snapshot`
-   cleanup (cost item C6, **ships OFF** by default — never called on the timeout path, where the
-   snapshot is the only copy of paid-for data).
-13. **T13** — preflight credential check, cost item C8 (saving in operator time, not billed
-    dollars — fails a platform before the handle loop instead of after N wasted attempts) (B-21).
-14-15. **T14-T15** — B-03: the per-platform item-cap override (`BRIGHTDATA_MAX_ITEMS_<PLATFORM>`,
-    cost item C1, **requires the operator approval above**) and a longer poll timeout override
-    (`BRIGHTDATA_POLL_TIMEOUT_<PLATFORM>`, cost item C9, a saving).
-16-17. **T16-T17** — the **S1**, B-02: saturation escalation (cost item C2) plus whatever else
-    B-02 needs — read the plan directly, this is the one high-severity finding in the package.
-18. **T18** — B-22.
-19-20. **T19-T20** — B-23, including the field-mapping gaps noted in §7's residuals (Instagram
-    author/view-count field names are genuinely unverified against a live response as of this
-    writing — T19/T20 read candidate lists and report real keys when none matches; the next live
-    Instagram run resolves the ambiguity, a one-line follow-up to
-    `AUTHOR_FIELD_CANDIDATES`/`VIEW_COUNT_FIELD_CANDIDATES`, not a blocker for this task).
-21. **T21** — B-01, alongside T6 (see above).
-22. **T22** — B-25. **Only partially closes it**: per the plan's own cross-package seam table, T22
-    closes the two `REQUEST_TIMEOUT_S` re-exports, but `discovery_youtube.USER_AGENT` (an
-    unreferenced string that looks like it configures request identity, but yt-dlp is never passed
-    `--user-agent`) lives in **P6's file** (`discovery_youtube.py`, already merged, not owned by
-    P7). See "Carried-forward open items" below — this residual needs an explicit decision, not a
-    silent skip.
-23-24. **T23-T24** — F-67 (ordering hazard): P7 adds public reset/threading hooks P0's conftest
-    needs, plus six module-local autouse fixtures in P7's own test files so its suite is
-    order-independent whether or not P0's repo-wide fixture is present.
-25. **T25** — F-69.
+**NEW — an operator decision already made needs a plan amendment before Task 1:** P8's plan text
+says the true per-handle Bright Data item cap (a `PlatformAdapter` protocol change threading
+`handle_row` into `enumerate_newest_first`) is out of scope "**only** if the operator approves P7's
+cost item C1." **The operator approved C1 during the P7 session** (recorded in
+`docs/superpowers/plans/remediation/P7-brightdata.md` §6's amendment blockquote, and in P7's own
+git history at commit `55109b8`). This means the per-handle cap is now IN SCOPE for P8 and is not
+one of the 40 numbered tasks — **read P8's plan §1 and §7 "Open handoffs" for the P7 row, confirm
+this reading is still accurate, then amend the plan with a new task (or extend an existing one)
+before dispatching**, following the same "amend first, with its own commit" discipline as every
+other mid-programme correction in this document. Do not silently skip this or silently bundle it
+into an unrelated task without a plan note.
 
-**Cross-package seams P7 delivers, named in its own §1 table — read the plan's own wording, this
-is a summary:**
-- `brightdata_job.drain_diagnostics()` → shaped for `obs.record_event(...)`; **P8** drains it once
-  per handle (P8 not yet started — this is a seam P7 produces, doesn't consume).
-- `<adapter>.preflight()` → `None` or one operator-facing message; **P8**'s `run_discovery_cron.py`
-  calls it once before the handle loop; P7 tests it directly.
-- A per-platform item-cap env override (T14/T15, cost item C1) — a **true per-handle** cap needs
-  `handle_row` threaded into `enumerate_newest_first`, a `PlatformAdapter` protocol change in
-  `discovery_engine.py`; that's **P8**'s to add if the operator approved C1, explicitly out of
-  scope here and recorded in P7's own §7.
-- `discovery_youtube.USER_AGENT` (part of B-25) — **P6**'s file, not P7's; see T22 above.
+**Depends on P0** (conftest network/subprocess guard — P8's route tests are written against the
+`subprocess.Popen` guard staying armed, not around it) **and P1** (`obs.py`, `events` table,
+`db.record_handle_failure`/`clear_handle_failures`, the `failing` status). Both long merged.
+**Also effectively depends on P6 and P7 being merged** (Task 36-39 use locally-constructed
+stand-ins so P8 isn't blocked on exact merge timing, but `test_the_local_stand_in_names_match_p6s_real_exported_errors`
+pins the stand-ins against the real modules — both are merged now, so this should just pass).
+
+**Suite: app suite** (`cd pipeline-app && python -m pytest -q`) — P8 touches no root-suite files.
+Verification command from the plan's own §7:
+```bash
+cd pipeline-app && python -m pytest -q
+```
+Package-specific acceptance checks (plan §7, all 7 must hold): zero bare-`0`-exit-code assertions
+in `test_run_discovery_cron.py` with ≥17 parametrized contracted-code assertions;
+`grep -rn "does_not_propagate_or_change_exit_code" pipeline-app/tests/` empty;
+`grep -rn "subprocess.Popen" pipeline-app/pipeline_app/routes/discovery.py` exactly one hit (inside
+`_popen`); the programme-level "injected fault → nonzero exit + error events row" check passes;
+every S1 (B-47, B-50, F-16, F-68's guard) has an observed-failing-first test; the exit-code table
+in the plan's §3 and `EXIT_REASON` agree; every inbound seam obligation above has its own named
+passing test.
+
+**40 tasks across 7 groups — one line each here, full detail in the plan file:**
+
+*Group A — the exit-code spine (B-40, B-41, D-01, D-06, B-47a, F-16):*
+1. Publish the exit-code contract as code. 2. `run_discovery` reports per-status counts.
+3. `classify_exit`, the pure mapping. 4. `main()` returns the contracted code. 5. An unsent email
+is a non-zero exit and an event row. 6. A run that dies before its first DB write leaves a trace.
+7. A wedged schedule setting degrades loudly. 8. **The data-driven exit-code contract test**
+(F-16/B-40 capstone).
+
+*Group B — the scheduled path's transcript (D-02, B-42, B-44, B-45, B-46):*
+9. The registered task captures its own output. 10. Verify, refuse to clobber, and uninstall.
+11. The dry run prints a runnable command. 12. The engine's three stderr sites become durable
+events.
+
+*Group C — the lock and the watermark (B-48, B-49, B-50, B-52, B-53):*
+13. Run ownership: a sidecar and a Windows-safe liveness probe. 14. Reclaim refuses to steal a live
+run. 15. A reclaimed run cannot resurrect itself. 16. Reclaim runs before the due-check. 17. A long
+run stops manufacturing junk. 18. A timezone change cannot fire a second run the same day. 19. A
+skipped day is visible as a gap. 20. Deadlines: a hung adapter no longer wedges discovery.
+
+*Group D — per-handle truth (B-51, B-54, B-55, B-56, B-57):*
+21. Partial downloads survive a raising handle. 22. `error_message` names the exception type.
+23. Abandoned records stop contradicting their own DB rows. 24. Frontmatter totals reconcile.
+25. A transient failure no longer permanently excludes a handle.
+
+*Group E — the routes (F-68, B-58, B-60, B-47b, B-59, B-61, E-11, B-43):*
+26. The spawn seam, so a forgotten stub fails instead of billing. 27. `platform` is validated
+against the adapter registry. 28. Backfill dates are validated. 29. Schedule settings are
+validated at the form. 30. Run Now stops stacking, and a lost race stops crashing. 31. A dead spawn
+is visible. 32. The runs page can answer "is anything unhealthy?".
+
+*Group F — paths and hygiene (B-62, B-63, B-64):*
+33. Windows reserved device names. 34. One collision gate, and a durable detector for the paths
+that bypass it. 35. Engine hygiene (imports, Protocol, tunables, naive datetime).
+
+*Group G — inbound seams (P6 B-06, P7 B-01/B-21, P1 B-82, P0 F-64):*
+36. A typed adapter error never marks a handle invalid. 37. Bright Data diagnostics become
+`events` rows. 38. `preflight()` runs once per run, not once per handle. 39. A handle that keeps
+failing stops looking healthy. 40. `pipeline-app/scripts/` → `pipeline-app/tools/`, **one commit
+with P10's six file updates**.
+
+**Sequencing note from the plan itself:** Tasks 36-39 are written against locally-constructed
+stand-ins so P8 was not blocked on P6/P7/P1's exact merge order — since P6 and P7 are both merged
+now, `test_the_local_stand_in_names_match_p6s_real_exported_errors` should pass cleanly against the
+real modules; if it doesn't, that's a real signal something drifted, not a stand-in artifact to
+wave away.
 
 ## The recurring bug class — check for it before dispatching every task, not just this once
 
 Every package executed since P2 has hit at least one instance of this. P4 hit it **eleven times**
-across 20 tasks; P5 hit it **twice** plus one silent T1-fixture regression caught later; P6 hit it
-**once**, cleanly, exactly as this mitigation predicts: a task's own shown test code (T2's original
-fake-migration list) assumed two functions (`peek_upload_date`, `download_item`) were already
-routed through a new chokepoint that a LATER task (T3) actually introduced. Found by grepping every
-symbol T2's shown code referenced before dispatching it, fixed by amending the plan file with a
-`>` blockquote note **before** dispatching the corrected task, committed separately
-(`fb9dd94`) — never fixed silently inline. The mitigation, unchanged since P2:
+across 20 tasks; P5 hit it **twice**; P6 hit it **once**; P7 hit it **once cleanly** (T17's own
+shown code measured saturation on the post-filter count instead of the raw API response count — a
+false negative on the exact S1 finding the task existed to fix; caught by T17's own task review,
+fixed via a plan blockquote + dispatched correction, never silently patched). The mitigation,
+unchanged since P2:
 
 1. **Grep for every symbol a task's own shown code references** before dispatching it — function
    names, class names, fixture names, other packages' modules — and confirm each either already
@@ -275,180 +266,100 @@ symbol T2's shown code referenced before dispatching it, fixed by amending the p
    numbers, exact counts, exact function signatures) against the live repo before committing them.
 4. **A sibling package's return type/infrastructure can carry richer semantics than its signature
    alone reveals, and can be NEWER than the plan text that references it.** Read the actual current
-   state of a file the task instructs you to change or stop calling — don't trust the plan's
-   characterization of "what X currently does," even when the plan sounds confident.
+   state of a file the task instructs you to change or stop calling.
 5. **A later task can quietly widen what an earlier task's error-handling already covers, INCLUDING
    across the task/final-review boundary itself.** Only the final whole-branch review, reading the
-   full cumulative interaction, tends to catch this — P6's own final review found exactly this
-   shape twice: T20's new default item-cap silently narrowed a downstream package's (P8's)
-   backfill path with no error (a genuinely new regression no task-scoped review could see, since
-   the affected call site lives in a file P6 doesn't own), and a retry-state-machine helper
-   (`_prior_transcript_attempts`, T10) caught a narrower exception set than its own sibling function
-   (`_awaiting_transcript_retry`, T11) added one task later. **P7's own T4/T5 retry logic and
-   T6-T12's six-way B-19 split are exactly the kind of multi-task state machine where this shape
-   recurs — walk any retry/attempt-counting chain end to end at final review time, not just at each
-   task's own review.**
+   full cumulative interaction, tends to catch this. **P7's final review found exactly this shape
+   twice** (both new — see "Carried-forward open items" below for full detail): a single-slot
+   pending-store dict silently orphaned a paid-for snapshot on a SECOND consecutive timeout (a
+   defect no single task's review could see, since T8 introduced the store and T9-T11 each only
+   tested their own slice), and a `resume_pending` error-handling guarantee stated in its own
+   docstring was only implemented for half the function (the poll call, not the fetch call). **P8's
+   own Group C (the lock/watermark state machine, tasks 13-20) and Group D (per-handle truth,
+   21-25) are exactly this kind of multi-task state machine — walk each one end to end at final
+   review time, not just at each task's own review.**
 6. **A test double's structure can force a change to production code, and that's fine — but write
-   the production comment to justify itself first, the test second.** When a test fakes an external
-   call by counting invocations, and production code changes how many calls a single logical
-   operation makes, re-verify the count is still landing where the test's docstring claims — don't
-   just check that the test still passes.
+   the production comment to justify itself first, the test second.**
 7. **Verify empirically before writing a brief, not after a fix-loop round.** Cheaper every time
    this programme has measured it.
 8. **A mandatory final whole-branch review is not the last line of defense against everything — CI
-   on a genuinely different machine is.** Watch the PR's CI checks after pushing, not just your own
-   local suite runs, even when the final review came back clean. **P6's final review also found a
-   real plan-text defect, not just an implementation one**: its own §7 cross-package note for B-06
-   told P8 that "routing the exception to the existing error branch" was sufficient to fix the
-   finding, when in fact that branch already produced the exact broken behavior on ANY exception —
-   simply routing there would have let P8 believe B-06 was fixed when it was not. **A plan's own
-   cross-package handoff notes are not self-certifying — verify a note's claim against the actual
-   downstream file's current behavior before treating it as settled, even (especially) at final
-   review time, when it's tempting to treat everything upstream as already checked.**
-9. **A named heading style is plan-specific, not tool-default.** This programme's `task-brief`
-   helper script (`scripts/task-brief` under the `subagent-driven-development` skill) only matches
-   `^#+\s+Task\s+N` headings. P6's plan used `### T1 · ...` headings (a raised middot) and **P7's
-   plan uses `### T1 — ...` headings (an em dash)** — neither matches the script's pattern. You
-   will need a custom `awk` extraction (P6's session wrote one; adapt it) rather than the built-in
-   script, and the boundary condition matters: stop the extraction not only at the next `### T<N+1>`
-   heading but also at the next `## <number>.` section heading (P6's session initially over-captured
-   an entire 264-line tail into a single task's brief before adding that second stop condition —
-   verify your own extraction's output length looks sane, don't trust it blindly).
+   on a genuinely different machine is.** Watch the PR's CI checks after pushing.
+9. **A named heading style is plan-specific, not tool-default.** P6 used `### T1 · ...` (raised
+   middot), P7 used `### T1 — ...` (em dash), **P8 uses `#### - [ ] Task N — ...`** (a fourth-level
+   heading with an inline checkbox) — none match the built-in `task-brief` script's `^#+\s+Task\s+N`
+   pattern closely enough to trust blindly; P8's actually might, since it does contain `Task N` —
+   **verify the script's extraction output length looks sane before trusting it**, and fall back to
+   a custom `awk` extraction (adapt P6/P7's sessions' scripts) if it over- or under-captures. The
+   stop condition needs to catch the next `#### - [ ] Task N+1` heading AND the next `## <number>.`
+   section heading.
+10. **A plan's own execution-order assumption, OR its characterization of a sibling file's current
+    behavior, can be wrong even when nothing about the CODE the plan describes has changed.** Grep
+    the live repo or write a two-line empirical check before dispatch — cheaper than a fix round,
+    every time this programme has measured it.
+11. **A test that fakes an external call by counting invocations can silently stop testing what its
+    own docstring claims** if production code later changes how many calls one logical operation
+    makes.
+12. **A mandatory final whole-branch review has found real issues in every package executed so far
+    without exception** — P3: 2 Critical + 3 Important; P10: 15; P11: 6; P12: 0 Critical + 5
+    Important; P4: 1 Critical + 2 Important + 4 Minor; P5: 0 Critical + 3 Important + 11 Minor;
+    P6: 0 Critical + 3 Important + 8 Minor; **P7: 0 Critical + 3 Important + 8 Minor** (all 3
+    Important were cross-task interaction bugs invisible to any single task's own review — see
+    above — fixed in one consolidated dispatch, re-reviewed clean, zero new breakage). Do not skip
+    it, do not shorten it, do not let a clean per-task review record talk you out of dispatching it
+    on the most capable available model — and do not consider the package done until you've read
+    its PR's CI logs and confirmed all three jobs are green (there is no longer a documented
+    pre-existing-failure baseline to fall back on — see Baseline suite counts above).
 
-## Carried-forward open items (know they exist; check whether any land in P7's own files)
+## Carried-forward open items (know they exist; check whether any land in P8's own files)
 
-Two operator decisions remain open, unresolved, not any package's call — surface them again if the
-operator hasn't weighed in (repeated in every resume prompt since P10/P11):
+**Resolved this session, no longer open:**
+- `T21R-01` (Gate C's CLOSE/MACRO 1-object-floor carve-out) — code at
+  `scripts/lint_prompt_sheet.py:753` (`TIGHT_SCALES_ONE_OBJECT_FLOOR`) shows this is implemented;
+  treat as resolved unless you find evidence otherwise.
+- `T6R-02` (the fenced-heading gate-C mutation case) — retired by PR #44 before P7 started;
+  confirmed this session `tests/test_lint_prompt_sheet.py` no longer has that case, and the root
+  suite is fully green with no exception.
+- **B-25's `discovery_youtube.USER_AGENT` residual** (was P7's, carried from P6) — resolved in P7's
+  own PR (`cb0c3c3`, an operator-approved flagged out-of-scope-file exception), not merely tracked.
 
-1. `T21R-01` — the `CLOSE`/`MACRO` 1-object-floor carve-out in Gate C's C8 check (P11's file).
-2. `T6R-02` — what should catch an extra fenced example block mid-sheet (the one documented
-   root-suite exception, `test_lint_prompt_sheet.py::...[fenced-heading]`, unchanged for many
-   sessions now, confirmed still present and still out-of-scope for every package including P4/P5/P6).
+**New from P7's final review (not P8's job unless P8 happens to touch these exact files — full
+list in [PR #45](https://github.com/happydotemdr/ContentStudio/pull/45)'s body; all Minor, none
+block anything):**
+- `brightdata_job.py` reset-hook docstrings claim a repo-wide conftest fixture calls
+  `reset_caches()`/`reset_state()` before every test — untrue; isolation is per-file autouse only
+  (P7's own six test files), not repo-wide. If P8 ever adds a test file that constructs Bright Data
+  adapters (it might, for the inbound-seam tasks 37/38), it needs its own isolation, not an
+  inherited one.
+- `_with_retry`'s `what` parameter is accepted but never used (dead, likely meant for logging).
+- T12's `delete_snapshot`/`cleanup_fn` capability is still entirely unused in production (no
+  adapter wires it in) — inert, not a blocker.
+- Instagram's `adapter.author_field_unresolved` diagnostic can report an error-row's keys instead
+  of a real content row's keys when `raw_rows[0]` happens to be an error row.
+- `PENDING_STORE_PATH` is not `repo_root`-aware (T25's pattern wasn't extended to it) — worth
+  threading if P8's task 37 (`drain_diagnostics` wiring) ever needs a sandboxed pending-store path
+  for its own tests.
+- `config_int` can emit duplicate `config.bad_override` diagnostics per call when a knob is read
+  multiple times per `enumerate_newest_first` invocation.
+- A raw-saturated-and-fully-filtered batch's escalation message interpolates "Posts older than
+  None" — cosmetic.
+- `BrightDataJobFailed`'s `snapshot_id`/`label`/`poll_timeout_s` attribute wiring (T7) has no
+  dedicated test on the failed-job path (only timeout-path is tested) — diff-confirmed correct,
+  just untested that way.
 
-**New this session — a decision P7 (or whoever picks it up) needs to make, not silently skip:**
+**None of P3/P4/P5/P6's older carried-forward items are load-bearing for P8** unless P8's own
+tasks happen to touch the exact same lines (they should not — full historical lists remain in each
+package's own merged PR body if needed: P3 #32, P4 #37, P5 #39, P6 #41).
 
-3. **B-25's residual, `discovery_youtube.USER_AGENT`.** P7's own plan (§1 cross-package seam
-   table, and §7 residual #4) says T22 closes B-25's `REQUEST_TIMEOUT_S` re-exports but explicitly
-   leaves an unreferenced `USER_AGENT` string in `discovery_youtube.py` — **P6's file, already
-   merged, not in P7's owned-files list.** Options: (a) ask the operator whether a one-line
-   unreferenced-string removal in an already-merged sibling package's file is an acceptable, tiny,
-   explicitly-flagged scope exception for P7's own PR; (b) file it as its own tiny tracked
-   follow-up item for whichever later package (P13/P14, doc/cleanup waves) is willing to touch it;
-   (c) leave it and record the decision either way in P7's own plan file so it isn't silently
-   dropped. Do not just leave `USER_AGENT` unaddressed with no note — that recreates exactly the
-   "residual quietly vanishes" failure this program's §7 sections exist to prevent.
+**From the gate-coverage final review (PR #40, unrelated to this remediation programme — still
+carried forward, still nobody's job):** three issues in `pipeline_app/migrations.py` and
+`pipeline_config.py` (topological-order dependency in the hash-repair cascade; a malformed
+downstream artifact permanently short-circuiting repair for a healthy upstream; `_check_no_cycles`
+never walking `optional_depends_on`). All three dormant against the live `pipeline.yaml`. Neither
+file is in any remaining package's owned-file list (P8/P9/P13/P14/P15). Full detail in prior
+resume-prompt revisions' git history if anyone ever picks this up.
 
-From P3's final review (unchanged, still open): nine test failures in files P3 owns, a scratch-file
-interleaving hazard, gate messages naming a scratch filename, eight further Minor findings (PR #32),
-and four new CSS classes with no stylesheet rules yet.
-
-From P12's final review (still open): nine Minor findings — full list in
-[PR #34](https://github.com/happydotemdr/ContentStudio/pull/34)'s body.
-
-From P4's final review (still open, not P7's job unless P7 happens to touch the exact same lines —
-full list in [PR #37](https://github.com/happydotemdr/ContentStudio/pull/37)'s body): an untested
-defensive branch in `turn_service._resume_failed`, a stale docstring on one turn-recovery test,
-`routes/stages.py`'s hand-edit path not adopting P4's three-keyword widening, and `main.py:161`'s
-implicit `repo_root=` derivation.
-
-From P5's final review (still open, none are P7's job — full list in
-[PR #39](https://github.com/happydotemdr/ContentStudio/pull/39)'s body): 8 Minor findings covering
-a naming/assertion mismatch in one test, a partial Windows-junction defense, an unguarded
-`path.write_text` in `routes/skills.py`, an anti-tautology violation inherited verbatim from the
-plan text, two pre-existing non-conformant `subprocess.run` calls in `test_git_helper.py`, a stale
-cross-package note in the master plan (since superseded — see below), a code comment ordering
-nit, and an asymmetric collision-handling gap between DB-level and filesystem-level `run_id`
-collisions.
-
-**From P6's final review (still open, none are P7's job unless P7 happens to touch these exact
-files — full list in [PR #41](https://github.com/happydotemdr/ContentStudio/pull/41)'s body, 8
-Minor findings after the 3 Important ones were fixed in-session — 11 numbered issues total, not
-11 Minor; verify counts like this yourself rather than trusting a prior session's arithmetic, per
-the recurring-bug-class discipline below):**
-
-4. `order_confidence: "exact"` is applied even to items the Data API returned no date for
-   (deleted/private/API-miss ids inside the `if dates:` branch) — they sort last with
-   `published=None` yet claim exact ordering.
-5. `_warn_no_key`'s structured `obs.log` call is unthrottled while only the stderr `print` is
-   throttled to once-per-process — a keyless run still emits one log record per `fetch_one` call
-   (hundreds per corpus run), which is exactly the noise B-15 was trying to eliminate, just moved
-   to a different channel.
-6. `_FEED_CACHE` (Bluesky, module-level) is never cleared per run and grows unbounded across
-   handles for the process lifetime — bounded by handle count today so not a practical leak, but
-   worth confirming the Bright Data adapters (P7's own files!) bound their analogous caches the
-   same way, since this resume prompt's author (P6's session) did not check.
-7. Test-side `_FEED_CACHE` hygiene in `test_discovery_bluesky.py` is by convention (most tests call
-   `clear_feed_cache()` first) not by fixture — an `autouse` fixture would make the file
-   order-proof.
-8. T19's parametrized native-adapter contract sweep uses `pytest.raises(Exception)` (loose — would
-   pass on an unrelated `KeyError`/`AttributeError`, not just the typed contract error) and lives
-   in `test_discovery_bluesky.py` rather than a dedicated file. **P7's own plan explicitly says it
-   should hoist `_NATIVE_ADAPTERS` into a shared six-platform table** — when you do, tighten this
-   at the same time (assert the per-platform expected exception type, not bare `Exception`).
-9. Stray/late imports in `test_discovery_bluesky.py` (a re-import inside one test function despite
-   a module-level import already existing; two imports sitting mid-file rather than at the top).
-10. `on_disk_ids` (YouTube) now fully reads and YAML-parses every capture file instead of a
-    filename-only glob — correctness fix, but a real cost increase for a large handle (tens of MB
-    read per `process_handle` call for a 600-video handle). Flagged as a future perf concern, not
-    a defect.
-11. A fully-`pending_retry` handle (all its on-disk captures still awaiting transcript retry) now
-    reads as brand-new (`is_new = len(on_disk) == 0`) to `discovery_engine.py` — **P8's file** —
-    on the next run, taking the 90-day-lookback path instead of the narrower existing-handle path.
-    Benign-to-correct for the actual scenario (a new handle onboarded during an outage), but an
-    unlisted cross-package consequence P8's session should be aware of, not just P7's.
-5-more items are pre-existing/task-level deferred minors (info.json parse asymmetry, a redundant
-log field, a broad-but-safe stderr marker string, `max_items=0` treated as unbounded, an inert
-test-only code path, a conditional-expression-as-statement) — full text in PR #41's body if any of
-P7's own tasks happen to touch the same functions, which they should not (P7's scope is Bright
-Data adapters, entirely separate files).
-
-None of P3/P4/P5/P6's carried-forward items are load-bearing for P7 unless P7's own tasks happen
-to touch the exact same lines, which they should not (P7's scope is Bright Data adapters, entirely
-separate files from every prior package's).
-
-**From the gate-coverage final review (PR #40, unrelated to this remediation programme — its work
-was five new deterministic gates, not an audit finding — but its final whole-branch review found
-real issues in `pipeline_app/migrations.py` and `pipeline_app/pipeline_config.py`, neither owned by
-any remaining P-package, so they're carried forward here rather than lost):**
-
-12. **`backfill_gate_coverage_artifacts`'s downstream hash-repair (`migrations.py`) silently depends
-    on `stage_defs` being topologically ordered.** The repair cascades — fixing a dependent's
-    `depends_on[].sha256` after its upstream is backfilled can change that dependent's own hash in
-    turn, so the cascade must reach its dependents too. Verified correct against the real
-    `pipeline.yaml` order; verified **broken** against a reversed or shuffled `stage_defs` order
-    (`assembly`/`repurpose` wrongly compute stale in both). `pipeline.yaml` is topologically ordered
-    today and `_validate_topology` (`pipeline_config.py`) checks duplicates/unknown-deps/cycles but
-    never ordering — so this is dormant, not live, and no existing test would catch a regression (all
-    four new migration tests use topologically-ordered `stage_defs`). Needs either an ordering check
-    in `_validate_topology` or a doc comment pinning the precondition on the cascade function — pick
-    whichever whoever picks this up finds already has a repo convention (see item 14 for a related
-    gap in the same file).
-13. **A malformed downstream artifact now permanently short-circuits the same repair for its
-    (healthy) upstream.** `backfill_gate_coverage_artifacts` reads every downstream dependent while
-    repairing hashes; a `MalformedArtifactError` from any one of them propagates *after* the
-    upstream's own gate-stamp write has already landed, and the idempotency guard (gate name already
-    present) then skips that upstream forever, so the cascade never retries. The failure is also
-    misattributed in the log — it names the healthy upstream's path, not the broken dependent's.
-    Milder than the bug this migration exists to fix (spurious staleness, clearable by regenerating —
-    not a silent fake pass), but the same shape: a two-step sequence where step 2 can fail after
-    step 1 committed, guarded by an idempotency check that then suppresses retry forever.
-14. **`_check_no_cycles` (`pipeline_config.py`) only walks `depends_on`, never
-    `optional_depends_on`** — a cycle formed entirely through an optional edge passes topology
-    validation. Pre-dates PR #40 entirely, but was inert until item 12's hash-repair cascade started
-    traversing recorded `depends_on` entries at runtime; a genuine cyclic graph would now make that
-    cascade loop forever (`seen_edges` cannot help — a cycle keeps generating fresh hash triples).
-    Today's `pipeline.yaml` has exactly one optional edge (`assembly ← music`) and no cycle, so still
-    dormant. Whoever eventually revisits `pipeline_config.py`'s validation — no package currently
-    does — should close this alongside item 12; they're the same class of gap in the same function.
-
-None of 12-14 are any current package's job (`migrations.py` and `pipeline_config.py` aren't in
-P7/P8/P9/P13/P14/P15's owned-file lists) and all three are dormant against the live `pipeline.yaml`
-— flagging here purely so they aren't silently lost, same discipline as every other carried-forward
-item in this document.
-
-**T20 remains parked** (P5's own explicitly incomplete task, tracked separately):
-`routes/inspector.py:45` needs `browse_service.sanitize_html`, which is P15's deliverable (Wave
-B5, still not started as of this session). Not P7's concern.
+**`T20` remains parked** (P5's own explicitly incomplete task): `routes/inspector.py:45` needs
+`browse_service.sanitize_html`, P15's deliverable (Wave B5, still not started). Not P8's concern.
 
 ## Traps, verbatim (carried forward from every prior session, still binding)
 
@@ -459,122 +370,90 @@ B5, still not started as of this session). Not P7's concern.
 - The live database is `C:\Projects\ContentStudio\pipeline-app\pipeline.db` — main checkout,
   git-ignored. Never write to it.
 - `subprocess` with `text=True` decodes as cp1252 on this host. Always `encoding="utf-8",
-  errors="replace"`. **P7 shells out to nothing** (Bright Data is an HTTP API, not a subprocess
-  tool like yt-dlp) — this trap is inherited but likely inert for P7's own files; verify before
-  assuming.
+  errors="replace"`. **This is directly relevant to P8** — `run_discovery_cron.py` and
+  `routes/discovery.py`'s spawn seam (Task 26) both shell out to subprocesses, unlike P6/P7.
 - **Bash resolution on Windows is genuinely two-layered** — never invoke `bash`/`sh` by bare name
-  in a `subprocess.run([...])` call. Not expected to be relevant to P7 (no subprocess calls in its
-  scope), but verify rather than assume.
-- `os.kill(pid, 0)` terminates the process on Windows. Use `OpenProcess` for liveness.
+  in a `subprocess.run([...])` call. Directly relevant to P8's `setup_discovery_task.py` (Task
+  9-11) if it shells out to `schtasks`.
+- `os.kill(pid, 0)` terminates the process on Windows. Use `OpenProcess` for liveness. **Directly
+  relevant to P8's Task 13** (Windows-safe liveness probe for run ownership) and Task 31 (a dead
+  spawn must be visible).
 - Writing a commit message through `bash -c "..."` eats anything in backticks; write long/quote-
-  heavy commit or PR bodies to a file and use `-F`/`--body-file` instead of an inline heredoc. The
-  harness's worktree-boundary guard also rejects complex multi-command heredocs run via
-  `cd ... && ...` — prefer the Write tool over Bash heredocs for anything beyond a single simple
-  command, and prefer separate single-purpose Bash calls (`git rev-parse --git-dir`, then
-  `git rev-parse --git-common-dir`, then `git rev-parse --show-toplevel`, then
-  `git branch --show-current`) over one compound multi-line script when the harness's "too complex
-  to verify stays inside the worktree" refusal fires on a chained version.
+  heavy commit or PR bodies to a file and use `-F`/`--body-file` instead. The harness's
+  worktree-boundary guard also rejects complex multi-command heredocs run via `cd ... && ...` —
+  prefer the Write tool over Bash heredocs for anything beyond a single simple command, and prefer
+  separate single-purpose Bash calls over one compound multi-line script.
 - `grep -c` exits 1 when the count is zero, silently truncating a `&&` chain. Use `;` instead.
 - A `str` regex's `\d` is Unicode-aware in Python; `int()` parses non-ASCII decimal digits. Use
-  `[0-9]` and verify empirically if parsing any numeric field from a filename or frontmatter value.
+  `[0-9]` and verify empirically if parsing any numeric field.
 - In this specific harness, the Bash tool's working directory can drift between calls depending on
   prior `cd`s within the same tool call — prefer absolute paths, and re-run `pwd` if a command
-  fails with an unexpected "no such file or directory" on a path you expect to exist. **This
-  harness refuses `cd`s out of a worktree-isolated session's own worktree entirely**, and also
-  refuses any single Bash call it judges "too complex to verify stays inside the worktree" — break
-  such commands into the Write tool plus a simple `cd ... && command` instead of one compound Bash
-  call. **P6's session also hit this repeatedly when running the ROOT suite from a Bash tool whose
-  cwd had drifted into `pipeline-app`** — `cd /path/to/repo-root && python -m pytest tests/ -q` in
-  one call is the reliable fix; running `pytest` against an absolute `tests/` path while cwd sits
-  inside `pipeline-app` silently shadows the root `scripts/` package with `pipeline-app`'s own and
-  produces a `ModuleNotFoundError` that looks unrelated to the real cause.
+  fails unexpectedly. **This harness refuses `cd`s out of a worktree-isolated session's own
+  worktree entirely** — but `git -C <path>` and absolute-path Read/Write/Edit calls both work fine
+  for touching the main checkout without violating this (used successfully this session to fast-
+  forward the main checkout and clean up P7's worktree registration). Running the ROOT suite from
+  a Bash tool whose cwd had drifted into `pipeline-app` silently shadows the root `scripts/`
+  package with `pipeline-app`'s own and produces a `ModuleNotFoundError` that looks unrelated —
+  `cd /path/to/repo-root && python -m pytest tests/ -q` in one call is the reliable fix.
 - A regex with a fully-optional trailing group after a non-greedy `.*?`, matched with `.match()`
   (not `.fullmatch()`), will silently never capture the optional group.
 - When two independently-written pieces of text/code both need to find something via a
   first-occurrence string match, and one can textually contain what the other searches for, they
   will collide.
-- A hand-written HTML sanitizer built on `html.parser.HTMLParser` must escape TEXT NODES
-  (`handle_data`), not just attribute values. Not P7's concern.
 - A `dict` subclass can override `__contains__`/`__getitem__`/`get` to raise on a specific key
   state rather than behaving like an ordinary dict — check a sibling package's actual class
   definition before assuming standard dict semantics from a type hint alone.
 - **A later task can quietly widen what an earlier task's exception-handling already covers** — a
   code region one task wrapped in error-handling because nothing inside it could raise yet can
   become unsafe once a LATER task adds a new raising code path into that same region. Only a final
-  whole-branch review reading the cumulative function/interaction tends to catch this. **P7's own
-  T4/T5 (retry) and T6-T12 (the six-way B-19 split) are exactly this shape — walk the full chain at
-  final review time.**
-- **A plan's own execution-order assumption, OR its characterization of a sibling file's current
-  behavior, can be wrong even when nothing about the CODE the plan is describing has changed.**
-  Grepping the live repo or writing a two-line empirical check before dispatch remains cheaper than
-  a fix round, every time this programme has measured it.
+  whole-branch review reading the cumulative function/interaction tends to catch this. **P8's own
+  Group C (lock/watermark, tasks 13-20) and Group D (per-handle truth, 21-25) are exactly this
+  shape — walk the full chain at final review time.**
 - **A test that fakes an external call by counting invocations can silently stop testing what its
   own docstring claims** if production code later changes how many calls one logical operation
-  makes. Re-verify the count lands where claimed, don't just check green. **P7's cost-sensitivity
-  makes this trap sharper than usual — a test asserting "one billed call" that's actually counting
-  the wrong call could hide a real double-billing bug (see cost item C5, `trigger` deliberately not
-  retried, pinned by `test_trigger_is_never_retried_because_a_retried_trigger_double_bills`; verify
-  that test's call-counting is actually counting `trigger`, not some other method, before trusting
-  it as the guard it claims to be).**
-- **A mandatory final whole-branch review has found real issues in every package executed so far
-  without exception** — P3: 2 Critical + 3 Important; P10: 15; P11: 6; P12: 0 Critical + 5 Important
-  (plus 2 CI-only failures); P4: 1 Critical + 2 Important + 4 Minor; P5: 0 Critical + 3 Important
-  + 11 Minor (as documented by P5's own resume-prompt handoff — not independently re-verified this
-  session); **P6: 0 Critical + 3 Important + 8 Minor** (all 3 Important fixed in one fix wave,
-  re-reviewed clean — two were plan-text corrections, one a one-line code fix; two of the three
-  Important findings were genuinely invisible to any single task's own review, since they were
-  cross-package/cross-task interaction bugs). Do not skip it, do not shorten it, do not let a clean
-  per-task review record talk you out of dispatching it on the most capable available model — and
-  do not consider the package done until you've read its PR's CI logs and confirmed the ONLY
-  failures are the same documented pre-existing baseline (1 root + 31 app, by test name, not just
-  by count).
-- **A task-brief extraction script tuned for `Task N` headings will silently over- or under-capture
-  against a plan using a different heading convention** (`T1 ·`, `T1 —`, etc.) — see recurring-bug-
-  class point 9 above. Sanity-check every extracted brief's line count against a rough expectation
-  before handing it to an implementer.
+  makes.
+- A finding that conflicts with the PLAN's own text (not the implementation) is the human's
+  decision, same as any plan contradiction — present it, ask which governs, amend the plan first.
+  **P7's T17 mid-review correction and the operator's approval of adding the per-handle cap
+  mid-programme (see "operator decision already made" above) are both this shape.**
+- **Once both suites are fully green (as they are now), there is no longer a documented baseline
+  to distinguish "the same old failures" from "a new regression."** Any test failure from this
+  point forward in the programme is real until proven otherwise — do not assume it's pre-existing.
 - **`gh pr create --body-file` plus a manually-authored `.md` file works cleanly** for a PR body
-  with backticks/code blocks that would otherwise get mangled by `bash -c` — write the body to a
-  scratch file (this programme has been putting these under the worktree's own `.superpowers/`
-  directory, which is git-ignored, then deleting the scratch file after `gh pr create` succeeds)
-  rather than trying to inline it.
-- **Finishing a branch via "push and create a PR," then continuing documentation work in the SAME
-  session after the PR merges, requires a second, fresh worktree** — the first worktree's branch is
-  now a merged, closed PR branch; `git status`/`log` on it will look correct but it is not the
-  place to make new commits. `EnterWorktree` refuses to create a second worktree while a session is
-  still inside its first one — `ExitWorktree` (with `action: "keep"`, not `"remove"`, since the
-  tool will otherwise ask for confirmation about discarding commits it thinks might be unmerged)
-  before creating the next one.
+  with backticks/code blocks — write the body to a scratch file (this programme puts these under
+  the worktree's own `.superpowers/` directory, git-ignored) and delete it after `gh pr create`
+  succeeds.
+- **Finishing a branch via "push and create a PR," then continuing work in the SAME session after
+  the PR merges, requires a second, fresh worktree** — the first worktree's branch is now merged
+  and closed. `ExitWorktree` (`action: "keep"`) before creating the next one. **After a worktree's
+  branch is merged, `git worktree remove` may fail with "Permission denied" if the session is still
+  physically inside that directory** (Windows file-lock, not a git problem) — the git-side
+  registration can still be removed (it'll disappear from `git worktree list`even if the directory
+  itself lingers on disk); the orphaned directory needs manual deletion once the session that was
+  inside it ends, or from a different session.
 
 ## Definition of done (the whole programme, not any one package)
 
 1. All 328 findings closed — each verified by the mechanism its plan names. P3's own 22, P12's own
-   16, P4's own 26, P5's own 15, and now **P6's own 18** (all 20 executed tasks + the final
-   review's 3-Important fix wave, confirmed by its own mandatory final review, re-reviewed clean)
-   are confirmed closed independently by each package's mandatory final review. **Running total:
-   P0+P1+P2+P3+P4+P5+P10+P11+P12+P6 merged; P7's own 14 (B-01 through B-25 subset, D-03, F-67, F-69)
-   are next.** Count each package's own total from its merged PR, not from memory. One caveat
-   carried forward from P6: B-25 is only PARTIALLY P7's — see "Carried-forward open items" #3 above.
-2. Both suites green everywhere they can be: root suite target ~445-446/1 (the one documented
-   T6R-02 exception); app suite target keeps the same 31 pre-existing failures until a dedicated
-   follow-up closes them (see "Carried-forward open items" above). The passed count on both suites
-   will keep climbing as each package adds its own regression tests — track failures by name, not
-   the passed count, when checking whether a session's work is "the same baseline."
-3. CI exists (3 jobs, from P0) — **but is NOT green, and has not been since before P3's merge**,
-   confirmed again this session (`gh run list --branch main --limit 5`, all recent merges show
-   `failure`, including P6's own merge commit). The cause is exactly the same pre-existing
-   root-suite and app-suite failures every resume prompt has documented as deliberately out of
-   scope — the CI job hard-fails on any non-zero pytest exit code with no allowance for the
-   documented baseline. This is a real, standing gap in the programme's own definition of done, not
-   a P7 concern specifically, but worth naming again for whichever session eventually closes the
-   pre-existing failures or decides the CI job should tolerate a documented allowlist instead.
-   Re-run `gh run list --branch main --limit 5` yourself at session start rather than trusting this
-   note.
+   16, P4's own 26, P5's own 15, P6's own 18, and now **P7's own 14** (B-01 through B-25 subset —
+   fully closed now, no partial caveat — D-03, F-67, F-69) are confirmed closed independently by
+   each package's mandatory final review. **Running total: P0+P1+P2+P3+P4+P5+P10+P11+P12+P6+P7
+   merged; P8's own 31 (plus 5 inbound seam obligations, not separately counted) are next.** Count
+   each package's own total from its merged PR, not from memory.
+2. **Both suites are fully green with no documented exceptions** — root suite 445 passed/1 skipped/
+   0 failed; app suite 1628 passed/4 skipped/0 failed, as of P7's merge (`e23851c`). This is new:
+   every prior resume prompt in this programme had to carry forward a pre-existing-failure
+   baseline; that baseline is gone. Track any future failure as real.
+3. **CI is green** — also new. `gh run list --branch main --limit 5` showed `success` on P7's merge
+   commit, the first fully green CI run in this programme's history. Re-verify at session start;
+   confirm it stays green after P8 merges.
 4. Every S0/S1 has an observed-failing-first regression test.
-5. A scheduled discovery run with an injected fault exits non-zero with an error events row.
-   **This is directly P6/P7/P8's territory (Wave B4 is Discovery) — P6 delivered the typed
-   exceptions and the adapter-side half; P7 delivers `drain_diagnostics()`/`preflight()` as seams;
-   P8 is where this item actually closes, by wiring both packages' seams into the engine's run
-   loop and the `events` table.**
+5. A scheduled discovery run with an injected fault exits non-zero with an error `events` row.
+   **This is directly P6/P7/P8's territory (Wave B4 is Discovery) — P6 and P7 delivered the
+   adapter-side halves (typed exceptions, `drain_diagnostics()`, `preflight()`); P8 is where this
+   item actually closes**, by wiring both packages' seams into the engine's run loop, the exit-code
+   contract, and the `events` table. This is the whole point of P8 — see the "Business value"
+   paragraph at the top of this document.
 6. Gate C rejects a malformed shot heading — done, verified end to end.
 7. `git grep "pipeline-app/scripts" -- '*.md'` returns nothing — the F-64 atomic rename is P8's
-   task (Wave B4, lands after P6 and P7 per the ordering constraint above).
+   Task 40, landing in one commit with P10's six file updates.

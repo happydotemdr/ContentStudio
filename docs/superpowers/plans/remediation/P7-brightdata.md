@@ -1774,8 +1774,11 @@ verification pass does not read them as coverage gaps.
    right answer for X is the saturation alarm, not a backfill path.
 3. **B-01, events rows.** `drain_diagnostics()` must be called by P8's run loop and written
    with `obs.record_event`. Until that lands, the durable surface is `obs.log`'s dated file.
-4. **B-25, `discovery_youtube.USER_AGENT`.** In P6's file. Unreferenced string that looks
-   like it configures request identity; yt-dlp is never passed `--user-agent`.
+4. **B-25, `discovery_youtube.USER_AGENT`.** ~~In P6's file.~~ **Resolved 2026-08-16**: the
+   operator approved a tiny flagged exception (see the Cost note amendment above) — T22's own
+   commit range includes a second, separately-labeled commit (`cb0c3c3`) removing the
+   unreferenced string from P6's already-merged `discovery_youtube.py`, called out explicitly
+   in the PR body as an out-of-scope-file touch. B-25 is now fully closed, not partially.
 5. **B-23, LinkedIn `view_count`.** Neither the appendix nor the LinkedIn design doc records
    a view-count field on that dataset. Nothing to map, nothing to guess. Not a gap.
 6. **Instagram author/view-count field names are unverified.** T19/T20 read candidate lists
@@ -1797,3 +1800,48 @@ verification pass does not read them as coverage gaps.
 - [ ] `brightdata_job.py`'s module docstring still states the "empty ≠ failed" invariant, and
       the two tests that pin it are present.
 - [ ] Every cost-note item C1–C9 has a recorded operator decision.
+
+---
+
+## 9. Outcome (recorded 2026-08-17, PR #45 merged as `e23851c`)
+
+All 25 tasks landed as written, plus one mid-review plan correction and one final-review fix
+wave. **Divergences from this plan, for the record:**
+
+1. **T17's shown code was wrong** (`is_saturated(len(kept), cap=cap)` — a false negative on
+   B-02 itself). Caught by T17's own task review, corrected via the blockquote at T17 above
+   (commit `037ee40`), fixed in `0492721`. See that blockquote for the full defect.
+2. **B-25 residual #4 resolved**, not merely tracked — see the amended residual item above.
+3. **Mandatory final whole-branch review** (opus, range `d52409d..188a975`) found 0 Critical,
+   3 Important, 8 Minor — the third package in a row (after P3, P4, P5, P6, P10, P11, P12) to
+   have real findings survive a clean per-task review record. All three Important findings were
+   cross-task interaction bugs no single task's own review could see:
+   - **Pending-store orphan**: `record_pending`'s single-slot-per-key store meant a *second*
+     consecutive timeout on the same platform/handle silently overwrote (permanently orphaned)
+     the *first* pending, paid-for snapshot — re-opening B-19 in exactly the scenario it exists
+     to close. Fixed: per-key entry list (capped at 3, loud eviction diagnostic on overflow).
+   - **`adapter.billed_captured_nothing` missing on 3 of 4 adapters**: T21's own brief required
+     this diagnostic on all four; only Instagram had it (added earlier by T18). LinkedIn,
+     Facebook, X's single most severe condition was stderr-only, invisible to the Scheduled
+     Task. Fixed: mirrored Instagram's pattern into all three.
+   - **`resume_pending`'s fetch call was unguarded**, contradicting its own docstring's
+     "failing here must not fail a run that is otherwise fine" guarantee — a non-transient
+     fetch failure (e.g. an expired snapshot) propagated out uncaught, starving a handle for up
+     to 48h instead of falling through to a fresh billed job. Fixed: guarded, returns `None`
+     and leaves the entry pending (not cleared) on failure.
+   All three fixed in one consolidated dispatch (commit `e1a04fe`), re-reviewed and confirmed
+   ADDRESSED with zero new Critical/Important breakage. Both suites re-verified green after the
+   fix (299 targeted incl. `-n auto` / 1628+4skip app / 446 root).
+4. **8 Minor findings deferred, not fixed this session** — full text in PR #45's body. None
+   block a future package unless it happens to touch these exact files/functions again.
+
+**Seams actually delivered, confirmed present in the merged state:**
+- `brightdata_job.drain_diagnostics()` — present, unconsumed (no caller yet; P8's to wire).
+- `<adapter>.preflight()` (all four, including `LinkedInAdapter` instance methods) — present,
+  unconsumed (no caller yet; P8's to wire once per run before the handle loop).
+- `BRIGHTDATA_MAX_ITEMS_<PLATFORM>` / `BRIGHTDATA_POLL_TIMEOUT_<PLATFORM>` env overrides — live,
+  defaults unchanged. The true per-handle cap (residual #1 above) is still P8's, unstarted.
+- CI: for the first time in this programme's history, all three jobs (`app-suite`, `root-suite`,
+  `no-live-credentials`) passed green on this PR — the pre-existing baseline failures both
+  suites carried since before P3 were fixed by a separate PR (#44) that merged just before P7
+  started. See RESUME-PROMPT.md for the corrected baseline.
