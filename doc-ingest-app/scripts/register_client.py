@@ -46,11 +46,15 @@ def main(argv: list[str] | None = None, db_path: Path | None = None) -> int:
     conn = db.init_db(resolved_db_path)
     try:
         if args.command == "add":
-            clients_db.register_client(
-                conn, slug=args.slug, display_name=args.display_name,
-                primary_email=args.email, session_outlines_dir=args.session_outlines_dir,
-                drive_folder_id=args.drive_folder_id, alias_emails=args.alias_email,
-            )
+            try:
+                clients_db.register_client(
+                    conn, slug=args.slug, display_name=args.display_name,
+                    primary_email=args.email, session_outlines_dir=args.session_outlines_dir,
+                    drive_folder_id=args.drive_folder_id, alias_emails=args.alias_email,
+                )
+            except clients_db.ClientAlreadyExists as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
             print(f"registered client {args.slug!r}")
         elif args.command == "list":
             for c in clients_db.get_active_clients(conn):

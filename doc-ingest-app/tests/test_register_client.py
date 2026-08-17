@@ -50,3 +50,19 @@ def test_deactivate(tmp_db_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "deactivated" in out
+
+
+def test_add_duplicate_slug_returns_error(tmp_db_path, capsys):
+    register_client.main(
+        ["add", "--slug", "sean", "--display-name", "Sean", "--email", "sean@example.com",
+         "--session-outlines-dir", "x", "--drive-folder-id", "y"],
+        db_path=tmp_db_path,
+    )
+    rc = register_client.main(
+        ["add", "--slug", "sean", "--display-name", "Sean Again", "--email", "other@example.com",
+         "--session-outlines-dir", "x", "--drive-folder-id", "y"],
+        db_path=tmp_db_path,
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
