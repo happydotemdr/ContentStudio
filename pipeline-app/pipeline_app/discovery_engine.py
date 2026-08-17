@@ -114,6 +114,7 @@ def process_handle_validate(adapter: PlatformAdapter, repo_root: Path, handle_ro
     return {"ok": bool(result.get("ok")), "item": result if result.get("ok") else None}
 
 
+import concurrent.futures
 import json
 import os
 import platform
@@ -368,12 +369,40 @@ def _warn_on_directory_collisions(conn: sqlite3.Connection, handle_rows) -> None
                              detail={"platform": platform, "handles": colliding, "slug": slug})
 
 
+class RunDeadlineExceeded(Exception):
+    """Raised internally when a run has been going longer than run_deadline_s.
+
+    Never escapes run_discovery -- it is caught by the same outer `except
+    Exception` that handles any other crash outside the per-handle loop, so
+    the run ends with status 'failed' through the existing path rather than a
+    second, duplicate failure-handling branch."""
+
+
 def run_discovery(
     conn: sqlite3.Connection, repo_root: Path, adapters: dict[str, PlatformAdapter],
     trigger: str, mode: str, backfill_start: str | None = None, backfill_end: str | None = None,
     handle_id: int | None = None, now: _dt.datetime | None = None,
     heartbeat_interval_s: float = 30.0, stale_after_s: int = 600,
+    per_handle_deadline_s: float = 900.0, run_deadline_s: float = 5400.0,
 ) -> dict:
+    """...
+
+    B-53: `per_handle_deadline_s` bounds any single handle's adapter call (run
+    through a one-worker ThreadPoolExecutor so `future.result(timeout=...)`
+    can actually interrupt a blocking network call) and `run_deadline_s`
+    bounds the whole run, checked between handles. Both exist so one hung
+    adapter call can no longer hold the status='running' row -- and the
+    single-flight lock -- forever.
+
+    Honest caveat: `future.result(timeout=...)` abandons the worker thread,
+    it does not kill it. The thread is a daemon so it will not block process
+    exit, but if the adapter call is truly wedged on a socket with no
+    client-side timeout of its own, that thread keeps running (and the
+    connection stays open) for as long as the underlying call takes to fail
+    or the process exits. This unwedges the *run*, not the thread. The
+    durable fix is socket-level timeouts inside the adapters themselves (T4 /
+    packages P6-P7) -- this deadline is a backstop, not a substitute for that.
+    """
     now = now or _dt.datetime.now(_dt.timezone.utc)
     started_at = now_iso(now)
     run_id = make_run_id(now)
@@ -480,10 +509,23 @@ def run_discovery(
     handle_results = []
     any_error = False
     outer_crash: Exception | None = None
+    run_started = _dt.datetime.now(_dt.timezone.utc)
     try:
         handles = db_mod.list_handles(conn, included_only=True)
         _warn_on_directory_collisions(conn, handles)
         for handle_row in handles:
+            elapsed_s = (_dt.datetime.now(_dt.timezone.utc) - run_started).total_seconds()
+            if elapsed_s >= run_deadline_s:
+                deadline_message = (f"  !! run exceeded its {run_deadline_s}s overall deadline "
+                                    f"after {elapsed_s:.1f}s -- stopping before the remaining "
+                                    f"handles, run will end 'failed'")
+                print(deadline_message, file=sys.stderr)
+                obs.record_event(conn, kind="discovery.run_deadline_exceeded", severity="error",
+                                 source="discovery_engine", message=deadline_message,
+                                 run_id=run_row_id,
+                                 detail={"run_deadline_s": run_deadline_s, "elapsed_s": elapsed_s})
+                raise RunDeadlineExceeded(
+                    f"run exceeded its {run_deadline_s}s overall deadline after {elapsed_s:.1f}s")
             try:
                 if mode == "backfill" and handle_row["platform"] not in BACKFILL_SUPPORTED_PLATFORMS:
                     skip_message = (f"  ! backfill not supported for platform "
@@ -503,7 +545,17 @@ def run_discovery(
                         "last_seen_published_at": None, "error_message": None,
                     })
                     continue
-                downloaded = _process_one_handle(adapters, repo_root, handle_row, mode, backfill_start, backfill_end, now)
+                # Not `with ThreadPoolExecutor(...) as pool:` -- __exit__ calls
+                # shutdown(wait=True), which blocks until the worker thread
+                # finishes, defeating the whole point of the timeout below. No
+                # explicit shutdown() is called either: on a timeout the pool
+                # (and its one worker thread) is simply abandoned. See the
+                # docstring's caveat about what that means for that thread.
+                pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                future = pool.submit(_process_one_handle, adapters, repo_root, handle_row,
+                                     mode, backfill_start, backfill_end, now)
+                downloaded = future.result(timeout=per_handle_deadline_s)
+                pool.shutdown(wait=False)
                 # Not every downloaded item is guaranteed to carry a date (a
                 # YouTube item whose info.json write failed reports
                 # published=None) -- guard max() against an empty sequence
@@ -519,6 +571,20 @@ def run_discovery(
                     "cohort": handle_row["cohort"], "status": status, "items_downloaded": len(downloaded),
                     "last_seen_published_at": db_mod.get_handle(conn, handle_row["id"])["last_seen_published_at"],
                     "error_message": None,
+                })
+            except concurrent.futures.TimeoutError:
+                # Must come BEFORE the generic `except Exception` below --
+                # concurrent.futures.TimeoutError IS an Exception subclass, so
+                # Python matches except clauses top-to-bottom and this one
+                # needs its own distinct error_message, not the generic
+                # str(exc) from the catch-all.
+                any_error = True
+                timeout_message = f"TimeoutError: handle exceeded its {per_handle_deadline_s}s deadline"
+                db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", 0, timeout_message)
+                handle_results.append({
+                    "handle": handle_row["handle"], "platform": handle_row["platform"],
+                    "cohort": handle_row["cohort"], "status": "error", "items_downloaded": 0,
+                    "last_seen_published_at": None, "error_message": timeout_message,
                 })
             except Exception as exc:  # noqa: BLE001 - per-handle isolation is the whole point
                 any_error = True

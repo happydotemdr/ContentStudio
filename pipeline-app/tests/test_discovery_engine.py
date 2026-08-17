@@ -835,3 +835,39 @@ def test_a_reclaimed_run_does_not_write_a_stale_watermark(engine_conn, tmp_path)
     assert db.get_run(engine_conn, result["run_row_id"])["status"] == "abandoned"
     after = db.get_settings(engine_conn)["last_scheduled_run_date"]
     assert after == before  # watermark must not move for a reclaimed run
+
+
+def test_a_handle_that_never_returns_is_recorded_as_an_error_and_the_run_finishes(engine_conn, tmp_path):
+    """B-53: nothing bounded a run's duration, so one blocking network call held
+    the status='running' row -- and the single-flight lock -- forever, while the
+    run history showed a run that looked healthy and in progress."""
+    class HangingAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter):
+            time.sleep(30)
+    db.create_handle(engine_conn, "youtube", "@hang", "H", "guru", None, now_iso())
+    started = time.monotonic()
+    result = run_discovery(engine_conn, tmp_path, {"youtube": HangingAdapter({})},
+                           trigger="manual", mode="incremental", per_handle_deadline_s=0.2)
+    elapsed = time.monotonic() - started
+    assert elapsed < 10  # bounded by the 0.2s deadline, not the adapter's 30s sleep
+    assert result["status"] == "completed_with_errors"
+    row = db.list_run_handle_results(engine_conn, result["run_row_id"])[0]
+    assert "TimeoutError" in row["error_message"]
+    assert db.get_running_run(engine_conn) is None          # the lock was released
+
+
+def test_a_run_that_blows_its_overall_deadline_ends_failed_not_running(engine_conn, tmp_path):
+    """B-53: the per-run cap. Even if every handle returns promptly, a run
+    that has already been going longer than run_deadline_s must stop
+    processing the remaining handles and end 'failed', not silently keep
+    the 'running' row alive to the end of the handle list."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    db.create_handle(engine_conn, "youtube", "@b", "B", "guru", None, now_iso())
+    result = run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({"@a": [], "@b": []})},
+                           trigger="manual", mode="incremental", run_deadline_s=0.0)
+    assert result["status"] == "failed"
+    assert db.get_running_run(engine_conn) is None
+    row = engine_conn.execute(
+        "SELECT kind, severity FROM events WHERE kind = 'discovery.run_deadline_exceeded'").fetchone()
+    assert row is not None
+    assert row["severity"] == "error"
