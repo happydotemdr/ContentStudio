@@ -1,10 +1,15 @@
+import re
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from pipeline_app import db as db_mod
+from pipeline_app import discovery_engine
 from pipeline_app.main import create_app
 from pipeline_app.routes import discovery as discovery_routes
+
+import run_discovery_cron as cron
 
 
 class _FakeProc:
@@ -262,3 +267,53 @@ def test_brand_choices_matches_email_render_brand_section_order():
     from pipeline_app import email_render
     from pipeline_app.routes.discovery import BRAND_CHOICES
     assert BRAND_CHOICES == list(email_render.BRAND_SECTION_ORDER)
+
+
+def test_add_handle_rejects_a_platform_no_adapter_serves(client, spawns):
+    """B-58: an unvalidated platform was persisted, then adapters[platform]
+    raised KeyError OUTSIDE run_discovery's try -- the fire-and-forget child
+    died with a traceback nobody saw, no run row was written, and the handle
+    sat at 'pending' forever with no explanation."""
+    response = client.post("/discovery/handles", data={
+        "platform": "youtub", "handle": "@a", "display_name": "",
+        "cohort": "guru", "keyword_filter": ""})
+    assert response.status_code == 400
+    assert "youtub" in response.text and "youtube" in response.text   # names the valid set
+
+
+def test_a_rejected_platform_is_neither_stored_nor_spawned(client, spawns):
+    client.post("/discovery/handles", data={"platform": "youtub", "handle": "@a",
+                                            "display_name": "", "cohort": "guru", "keyword_filter": ""})
+    assert spawns == []
+    assert "@a" not in client.get("/discovery/handles").text
+
+
+def test_the_adapter_registry_and_the_declared_platform_set_agree():
+    """The route's gate and the engine's lookup must not drift: build_adapters
+    is what adapters[platform] indexes."""
+    assert set(cron.build_adapters()) == discovery_engine.SUPPORTED_PLATFORMS
+
+
+def test_the_declared_platform_set_matches_the_storage_constraint():
+    """B-73 (P1) complementarity. P1's schema CHECK and P8's route gate must
+    carry ONE vocabulary; two lists drift, and a drifted route gate rejects a
+    platform the storage layer would have accepted (or vice versa)."""
+    schema = (Path(db_mod.__file__).parent / "schema.sql").read_text(encoding="utf-8")
+    declared = set(re.findall(r"'([a-z-]+)'", schema.split("platform TEXT NOT NULL CHECK")[1]
+                                                     .split(")")[0]))
+    assert declared == discovery_engine.SUPPORTED_PLATFORMS
+
+
+def test_a_bad_platform_is_rejected_before_the_storage_constraint_can_fire(client, spawns, monkeypatch):
+    """B-73's two halves are complementary, not duplicated. P1's CHECK is the
+    durable backstop that also covers the migration path; this gate exists so
+    the operator gets a message naming the valid set instead of a 500 carrying
+    'CHECK constraint failed: handles'."""
+    def explode(*a, **k):
+        raise AssertionError("the route must reject before reaching create_handle")
+    monkeypatch.setattr(db_mod, "create_handle", explode)
+    response = client.post("/discovery/handles", data={
+        "platform": "youtub", "handle": "@a", "display_name": "",
+        "cohort": "guru", "keyword_filter": ""})
+    assert response.status_code == 400
+    assert "CHECK constraint" not in response.text

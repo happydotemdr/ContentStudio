@@ -28,6 +28,17 @@ NEW_HANDLE_UNDATED_STOP_GRACE = 5
 # here before the adapter is ever called.
 BACKFILL_SUPPORTED_PLATFORMS = {"youtube", "bluesky"}
 
+# The canonical set of platforms this engine can serve: the exact keys
+# run_discovery_cron.build_adapters() returns, and the exact vocabulary of
+# schema.sql's `handles.platform` CHECK constraint (B-73). The route gate
+# (routes/discovery.py::add_handle) validates against this before persisting
+# a handle or spawning a validation job; a test in test_routes_discovery.py
+# asserts all three stay in lockstep so they cannot silently drift apart.
+SUPPORTED_PLATFORMS: frozenset[str] = frozenset({
+    "youtube", "bluesky", "instagram", "linkedin-profile", "linkedin-company",
+    "facebook", "x",
+})
+
 
 class PlatformAdapter(Protocol):
     def on_disk_ids(self, repo_root: Path, handle: str) -> set[str]: ...
@@ -456,10 +467,10 @@ def run_discovery(
     run_id = make_run_id(now)
 
     if mode == "validate_handle":
-        handle_row = db_mod.get_handle(conn, handle_id)
-        adapter = adapters[handle_row["platform"]]
         db_mod.set_handle_status(conn, handle_id, "validating")
         try:
+            handle_row = db_mod.get_handle(conn, handle_id)
+            adapter = adapters[handle_row["platform"]]
             outcome = process_handle_validate(adapter, repo_root, handle_row)
             finished_at = now_iso()
             if outcome["ok"]:

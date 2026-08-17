@@ -554,6 +554,23 @@ def test_a_definitive_not_found_does_exclude_the_handle(engine_conn, tmp_path):
     assert row["included"] == 0
 
 
+def test_validate_handle_with_no_matching_adapter_records_a_failed_run_not_a_crash(engine_conn, tmp_path):
+    """B-58: a handle whose platform has no entry in the adapters dict used to
+    raise KeyError OUTSIDE run_discovery's try -- the fire-and-forget child died
+    with a traceback nobody saw, no run row was written, and the handle sat at
+    'pending' forever with no explanation. adapters[handle_row["platform"]] must
+    live inside the try so this produces a recorded 'failed' run instead."""
+    handle_id = db.create_handle(engine_conn, "youtube", "@orphan", "Orphan", "guru", None, now_iso())
+    result = run_discovery(
+        engine_conn, tmp_path, {},  # no adapter registered for "youtube"
+        trigger="manual", mode="validate_handle", handle_id=handle_id,
+    )
+    assert result["status"] == "failed"
+    row = db.get_handle(engine_conn, handle_id)
+    assert row["status"] == "pending"
+    assert db.get_run(engine_conn, result["run_row_id"]) is not None
+
+
 def test_a_transient_validate_failure_leaves_a_warning_event(engine_conn, tmp_path):
     handle_id = db.create_handle(engine_conn, "youtube", "@crashy", "Crashy", "guru", None, now_iso())
     adapter = SingleFakeAdapter({}, fail_handles={"@crashy"})

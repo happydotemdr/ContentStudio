@@ -7,6 +7,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 from pipeline_app import db as db_mod
+from pipeline_app import discovery_engine
 from pipeline_app import email_render
 from pipeline_app.discovery_paths import find_slug_collision, handle_slug
 
@@ -57,6 +58,18 @@ def add_handle(
     repo_root = request.app.state.repo_root
     if db_mod.get_handle_by_platform_and_handle(conn, platform, handle) is not None:
         return PlainTextResponse(f"handle already exists: {platform}/{handle}", status_code=400)
+    # B-58/B-73: reject an unrecognized platform before it is ever persisted.
+    # Without this, adapters[platform] raised KeyError OUTSIDE run_discovery's
+    # try -- the fire-and-forget validate child died with a traceback nobody
+    # saw, no run row was written, and the handle sat at 'pending' forever
+    # with no explanation. This is the fast, message-bearing gate; P1's schema
+    # CHECK (B-73) is the durable backstop for paths this route can't reach.
+    if platform not in discovery_engine.SUPPORTED_PLATFORMS:
+        valid = ", ".join(sorted(discovery_engine.SUPPORTED_PLATFORMS))
+        return PlainTextResponse(
+            f"unrecognized platform: {platform!r}. Valid platforms are: {valid}.",
+            status_code=400,
+        )
     # Reject before create_handle and before the validate spawn: on the Bright
     # Data platforms that spawn is a billable job, so a handle we refuse to
     # store must not be paid for either.
