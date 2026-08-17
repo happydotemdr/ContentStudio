@@ -3801,7 +3801,7 @@ def test_process_candidate_gate_failure_never_publishes_and_never_retries(conn, 
     assert "ALERT" in alerts[0]
 
     run = conn.execute("SELECT status FROM generation_runs").fetchone()
-    assert run[0] == "failed"
+    assert run[0] == "gates_failed"
 
     # A later wake for the SAME event must not re-generate or re-alert --
     # the watermark is set on gate failure specifically to make this true.
@@ -3914,7 +3914,7 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
     if existing is not None:
         run_id, file_id = existing
         subject, text = notify.render_review_email(client["display_name"], event["start_utc"].date(), file_id)
-        sent = notify.send_email(subject, text)
+        sent = notify.send_email(subject, text, recipient=cfg.notify_recipient)
         if not sent:
             return "publish_ok_notify_failed"
         trigger.mark_done(conn, client["slug"], event["instance_id"], _now_iso())
@@ -3942,7 +3942,9 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
     bad_citations = gates.citation_gate(generated, allowed_labels)
     leaked = gates.leakage_scan(generated, other_clients)
     if bad_citations or leaked:
-        _fail_run(conn, run_id, f"gate_failed: bad_citations={bad_citations} leaked={leaked}")
+        _fail_run(
+            conn, run_id, f"gate_failed: bad_citations={bad_citations} leaked={leaked}", status="gates_failed"
+        )
         # Terminal, per spec: "a hard stop, never auto-retried silently."
         # Setting the watermark HERE too (not only on success) is what makes
         # is_due() return False on every later wake for this event -- a gate
@@ -3954,6 +3956,7 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
             f"Run {run_id} failed its mechanical gates. bad_citations={bad_citations} leaked={leaked}\n"
             f"No draft was published or sent. This will NOT be retried automatically -- "
             f"investigate and re-run by hand if appropriate.",
+            recipient=cfg.notify_recipient,
         )
         return "gate_failed"
 
@@ -3964,7 +3967,7 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
     _mark_published(conn, run_id, file_id)
 
     subject, text = notify.render_review_email(client["display_name"], event["start_utc"].date(), file_id)
-    sent = notify.send_email(subject, text)
+    sent = notify.send_email(subject, text, recipient=cfg.notify_recipient)
     if not sent:
         return "publish_ok_notify_failed"  # watermark deliberately NOT set -- next wake retries notify only (see the existing-run check above)
 
@@ -3994,11 +3997,11 @@ def _start_run(conn, client_slug, event_instance_id, meeting_start_utc) -> int:
         return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
 
-def _fail_run(conn, run_id, reason) -> None:
+def _fail_run(conn, run_id, reason, status="failed") -> None:
     with db.transaction(conn):
         conn.execute(
-            "UPDATE generation_runs SET status = 'failed', failure_reason = ?, updated_at = ? WHERE id = ?",
-            (reason, _now_iso(), run_id),
+            "UPDATE generation_runs SET status = ?, failure_reason = ?, updated_at = ? WHERE id = ?",
+            (status, reason, _now_iso(), run_id),
         )
 
 
@@ -4707,7 +4710,7 @@ def main(argv: list[str] | None = None) -> int:
         since_iso = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)).isoformat()
         report = audit.build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso)
         subject, text = audit.render_report_email(report)
-        notify.send_email(subject, text)
+        notify.send_email(subject, text, recipient=cfg.notify_recipient)
         print(text)
     finally:
         conn.close()
