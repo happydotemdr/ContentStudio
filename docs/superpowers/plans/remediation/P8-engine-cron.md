@@ -866,6 +866,25 @@ finding B-10), never bare `text=True`. Mark these tests `@pytest.mark.allow_subp
 
 #### - [ ] Task 11 — The dry run prints a runnable command (B-45)
 
+> **Plan correction, task implementation session.** This task's premise assumes `main()`'s dry-run
+> branch still prints a flattened `" ".join(cmd)` schtasks command line, the way it did before
+> Task 9/10. It does not: Task 10 rewrote `main()` around `build_task_xml` + a temp-file write,
+> and its dry-run branch (verified against the live file this session) prints a fixed descriptive
+> string — `"Write the task XML to a temp file and run: schtasks /Create /TN <name> /XML <tmpfile>
+> /F"` — with no `cmd` list ever built or flattened in that branch. B-45's underlying defect (a
+> naive join corrupting a quoted `/TR` payload) is therefore already structurally impossible in
+> the current dry-run path, since there is no longer any multi-word quoted argument for a join to
+> corrupt. `test_dry_run_prints_a_command_that_survives_a_round_trip_through_the_shell_parser`, as
+> originally written, does not exercise `main()` at all — it is a standalone unit test of
+> `subprocess.list2cmdline` in the abstract, which stays true regardless of what `main()` prints,
+> so it is **kept, unmodified**, as documentation of the correct pattern, not as regression
+> coverage for `main()`'s current dry-run output.
+>
+> **What remains genuinely open:** the dry-run branch does not mention where the log will be —
+> `test_dry_run_tells_the_operator_where_the_log_will_be` still fails against the live file (grep
+> confirms `default_log_path`/`discovery-task.log` do not appear in the current dry-run print
+> block). That is this task's real remaining work: add the log path to the dry-run message.
+
 **Test:**
 
 ```python
@@ -885,8 +904,9 @@ def test_dry_run_tells_the_operator_where_the_log_will_be(monkeypatch, capsys):
     assert "discovery-task.log" in capsys.readouterr().out
 ```
 
-**Implement:** `print(subprocess.list2cmdline(cmd))` in place of `print(" ".join(cmd))`, and
-print `default_log_path(...)` plus the XML's destination in the dry-run block.
+**Implement:** print `default_log_path(...)` (which resolves to `discovery-task.log`) in the
+dry-run block, alongside the existing description of the XML/`/Create` step. Do not reintroduce a
+flattened `cmd` list — the current dry-run message already avoids the B-45 defect by construction.
 
 **Commit:** `fix(setup): print the registration command with list2cmdline (B-45)`
 
