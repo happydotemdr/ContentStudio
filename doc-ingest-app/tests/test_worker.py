@@ -606,3 +606,12 @@ def test_process_job_logs_drift_for_an_unlisted_program_doc(conn, tmp_path):
         (source_file_id,),
     ).fetchone()
     assert event is not None
+
+    job_status = conn.execute(
+        "SELECT status FROM conversion_jobs WHERE id = ?", (job_id,)
+    ).fetchone()[0]
+    assert job_status == "complete"
+    output_files = list(
+        (cfg.converted_root / "Offer & Coaching Framework" / "Current finalized documents").glob("*.md")
+    )
+    assert len(output_files) == 1
