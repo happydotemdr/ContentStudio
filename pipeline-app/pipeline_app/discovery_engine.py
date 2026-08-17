@@ -37,6 +37,15 @@ class PlatformAdapter(Protocol):
                       content_type: str | None = None) -> dict: ...
 
 
+class HandleFailure(Exception):
+    """Carries the items already written to disk when a walk fails partway, so
+    the run records real work instead of 0 (B-54). The engine's per-handle
+    except branch reads .downloaded and .cause."""
+    def __init__(self, cause: BaseException, downloaded: list[dict]):
+        super().__init__(f"{type(cause).__name__}: {cause}")
+        self.cause, self.downloaded = cause, downloaded
+
+
 def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _dt.datetime) -> list[dict]:
     handle = handle_row["handle"]
     keyword_filter = handle_row["keyword_filter"]
@@ -44,35 +53,40 @@ def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _
     is_new = len(on_disk) == 0
     cutoff = now - _dt.timedelta(days=NEW_HANDLE_LOOKBACK_DAYS) if is_new else None
 
-    enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
     downloaded: list[dict] = []
-    consecutive_on_disk = 0
-    consecutive_undated = 0
-
-    for item in enumerated:
-        item_id = item["id"]
-        if item_id in on_disk:
-            consecutive_on_disk += 1
-            if not is_new and consecutive_on_disk >= EXISTING_HANDLE_STOP_GRACE:
-                break
-            continue
+    try:
+        enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
         consecutive_on_disk = 0
+        consecutive_undated = 0
 
-        if is_new:
-            published = item.get("published") or adapter.peek_upload_date(item_id)
-            if published is None:
-                consecutive_undated += 1
-                if consecutive_undated >= NEW_HANDLE_UNDATED_STOP_GRACE:
+        for item in enumerated:
+            item_id = item["id"]
+            if item_id in on_disk:
+                consecutive_on_disk += 1
+                if not is_new and consecutive_on_disk >= EXISTING_HANDLE_STOP_GRACE:
                     break
                 continue
-            consecutive_undated = 0
-            if _dt.datetime.strptime(published, "%Y-%m-%d").replace(tzinfo=_dt.timezone.utc) < cutoff:
-                break
+            consecutive_on_disk = 0
 
-        result = adapter.download_item(repo_root, handle, item_id, item["title"],
-                                       item.get("content_type"))
-        if result.get("ok"):
-            downloaded.append(result)
+            if is_new:
+                published = item.get("published") or adapter.peek_upload_date(item_id)
+                if published is None:
+                    consecutive_undated += 1
+                    if consecutive_undated >= NEW_HANDLE_UNDATED_STOP_GRACE:
+                        break
+                    continue
+                consecutive_undated = 0
+                if _dt.datetime.strptime(published, "%Y-%m-%d").replace(tzinfo=_dt.timezone.utc) < cutoff:
+                    break
+
+            result = adapter.download_item(repo_root, handle, item_id, item["title"],
+                                           item.get("content_type"))
+            if result.get("ok"):
+                downloaded.append(result)
+    except HandleFailure:
+        raise
+    except Exception as exc:
+        raise HandleFailure(exc, downloaded) from exc
 
     return downloaded
 
@@ -80,24 +94,29 @@ def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _
 def process_handle_backfill(adapter: PlatformAdapter, repo_root: Path, handle_row, start_date: _dt.date, end_date: _dt.date) -> list[dict]:
     handle = handle_row["handle"]
     keyword_filter = handle_row["keyword_filter"]
-    on_disk = adapter.on_disk_ids(repo_root, handle)
-    enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
     downloaded: list[dict] = []
+    try:
+        on_disk = adapter.on_disk_ids(repo_root, handle)
+        enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
 
-    for item in enumerated:
-        item_id = item["id"]
-        if item_id in on_disk:
-            continue
-        published = item.get("published") or adapter.peek_upload_date(item_id)
-        if published is None:
-            continue
-        pub_date = _dt.datetime.strptime(published, "%Y-%m-%d").date()
-        if pub_date < start_date or pub_date > end_date:
-            continue
-        result = adapter.download_item(repo_root, handle, item_id, item["title"],
-                                       item.get("content_type"))
-        if result.get("ok"):
-            downloaded.append(result)
+        for item in enumerated:
+            item_id = item["id"]
+            if item_id in on_disk:
+                continue
+            published = item.get("published") or adapter.peek_upload_date(item_id)
+            if published is None:
+                continue
+            pub_date = _dt.datetime.strptime(published, "%Y-%m-%d").date()
+            if pub_date < start_date or pub_date > end_date:
+                continue
+            result = adapter.download_item(repo_root, handle, item_id, item["title"],
+                                           item.get("content_type"))
+            if result.get("ok"):
+                downloaded.append(result)
+    except HandleFailure:
+        raise
+    except Exception as exc:
+        raise HandleFailure(exc, downloaded) from exc
 
     return downloaded
 
@@ -593,11 +612,20 @@ def run_discovery(
                 })
             except Exception as exc:  # noqa: BLE001 - per-handle isolation is the whole point
                 any_error = True
-                db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", 0, str(exc))
+                # B-54: a handle that fails partway through its walk still has
+                # real items on disk -- HandleFailure (raised by process_handle
+                # / process_handle_backfill) carries them via .downloaded so
+                # this branch can record actual counts instead of hardcoding 0.
+                partial = getattr(exc, "downloaded", [])
+                partial_dates = [d["published"] for d in partial if d.get("published")]
+                if partial_dates:
+                    db_mod.set_handle_last_seen(conn, handle_row["id"], max(partial_dates))
+                db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", len(partial), str(exc))
                 handle_results.append({
                     "handle": handle_row["handle"], "platform": handle_row["platform"],
-                    "cohort": handle_row["cohort"], "status": "error", "items_downloaded": 0,
-                    "last_seen_published_at": None, "error_message": str(exc),
+                    "cohort": handle_row["cohort"], "status": "error", "items_downloaded": len(partial),
+                    "last_seen_published_at": db_mod.get_handle(conn, handle_row["id"])["last_seen_published_at"],
+                    "error_message": str(exc),
                 })
     except Exception as exc:  # noqa: BLE001 - a crash OUTSIDE the per-handle loop
         # (e.g. db_mod.list_handles itself raising) -- distinct from any

@@ -397,6 +397,43 @@ def test_run_discovery_one_bad_handle_does_not_abort_the_run(engine_conn, tmp_pa
     assert list(results.values()).count("error") == 1
 
 
+def test_a_handle_that_raises_after_two_downloads_records_two_not_zero(engine_conn, tmp_path):
+    """B-54: process_handle accumulated `downloaded` in a local destroyed on
+    raise, so the except branch hardcoded items_downloaded=0 -- the DB row, the
+    markdown record and last_seen_published_at all under-reported real work
+    that is on disk, permanently."""
+    class FailsOnThird(SingleFakeAdapter):
+        def download_item(self, repo_root, handle, item_id, title, content_type=None):
+            if item_id == "v3":
+                raise RuntimeError("rate limited")
+            return {"id": item_id, "ok": True, "published": "2026-07-29"}
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = FailsOnThird({"@a": [{"id": f"v{i}", "title": "x", "published": "2026-07-29"}
+                                    for i in (1, 2, 3)]})
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter},
+                           trigger="manual", mode="incremental")
+    row = db.list_run_handle_results(engine_conn, result["run_row_id"])[0]
+    assert row["status"] == "error"
+    assert row["items_downloaded"] == 2
+
+
+def test_a_partly_downloaded_handle_still_advances_last_seen(engine_conn, tmp_path):
+    """B-54: last_seen_published_at must advance from the items actually
+    downloaded before the failure, not stay stuck at None."""
+    handle_id = db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+
+    class FailsOnThird(SingleFakeAdapter):
+        def download_item(self, repo_root, handle, item_id, title, content_type=None):
+            if item_id == "v3":
+                raise RuntimeError("rate limited")
+            return {"id": item_id, "ok": True, "published": "2026-07-29"}
+    adapter = FailsOnThird({"@a": [{"id": f"v{i}", "title": "x", "published": "2026-07-29"}
+                                    for i in (1, 2, 3)]})
+    run_discovery(engine_conn, tmp_path, {"youtube": adapter},
+                  trigger="manual", mode="incremental")
+    assert db.get_handle(engine_conn, handle_id)["last_seen_published_at"] == "2026-07-29"
+
+
 def test_run_discovery_no_new_content_records_that_status(engine_conn, tmp_path):
     db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
     adapter = SingleFakeAdapter({"@a": []})
