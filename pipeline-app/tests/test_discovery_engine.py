@@ -605,6 +605,85 @@ def test_a_definitive_not_found_does_exclude_the_handle(engine_conn, tmp_path):
     assert row["included"] == 0
 
 
+@pytest.mark.parametrize("error_name", [
+    "BlueskyFetchError", "YouTubeEnumerationError", "TranscriptFetchBlocked", "YtDlpUnavailable",
+])
+def test_a_typed_adapter_fetch_error_never_marks_a_handle_invalid(engine_conn, tmp_path, error_name):
+    """P6's B-06 (S1): a valid handle added while the VPN was up was quietly and
+    permanently removed from every future run. P6 makes the failure raise; this
+    asserts P8 does not then convert the raise into 'invalid' + included=0. The
+    error types are constructed locally by name so this test does not depend on
+    P6's merge landing first."""
+    Boom = type(error_name, (RuntimeError,), {})
+
+    class RaisingAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter):
+            raise Boom("transport failed")
+
+    handle_id = db.create_handle(engine_conn, "bluesky", "adamgrant.bsky.social", "AG",
+                                 "guru", None, now_iso())
+    db.set_handle_status(engine_conn, handle_id, "validated")
+    result = run_discovery(engine_conn, tmp_path, {"bluesky": RaisingAdapter({})},
+                           trigger="manual", mode="validate_handle", handle_id=handle_id)
+    row = db.get_handle(engine_conn, handle_id)
+    assert result["status"] == "failed"        # the run reports the failure...
+    assert row["status"] != "invalid"          # ...without condemning the handle
+    assert row["included"] == 1
+
+
+P6_ERROR_NAMES = ("BlueskyFetchError", "YouTubeEnumerationError",
+                  "TranscriptFetchBlocked", "YtDlpUnavailable")
+
+
+def test_the_local_stand_in_names_match_p6s_real_exported_errors():
+    """The test above constructs P6's error types by NAME so P8 is not blocked
+    on P6's merge order -- which means a rename on P6's side would leave this
+    suite green against types that no longer exist, i.e. an except clause that
+    silently never matches. Assert the names against the real modules the
+    moment they are importable, so a rename is a failure rather than a
+    disappearance."""
+    from pipeline_app import discovery_bluesky, discovery_youtube
+    exported = set(dir(discovery_bluesky)) | set(dir(discovery_youtube))
+    missing = [name for name in P6_ERROR_NAMES if name not in exported]
+    assert not missing, (
+        f"P6 no longer exports {missing}; the parametrised stand-ins above are "
+        f"testing types nothing raises. Update P6_ERROR_NAMES and EXCLUDING_ERRORS together."
+    )
+    for name in P6_ERROR_NAMES:
+        error_type = getattr(discovery_bluesky, name, None) or getattr(discovery_youtube, name)
+        assert issubclass(error_type, Exception)
+        assert not issubclass(error_type, discovery_engine.EXCLUDING_ERRORS), (
+            f"{name} is a transport failure, not proof the account is gone (B-06)")
+
+
+def test_only_handle_not_found_survives_as_an_excluding_error(engine_conn, tmp_path):
+    """The whitelist is the contract: if a future adapter error type is added and
+    nobody updates this set, the default is 'retryable', never 'delete it from
+    the roster'."""
+    assert discovery_engine.EXCLUDING_ERRORS == (discovery_engine.HandleNotFound,)
+
+
+def test_a_transient_validate_failure_names_the_error_type_in_its_event(engine_conn, tmp_path):
+    """The event detail records the concrete adapter error type name, not a
+    generic label -- so an operator scanning events can tell BlueskyFetchError
+    apart from a socket timeout."""
+    from pipeline_app import discovery_bluesky
+
+    class RaisingAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter):
+            raise discovery_bluesky.BlueskyFetchError("transport failed")
+
+    handle_id = db.create_handle(engine_conn, "bluesky", "adamgrant.bsky.social", "AG",
+                                 "guru", None, now_iso())
+    run_discovery(engine_conn, tmp_path, {"bluesky": RaisingAdapter({})},
+                 trigger="manual", mode="validate_handle", handle_id=handle_id)
+    row = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.validate_transient_failure'").fetchone()
+    assert row is not None
+    detail = json.loads(row["detail"])
+    assert detail["error_type"] == "BlueskyFetchError"
+
+
 def test_validate_handle_with_no_matching_adapter_records_a_failed_run_not_a_crash(engine_conn, tmp_path):
     """B-58: a handle whose platform has no entry in the adapters dict used to
     raise KeyError OUTSIDE run_discovery's try -- the fire-and-forget child died

@@ -166,6 +166,17 @@ class HandleNotFound(Exception):
     since B-57's damage is a VALID handle silently dropped from every run."""
 
 
+EXCLUDING_ERRORS: tuple[type[BaseException], ...] = (HandleNotFound,)
+"""The ONLY errors that mark a handle invalid and clear `included`.
+
+Everything else -- BlueskyFetchError, YouTubeEnumerationError,
+TranscriptFetchBlocked, YtDlpUnavailable, a socket timeout, a 503 -- is
+transient by default and leaves the handle retryable (P6's B-06, S1). The
+default direction matters: the damage in B-06 is a VALID handle silently
+dropped from every future run, which nothing retries and nothing reports.
+"""
+
+
 def now_iso(now: _dt.datetime | None = None) -> str:
     return (now or _dt.datetime.now(_dt.timezone.utc)).isoformat(timespec="seconds")
 
@@ -522,7 +533,7 @@ def run_discovery(
             # and included, not silently and permanently excluded.
             finished_at = now_iso()
             error_message = f"{type(exc).__name__}: {exc}"
-            if isinstance(exc, HandleNotFound):
+            if isinstance(exc, EXCLUDING_ERRORS):
                 db_mod.set_handle_status(conn, handle_id, "invalid")
                 db_mod.set_handle_included(conn, handle_id, False)
             else:
