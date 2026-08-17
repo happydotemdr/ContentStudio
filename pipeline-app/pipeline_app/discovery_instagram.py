@@ -241,6 +241,16 @@ def _normalize_row(row: dict) -> dict | None:
     }
 
 
+def _error_codes(raw_rows: list[dict]) -> list[str]:
+    """Vendor error codes from an include_errors=true batch.
+
+    With include_errors=true a failure arrives as a ROW carrying `error` and
+    `error_code` rather than as an absence, so the adapter can log Bright
+    Data's own reason ('dead_page') instead of a bare drop count.
+    """
+    return [r.get("error_code") or "unknown" for r in raw_rows if r.get("error")]
+
+
 # handle -> item_id -> normalized row. Populated by enumerate_newest_first,
 # read by download_item. Per-process, per-run cache -- see the design doc's
 # "Cache concurrency" section for the documented, accepted race with
@@ -256,6 +266,26 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
         print(f"  ! {dropped} Bright Data row(s) for {handle} dropped (missing id or unusable date)",
               file=sys.stderr)
     normalized = [n for n in normalized if n is not None]
+
+    if raw_rows and not normalized:
+        # This run was billed and produced nothing, but process_handle will
+        # record the healthy status 'no_new_content' -- indistinguishable
+        # from a quiet day unless it is loud here.
+        codes = _error_codes(raw_rows)
+        detail = f" Bright Data reported: {', '.join(sorted(set(codes)))}." if codes else ""
+        print(f"  !! instagram/{handle}: Bright Data returned {len(raw_rows)} "
+              f"row(s) but none survived filtering. This run was billed and "
+              f"captured nothing -- check whether this handle is still valid."
+              f"{detail}", file=sys.stderr)
+        brightdata_job.record_diagnostic(
+            kind="adapter.billed_captured_nothing", severity="error",
+            source="discovery_instagram",
+            message=(f"instagram/{handle}: Bright Data returned {len(raw_rows)} "
+                     f"row(s) but none survived filtering. This run was billed "
+                     f"and captured nothing.{detail}"),
+            detail={"platform": "instagram", "handle": handle,
+                    "raw_count": len(raw_rows), "error_codes": sorted(set(codes))})
+
     # Sort on the full timestamp, not the date-truncated 'published': Python's
     # sort is stable and Bright Data returns rows unsorted, so same-day rows
     # sorted on 'published' alone would keep Bright Data's arbitrary arrival

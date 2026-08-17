@@ -368,6 +368,46 @@ def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(mo
     assert "no backfill" in record["message"]
 
 
+def _error_row(code="dead_page"):
+    """With include_errors=true a failure arrives as a ROW, not an absence."""
+    return {"input": {"url": "https://www.instagram.com/gone/"},
+            "error": "Page not found", "error_code": code}
+
+
+def test_all_error_rows_escalate_billed_and_captured_nothing(monkeypatch, capsys):
+    """Fault test. A renamed or deleted handle returns error rows; the run is
+    billed, captures nothing, and today records the healthy 'no_new_content'."""
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [_error_row()])
+    brightdata_job.drain_diagnostics()
+    assert ig.enumerate_newest_first("gone", keyword_filter=None) == []
+    err = capsys.readouterr().err
+    assert "billed and captured nothing" in err
+    assert "dead_page" in err
+
+
+def test_a_genuinely_empty_batch_does_not_escalate(monkeypatch, capsys):
+    """Distinguishability. Zero rows is a quiet day and must stay quiet;
+    N rows of which none survived is a paid-for failure."""
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [])
+    brightdata_job.drain_diagnostics()
+    assert ig.enumerate_newest_first("quiet", keyword_filter=None) == []
+    assert "billed and captured nothing" not in capsys.readouterr().err
+    assert brightdata_job.drain_diagnostics() == []
+
+
+def test_billed_nothing_records_an_error_diagnostic_carrying_the_vendor_codes(monkeypatch):
+    """Surfacing. stderr has no destination on the scheduled path (B-01)."""
+    monkeypatch.setattr(ig, "_run_collection_job",
+                        lambda handle: [_error_row("dead_page"), _error_row("blocked")])
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("gone", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.billed_captured_nothing"][0]
+    assert record["severity"] == "error"
+    assert record["detail"]["handle"] == "gone"
+    assert sorted(record["detail"]["error_codes"]) == ["blocked", "dead_page"]
+
+
 def test_enumerate_newest_first_caps_retained_items(monkeypatch):
     """Consequence of truncation: the returned list itself is bounded to the
     cap, independent of whether the diagnostic above also fires."""
