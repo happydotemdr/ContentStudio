@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
+from pipeline_app import brightdata_job
 from pipeline_app import db as db_mod
 from pipeline_app import obs
 from pipeline_app.discovery_paths import group_slug_collisions, run_owner_path
@@ -437,6 +438,20 @@ def _warn_on_directory_collisions(conn: sqlite3.Connection, handle_rows) -> None
                              detail={"platform": platform, "handles": colliding, "slug": slug})
 
 
+def _drain_adapter_diagnostics(conn, run_row_id: int) -> None:
+    """P7 owns the sink; P8 owns the durable surface. Drained per handle, in a
+    finally, so a handle that failed still yields its retry/truncation record --
+    that is exactly when the evidence is worth having."""
+    try:
+        records = brightdata_job.drain_diagnostics()
+    except Exception as exc:  # noqa: BLE001 - reporting must never take down the run
+        obs.log("discovery.diagnostics_drain_failed", level="error",
+                error=f"{type(exc).__name__}: {exc}")
+        return
+    for record in records:
+        obs.record_event(conn, run_id=run_row_id, **record)
+
+
 class RunDeadlineExceeded(Exception):
     """Raised internally when a run has been going longer than run_deadline_s.
 
@@ -723,6 +738,8 @@ def run_discovery(
                     "last_seen_published_at": db_mod.get_handle(conn, handle_row["id"])["last_seen_published_at"],
                     "error_message": error_message,
                 })
+            finally:
+                _drain_adapter_diagnostics(conn, run_row_id)
     except Exception as exc:  # noqa: BLE001 - a crash OUTSIDE the per-handle loop
         # (e.g. db_mod.list_handles itself raising) -- distinct from any
         # individual handle's error above. The run still gets a terminal

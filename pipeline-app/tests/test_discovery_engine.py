@@ -309,6 +309,61 @@ def test_a_collision_introduced_by_the_migration_path_is_reported_durably(engine
     assert row is not None and row["severity"] == "warning"
 
 
+def test_brightdata_diagnostics_are_drained_into_event_rows(engine_conn, tmp_path, monkeypatch):
+    """P7's B-01: the diagnostics sink is written on every Bright Data call and
+    read by nobody, so a job that retried three times and truncated its results
+    leaves no durable trace."""
+    # drain_diagnostics() returns list[dict] (per its real docstring); the mock
+    # models "one batch on the first drain, empty after" as a list of batches
+    # so the fake keeps that same shape rather than handing back a bare dict.
+    batches = [[{"kind": "brightdata.truncated", "severity": "warning",
+                 "source": "discovery_instagram",
+                 "message": "instagram/@nasa returned exactly limit_per_input=10 items",
+                 "detail": {"platform": "instagram", "records": 10}}]]
+    monkeypatch.setattr(discovery_engine.brightdata_job, "drain_diagnostics",
+                        lambda: batches.pop(0) if batches else [])
+    db.create_handle(engine_conn, "instagram", "@nasa", "N", "guru", None, now_iso())
+    run_discovery(engine_conn, tmp_path, {"instagram": SingleFakeAdapter({"@nasa": []})},
+                  trigger="manual", mode="incremental")
+    row = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'brightdata.truncated'").fetchone()
+    assert row is not None and row["severity"] == "warning"
+    assert json.loads(row["detail"])["records"] == 10
+
+
+def test_the_sink_is_drained_even_when_the_handle_errored(engine_conn, tmp_path, monkeypatch):
+    """The truncation/retry evidence matters MOST on the failing handle, so the
+    drain lives in a finally, not on the success path."""
+    batches = [[{"kind": "brightdata.retry", "severity": "warning",
+                 "source": "discovery_instagram",
+                 "message": "instagram/@bad retried after a transient error",
+                 "detail": {"platform": "instagram", "attempts": 2}}]]
+    monkeypatch.setattr(discovery_engine.brightdata_job, "drain_diagnostics",
+                        lambda: batches.pop(0) if batches else [])
+    db.create_handle(engine_conn, "instagram", "@bad", "N", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({}, fail_handles={"@bad"})
+    result = run_discovery(engine_conn, tmp_path, {"instagram": adapter},
+                           trigger="manual", mode="incremental")
+    assert result["status"] == "completed_with_errors"
+    results = db.list_run_handle_results(engine_conn, result["run_row_id"])
+    assert results[0]["status"] == "error"
+    row = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'brightdata.retry'").fetchone()
+    assert row is not None and row["severity"] == "warning"
+    assert json.loads(row["detail"])["attempts"] == 2
+
+
+def test_a_diagnostics_drain_failure_never_aborts_the_run(engine_conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(discovery_engine.brightdata_job, "drain_diagnostics",
+                        lambda: (_ for _ in ()).throw(RuntimeError("sink is broken")))
+    db.create_handle(engine_conn, "instagram", "@nasa", "N", "guru", None, now_iso())
+    result = run_discovery(engine_conn, tmp_path, {"instagram": SingleFakeAdapter({"@nasa": []})},
+                           trigger="manual", mode="incremental")
+    assert result["status"] in ("completed", "completed_with_errors")
+    results = db.list_run_handle_results(engine_conn, result["run_row_id"])
+    assert results[0]["status"] == "no_new_content"
+
+
 def test_run_discovery_completes_and_writes_record(engine_conn, tmp_path):
     handle_id = db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
     adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]})
