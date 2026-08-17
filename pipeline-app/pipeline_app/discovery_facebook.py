@@ -266,6 +266,12 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
         detail = f" ({', '.join(sorted(set(codes)))})" if codes else ""
         print(f"  ! {PLATFORM}/{handle}: dropped {unusable} unusable row(s){detail}",
               file=sys.stderr)
+        brightdata_job.record_diagnostic(
+            kind="adapter.rows_dropped", severity="warning",
+            source="discovery_facebook",
+            message=f"{PLATFORM}/{handle}: dropped {unusable} unusable row(s){detail}",
+            detail={"platform": PLATFORM, "handle": handle, "dropped": unusable,
+                    "error_codes": sorted(set(codes))})
 
     if raw_rows and not kept:
         # This run was billed and produced nothing, but process_handle will

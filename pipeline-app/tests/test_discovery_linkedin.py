@@ -423,6 +423,69 @@ def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(mo
     assert "no backfill" in record["message"]
 
 
+def test_dropped_rows_reach_a_durable_surface_not_only_stderr(monkeypatch, capsys):
+    """Fault test. The Scheduled Task command has no redirection, so a stderr
+    warning on the production path has no destination at all (B-01)."""
+    adapter = _company()
+    _stub_job(adapter, [_row("good", "2026-07-08"), {"post_text": "no id"}], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.rows_dropped"][0]
+    assert record["severity"] == "warning"
+    assert record["detail"]["dropped"] == 1
+    assert record["source"] == "discovery_linkedin"
+    assert "dropped 1 unusable row(s)" in capsys.readouterr().err   # the print stays
+
+
+def test_foreign_author_rows_reach_a_durable_surface_not_only_stderr(monkeypatch, capsys):
+    """Fault test, the foreign-author case: profile mode filters posts
+    written by other people and today only unusable rows reach a durable
+    surface -- this must be true for the foreign-author drop too."""
+    adapter = _profile()
+    _stub_job(adapter, [
+        _row("own1", "2026-07-08", author="bettywliu"),
+        _row("foreign", "2026-07-14", author="mattwilkerson"),
+    ], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.foreign_rows_dropped"][0]
+    assert record["severity"] == "warning"
+    assert record["detail"]["dropped"] == 1
+    assert record["source"] == "discovery_linkedin"
+    assert "dropped 1 row(s) by another author" in capsys.readouterr().err
+
+
+def test_a_clean_batch_produces_no_diagnostics_at_all(monkeypatch):
+    """Distinguishability. A degraded run must be observably different from a
+    healthy one -- 'no diagnostics' is the healthy signal."""
+    adapter = _company()
+    _stub_job(adapter, [_row("good", "2026-07-08")], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    assert brightdata_job.drain_diagnostics() == []
+
+
+def test_diagnostics_carry_everything_obs_record_event_requires(monkeypatch):
+    """Surfacing. P8 writes these straight into the events table; a record
+    missing a column is a record that never becomes a row."""
+    adapter = _profile()
+    _stub_job(adapter, [
+        _row("own1", "2026-07-08", author="bettywliu"),
+        {"post_text": "no id"},
+        _row("foreign", "2026-07-14", author="mattwilkerson"),
+    ], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+    records = brightdata_job.drain_diagnostics()
+    assert records
+    for record in records:
+        assert set(record) == {"kind", "severity", "source", "message", "detail"}
+        assert record["severity"] in {"info", "warning", "error", "critical"}
+        assert record["message"]
+
+
 def test_enumerate_drops_unusable_rows_and_logs(monkeypatch, capsys):
     adapter = _company()
     _stub_job(adapter, [

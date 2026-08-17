@@ -382,6 +382,53 @@ def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(mo
     assert "no backfill" in record["message"]
 
 
+def test_dropped_rows_reach_a_durable_surface_not_only_stderr(monkeypatch, capsys):
+    """Fault test. The Scheduled Task command has no redirection, so a stderr
+    warning on the production path has no destination at all (B-01)."""
+    good = _raw_row("p1", "2026-08-01")
+    good["user_posted"] = "somehandle"
+    raw = [good, {"no": "id"}]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.rows_dropped"][0]
+    assert record["severity"] == "warning"
+    assert record["detail"]["dropped"] == 1
+    assert record["source"] == "discovery_instagram"
+    assert "dropped (missing id or unusable date)" in capsys.readouterr().err
+
+
+def test_a_clean_batch_produces_no_rows_dropped_diagnostic(monkeypatch):
+    """Distinguishability. A degraded run must be observably different from a
+    healthy one -- 'no diagnostics' is the healthy signal."""
+    good = _raw_row("p1", "2026-08-01")
+    good["user_posted"] = "somehandle"
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [good])
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    assert [d for d in brightdata_job.drain_diagnostics()
+            if d["kind"] == "adapter.rows_dropped"] == []
+
+
+def test_rows_dropped_diagnostic_carries_everything_obs_record_event_requires(monkeypatch):
+    """Surfacing. P8 writes these straight into the events table; a record
+    missing a column is a record that never becomes a row."""
+    good = _raw_row("p1", "2026-08-01")
+    good["user_posted"] = "somehandle"
+    raw = [good, {"no": "id"}]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    records = [d for d in brightdata_job.drain_diagnostics()
+               if d["kind"] == "adapter.rows_dropped"]
+    assert records
+    for record in records:
+        assert set(record) == {"kind", "severity", "source", "message", "detail"}
+        assert record["severity"] in {"info", "warning", "error", "critical"}
+        assert record["message"]
+
+
 def _error_row(code="dead_page"):
     """With include_errors=true a failure arrives as a ROW, not an absence."""
     return {"input": {"url": "https://www.instagram.com/gone/"},

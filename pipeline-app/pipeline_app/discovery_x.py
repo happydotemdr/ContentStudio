@@ -288,6 +288,19 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
         print(f"  ! {PLATFORM}/{handle}: dropped {foreign} row(s) by another author",
               file=sys.stderr)
 
+    if unusable:
+        brightdata_job.record_diagnostic(
+            kind="adapter.rows_dropped", severity="warning",
+            source="discovery_x",
+            message=f"{PLATFORM}/{handle}: dropped {unusable} unusable row(s)",
+            detail={"platform": PLATFORM, "handle": handle, "dropped": unusable})
+    if foreign:
+        brightdata_job.record_diagnostic(
+            kind="adapter.foreign_rows_dropped", severity="warning",
+            source="discovery_x",
+            message=f"{PLATFORM}/{handle}: dropped {foreign} row(s) by another author",
+            detail={"platform": PLATFORM, "handle": handle, "dropped": foreign})
+
     if raw_rows and not kept:
         # This run was billed and produced nothing, but process_handle will
         # record the healthy status 'no_new_content' -- indistinguishable from

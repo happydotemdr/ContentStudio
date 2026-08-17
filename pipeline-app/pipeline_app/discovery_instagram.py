@@ -292,6 +292,12 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
     if dropped:
         print(f"  ! {dropped} Bright Data row(s) for {handle} dropped (missing id or unusable date)",
               file=sys.stderr)
+        brightdata_job.record_diagnostic(
+            kind="adapter.rows_dropped", severity="warning",
+            source="discovery_instagram",
+            message=(f"instagram/{handle}: {dropped} Bright Data row(s) dropped "
+                     f"(missing id or unusable date)"),
+            detail={"platform": "instagram", "handle": handle, "dropped": dropped})
     normalized = [n for n in normalized if n is not None]
 
     if normalized and all(not n["author"] for n in normalized):

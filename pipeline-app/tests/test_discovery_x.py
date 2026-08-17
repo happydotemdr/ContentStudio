@@ -484,6 +484,65 @@ def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(mo
     assert "no backfill" in record["message"]
 
 
+def test_dropped_rows_reach_a_durable_surface_not_only_stderr(monkeypatch, capsys):
+    """Fault test. The Scheduled Task command has no redirection, so a stderr
+    warning on the production path has no destination at all (B-01)."""
+    _enumerate_with(monkeypatch, [_raw_row(id="1", user_posted="CNN"), {"no": "id"}])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.rows_dropped"][0]
+    assert record["severity"] == "warning"
+    assert record["detail"]["dropped"] == 1
+    assert record["source"] == "discovery_x"
+    assert "dropped 1 unusable row(s)" in capsys.readouterr().err   # the print stays
+
+
+def test_foreign_author_rows_reach_a_durable_surface_not_only_stderr(monkeypatch, capsys):
+    """Fault test, the foreign-author case: X filters both unusable and
+    foreign-author rows and today only unusable rows reach a durable
+    surface -- this must be true for the foreign-author drop too."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id="1", user_posted="CNN"),
+        _raw_row(id="2", user_posted="someone_else"),
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.foreign_rows_dropped"][0]
+    assert record["severity"] == "warning"
+    assert record["detail"]["dropped"] == 1
+    assert record["source"] == "discovery_x"
+    assert "dropped 1 row(s) by another author" in capsys.readouterr().err
+
+
+def test_a_clean_batch_produces_no_diagnostics_at_all(monkeypatch):
+    """Distinguishability. A degraded run must be observably different from a
+    healthy one -- 'no diagnostics' is the healthy signal."""
+    _enumerate_with(monkeypatch, [_raw_row(id="1", user_posted="CNN")])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    assert brightdata_job.drain_diagnostics() == []
+
+
+def test_diagnostics_carry_everything_obs_record_event_requires(monkeypatch):
+    """Surfacing. P8 writes these straight into the events table; a record
+    missing a column is a record that never becomes a row."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id="1", user_posted="CNN"),
+        {"no": "id"},
+        _raw_row(id="2", user_posted="someone_else"),
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    records = brightdata_job.drain_diagnostics()
+    assert records
+    for record in records:
+        assert set(record) == {"kind", "severity", "source", "message", "detail"}
+        assert record["severity"] in {"info", "warning", "error", "critical"}
+        assert record["message"]
+
+
 def test_saturation_fires_even_when_a_filtered_row_drops_kept_below_the_cap(monkeypatch):
     """Plan correction (T17 task review, 2026-08-16): saturation must be
     measured on the RAW Bright Data count, not the post-filter 'kept' count.

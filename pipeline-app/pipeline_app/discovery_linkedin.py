@@ -279,6 +279,19 @@ class LinkedInAdapter:
             print(f"  ! {self.platform}/{handle}: dropped {foreign} row(s) by another author",
                   file=sys.stderr)
 
+        if unusable:
+            brightdata_job.record_diagnostic(
+                kind="adapter.rows_dropped", severity="warning",
+                source="discovery_linkedin",
+                message=f"{self.platform}/{handle}: dropped {unusable} unusable row(s)",
+                detail={"platform": self.platform, "handle": handle, "dropped": unusable})
+        if foreign:
+            brightdata_job.record_diagnostic(
+                kind="adapter.foreign_rows_dropped", severity="warning",
+                source="discovery_linkedin",
+                message=f"{self.platform}/{handle}: dropped {foreign} row(s) by another author",
+                detail={"platform": self.platform, "handle": handle, "dropped": foreign})
+
         if raw_rows and not kept:
             # This run was billed and produced nothing, but process_handle will
             # record the healthy status 'no_new_content' -- indistinguishable
