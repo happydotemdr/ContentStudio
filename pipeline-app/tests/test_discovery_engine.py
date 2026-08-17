@@ -216,6 +216,7 @@ import pytest
 
 from pipeline_app import db
 from pipeline_app.discovery_engine import (
+    HandleNotFound,
     _claim_run_ownership,
     _finish_run_guarded,
     _process_is_alive,
@@ -501,21 +502,48 @@ def test_run_discovery_validate_handle_bypasses_lock_while_a_run_is_active(engin
     assert db.get_running_run(engine_conn)["run_id"] == "already-running"
 
 
-def test_run_discovery_validate_handle_sets_invalid_and_excludes_on_empty_enumeration(engine_conn, tmp_path):
+def test_an_empty_enumeration_is_not_treated_as_proof_of_non_existence(engine_conn, tmp_path):
+    """Inverts test_run_discovery_validate_handle_sets_invalid_and_excludes_on_empty_enumeration.
+    B-57: an empty result is D-03's ambiguity -- a dead handle and a failed
+    fetch look alike -- so it must not permanently exclude a valid handle."""
     handle_id = db.create_handle(engine_conn, "youtube", "@dead", "Dead", "guru", None, now_iso())
     adapter = SingleFakeAdapter({"@dead": []})
-    run_discovery(
+    result = run_discovery(
         engine_conn, tmp_path, {"youtube": adapter},
         trigger="manual", mode="validate_handle", handle_id=handle_id,
     )
+    assert result["status"] == "completed_with_errors"
     row = db.get_handle(engine_conn, handle_id)
-    assert row["status"] == "invalid"
-    assert row["included"] == 0
+    assert row["status"] == "pending"
+    assert row["included"] == 1
 
 
-def test_run_discovery_validate_handle_sets_invalid_and_excludes_on_crash(engine_conn, tmp_path):
+def test_a_transient_validate_failure_leaves_the_handle_pending_and_included(engine_conn, tmp_path):
+    """Inverts test_run_discovery_validate_handle_sets_invalid_and_excludes_on_crash.
+    B-57: the blanket except set 'invalid' AND cleared 'included' with no
+    distinction between 'this account does not exist' and 'the VPN was up' --
+    quietly and permanently removing a valid handle from every future run."""
     handle_id = db.create_handle(engine_conn, "youtube", "@crashy", "Crashy", "guru", None, now_iso())
     adapter = SingleFakeAdapter({}, fail_handles={"@crashy"})
+    result = run_discovery(
+        engine_conn, tmp_path, {"youtube": adapter},
+        trigger="manual", mode="validate_handle", handle_id=handle_id,
+    )
+    assert result["status"] == "failed"           # the run still reports the failure
+    row = db.get_handle(engine_conn, handle_id)
+    assert row["status"] == "pending"             # ...but the handle is retryable
+    assert row["included"] == 1
+
+
+def test_a_definitive_not_found_does_exclude_the_handle(engine_conn, tmp_path):
+    """HandleNotFound is the one exception that still excludes -- a definitive
+    404/"no such account", not merely an empty enumeration or a network blip."""
+    class GoneAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter):
+            raise HandleNotFound("account does not exist")
+
+    handle_id = db.create_handle(engine_conn, "youtube", "@gone", "Gone", "guru", None, now_iso())
+    adapter = GoneAdapter({})
     result = run_discovery(
         engine_conn, tmp_path, {"youtube": adapter},
         trigger="manual", mode="validate_handle", handle_id=handle_id,
@@ -524,6 +552,32 @@ def test_run_discovery_validate_handle_sets_invalid_and_excludes_on_crash(engine
     row = db.get_handle(engine_conn, handle_id)
     assert row["status"] == "invalid"
     assert row["included"] == 0
+
+
+def test_a_transient_validate_failure_leaves_a_warning_event(engine_conn, tmp_path):
+    handle_id = db.create_handle(engine_conn, "youtube", "@crashy", "Crashy", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({}, fail_handles={"@crashy"})
+    run_discovery(
+        engine_conn, tmp_path, {"youtube": adapter},
+        trigger="manual", mode="validate_handle", handle_id=handle_id,
+    )
+    row = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.validate_transient_failure'").fetchone()
+    assert row is not None
+    assert row["severity"] == "warning"
+
+
+def test_an_empty_enumeration_leaves_a_warning_event(engine_conn, tmp_path):
+    handle_id = db.create_handle(engine_conn, "youtube", "@dead", "Dead", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@dead": []})
+    run_discovery(
+        engine_conn, tmp_path, {"youtube": adapter},
+        trigger="manual", mode="validate_handle", handle_id=handle_id,
+    )
+    row = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.validate_transient_failure'").fetchone()
+    assert row is not None
+    assert row["severity"] == "warning"
 
 
 def test_reclaim_cascade_leaves_nothing_behind_when_it_fails_partway(engine_conn, tmp_path, monkeypatch):

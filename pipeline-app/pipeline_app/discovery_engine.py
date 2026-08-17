@@ -149,6 +149,13 @@ from pipeline_app.discovery_records import write_run_record
 from pipeline_app.discovery_scheduling import encode_watermark
 
 
+class HandleNotFound(Exception):
+    """The account provably does not exist. Only this excludes a handle (B-57).
+    Adapters (packages P6/P7) must raise it for a definitive 404/'no such
+    account'; until they do, nothing is auto-excluded -- the safe direction,
+    since B-57's damage is a VALID handle silently dropped from every run."""
+
+
 def now_iso(now: _dt.datetime | None = None) -> str:
     return (now or _dt.datetime.now(_dt.timezone.utc)).isoformat(timespec="seconds")
 
@@ -463,13 +470,22 @@ def run_discovery(
                                   "cohort": handle_row["cohort"], "status": "ok", "items_downloaded": 1,
                                   "last_seen_published_at": outcome["item"]["published"], "error_message": None}
             else:
-                db_mod.set_handle_status(conn, handle_id, "invalid")
-                db_mod.set_handle_included(conn, handle_id, False)
+                # B-57: an empty enumeration is D-03's ambiguity -- a dead
+                # handle and a failed fetch look alike. Only HandleNotFound
+                # (raised by an adapter for a definitive 404/"no such
+                # account") is proof of non-existence, so leave the handle
+                # retryable rather than permanently excluding it.
+                db_mod.set_handle_status(conn, handle_id, "pending")
                 status = "completed_with_errors"
                 handle_result = {"handle": handle_row["handle"], "platform": handle_row["platform"],
                                   "cohort": handle_row["cohort"], "status": "handle_not_found",
                                   "items_downloaded": 0, "last_seen_published_at": None,
                                   "error_message": "enumerate returned no results"}
+                obs.record_event(conn, kind="discovery.validate_transient_failure", severity="warning",
+                                 source="discovery_engine",
+                                 message="enumerate returned no results -- not treated as proof of non-existence",
+                                 run_id=None,
+                                 detail={"handle": handle_row["handle"], "platform": handle_row["platform"]})
             run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
             db_mod.record_handle_result(conn, run_row_id, handle_id, handle_result["status"],
                                          handle_result["items_downloaded"], handle_result["error_message"])
@@ -482,19 +498,26 @@ def run_discovery(
             return {"run_row_id": run_row_id, "status": status, "counts": _summarize([handle_result])}
         except Exception as exc:  # noqa: BLE001 - an unguarded network/adapter
             # failure here must not leave the handle stuck forever in
-            # status='validating' with no run row and no paired record --
-            # match the existing "enumeration returned nothing" failure path
-            # (set the handle back to 'invalid' AND excluded, per the spec's
-            # auto-exclude-on-invalid behavior) and still produce a terminal
-            # run row + markdown record documenting the error.
-            db_mod.set_handle_status(conn, handle_id, "invalid")
-            db_mod.set_handle_included(conn, handle_id, False)
-            status = "failed"
+            # status='validating' with no run row and no paired record.
+            # B-57: only HandleNotFound is a definitive "this account does
+            # not exist" -- everything else (a network blip, the VPN being
+            # up, a transient adapter error) must leave the handle pending
+            # and included, not silently and permanently excluded.
             finished_at = now_iso()
+            error_message = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, HandleNotFound):
+                db_mod.set_handle_status(conn, handle_id, "invalid")
+                db_mod.set_handle_included(conn, handle_id, False)
+            else:
+                db_mod.set_handle_status(conn, handle_id, "pending")
+                obs.record_event(conn, kind="discovery.validate_transient_failure", severity="warning",
+                                 source="discovery_engine", message=error_message, run_id=None,
+                                 detail={"error_type": type(exc).__name__})
+            status = "failed"
             handle_result = {"handle": handle_row["handle"], "platform": handle_row["platform"],
                               "cohort": handle_row["cohort"], "status": "error",
                               "items_downloaded": 0, "last_seen_published_at": None,
-                              "error_message": f"{type(exc).__name__}: {exc}"}
+                              "error_message": error_message}
             run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
             db_mod.record_handle_result(conn, run_row_id, handle_id, handle_result["status"],
                                          handle_result["items_downloaded"], handle_result["error_message"])
