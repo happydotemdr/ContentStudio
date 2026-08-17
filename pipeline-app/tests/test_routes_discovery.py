@@ -4,6 +4,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pipeline_app.main import create_app
+from pipeline_app.routes import discovery as discovery_routes
+
+
+class _FakeProc:
+    pid = 1
+
+
+@pytest.fixture
+def spawns(monkeypatch):
+    """The single spawn stub for this module. Replaces routes.discovery._popen,
+    NOT subprocess.Popen, so the repo-wide conftest guard stays armed for
+    everything else -- and a route test that forgets this fixture hits the real
+    Popen, trips the guard, and FAILS instead of launching a billed job (F-68)."""
+    recorded: list[list[str]] = []
+    monkeypatch.setattr("pipeline_app.routes.discovery._popen",
+                        lambda cmd, **kw: recorded.append(cmd) or _FakeProc())
+    return recorded
 
 
 @pytest.fixture
@@ -28,16 +45,7 @@ def test_get_handles_page_lists_no_handles_initially(client: TestClient):
     assert "No handles yet" in response.text
 
 
-def test_add_handle_creates_pending_row_and_spawns_validation(client: TestClient, monkeypatch):
-    spawned = {}
-
-    def fake_popen(cmd, **kwargs):
-        spawned["cmd"] = cmd
-        class FakeProc:
-            pid = 999
-        return FakeProc()
-
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", fake_popen)
+def test_add_handle_creates_pending_row_and_spawns_validation(client: TestClient, spawns):
     response = client.post("/discovery/handles", data={
         "platform": "youtube", "handle": "@NewChannel", "display_name": "New Channel",
         "cohort": "guru", "keyword_filter": "",
@@ -46,19 +54,8 @@ def test_add_handle_creates_pending_row_and_spawns_validation(client: TestClient
     listing = client.get("/discovery/handles")
     assert "@NewChannel" in listing.text
     assert "pending" in listing.text.lower() or "validating" in listing.text.lower()
-    assert "--mode" in spawned["cmd"]
-    assert "validate_handle" in spawned["cmd"]
-
-
-def _no_spawn(monkeypatch):
-    """Stub the validate subprocess. A validate run costs a billable Bright Data
-    job on the paid platforms, so tests must never let one launch."""
-    spawned = []
-    monkeypatch.setattr(
-        "pipeline_app.routes.discovery.subprocess.Popen",
-        lambda cmd, **k: spawned.append(cmd) or type("P", (), {"pid": 1})(),
-    )
-    return spawned
+    assert "--mode" in spawns[0]
+    assert "validate_handle" in spawns[0]
 
 
 def _add(client: TestClient, platform: str, handle: str):
@@ -68,12 +65,11 @@ def _add(client: TestClient, platform: str, handle: str):
     })
 
 
-def test_add_handle_rejects_a_handle_that_would_share_a_directory(client: TestClient, monkeypatch):
+def test_add_handle_rejects_a_handle_that_would_share_a_directory(client: TestClient, spawns):
     """slugify strips periods, so facebook/john.doe.5 and facebook/johndoe5 both
     resolve to output/brand-intel/facebook/johndoe5. Registering both means two
     billed jobs per run writing to one directory, and the second reports the
     healthy 'no_new_content' after reading the first's files."""
-    _no_spawn(monkeypatch)
     assert _add(client, "facebook", "johndoe5").status_code in (200, 303, 307)
 
     response = _add(client, "facebook", "john.doe.5")
@@ -84,25 +80,22 @@ def test_add_handle_rejects_a_handle_that_would_share_a_directory(client: TestCl
     assert "johndoe5" in response.text
 
 
-def test_add_handle_rejects_a_case_only_difference(client: TestClient, monkeypatch):
-    _no_spawn(monkeypatch)
+def test_add_handle_rejects_a_case_only_difference(client: TestClient, spawns):
     _add(client, "facebook", "NASA")
     assert _add(client, "facebook", "nasa").status_code == 400
 
 
-def test_add_handle_does_not_spawn_validation_for_a_rejected_handle(client: TestClient, monkeypatch):
+def test_add_handle_does_not_spawn_validation_for_a_rejected_handle(client: TestClient, spawns):
     """A rejected registration must not launch a validate run -- on the Bright
     Data platforms that is a billable job for a handle we refused to store."""
-    spawned = _no_spawn(monkeypatch)
     _add(client, "facebook", "johndoe5")
-    spawned.clear()
+    spawns.clear()
 
     assert _add(client, "facebook", "john.doe.5").status_code == 400
-    assert spawned == []
+    assert spawns == []
 
 
-def test_add_handle_does_not_store_a_rejected_handle(client: TestClient, monkeypatch):
-    _no_spawn(monkeypatch)
+def test_add_handle_does_not_store_a_rejected_handle(client: TestClient, spawns):
     _add(client, "facebook", "johndoe5")
     _add(client, "facebook", "john.doe.5")
 
@@ -110,18 +103,16 @@ def test_add_handle_does_not_store_a_rejected_handle(client: TestClient, monkeyp
     assert "john.doe.5" not in listing.text
 
 
-def test_add_handle_allows_the_same_slug_on_a_different_platform(client: TestClient, monkeypatch):
+def test_add_handle_allows_the_same_slug_on_a_different_platform(client: TestClient, spawns):
     """Directories are namespaced by platform, so facebook/nasa and
     instagram/nasa never share one -- this must not be rejected."""
-    _no_spawn(monkeypatch)
     assert _add(client, "facebook", "nasa").status_code in (200, 303, 307)
     assert _add(client, "instagram", "NASA").status_code in (200, 303, 307)
 
 
-def test_add_handle_still_rejects_an_exact_duplicate_with_its_own_message(client: TestClient, monkeypatch):
+def test_add_handle_still_rejects_an_exact_duplicate_with_its_own_message(client: TestClient, spawns):
     """Regression: the pre-existing exact-match check keeps its own wording, so
     'already registered' and 'shares a directory' stay distinguishable."""
-    _no_spawn(monkeypatch)
     _add(client, "facebook", "nasa")
 
     response = _add(client, "facebook", "nasa")
@@ -129,8 +120,7 @@ def test_add_handle_still_rejects_an_exact_duplicate_with_its_own_message(client
     assert "already exists" in response.text
 
 
-def test_toggle_include_flips_and_persists(client: TestClient, monkeypatch):
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", lambda *a, **k: type("P", (), {"pid": 1})())
+def test_toggle_include_flips_and_persists(client: TestClient, spawns):
     client.post("/discovery/handles", data={
         "platform": "youtube", "handle": "@a", "display_name": "A", "cohort": "guru", "keyword_filter": "",
     })
@@ -143,8 +133,7 @@ def test_toggle_include_flips_and_persists(client: TestClient, monkeypatch):
     assert response.status_code in (200, 303, 307)
 
 
-def test_handle_status_endpoint_returns_json(client: TestClient, monkeypatch):
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", lambda *a, **k: type("P", (), {"pid": 1})())
+def test_handle_status_endpoint_returns_json(client: TestClient, spawns):
     client.post("/discovery/handles", data={
         "platform": "youtube", "handle": "@a", "display_name": "A", "cohort": "guru", "keyword_filter": "",
     })
@@ -156,8 +145,7 @@ def test_handle_status_endpoint_returns_json(client: TestClient, monkeypatch):
     assert response.json()["status"] in ("pending", "validating", "validated", "invalid")
 
 
-def test_add_duplicate_handle_returns_400_not_500(client: TestClient, monkeypatch):
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", lambda *a, **k: type("P", (), {"pid": 1})())
+def test_add_duplicate_handle_returns_400_not_500(client: TestClient, spawns):
     data = {"platform": "youtube", "handle": "@a", "display_name": "A", "cohort": "guru", "keyword_filter": ""}
     first = client.post("/discovery/handles", data=data)
     assert first.status_code in (200, 303, 307)
@@ -165,28 +153,31 @@ def test_add_duplicate_handle_returns_400_not_500(client: TestClient, monkeypatc
     assert second.status_code == 400
 
 
-def test_run_now_spawns_incremental_mode(client: TestClient, monkeypatch):
-    spawned = {}
-    def fake_popen(cmd, **kwargs):
-        spawned["cmd"] = cmd
-        return type("P", (), {"pid": 1})()
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", fake_popen)
+def test_run_now_spawns_incremental_mode(client: TestClient, spawns):
     response = client.post("/discovery/run-now")
     assert response.status_code in (200, 303, 307)
-    assert "incremental" in spawned["cmd"]
+    assert "incremental" in spawns[0]
 
 
-def test_run_now_backfill_spawns_backfill_mode_with_dates(client: TestClient, monkeypatch):
-    spawned = {}
-    def fake_popen(cmd, **kwargs):
-        spawned["cmd"] = cmd
-        return type("P", (), {"pid": 1})()
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", fake_popen)
+def test_run_now_backfill_spawns_backfill_mode_with_dates(client: TestClient, spawns):
     response = client.post("/discovery/run-now-backfill", data={"start": "2026-06-01", "end": "2026-06-30"})
     assert response.status_code in (200, 303, 307)
-    assert "backfill" in spawned["cmd"]
-    assert "2026-06-01" in spawned["cmd"]
-    assert "2026-06-30" in spawned["cmd"]
+    assert "backfill" in spawns[0]
+    assert "2026-06-01" in spawns[0]
+    assert "2026-06-30" in spawns[0]
+
+
+def test_a_discovery_post_without_the_spawn_stub_raises_instead_of_billing(client: TestClient):
+    """The guard, asserted. Without it this POST launches a detached, live,
+    per-record-billed collection job and the test still passes, because the
+    spawn is fire-and-forget and nothing asserts on it."""
+    with pytest.raises(RuntimeError, match="subprocess"):
+        client.post("/discovery/run-now")
+
+
+def test_every_spawn_site_goes_through_the_single_seam():
+    source = Path(discovery_routes.__file__).read_text(encoding="utf-8")
+    assert source.count("subprocess.Popen") == 1  # only inside _popen
 
 
 def test_update_settings_persists_time_and_timezone(client: TestClient):
@@ -226,8 +217,7 @@ def test_discovery_runs_page_empty_state(client: TestClient):
     assert "No discovery runs yet" in response.text
 
 
-def test_handles_page_shows_a_handles_current_brand_tags(client: TestClient, monkeypatch):
-    _no_spawn(monkeypatch)
+def test_handles_page_shows_a_handles_current_brand_tags(client: TestClient, spawns):
     _add(client, "instagram", "aspenprojectplay")
     from pipeline_app import db as db_mod
     conn = client.app.state.conn
@@ -239,8 +229,7 @@ def test_handles_page_shows_a_handles_current_brand_tags(client: TestClient, mon
     assert "raisinggoodsports" in response.text
 
 
-def test_update_handle_brands_replaces_the_tag_set(client: TestClient, monkeypatch):
-    _no_spawn(monkeypatch)
+def test_update_handle_brands_replaces_the_tag_set(client: TestClient, spawns):
     _add(client, "instagram", "aspenprojectplay")
     from pipeline_app import db as db_mod
     conn = client.app.state.conn
@@ -253,8 +242,7 @@ def test_update_handle_brands_replaces_the_tag_set(client: TestClient, monkeypat
     assert db_mod.get_handle_brands(conn, handle_id) == ["guru", "raisinggoodsports"]
 
 
-def test_update_handle_brands_to_no_boxes_checked_clears_all_tags(client: TestClient, monkeypatch):
-    _no_spawn(monkeypatch)
+def test_update_handle_brands_to_no_boxes_checked_clears_all_tags(client: TestClient, spawns):
     _add(client, "instagram", "aspenprojectplay")
     from pipeline_app import db as db_mod
     conn = client.app.state.conn

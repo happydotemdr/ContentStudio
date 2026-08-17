@@ -16,9 +16,16 @@ COHORT_SUGGESTIONS = ["guru", "shorts-specialist", "midjourney-source", "general
 BRAND_CHOICES = list(email_render.BRAND_SECTION_ORDER)
 
 
+def _popen(cmd: list[str], **kwargs):
+    """The single process-spawn seam for this module. Tests replace THIS, so
+    the repo-wide conftest guard on the real spawn call stays armed and a
+    route test that forgets to stub fails loudly instead of billing (F-68)."""
+    return subprocess.Popen(cmd, **kwargs)
+
+
 def _spawn_cron(repo_root: Path, args: list[str]) -> None:
     cron_script = repo_root / "pipeline-app" / "run_discovery_cron.py"
-    subprocess.Popen(
+    _popen(
         [sys.executable, str(cron_script), *args, "--repo-root", str(repo_root)],
         cwd=str(repo_root),
     )
