@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+coach_prep.db
+coach_prep.db-*
+client_secret.json
+token.json
+.pytest_cache/
