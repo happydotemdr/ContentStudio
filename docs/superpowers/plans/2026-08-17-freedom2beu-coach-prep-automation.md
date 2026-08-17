@@ -2472,6 +2472,29 @@ def test_slugify_source_label_strips_both_suffixes_and_special_characters():
     # neither of which gates.py's citation regex ([a-z0-9-]+) can match.
     assert doc_ingest_reader.slugify_source_label("Vision & Passion.gdoc.md") == "vision-passion"
     assert doc_ingest_reader.slugify_source_label("F2BU_Module_00_The_Judge.docx.md") == "f2bu-module-00-the-judge"
+
+
+def test_open_readonly_rejects_writes(tmp_path):
+    """open_readonly's whole purpose is enforcing that coach-prep-app can
+    never write to doc-ingest-app's database -- pin that at the connection
+    level, not just by convention, so a future edit that silently drops
+    mode=ro (or otherwise weakens this) fails CI instead of shipping."""
+    from doc_ingest import db as doc_ingest_db
+    db_path = tmp_path / "doc_ingest_test.db"
+    doc_ingest_db.init_db(db_path).close()
+
+    ro_conn = doc_ingest_reader.open_readonly(db_path)
+    try:
+        # Reads must still work.
+        ro_conn.execute("SELECT slug FROM clients").fetchall()
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            ro_conn.execute(
+                "INSERT INTO clients (slug, display_name, primary_email, alias_emails_json, "
+                "session_outlines_dir, drive_folder_id, status, created_at) "
+                "VALUES ('x', 'X', 'x@example.com', '[]', 'x', 'y', 'active', 'z')"
+            )
+    finally:
+        ro_conn.close()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
