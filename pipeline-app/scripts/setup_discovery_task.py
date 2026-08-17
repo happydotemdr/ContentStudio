@@ -15,8 +15,10 @@ whether the user is logged on or not, without Task Scheduler storing a password.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 TASK_NAME = "ContentStudio-Discovery"
@@ -69,35 +71,83 @@ def build_task_xml(python_exe: Path, cron_script: Path, *, log_path: Path,
 """
 
 
-def build_schtasks_command(python_exe: Path, cron_script: Path) -> list[str]:
-    task_command = f'"{python_exe}" "{cron_script}" --mode scheduled'
-    return [
-        "schtasks", "/Create", "/TN", TASK_NAME,
-        "/TR", task_command, "/SC", "MINUTE", "/MO", "15", "/F",
-    ]
+def _default_run_as() -> str:
+    """Best-effort `DOMAIN\\user` (or bare user) for the task's <UserId>,
+    derived from the ambient Windows environment."""
+    domain = os.environ.get("USERDOMAIN")
+    user = os.environ.get("USERNAME") or os.environ.get("USER") or "SYSTEM"
+    return f"{domain}\\{user}" if domain else user
+
+
+def _run(cmd: list[str]) -> subprocess.CompletedProcess:
+    """Every subprocess.run call funnels through here so B-10 (encoding='utf-8',
+    errors='replace', never bare text=True) is enforced in exactly one place."""
+    return subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace")
+
+
+def _task_registered() -> bool:
+    return _run(["schtasks", "/Query", "/TN", TASK_NAME]).returncode == 0
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true", help="actually register the task (default: dry run / print only)")
+    ap.add_argument("--force", action="store_true",
+                     help="overwrite an already-registered task instead of refusing (B-46: this "
+                          "destroys any fix applied by hand in the Task Scheduler GUI)")
+    ap.add_argument("--remove", action="store_true", help="delete the registered task and exit")
     args = ap.parse_args(argv)
+
+    if args.remove:
+        result = _run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"])
+        if result.stdout:
+            print(result.stdout)
+        if result.returncode != 0:
+            print(result.stderr, file=sys.stderr)
+            return result.returncode
+        print(f"Removed task '{TASK_NAME}'.")
+        return 0
 
     pipeline_app_root = Path(__file__).resolve().parents[1]
     python_exe = Path(sys.executable)
     cron_script = pipeline_app_root / "run_discovery_cron.py"
-    cmd = build_schtasks_command(python_exe, cron_script)
+    log_path = default_log_path(pipeline_app_root)
 
     if not args.apply:
-        print("Dry run -- this is the command that would register the scheduled task:")
-        print(" ".join(cmd))
+        print("Dry run -- this is what --apply would do:")
+        print(f"Write the task XML to a temp file and run: "
+              f"schtasks /Create /TN {TASK_NAME} /XML <tmpfile> /F")
         print("\nRe-run with --apply to actually register it.")
         return 0
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    print(result.stdout)
+    if not args.force and _task_registered():
+        print(f"Task '{TASK_NAME}' is already registered. Re-run with --force to overwrite it "
+              "(B-46: this destroys any fix applied by hand in the Task Scheduler GUI).",
+              file=sys.stderr)
+        return 1
+
+    xml = build_task_xml(python_exe, cron_script, log_path=log_path, run_as=_default_run_as())
+
+    with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-16") as f:
+        f.write(xml)
+        xml_path = Path(f.name)
+
+    try:
+        result = _run(["schtasks", "/Create", "/TN", TASK_NAME, "/XML", str(xml_path), "/F"])
+    finally:
+        xml_path.unlink(missing_ok=True)
+
+    if result.stdout:
+        print(result.stdout)
     if result.returncode != 0:
         print(result.stderr, file=sys.stderr)
         return result.returncode
+
+    if not _task_registered():
+        print(f"Task '{TASK_NAME}' could not be verified as registered after creation.",
+              file=sys.stderr)
+        return 1
+
     print(f"Registered task '{TASK_NAME}': fires every 15 minutes, "
           f"run_discovery_cron.py decides per-wake whether a scheduled run is due.")
     return 0

@@ -1,7 +1,9 @@
 from pathlib import Path
 from xml.etree import ElementTree
 
-from scripts.setup_discovery_task import build_schtasks_command, build_task_xml, main
+import pytest
+
+from scripts.setup_discovery_task import build_task_xml, main
 
 
 def _xml():
@@ -13,21 +15,48 @@ def _xml():
     )
 
 
-def test_build_schtasks_command_shape():
-    cmd = build_schtasks_command(Path("C:/venv/Scripts/python.exe"), Path("C:/repo/pipeline-app/run_discovery_cron.py"))
-    assert cmd[0] == "schtasks"
-    assert "/Create" in cmd
-    assert "ContentStudio-Discovery" in cmd
-    assert "/SC" in cmd
-    assert "MINUTE" in cmd
-    assert "/MO" in cmd
-    mo_index = cmd.index("/MO")
-    assert cmd[mo_index + 1] == "15"
-    tr_index = cmd.index("/TR")
-    assert "python.exe" in cmd[tr_index + 1]
-    assert "run_discovery_cron.py" in cmd[tr_index + 1]
-    assert "--mode" in cmd[tr_index + 1]
-    assert "scheduled" in cmd[tr_index + 1]
+class _FakeResult:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _assert_b10_kwargs(kwargs):
+    """B-10 (Global Constraint): every subprocess.run call must pass
+    encoding="utf-8", errors="replace" -- never bare text=True."""
+    assert kwargs.get("encoding") == "utf-8"
+    assert kwargs.get("errors") == "replace"
+    assert "text" not in kwargs
+
+
+def _fake_run(responses):
+    """Fake subprocess.run keyed by a tuple of tokens that must all appear in
+    the command list, e.g. {("schtasks", "/Query"): 0}. First matching key
+    wins; an unmatched command defaults to a successful (0) result."""
+
+    def _run(cmd, **kwargs):
+        _assert_b10_kwargs(kwargs)
+        for tokens, returncode in responses.items():
+            if all(token in cmd for token in tokens):
+                return _FakeResult(returncode=returncode)
+        return _FakeResult(returncode=0)
+
+    return _run
+
+
+def _record_calls(monkeypatch):
+    """Stubs subprocess.run to always succeed while recording every command
+    list issued, in order."""
+    calls = []
+
+    def _run(cmd, **kwargs):
+        _assert_b10_kwargs(kwargs)
+        calls.append(cmd)
+        return _FakeResult(returncode=0)
+
+    monkeypatch.setattr("scripts.setup_discovery_task.subprocess.run", _run)
+    return calls
 
 
 def test_main_dry_run_does_not_execute(monkeypatch, capsys):
@@ -41,17 +70,60 @@ def test_main_dry_run_does_not_execute(monkeypatch, capsys):
     assert "--apply" in captured.out
 
 
-def test_main_apply_executes_schtasks(monkeypatch):
+@pytest.mark.allow_subprocess
+def test_apply_creates_when_no_existing_task(monkeypatch):
+    """Replaces the old test_main_apply_executes_schtasks: main() now probes
+    for an existing task before creating one, so a plain `--apply` on a clean
+    machine issues three calls (probe / create / verify), not one. This keeps
+    the old test's intent -- a plain --apply run against a well-behaved
+    schtasks ends in success -- under the new verify-before-success flow."""
     calls = []
-    class FakeResult:
-        returncode = 0
-        stdout = "SUCCESS"
-        stderr = ""
-    monkeypatch.setattr("scripts.setup_discovery_task.subprocess.run", lambda cmd, **k: (calls.append(cmd), FakeResult())[1])
+    responses = iter([1, 0, 0])  # probe: not found; create: ok; verify: ok
+
+    def _run(cmd, **kwargs):
+        _assert_b10_kwargs(kwargs)
+        calls.append(cmd)
+        return _FakeResult(returncode=next(responses))
+
+    monkeypatch.setattr("scripts.setup_discovery_task.subprocess.run", _run)
     exit_code = main(["--apply"])
     assert exit_code == 0
-    assert len(calls) == 1
-    assert calls[0][0] == "schtasks"
+    assert len(calls) == 3
+    assert calls[0][0] == "schtasks" and "/Query" in calls[0]
+    assert "/Create" in calls[1]
+    assert "/Query" in calls[2]
+
+
+@pytest.mark.allow_subprocess
+def test_apply_refuses_to_overwrite_an_existing_task_without_force(monkeypatch, capsys):
+    """B-46: /F destroyed and recreated the task, wiping any fix applied by
+    hand in the Task Scheduler GUI -- the very fixes B-44 calls for."""
+    monkeypatch.setattr("scripts.setup_discovery_task.subprocess.run",
+                        _fake_run({("schtasks", "/Query"): 0}))
+    assert main(["--apply"]) != 0
+    assert "--force" in capsys.readouterr().err
+
+
+@pytest.mark.allow_subprocess
+def test_apply_verifies_registration_with_a_query_before_reporting_success(monkeypatch):
+    calls = _record_calls(monkeypatch)
+    main(["--apply", "--force"])
+    assert any("/Query" in c for c in calls[-1])
+
+
+@pytest.mark.allow_subprocess
+def test_apply_reports_failure_when_the_verifying_query_finds_nothing(monkeypatch, capsys):
+    monkeypatch.setattr("scripts.setup_discovery_task.subprocess.run",
+                        _fake_run({("schtasks", "/Create"): 0, ("schtasks", "/Query"): 1}))
+    assert main(["--apply", "--force"]) != 0
+    assert "could not be verified" in capsys.readouterr().err
+
+
+@pytest.mark.allow_subprocess
+def test_remove_deletes_the_task(monkeypatch):
+    calls = _record_calls(monkeypatch)
+    assert main(["--remove"]) == 0
+    assert "/Delete" in calls[0]
 
 
 def test_task_xml_redirects_stdout_and_stderr_to_a_log_file():
