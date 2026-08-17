@@ -2635,6 +2635,20 @@ def test_recurring_events_instance_ids_are_independent_watermarks(conn):
     assert trigger.is_due(
         conn, "sean", "series1_20260827T150000Z", meeting_next_week, now_next_week, TZ, 7
     ) is True
+
+
+def test_day_before_computation_across_dst_fallback_resolves_to_correct_wall_clock_seven_am(conn):
+    """2026-11-01 (Sunday) is the US DST fall-back date for America/Chicago:
+    clocks move from CDT (UTC-5) to CST (UTC-6) at 2am local. A meeting on
+    the Monday after it (2026-11-02) has its "day before" ready time land
+    on the transition date itself -- confirm is_due still resolves to
+    07:00 wall-clock Chicago time (13:00 UTC, CST) rather than drifting an
+    hour off from a naively-applied fixed UTC offset."""
+    meeting_start = _utc(2026, 11, 2, 21, 0)  # Nov 2, 3pm Chicago (CST, UTC-6)
+    not_yet = _utc(2026, 11, 1, 12, 59)  # Nov 1, 6:59am CST -- one minute before ready
+    ready = _utc(2026, 11, 1, 13, 0)  # Nov 1, 7:00am CST -- exactly ready
+    assert trigger.is_due(conn, "sean", "evt-dst", meeting_start, not_yet, TZ, 7) is False
+    assert trigger.is_due(conn, "sean", "evt-dst", meeting_start, ready, TZ, 7) is True
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2730,9 +2744,11 @@ class _FakeMessages:
     def __init__(self, list_response, get_response):
         self._list_response = list_response
         self._get_response = get_response
+        self.last_query = None
 
     def list(self, userId, q, maxResults):
         assert userId == "me"
+        self.last_query = q
         return _Exec(self._list_response)
 
     def get(self, userId, id, format):
@@ -2748,8 +2764,8 @@ class _Exec:
 
 
 class _FakeUsers:
-    def __init__(self, list_response, get_response):
-        self._messages = _FakeMessages(list_response, get_response)
+    def __init__(self, messages_client):
+        self._messages = messages_client
 
     def messages(self):
         return self._messages
@@ -2757,7 +2773,8 @@ class _FakeUsers:
 
 class _FakeGmailService:
     def __init__(self, list_response, get_response):
-        self._users = _FakeUsers(list_response, get_response)
+        self.messages_client = _FakeMessages(list_response, get_response)
+        self._users = _FakeUsers(self.messages_client)
 
     def users(self):
         return self._users
@@ -2767,6 +2784,10 @@ def _b64(text: str) -> str:
     return base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii")
 
 
+def _headers_to(*addresses: str) -> list[dict]:
+    return [{"name": "To", "value": ", ".join(addresses)}]
+
+
 def test_find_last_meeting_email_returns_recent_message_verbatim():
     internal_date_ms = int(dt.datetime(2026, 8, 12, 0, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
     service = _FakeGmailService(
@@ -2774,13 +2795,20 @@ def test_find_last_meeting_email_returns_recent_message_verbatim():
         get_response={
             "threadId": "thread1",
             "internalDate": str(internal_date_ms),
-            "payload": {"parts": [{"mimeType": "text/plain", "body": {"data": _b64("Do the 5-minute exercise.")}}]},
+            "payload": {
+                "headers": _headers_to("sean@example.com"),
+                "parts": [{"mimeType": "text/plain", "body": {"data": _b64("Do the 5-minute exercise.")}}],
+            },
         },
     )
     result = bundle.find_last_meeting_email(service, "sean@example.com", NOW, staleness_days=30)
     assert result["thread_id"] == "thread1"
     assert "Do the 5-minute exercise." in result["text"]
     assert "No recent follow-up" not in result["text"]
+    # NOW is 2026-08-19 -- the search must carry an upper date bound so it
+    # never trusts a message dated after "now" (clock skew, replay, a
+    # future-dated draft).
+    assert "before:2026/08/20" in service.messages_client.last_query
 
 
 def test_find_last_meeting_email_flags_a_stale_match():
@@ -2790,7 +2818,10 @@ def test_find_last_meeting_email_flags_a_stale_match():
         get_response={
             "threadId": "thread1",
             "internalDate": str(internal_date_ms),
-            "payload": {"parts": [{"mimeType": "text/plain", "body": {"data": _b64("Old content.")}}]},
+            "payload": {
+                "headers": _headers_to("sean@example.com"),
+                "parts": [{"mimeType": "text/plain", "body": {"data": _b64("Old content.")}}],
+            },
         },
     )
     result = bundle.find_last_meeting_email(service, "sean@example.com", NOW, staleness_days=30)
@@ -2800,6 +2831,28 @@ def test_find_last_meeting_email_flags_a_stale_match():
 
 def test_find_last_meeting_email_handles_no_messages_found():
     service = _FakeGmailService(list_response={}, get_response={})
+    result = bundle.find_last_meeting_email(service, "sean@example.com", NOW, staleness_days=30)
+    assert result["thread_id"] is None
+    assert "No follow-up email found" in result["text"]
+
+
+def test_find_last_meeting_email_rejects_a_match_not_actually_addressed_to_the_client():
+    """The Gmail search `in:sent to:<address>` can surface a message where
+    the address only appears in a quoted reply body rather than the actual
+    recipient list -- confirm the resolved To/Cc headers really contain the
+    target client before trusting the match."""
+    internal_date_ms = int(dt.datetime(2026, 8, 12, 0, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
+    service = _FakeGmailService(
+        list_response={"messages": [{"id": "msg1"}]},
+        get_response={
+            "threadId": "thread1",
+            "internalDate": str(internal_date_ms),
+            "payload": {
+                "headers": _headers_to("someone.else@example.com"),
+                "parts": [{"mimeType": "text/plain", "body": {"data": _b64("Not actually to Sean.")}}],
+            },
+        },
+    )
     result = bundle.find_last_meeting_email(service, "sean@example.com", NOW, staleness_days=30)
     assert result["thread_id"] is None
     assert "No follow-up email found" in result["text"]
@@ -2847,12 +2900,18 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import email.utils
 
 from coach_prep_app import db
 
 
 def find_last_meeting_email(gmail_service, client_email: str, now_utc: dt.datetime, staleness_days: int) -> dict:
-    query = f"in:sent to:{client_email}"
+    # Upper-bound the search relative to now_utc -- an unbounded `in:sent
+    # to:` query has no defense against a future-dated or clock-skewed
+    # message being trusted as "the last meeting email". `before:` is
+    # exclusive, so add a day to include anything sent earlier today.
+    before = (now_utc + dt.timedelta(days=1)).strftime("%Y/%m/%d")
+    query = f"in:sent to:{client_email} before:{before}"
     resp = gmail_service.users().messages().list(userId="me", q=query, maxResults=1).execute()
     messages = resp.get("messages", [])
     if not messages:
@@ -2862,11 +2921,34 @@ def find_last_meeting_email(gmail_service, client_email: str, now_utc: dt.dateti
         }
     message_id = messages[0]["id"]
     full = gmail_service.users().messages().get(userId="me", id=message_id, format="full").execute()
+
+    # Gmail's `to:` search operator matches substrings anywhere the address
+    # appears (including a quoted reply body), not just the actual
+    # recipient list -- re-check the resolved To/Cc headers before trusting
+    # the match.
+    if client_email.strip().lower() not in _extract_recipients(full):
+        return {
+            "source_label": "last-meeting-email", "thread_id": None,
+            "text": "No follow-up email found for this client.",
+        }
+
     internal_date = dt.datetime.fromtimestamp(int(full["internalDate"]) / 1000, tz=dt.timezone.utc)
     text = _extract_plain_text(full)
     if (now_utc - internal_date).days > staleness_days:
         text = f"[No recent follow-up found -- most recent is from {internal_date.date().isoformat()}]\n\n{text}"
     return {"source_label": "last-meeting-email", "thread_id": full.get("threadId"), "text": text}
+
+
+def _extract_recipients(message: dict) -> set[str]:
+    headers = message.get("payload", {}).get("headers", [])
+    recipients: set[str] = set()
+    for header in headers:
+        if header.get("name", "").lower() in ("to", "cc"):
+            for raw_addr in header.get("value", "").split(","):
+                _, addr = email.utils.parseaddr(raw_addr)
+                if addr:
+                    recipients.add(addr.strip().lower())
+    return recipients
 
 
 def _extract_plain_text(message: dict) -> str:
@@ -4202,7 +4284,7 @@ git commit -m "feat(coach-prep-app): add 4-hourly cron entry point and task regi
 
 **Interfaces:**
 - Consumes: `gates.leakage_scan` (Task 18), `doc_ingest_reader.get_active_clients` (Task 13)
-- Produces: `mechanical_scan(conn, doc_ingest_conn) -> list[dict]`, `content_scan(conn, doc_ingest_conn, drive_service) -> list[dict]`, `placement_check(conn, doc_ingest_conn, drive_service, pending_review_folder_id) -> list[dict]`, `unmatched_count(doc_ingest_conn) -> int`, `build_report(conn, doc_ingest_conn, drive_service, cfg) -> dict`, `render_report_email(report: dict) -> tuple[str, str]`. Task 24's weekly cron script is the sole caller of `build_report`/`render_report_email`.
+- Produces: `mechanical_scan(conn, doc_ingest_conn, since_iso: str) -> list[dict]`, `content_scan(conn, doc_ingest_conn, drive_service, since_iso: str) -> list[dict]`, `placement_check(conn, doc_ingest_conn, drive_service, pending_review_folder_id, since_iso: str) -> list[dict]`, `unmatched_count(doc_ingest_conn) -> int`, `build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso: str) -> dict`, `render_report_email(report: dict) -> tuple[str, str]`. `since_iso` bounds every `generation_runs` scan to `created_at >= since_iso` so the weekly audit re-scans only that week's runs, not every published draft ever; `unmatched_count` is a current-state snapshot and is deliberately not time-bounded. Task 24's weekly cron script is the sole caller of `build_report`/`render_report_email` and is the one that computes `since_iso` (`now - 7 days`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4244,11 +4326,14 @@ class _Row:
         return self._value if isinstance(self._value, tuple) else (self._value,)
 
 
-def _seed_run(conn, client_slug, status="notified", draft_id="file1"):
+SINCE = "2026-08-12T00:00:00+00:00"
+
+
+def _seed_run(conn, client_slug, status="notified", draft_id="file1", created_at="2026-08-15T00:00:00+00:00"):
     conn.execute(
         "INSERT INTO generation_runs (client_slug, calendar_event_instance_id, meeting_start_at, "
-        "status, draft_drive_file_id, created_at, updated_at) VALUES (?, 'evt1', 'n', ?, ?, 'n', 'n')",
-        (client_slug, status, draft_id),
+        "status, draft_drive_file_id, created_at, updated_at) VALUES (?, 'evt1', 'n', ?, ?, ?, 'n')",
+        (client_slug, status, draft_id, created_at),
     )
     run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
@@ -4264,7 +4349,7 @@ def test_mechanical_scan_flags_a_run_whose_input_belongs_to_another_client(conn)
     )
     conn.commit()
     doc_ingest_conn = _FakeDocIngestConn({"josh-note.md": "josh"})
-    problems = audit.mechanical_scan(conn, doc_ingest_conn)
+    problems = audit.mechanical_scan(conn, doc_ingest_conn, SINCE)
     assert len(problems) == 1
     assert problems[0]["expected"] == "sean"
     assert problems[0]["found"] == "josh"
@@ -4279,7 +4364,72 @@ def test_mechanical_scan_is_clean_when_inputs_match(conn):
     )
     conn.commit()
     doc_ingest_conn = _FakeDocIngestConn({"sean-note.md": "sean"})
-    assert audit.mechanical_scan(conn, doc_ingest_conn) == []
+    assert audit.mechanical_scan(conn, doc_ingest_conn, SINCE) == []
+
+
+def test_mechanical_scan_excludes_runs_created_before_since_iso(conn):
+    run_id = _seed_run(conn, "sean", created_at="2026-08-01T00:00:00+00:00")
+    conn.execute(
+        "INSERT INTO generation_inputs (run_id, source_label, source_kind, reference, captured_at) "
+        "VALUES (?, 'last-meeting-note', 'converted_file', 'josh-note.md', 'n')",
+        (run_id,),
+    )
+    conn.commit()
+    doc_ingest_conn = _FakeDocIngestConn({"josh-note.md": "josh"})
+    assert audit.mechanical_scan(conn, doc_ingest_conn, SINCE) == []
+
+
+class _FakeDriveExec:
+    def __init__(self, result):
+        self._result = result
+
+    def execute(self):
+        return self._result
+
+
+class _FakeDriveFiles:
+    def __init__(self, content_by_file_id):
+        self._content = content_by_file_id
+
+    def export(self, fileId, mimeType):
+        assert mimeType == "text/plain"
+        return _FakeDriveExec(self._content[fileId])
+
+
+class _FakeDriveService:
+    def __init__(self, content_by_file_id):
+        self._files = _FakeDriveFiles(content_by_file_id)
+
+    def files(self):
+        return self._files
+
+
+def test_content_scan_flags_leaked_content_referencing_another_client(conn, monkeypatch):
+    run_id = _seed_run(conn, "sean", draft_id="file1")
+    monkeypatch.setattr(audit.doc_ingest_reader, "get_active_clients", lambda doc_ingest_conn: CLIENTS)
+    drive_service = _FakeDriveService(
+        {"file1": b"Like we discussed with Josh, try the same exercise [last-meeting-email]"}
+    )
+    problems = audit.content_scan(conn, doc_ingest_conn=None, drive_service=drive_service, since_iso=SINCE)
+    assert len(problems) == 1
+    assert problems[0]["run_id"] == run_id
+    assert problems[0]["leaked"] == ["josh"]
+
+
+def test_content_scan_is_clean_when_no_leakage(conn, monkeypatch):
+    _seed_run(conn, "sean", draft_id="file1")
+    monkeypatch.setattr(audit.doc_ingest_reader, "get_active_clients", lambda doc_ingest_conn: CLIENTS)
+    drive_service = _FakeDriveService({"file1": b"Sean should reflect on his own goals [last-meeting-email]"})
+    assert audit.content_scan(conn, doc_ingest_conn=None, drive_service=drive_service, since_iso=SINCE) == []
+
+
+def test_content_scan_excludes_runs_created_before_since_iso(conn, monkeypatch):
+    _seed_run(conn, "sean", draft_id="file1", created_at="2026-08-01T00:00:00+00:00")
+    monkeypatch.setattr(audit.doc_ingest_reader, "get_active_clients", lambda doc_ingest_conn: CLIENTS)
+    drive_service = _FakeDriveService(
+        {"file1": b"Like we discussed with Josh, try the same exercise [last-meeting-email]"}
+    )
+    assert audit.content_scan(conn, doc_ingest_conn=None, drive_service=drive_service, since_iso=SINCE) == []
 
 
 def test_unmatched_count_reads_from_doc_ingest_conn(conn):
@@ -4320,13 +4470,17 @@ from __future__ import annotations
 from coach_prep_app import doc_ingest_reader, gates
 
 
-def mechanical_scan(conn, doc_ingest_conn) -> list[dict]:
+def mechanical_scan(conn, doc_ingest_conn, since_iso: str) -> list[dict]:
     """Flags any generation run whose generation_inputs reference a
     client-scoped converted file tagged for a DIFFERENT client than the run
-    itself. Global program_source inputs are excluded by design."""
+    itself. Global program_source inputs are excluded by design. Bounded to
+    runs created at or after since_iso -- the weekly audit re-scans that
+    week only, not every published draft ever."""
     problems = []
     runs = conn.execute(
-        "SELECT id, client_slug FROM generation_runs WHERE status IN ('published', 'notified')"
+        "SELECT id, client_slug FROM generation_runs "
+        "WHERE status IN ('published', 'notified') AND created_at >= ?",
+        (since_iso,),
     ).fetchall()
     for run_id, client_slug in runs:
         refs = conn.execute(
@@ -4343,14 +4497,16 @@ def mechanical_scan(conn, doc_ingest_conn) -> list[dict]:
     return problems
 
 
-def content_scan(conn, doc_ingest_conn, drive_service) -> list[dict]:
+def content_scan(conn, doc_ingest_conn, drive_service, since_iso: str) -> list[dict]:
     """Re-fetches each published draft's text from Drive and re-runs the
     leakage scan against every OTHER registered client. Same tripwire
-    caveat as gates.leakage_scan -- not a guarantee."""
+    caveat as gates.leakage_scan -- not a guarantee. Bounded to runs
+    created at or after since_iso -- see mechanical_scan."""
     problems = []
     runs = conn.execute(
         "SELECT id, client_slug, draft_drive_file_id FROM generation_runs "
-        "WHERE status IN ('published', 'notified') AND draft_drive_file_id IS NOT NULL"
+        "WHERE status IN ('published', 'notified') AND draft_drive_file_id IS NOT NULL AND created_at >= ?",
+        (since_iso,),
     ).fetchall()
     clients = doc_ingest_reader.get_active_clients(doc_ingest_conn)
     for run_id, client_slug, file_id in runs:
@@ -4362,16 +4518,18 @@ def content_scan(conn, doc_ingest_conn, drive_service) -> list[dict]:
     return problems
 
 
-def placement_check(conn, doc_ingest_conn, drive_service, pending_review_folder_id: str) -> list[dict]:
+def placement_check(conn, doc_ingest_conn, drive_service, pending_review_folder_id: str, since_iso: str) -> list[dict]:
     """For each notified draft, whether it's still sitting in Pending
     Review, moved to the correct client folder, or moved somewhere
     unexpected. Informational for the first two states; only the third is
-    surfaced as a problem by render_report_email."""
+    surfaced as a problem by render_report_email. Bounded to runs created
+    at or after since_iso -- see mechanical_scan."""
     clients_by_slug = {c["slug"]: c for c in doc_ingest_reader.get_active_clients(doc_ingest_conn)}
     results = []
     runs = conn.execute(
         "SELECT id, client_slug, draft_drive_file_id FROM generation_runs "
-        "WHERE status = 'notified' AND draft_drive_file_id IS NOT NULL"
+        "WHERE status = 'notified' AND draft_drive_file_id IS NOT NULL AND created_at >= ?",
+        (since_iso,),
     ).fetchall()
     for run_id, client_slug, file_id in runs:
         meta = drive_service.files().get(fileId=file_id, fields="parents").execute()
@@ -4394,11 +4552,13 @@ def unmatched_count(doc_ingest_conn) -> int:
     return row[0]
 
 
-def build_report(conn, doc_ingest_conn, drive_service, cfg) -> dict:
+def build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso: str) -> dict:
     return {
-        "mechanical_problems": mechanical_scan(conn, doc_ingest_conn),
-        "content_problems": content_scan(conn, doc_ingest_conn, drive_service),
-        "placement": placement_check(conn, doc_ingest_conn, drive_service, cfg.pending_review_drive_folder_id),
+        "mechanical_problems": mechanical_scan(conn, doc_ingest_conn, since_iso),
+        "content_problems": content_scan(conn, doc_ingest_conn, drive_service, since_iso),
+        "placement": placement_check(
+            conn, doc_ingest_conn, drive_service, cfg.pending_review_drive_folder_id, since_iso
+        ),
         "unmatched_count": unmatched_count(doc_ingest_conn),
     }
 
@@ -4522,6 +4682,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import sys
 from pathlib import Path
 
@@ -4543,7 +4704,8 @@ def main(argv: list[str] | None = None) -> int:
     doc_ingest_conn = doc_ingest_reader.open_readonly(cfg.doc_ingest_db_path)
     try:
         drive_service = google_clients.build_drive_service(cfg)
-        report = audit.build_report(conn, doc_ingest_conn, drive_service, cfg)
+        since_iso = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)).isoformat()
+        report = audit.build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso)
         subject, text = audit.render_report_email(report)
         notify.send_email(subject, text)
         print(text)
