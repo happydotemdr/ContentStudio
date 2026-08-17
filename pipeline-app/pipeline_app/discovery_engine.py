@@ -190,7 +190,18 @@ def reclaim_stale_runs_owned(conn: sqlite3.Connection, repo_root: Path, now: _dt
     protected: list[int] = []
     for row in conn.execute("SELECT id FROM discovery_runs WHERE status = 'running'").fetchall():
         owner = _read_run_owner(repo_root, row["id"])
-        if owner and _process_is_alive(owner["pid"]):
+        # `_read_run_owner` only guards the JSON *parse* -- a sidecar can be
+        # valid JSON with a missing/truncated/non-integer "pid" (plausible
+        # exactly because this file exists to survive crash/sleep scenarios).
+        # An unvalidated owner["pid"] would raise KeyError, or a non-int pid
+        # would raise ctypes.ArgumentError inside _process_is_alive's Windows
+        # branch, either of which would crash the whole reclaim sweep -- a
+        # strictly worse failure mode than B-50 itself. Treat a malformed
+        # owner file the same as a missing one: not protected, reclaim
+        # proceeds normally for that row.
+        if not (isinstance(owner, dict) and isinstance(owner.get("pid"), int)):
+            continue
+        if _process_is_alive(owner["pid"]):
             protected.append(row["id"])
             obs.record_event(conn, kind="discovery.reclaim_refused", severity="warning",
                              source="discovery_engine",

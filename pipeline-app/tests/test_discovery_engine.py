@@ -721,3 +721,40 @@ def test_a_refused_reclaim_leaves_a_warning_event(engine_conn, tmp_path):
         "SELECT * FROM events WHERE kind = 'discovery.reclaim_refused'").fetchone()
     assert row is not None
     assert row["severity"] == "warning"
+
+
+def test_a_malformed_but_parseable_owner_file_does_not_crash_the_sweep_and_is_reclaimed(engine_conn, tmp_path):
+    """`_read_run_owner` only guards the JSON parse step, not the parsed
+    dict's shape. A sidecar that is valid JSON but is missing (or has a
+    non-integer) "pid" is exactly the kind of truncated/corrupted write this
+    sidecar exists to survive (crash/sleep). Treat it like a missing owner:
+    don't crash, don't protect the row -- reclaim proceeds as normal."""
+    stale_id = db.insert_running_run(engine_conn, "stale-run", "manual", "incremental",
+                                     "2026-07-30T05:00:00+00:00")
+    run_owner_path(tmp_path, stale_id).parent.mkdir(parents=True, exist_ok=True)
+    run_owner_path(tmp_path, stale_id).write_text(json.dumps({"started_at": "x"}),  # no "pid" key
+                                                  encoding="utf-8")
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    now = _dt.datetime(2026, 7, 30, 6, 0, 0, tzinfo=_dt.timezone.utc)
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({"@a": []})},
+                           trigger="manual", mode="incremental", now=now)
+
+    assert result["status"] == "completed"  # the sweep did not crash the run
+    assert db.get_run(engine_conn, stale_id)["status"] == "abandoned"
+
+
+def test_a_non_integer_pid_owner_file_does_not_crash_the_sweep_and_is_reclaimed(engine_conn, tmp_path):
+    stale_id = db.insert_running_run(engine_conn, "stale-run", "manual", "incremental",
+                                     "2026-07-30T05:00:00+00:00")
+    run_owner_path(tmp_path, stale_id).parent.mkdir(parents=True, exist_ok=True)
+    run_owner_path(tmp_path, stale_id).write_text(json.dumps({"pid": "not-a-pid", "started_at": "x"}),
+                                                  encoding="utf-8")
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    now = _dt.datetime(2026, 7, 30, 6, 0, 0, tzinfo=_dt.timezone.utc)
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({"@a": []})},
+                           trigger="manual", mode="incremental", now=now)
+
+    assert result["status"] == "completed"  # the sweep did not crash the run
+    assert db.get_run(engine_conn, stale_id)["status"] == "abandoned"
