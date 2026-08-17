@@ -140,6 +140,7 @@ import platform
 import sqlite3
 import sys
 import threading
+import traceback
 
 from pipeline_app import db as db_mod
 from pipeline_app import obs
@@ -477,7 +478,7 @@ def run_discovery(
             handle_result = {"handle": handle_row["handle"], "platform": handle_row["platform"],
                               "cohort": handle_row["cohort"], "status": "error",
                               "items_downloaded": 0, "last_seen_published_at": None,
-                              "error_message": str(exc)}
+                              "error_message": f"{type(exc).__name__}: {exc}"}
             run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
             db_mod.record_handle_result(conn, run_row_id, handle_id, handle_result["status"],
                                          handle_result["items_downloaded"], handle_result["error_message"])
@@ -620,12 +621,28 @@ def run_discovery(
                 partial_dates = [d["published"] for d in partial if d.get("published")]
                 if partial_dates:
                     db_mod.set_handle_last_seen(conn, handle_row["id"], max(partial_dates))
-                db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", len(partial), str(exc))
+                # B-55: str(exc) alone is the whole post-mortem when there's no
+                # log file -- str(KeyError('youtube')) stores just "'youtube'"
+                # with no hint it's even a KeyError, and str(IndexError()) is
+                # the empty string. Name the exception type too, and stash the
+                # full traceback on an event so the actual failure site is
+                # still recoverable after the fact. HandleFailure already
+                # carries the true underlying exception on .cause (it formats
+                # its own str() the same way) -- use that when present so the
+                # message names the real failure, not "HandleFailure".
+                cause = getattr(exc, "cause", exc)
+                error_message = f"{type(cause).__name__}: {cause}"
+                obs.record_event(conn, kind="discovery.handle_failed", severity="error",
+                                 source="discovery_engine", message=error_message,
+                                 run_id=run_row_id,
+                                 detail={"handle": handle_row["handle"], "platform": handle_row["platform"],
+                                         "traceback": traceback.format_exc()})
+                db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", len(partial), error_message)
                 handle_results.append({
                     "handle": handle_row["handle"], "platform": handle_row["platform"],
                     "cohort": handle_row["cohort"], "status": "error", "items_downloaded": len(partial),
                     "last_seen_published_at": db_mod.get_handle(conn, handle_row["id"])["last_seen_published_at"],
-                    "error_message": str(exc),
+                    "error_message": error_message,
                 })
     except Exception as exc:  # noqa: BLE001 - a crash OUTSIDE the per-handle loop
         # (e.g. db_mod.list_handles itself raising) -- distinct from any

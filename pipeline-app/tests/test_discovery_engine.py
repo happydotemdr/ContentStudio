@@ -668,6 +668,57 @@ def test_run_discovery_result_carries_per_status_counts(engine_conn, tmp_path):
     assert result["counts"]["skipped"] == 0
 
 
+def test_an_unknown_platform_error_message_names_the_exception_type(engine_conn, tmp_path):
+    """B-55: str(KeyError('youtube')) stores the literal 'youtube'; str(IndexError())
+    stores an empty string. With no log file that string is the entire
+    post-mortem, and it is rendered verbatim in the UI and the record.
+
+    `handles.platform` is CHECK-constrained to known platform values, so a
+    truly-unknown platform can't be persisted -- the KeyError is instead
+    forced by handing run_discovery an adapters dict missing the "youtube"
+    key that _process_one_handle looks up by handle_row["platform"]."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    result = run_discovery(engine_conn, tmp_path, {},
+                           trigger="manual", mode="incremental")
+    row = db.list_run_handle_results(engine_conn, result["run_row_id"])[0]
+    assert row["error_message"].startswith("KeyError:")
+
+
+def test_an_empty_str_exception_is_still_identifiable(engine_conn, tmp_path):
+    """IndexError() -> "IndexError: " -- never the empty string that str(exc) gives."""
+    class RaisesIndexError(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter):
+            raise IndexError()
+
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = RaisesIndexError({})
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter},
+                           trigger="manual", mode="incremental")
+    row = db.list_run_handle_results(engine_conn, result["run_row_id"])[0]
+    assert row["error_message"] != ""
+    assert row["error_message"] == "IndexError: "
+
+
+def test_the_full_traceback_reaches_the_event_detail(engine_conn, tmp_path):
+    """The bare error_message string is the whole post-mortem with no log
+    file -- the full traceback must land in the discovery.handle_failed
+    event's detail so the actual failure site is recoverable."""
+    class RaisesIndexError(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter):
+            raise IndexError()
+
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = RaisesIndexError({})
+    run_discovery(engine_conn, tmp_path, {"youtube": adapter},
+                  trigger="manual", mode="incremental")
+    row = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.handle_failed'").fetchone()
+    assert row is not None
+    assert row["severity"] == "error"
+    detail = json.loads(row["detail"])
+    assert "Traceback (most recent call last)" in detail["traceback"]
+
+
 def test_a_heartbeat_write_failure_leaves_an_event_not_only_a_print(engine_conn, tmp_path, monkeypatch):
     """D-02: this print is the sole detector of the condition that lets B-50's
     double-run happen, and on the scheduled path it goes nowhere."""
