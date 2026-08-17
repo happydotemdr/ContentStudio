@@ -205,6 +205,7 @@ def test_validate_reports_not_ok_when_enumeration_empty():
     assert adapter.downloaded_ids == []
 
 
+import os
 import sqlite3
 import threading
 import time
@@ -213,7 +214,8 @@ from pathlib import Path
 import pytest
 
 from pipeline_app import db
-from pipeline_app.discovery_engine import make_run_id, now_iso, run_discovery
+from pipeline_app.discovery_engine import _process_is_alive, make_run_id, now_iso, run_discovery
+from pipeline_app.discovery_paths import run_owner_path
 
 
 @pytest.fixture
@@ -260,6 +262,21 @@ def test_now_iso_and_make_run_id_are_stable_format():
     assert now_iso(now) == "2026-07-30T06:00:00+00:00"
     run_id = make_run_id(now)
     assert run_id.startswith("2026-07-30T06-00-00")
+
+
+def test_process_is_alive_reports_true_for_this_process_and_false_for_a_dead_pid():
+    """NOT os.kill(pid, 0): on Windows os.kill calls TerminateProcess for any
+    signal other than CTRL_C_EVENT/CTRL_BREAK_EVENT, so the POSIX idiom would
+    kill the very run being checked on."""
+    assert _process_is_alive(os.getpid()) is True
+    assert _process_is_alive(0x7FFFFFFE) is False
+
+
+def test_a_run_writes_an_owner_file_and_removes_it_when_it_finishes(engine_conn, tmp_path):
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    result = run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({"@a": []})},
+                           trigger="manual", mode="incremental")
+    assert not run_owner_path(tmp_path, result["run_row_id"]).exists()
 
 
 def test_run_discovery_completes_and_writes_record(engine_conn, tmp_path):

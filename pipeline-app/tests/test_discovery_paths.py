@@ -5,6 +5,7 @@ from pipeline_app.discovery_paths import (
     group_slug_collisions,
     handle_dir,
     handle_slug,
+    run_owner_path,
     run_record_path,
     slugify,
 )
@@ -114,3 +115,7 @@ def test_group_slug_collisions_does_not_report_an_exactly_repeated_handle():
     """A repeated identical string cannot happen per platform (UNIQUE constraint)
     and is not a directory collision between two accounts -- it is one account."""
     assert group_slug_collisions(["NASA", "NASA"]) == {}
+
+
+def test_run_owner_path_is_namespaced_and_does_not_collide_with_run_records(tmp_path: Path):
+    assert run_owner_path(tmp_path, 7) == tmp_path / "output" / "discovery-runs" / ".owners" / "7.json"

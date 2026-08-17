@@ -114,13 +114,16 @@ def process_handle_validate(adapter: PlatformAdapter, repo_root: Path, handle_ro
     return {"ok": bool(result.get("ok")), "item": result if result.get("ok") else None}
 
 
+import json
+import os
+import platform
 import sqlite3
 import sys
 import threading
 
 from pipeline_app import db as db_mod
 from pipeline_app import obs
-from pipeline_app.discovery_paths import group_slug_collisions
+from pipeline_app.discovery_paths import group_slug_collisions, run_owner_path
 from pipeline_app.discovery_records import write_run_record
 
 
@@ -194,6 +197,38 @@ def _open_heartbeat_connection(conn: sqlite3.Connection) -> sqlite3.Connection |
         return hb_conn
     except sqlite3.Error:
         return None
+
+
+def _process_is_alive(pid: int) -> bool:
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True     # exists, owned by someone else
+        return True
+    import ctypes
+    SYNCHRONIZE, WAIT_TIMEOUT = 0x00100000, 0x00000102
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+    if not handle:
+        return False
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _claim_run_ownership(repo_root: Path, run_row_id: int, started_at: str) -> None:
+    path = run_owner_path(repo_root, run_row_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"pid": os.getpid(), "started_at": started_at,
+                                "host": platform.node()}), encoding="utf-8")
+
+
+def _release_run_ownership(repo_root: Path, run_row_id: int) -> None:
+    run_owner_path(repo_root, run_row_id).unlink(missing_ok=True)
 
 
 def _run_heartbeat_loop(conn: sqlite3.Connection, run_row_id: int, interval_s: float, stop_event: threading.Event) -> None:
@@ -353,6 +388,8 @@ def run_discovery(
         db_mod.finish_run(conn, locked_id, "locked", finished_at, str(md_path))
         return {"run_row_id": locked_id, "status": "locked", "counts": _summarize([])}
 
+    _claim_run_ownership(repo_root, run_row_id, started_at)
+
     heartbeat_conn = _open_heartbeat_connection(conn)
     stop_event = threading.Event()
     heartbeat_thread = threading.Thread(
@@ -426,6 +463,7 @@ def run_discovery(
         heartbeat_thread.join(timeout=5)
         if heartbeat_conn is not None:
             heartbeat_conn.close()
+        _release_run_ownership(repo_root, run_row_id)
 
     if outer_crash is not None:
         final_status = "failed"

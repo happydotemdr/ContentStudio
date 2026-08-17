@@ -80,3 +80,11 @@ def handle_dir(repo_root: Path, platform: str, handle: str) -> Path:
 
 def run_record_path(repo_root: Path, run_id: str) -> Path:
     return repo_root / "output" / "discovery-runs" / f"{run_id}.md"
+
+
+def run_owner_path(repo_root: Path, run_row_id: int) -> Path:
+    """Sidecar recording which OS process owns a 'running' row. Lives on disk
+    rather than on the row because discovery_runs' schema belongs to another
+    package; the reclaim sweep reads it to answer "is that process actually
+    gone?" instead of trusting a heartbeat that a sleeping machine freezes."""
+    return repo_root / "output" / "discovery-runs" / ".owners" / f"{run_row_id}.json"
