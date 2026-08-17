@@ -245,10 +245,28 @@ def _list_pending_spawns(conn) -> list:
     ).fetchall()
 
 
+UNHEALTHY = {"completed_with_errors", "failed", "abandoned"}
+
+
 @router.get("/discovery/runs")
-def discovery_runs_page(request: Request):
+def discovery_runs_page(request: Request, limit: int = 25, status: str | None = None):
     conn = request.app.state.conn
-    runs = db_mod.list_runs(conn)
+    # list_runs returns newest-first (ORDER BY started_at DESC); a DB-level
+    # LIMIT belongs in list_runs itself, which is P1's file -- this slices
+    # the already-fetched list instead of duplicating that change here.
+    runs = db_mod.list_runs(conn)[:limit]
+
+    health = {
+        "latest_status": runs[0]["status"] if runs else None,
+        "unhealthy_recent": sum(1 for run in runs if run["status"] in UNHEALTHY),
+        "last_successful_at": next(
+            (run["finished_at"] for run in runs if run["status"] == "completed"), None
+        ),
+    }
+
+    if status == "unhealthy":
+        runs = [run for run in runs if run["status"] in UNHEALTHY]
+
     runs_with_results = [
         {"run": run, "handle_results": db_mod.list_run_handle_results(conn, run["id"])}
         for run in runs
@@ -257,6 +275,7 @@ def discovery_runs_page(request: Request):
         request, "discovery_runs.html",
         {
             "runs_with_results": runs_with_results,
+            "health": health,
             "pending_spawns": _list_pending_spawns(conn),
             "active_nav": "discovery_runs",
             "cli_available": request.app.state.cli_available,

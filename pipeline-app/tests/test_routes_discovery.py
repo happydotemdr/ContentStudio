@@ -1,5 +1,7 @@
+import itertools
 import json
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,16 @@ from pipeline_app.main import create_app
 from pipeline_app.routes import discovery as discovery_routes
 
 import run_discovery_cron as cron
+
+_now_counter = itertools.count()
+
+
+def _now() -> str:
+    """A monotonically-increasing ISO timestamp -- each call is one second
+    later than the last, so runs inserted in test order sort in that same
+    order without relying on same-second ties."""
+    base = datetime(2026, 8, 1)
+    return (base + timedelta(seconds=next(_now_counter))).isoformat() + "Z"
 
 
 class _FakeProc:
@@ -334,6 +346,39 @@ def test_discovery_runs_page_empty_state(client: TestClient):
     response = client.get("/discovery/runs")
     assert response.status_code == 200
     assert "No discovery runs yet" in response.text
+
+
+def test_the_runs_page_is_capped_and_does_not_grow_without_bound(client: TestClient):
+    conn = client.app.state.conn
+    for i in range(60):
+        db_mod.insert_terminal_run(conn, f"r{i}", "scheduled", "incremental",
+                                    "completed", _now(), _now())
+    assert len(client.get("/discovery/runs").context["runs_with_results"]) == 25
+
+
+def test_the_runs_page_exposes_a_health_summary_of_the_recent_window(client: TestClient):
+    """B-43: the route did no aggregation, so an operator could not answer 'have
+    any of my last seven runs been unhealthy?' without reading every row."""
+    conn = client.app.state.conn
+    db_mod.insert_terminal_run(conn, "ok1", "scheduled", "incremental", "completed", _now(), _now())
+    db_mod.insert_terminal_run(conn, "bad1", "scheduled", "incremental",
+                                "completed_with_errors", _now(), _now())
+    health = client.get("/discovery/runs").context["health"]
+    assert health["unhealthy_recent"] == 1
+    assert health["latest_status"] == "completed_with_errors"
+
+
+def test_the_runs_page_can_be_filtered_to_unhealthy_runs_only(client: TestClient):
+    conn = client.app.state.conn
+    db_mod.insert_terminal_run(conn, "ok1", "scheduled", "incremental", "completed", _now(), _now())
+    db_mod.insert_terminal_run(conn, "bad1", "scheduled", "incremental",
+                                "completed_with_errors", _now(), _now())
+    db_mod.insert_terminal_run(conn, "ok2", "scheduled", "incremental", "completed", _now(), _now())
+
+    response = client.get("/discovery/runs", params={"status": "unhealthy"})
+    runs_with_results = response.context["runs_with_results"]
+    assert len(runs_with_results) == 1
+    assert runs_with_results[0]["run"]["run_id"] == "bad1"
 
 
 def test_handles_page_shows_a_handles_current_brand_tags(client: TestClient, spawns):
