@@ -46,8 +46,21 @@ until someone does that by hand (`drive_client.py`'s `build_default_service` del
 the interactive flow under cron, so this can't self-heal). **`coach-prep-app` therefore holds its
 own, separate OAuth client and token** (its own `client_secret.json`/`token.json`, its own one-time
 consent flow documented the same way `doc-ingest-app/SETUP.md` documents its), scoped to exactly
-what it needs: `calendar.readonly`, `gmail.readonly`, and Drive write access limited to one folder
-(see "Publish" below). This never touches doc-ingest-app's credentials.
+what it needs: `calendar.readonly`, `gmail.readonly`, and `drive.file` (Drive write scoped to files
+the app itself creates — the closest real equivalent Drive's OAuth model offers to "one folder").
+This never touches doc-ingest-app's credentials.
+
+**Plan-time correction (2026-08-17):** the Architecture table below says the event-attendee matcher
+"lives in doc-ingest-app," and Phase 1's tagging of historical meeting notes does need to call the
+Calendar API (to resolve each note's embedded `eid` to a real attendee list). That call also needs
+`calendar.readonly` — a scope `doc-ingest-app`'s *existing* Drive/Docs/Sheets token doesn't have.
+Widening that existing token would reintroduce the exact re-consent risk this section just ruled
+out. The fix: `doc-ingest-app` gets a **second, additive** OAuth credential pair
+(`calendar_client_secret.json` / `calendar_token.json`), scoped to `calendar.readonly` only, with
+its own one-time consent flow — entirely separate from, and never touching, the existing
+`client_secret.json`/`token.json` pair the running ingest cron already depends on. Only the pure
+matching logic (attendee list → client slug, given a registry) is actually shared code; each app
+calls it with attendees it fetched using its own credentials.
 
 ### The gap this design closes
 
