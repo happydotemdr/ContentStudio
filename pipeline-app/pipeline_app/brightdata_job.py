@@ -115,6 +115,30 @@ def drain_diagnostics() -> list[dict]:
     return drained
 
 
+def config_int(name: str, default: int) -> int:
+    """An operational knob: environment override, module literal as default.
+
+    B-03: every cap and timeout was a source literal. Overrides are read PER
+    PLATFORM and never shared -- discovery_x.py:40-43 records why one number
+    does not fit all four. Note that raising an ITEM CAP raises Bright Data
+    spend proportionally; raising a TIMEOUT does not.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        record_diagnostic(kind="config.bad_override", severity="warning",
+                          source="brightdata_job",
+                          message=f"{name}={raw!r} is not a positive integer; using {default}",
+                          detail={"name": name, "raw": raw, "default": default})
+        return default
+    return value
+
+
 class _BrightDataJobError(Exception):
     """Base for job-level failures. Carries the snapshot id as an ATTRIBUTE,
     not only inside the message: a snapshot the operator paid for must be

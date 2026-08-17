@@ -448,3 +448,22 @@ def test_resume_pending_is_a_no_op_when_nothing_is_pending(monkeypatch, tmp_path
 
     assert bd.resume_pending("x/CNN", poll_fn=_fail_if_called,
                              fetch_fn=_fail_if_called) is None
+
+
+def test_config_int_prefers_an_environment_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_TEST_KNOB", "25")
+    assert bd.config_int("BRIGHTDATA_TEST_KNOB", 10) == 25
+
+
+def test_config_int_falls_back_to_the_default_and_reports_a_bad_override(monkeypatch):
+    """A typo'd knob must not silently become a different number, and must not
+    crash a run either -- it reports and uses the default."""
+    monkeypatch.setenv("BRIGHTDATA_TEST_KNOB", "twenty")
+    bd.drain_diagnostics()
+    assert bd.config_int("BRIGHTDATA_TEST_KNOB", 10) == 10
+    assert [d["kind"] for d in bd.drain_diagnostics()] == ["config.bad_override"]
+
+
+def test_config_int_rejects_a_nonpositive_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_TEST_KNOB", "0")
+    assert bd.config_int("BRIGHTDATA_TEST_KNOB", 10) == 10
