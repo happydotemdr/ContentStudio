@@ -598,3 +598,17 @@ def test_download_item_makes_no_network_call(tmp_path, monkeypatch):
     monkeypatch.setattr(adapter, "_run_collection_job", _fail)
     monkeypatch.setattr(brightdata_job, "trigger", _fail)
     assert adapter.download_item(tmp_path, "lanieri", "c1", "t")["ok"] is True
+
+
+def test_max_items_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_MAX_ITEMS_LINKEDIN", "25")
+    assert li.max_items() == 25
+    monkeypatch.delenv("BRIGHTDATA_MAX_ITEMS_LINKEDIN")
+    assert li.max_items() == li.MAX_ITEMS_PER_RUN == 10
+
+
+def test_poll_timeout_s_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_POLL_TIMEOUT_LINKEDIN", "45")
+    assert li.poll_timeout_s() == 45
+    monkeypatch.delenv("BRIGHTDATA_POLL_TIMEOUT_LINKEDIN")
+    assert li.poll_timeout_s() == li.POLL_TIMEOUT_S == 300

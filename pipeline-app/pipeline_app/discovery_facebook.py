@@ -31,11 +31,20 @@ DATASET_ID = "gd_lkaxegm826bjpoo9m5"
 KEY_ENV_VAR = "BRIGHTDATA_API_KEY"
 KEY_FILE = Path(__file__).resolve().parent.parent / "brightdata_api_key.txt"
 
-MAX_ITEMS_PER_RUN = 10
+MAX_ITEMS_PER_RUN = 10           # the default; override with the env var below
+MAX_ITEMS_ENV_VAR = "BRIGHTDATA_MAX_ITEMS_FACEBOOK"
 POLL_TIMEOUT_S = 300
 POLL_INTERVAL_S = 5
 
 TITLE_MAX_CHARS = 60
+
+
+def max_items() -> int:
+    return brightdata_job.config_int(MAX_ITEMS_ENV_VAR, MAX_ITEMS_PER_RUN)
+
+
+def poll_timeout_s() -> float:
+    return brightdata_job.config_int("BRIGHTDATA_POLL_TIMEOUT_FACEBOOK", POLL_TIMEOUT_S)
 
 
 def _parse_published(raw: str | None) -> str | None:
@@ -192,7 +201,7 @@ def _trigger_job(handle: str, key: str) -> str:
             # Server-side per-input record cap: the primary cost control.
             # Verified honored exactly -- 3 returned 3, 2 returned 2.
             "url": profile_url(handle),
-            "num_of_posts": MAX_ITEMS_PER_RUN,
+            "num_of_posts": max_items(),
         }],
         key,
     )
@@ -229,7 +238,7 @@ def _run_collection_job(handle: str) -> list[dict]:
         poll_fn=lambda job_id: _poll_job_status(job_id, key),
         fetch_fn=lambda job_id: _fetch_job_results(job_id, key),
         label=f"for {PLATFORM}/{handle}",
-        poll_timeout_s=POLL_TIMEOUT_S,
+        poll_timeout_s=poll_timeout_s(),
         poll_interval_s=POLL_INTERVAL_S,
         pending_key=pending_key,
     )
@@ -274,7 +283,7 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
     # ones already on disk and trip the early-stop dedup before reaching it.
     # Cap AFTER sorting so it bounds retained items.
     kept.sort(key=lambda n: n["published_ts"], reverse=True)
-    kept = kept[:MAX_ITEMS_PER_RUN]
+    kept = kept[:max_items()]
 
     # Overwrite, not merge: a fresh successful enumerate replaces whatever
     # this handle held, so download_item never reads a stale id. Cached

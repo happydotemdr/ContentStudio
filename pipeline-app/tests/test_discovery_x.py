@@ -645,3 +645,24 @@ def test_download_item_leaves_no_tmp_file(monkeypatch, tmp_path):
     x.download_item(tmp_path, "CNN", "1", "title")
     directory = tmp_path / "output" / "brand-intel" / "x" / "cnn"
     assert [p.name for p in directory.iterdir()] == ["1.md"]
+
+
+def test_max_items_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_MAX_ITEMS_X", "25")
+    assert x.max_items() == 25
+    monkeypatch.delenv("BRIGHTDATA_MAX_ITEMS_X")
+    assert x.max_items() == x.MAX_ITEMS_PER_RUN == 10
+
+
+def test_instagram_override_does_not_change_x(monkeypatch):
+    """One knob per platform: raising Instagram's cap must not silently raise
+    the spend on an account posting hundreds of times a day."""
+    monkeypatch.setenv("BRIGHTDATA_MAX_ITEMS_INSTAGRAM", "50")
+    assert x.max_items() == 10
+
+
+def test_poll_timeout_s_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_POLL_TIMEOUT_X", "45")
+    assert x.poll_timeout_s() == 45
+    monkeypatch.delenv("BRIGHTDATA_POLL_TIMEOUT_X")
+    assert x.poll_timeout_s() == x.POLL_TIMEOUT_S == 600

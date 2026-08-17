@@ -31,11 +31,20 @@ DATASET_ID = "gd_lyy3tktm25m4avu764"
 KEY_ENV_VAR = "BRIGHTDATA_API_KEY"
 KEY_FILE = Path(__file__).resolve().parent.parent / "brightdata_api_key.txt"
 
-MAX_ITEMS_PER_RUN = 10
+MAX_ITEMS_PER_RUN = 10           # the default; override with the env var below
+MAX_ITEMS_ENV_VAR = "BRIGHTDATA_MAX_ITEMS_LINKEDIN"
 POLL_TIMEOUT_S = 300
 POLL_INTERVAL_S = 5
 
 TITLE_MAX_CHARS = 60
+
+
+def max_items() -> int:
+    return brightdata_job.config_int(MAX_ITEMS_ENV_VAR, MAX_ITEMS_PER_RUN)
+
+
+def poll_timeout_s() -> float:
+    return brightdata_job.config_int("BRIGHTDATA_POLL_TIMEOUT_LINKEDIN", POLL_TIMEOUT_S)
 
 # Re-exported so `pytest.raises(discovery_linkedin.BrightDataJobFailed)` works
 # and callers need not know the exceptions moved.
@@ -195,7 +204,7 @@ class LinkedInAdapter:
                 "type": "discover_new",
                 "discover_by": self.mode.discover_by,
                 # Server-side per-input record cap: the primary cost control.
-                "limit_per_input": MAX_ITEMS_PER_RUN,
+                "limit_per_input": max_items(),
                 "include_errors": "true",
                 "notify": "false",
             },
@@ -236,7 +245,7 @@ class LinkedInAdapter:
             poll_fn=lambda job_id: self._poll_job_status(job_id, key),
             fetch_fn=lambda job_id: self._fetch_job_results(job_id, key),
             label=f"for {self.platform}/{handle}",
-            poll_timeout_s=POLL_TIMEOUT_S,
+            poll_timeout_s=poll_timeout_s(),
             poll_interval_s=POLL_INTERVAL_S,
             pending_key=pending_key,
         )
@@ -296,7 +305,7 @@ class LinkedInAdapter:
         # already on disk and trip the early-stop dedup before reaching it.
         # Cap AFTER filtering so it bounds retained items.
         kept.sort(key=lambda n: n["published_ts"], reverse=True)
-        kept = kept[:MAX_ITEMS_PER_RUN]
+        kept = kept[:max_items()]
 
         # Overwrite, not merge: a fresh successful enumerate replaces whatever
         # this handle held, so download_item never reads a stale id.

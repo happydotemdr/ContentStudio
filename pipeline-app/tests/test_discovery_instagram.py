@@ -421,3 +421,17 @@ def test_download_item_raises_on_cache_miss(tmp_path, monkeypatch):
     ig.enumerate_newest_first("somehandle", keyword_filter=None)
     with pytest.raises(KeyError):
         ig.download_item(tmp_path, "somehandle", "not_in_cache", "title")
+
+
+def test_max_items_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_MAX_ITEMS_INSTAGRAM", "25")
+    assert ig.max_items() == 25
+    monkeypatch.delenv("BRIGHTDATA_MAX_ITEMS_INSTAGRAM")
+    assert ig.max_items() == ig.MAX_ITEMS_PER_RUN == 10
+
+
+def test_poll_timeout_s_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_POLL_TIMEOUT_INSTAGRAM", "45")
+    assert ig.poll_timeout_s() == 45
+    monkeypatch.delenv("BRIGHTDATA_POLL_TIMEOUT_INSTAGRAM")
+    assert ig.poll_timeout_s() == ig.POLL_TIMEOUT_S == 300

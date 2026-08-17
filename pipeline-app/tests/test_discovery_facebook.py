@@ -581,3 +581,17 @@ def test_download_item_makes_no_network_call(tmp_path, monkeypatch):
     monkeypatch.setattr(fb, "_run_collection_job", boom)
     monkeypatch.setattr(brightdata_job, "trigger", boom)
     assert fb.download_item(tmp_path, "MrBeast6000", "1479086397353733", "x")["ok"]
+
+
+def test_max_items_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_MAX_ITEMS_FACEBOOK", "25")
+    assert fb.max_items() == 25
+    monkeypatch.delenv("BRIGHTDATA_MAX_ITEMS_FACEBOOK")
+    assert fb.max_items() == fb.MAX_ITEMS_PER_RUN == 10
+
+
+def test_poll_timeout_s_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_POLL_TIMEOUT_FACEBOOK", "45")
+    assert fb.poll_timeout_s() == 45
+    monkeypatch.delenv("BRIGHTDATA_POLL_TIMEOUT_FACEBOOK")
+    assert fb.poll_timeout_s() == fb.POLL_TIMEOUT_S == 300
