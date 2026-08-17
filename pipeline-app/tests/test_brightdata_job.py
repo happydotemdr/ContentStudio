@@ -206,6 +206,35 @@ def test_await_results_raises_on_timeout(monkeypatch):
         )
 
 
+def test_delete_snapshot_is_off_by_default(monkeypatch):
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("no delete request may be made unless opted in")
+
+    monkeypatch.setattr(bd.requests, "delete", _fail_if_called)
+    assert bd.await_results(trigger_fn=lambda: "j", poll_fn=lambda i: "ready",
+                            fetch_fn=lambda i: [{"id": "1"}], label="l",
+                            poll_timeout_s=300, poll_interval_s=5) == [{"id": "1"}]
+
+
+def test_delete_after_fetch_only_runs_once_the_rows_are_in_hand(monkeypatch):
+    """Deleting a snapshot destroys paid data. It may only happen AFTER a
+    successful fetch -- never on the timeout path, where the snapshot is the
+    only copy of what was bought."""
+    monkeypatch.setattr(bd.time, "sleep", lambda s: None)
+    monkeypatch.setattr(bd.time, "monotonic", lambda: 10_000.0)
+    monkeypatch.setattr(bd, "DELETE_AFTER_FETCH", True)
+    deleted = []
+    monkeypatch.setattr(bd, "delete_snapshot",
+                        lambda api_base, job_id, key: deleted.append(job_id))
+    with pytest.raises(bd.BrightDataJobTimeout):
+        bd.await_results(trigger_fn=lambda: "snap-timeout", poll_fn=lambda i: "running",
+                         fetch_fn=lambda i: [], label="l",
+                         poll_timeout_s=0, poll_interval_s=5)
+    assert deleted == []
+
+
 def test_timeout_exception_carries_the_snapshot_id_as_data_not_only_prose(monkeypatch):
     monkeypatch.setattr(bd.time, "sleep", lambda s: None)
     monkeypatch.setattr(bd.time, "monotonic", lambda: 10_000.0)

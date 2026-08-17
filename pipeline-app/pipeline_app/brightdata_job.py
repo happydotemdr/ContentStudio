@@ -290,9 +290,37 @@ def fetch_results(api_base: str, job_id: str, key: str) -> list[dict]:
     return _with_retry(_do_fetch, what=f"snapshot/{job_id}")
 
 
+# Default OFF. Deleting a snapshot is free but irreversible: run it only once
+# the operator is satisfied the fetched rows reached disk. It is NEVER called
+# on the timeout path -- that snapshot is the only copy of data already paid
+# for, and T8/T9 exist to recover it.
+DELETE_AFTER_FETCH = False
+
+
+def delete_snapshot(api_base: str, job_id: str, key: str) -> None:
+    """Delete a collected snapshot from Bright Data's side (B-19 cost item C6).
+
+    Free to call, but irreversible: a deleted snapshot cannot be recovered by
+    resume_pending or anything else. Callers must only invoke this once the
+    corresponding rows are already safely in hand -- see DELETE_AFTER_FETCH
+    and its use in await_results.
+    """
+    def _do_delete():
+        response = requests.delete(
+            f"{api_base}/snapshot/{job_id}",
+            headers=_auth(key),
+            timeout=REQUEST_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        return response
+
+    _with_retry(_do_delete, what=f"delete snapshot/{job_id}")
+
+
 def await_results(trigger_fn, poll_fn, fetch_fn, *, label: str,
                   poll_timeout_s: float, poll_interval_s: float,
-                  pending_key: str | None = None) -> list[dict]:
+                  pending_key: str | None = None,
+                  cleanup_fn=None) -> list[dict]:
     """Run one full trigger -> poll -> fetch cycle.
 
     The three callables are injected rather than called directly so each
@@ -304,13 +332,22 @@ def await_results(trigger_fn, poll_fn, fetch_fn, *, label: str,
     snapshot store (B-19). On timeout the job's snapshot id is persisted so a
     later run can fetch it for free instead of abandoning paid-for data. A
     failed job is not persisted -- there is nothing to recover.
+
+    `cleanup_fn`, if given, is called ONLY in the ready branch, after
+    fetch_fn has already returned successfully -- never on the failed or
+    timeout paths, where the snapshot may be the only copy of data already
+    paid for. Callers wire delete_snapshot in here when DELETE_AFTER_FETCH
+    is True; this function does not consult that flag itself.
     """
     job_id = trigger_fn()
     deadline = time.monotonic() + poll_timeout_s
     while True:
         status = poll_fn(job_id)
         if status == "ready":
-            return fetch_fn(job_id)
+            rows = fetch_fn(job_id)
+            if cleanup_fn is not None:
+                cleanup_fn(job_id)
+            return rows
         if status == "failed":
             raise BrightDataJobFailed(
                 f"Bright Data job {job_id} {label} failed",
