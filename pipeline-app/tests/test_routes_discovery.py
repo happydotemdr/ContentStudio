@@ -203,6 +203,25 @@ def test_backfill_rejects_an_absurd_window(client, spawns):
     assert spawns == []
 
 
+def test_backfill_accepts_a_window_at_exactly_the_730_day_cap(client, spawns):
+    """Pins the MAX_BACKFILL_DAYS boundary: a 730-day window is the largest
+    that must still be accepted."""
+    response = client.post("/discovery/run-now-backfill",
+                           data={"start": "2024-01-01", "end": "2025-12-31"})
+    assert response.status_code in (200, 303, 307)
+    assert len(spawns) == 1
+
+
+def test_backfill_rejects_a_window_one_day_past_the_cap(client, spawns):
+    """731 days must be rejected -- distinguishes '>' from '>=' at the
+    MAX_BACKFILL_DAYS boundary, which the absurd-window test (a ~56-year
+    range) cannot."""
+    response = client.post("/discovery/run-now-backfill",
+                           data={"start": "2024-01-01", "end": "2026-01-01"})
+    assert response.status_code == 400
+    assert spawns == []
+
+
 def test_a_discovery_post_without_the_spawn_stub_raises_instead_of_billing(client: TestClient):
     """The guard, asserted. Without it this POST launches a detached, live,
     per-record-billed collection job and the test still passes, because the
