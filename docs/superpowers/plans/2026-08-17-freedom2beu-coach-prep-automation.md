@@ -1982,18 +1982,19 @@ def transaction(conn: sqlite3.Connection):
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
+    # executescript runs its own implicit COMMIT before executing, so it
+    # cannot be wrapped in a BEGIN/COMMIT pair -- it establishes its own
+    # transaction boundary per statement under isolation_level=None. Mirrors
+    # doc_ingest/db.py's apply_migrations exactly (see that module for the
+    # full rationale and the accepted single-operator-tool gap this leaves:
+    # a crash between the DDL and the schema_version UPDATE is tolerated by
+    # this function's own idempotence on the next run).
     current = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
     for target_version, ddl in _MIGRATIONS:
         if target_version <= current:
             continue
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            conn.executescript(ddl)
-            conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (target_version,))
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+        conn.executescript(ddl)
+        conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (target_version,))
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
@@ -3952,7 +3953,7 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
     the_bundle = bundle_mod.build_bundle(gmail_service, doc_ingest_reader, doc_ingest_conn, cfg, client, now_utc)
     bundle_mod.persist_inputs(conn, run_id, the_bundle, _now_iso())
 
-    generated = generate.generate_draft(the_bundle)
+    generated = generate.generate_draft(the_bundle, timeout_s=cfg.generation_timeout_s)
     if generated is None:
         _fail_run(conn, run_id, "generation_failed")
         return "generation_failed"  # watermark deliberately NOT set -- a transient failure, retried next wake
