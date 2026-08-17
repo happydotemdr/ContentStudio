@@ -1300,6 +1300,23 @@ and `discovery_engine.py` writes `set_last_scheduled_run_date(conn, encode_water
 timezone_name, now_iso(now)))`. The engine tests at `:503`, `:518` assert the bare date and are
 **extended** to `assert decode_watermark(stored)[0] == "2026-07-30"`.
 
+> **Plan correction, found during Task 18's review (Critical).** The pseudocode above computes
+> `last_date` but never uses it — `is_due`'s pre-existing local-date comparison
+> (`if last_scheduled_run_date == today:`) was left comparing the RAW, still-encoded watermark
+> string, not the decoded `last_date`. Reproduced empirically this session: once a watermark is
+> written in the new `encode_watermark` form, a 3-part pipe-delimited string can never equal a
+> bare `YYYY-MM-DD`, so this comparison is permanently `False` for every watermark written after
+> this task ships — the ONLY remaining same-day guard becomes the 20-hour instant timer, which is
+> deliberately shorter than 24h by its own stated rationale ("< 24 so a schedule time change still
+> fires"). Net effect: an early-in-day schedule time (roughly before 04:00 local) can still
+> double-fire the same calendar day once the elapsed time exceeds `MIN_RUN_INTERVAL_H` but the
+> calendar day hasn't turned over yet — reopening the exact class of bug B-48 exists to close,
+> just with a narrower trigger window. **Fix:** the local-date comparison must read
+> `if last_date == today:`, not `if last_scheduled_run_date == today:`. This is a no-op for
+> legacy bare-date watermarks (`decode_watermark` returns the raw string unchanged as `last_date`
+> when no separator is present) and closes the gap for encoded ones. Add a regression test for
+> "same calendar day, elapsed time past `MIN_RUN_INTERVAL_H`" alongside the task's other new tests.
+
 **Commit:** `fix(scheduling): watermark carries its instant, so a timezone edit cannot double-fire (B-48)`
 
 ---
