@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_app import db
+from pipeline_app.discovery_scheduling import ScheduleConfigError
 import run_discovery_cron as cron
 
 
@@ -370,3 +371,73 @@ def test_a_broken_run_and_a_clean_run_do_not_share_an_exit_code(monkeypatch, rep
     monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: _result("failed", total=0))
     broken = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
     assert clean != broken
+
+
+def _raise(exc: BaseException):
+    def _fn(*a, **k):
+        raise exc
+    return _fn
+
+
+def _stub(monkeypatch, *, due=True, result=None, notify=None, init_db_error=None, tz=None):
+    if init_db_error is not None:
+        monkeypatch.setattr(cron.db, "init_db",
+                            lambda *a, **k: (_ for _ in ()).throw(init_db_error))
+        return
+    if tz is not None:
+        monkeypatch.setattr(cron, "_is_due_now",
+                            lambda conn: (_ for _ in ()).throw(ScheduleConfigError(tz)))
+    else:
+        monkeypatch.setattr(cron, "_is_due_now", lambda conn: due)
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: result)
+    monkeypatch.setattr(cron, "notify", notify if notify is not None else (lambda *a, **k: True))
+
+
+# (state label, stub kwargs, expected Exit)  -- one row per row of the contract table
+EXIT_CONTRACT = [
+    ("not due",                 dict(due=False),                                                          cron.Exit.OK),
+    ("clean run",               dict(result=_result("completed", total=3, attempted=3)),                  cron.Exit.OK),
+    ("lock lost in engine",     dict(result=_result("locked")),                                           cron.Exit.LOCKED),
+    ("every handle skipped",    dict(result=_result("completed", total=4, attempted=0, skipped=4)),       cron.Exit.NO_WORK),
+    ("no api key",              dict(result=_result("completed", total=1, attempted=1),
+                                     notify=lambda *a, **k: False),                                       cron.Exit.NOTIFY_FAILED),
+    ("send failed",             dict(result=_result("completed", total=1, attempted=1),
+                                     notify=lambda *a, **k: False),                                       cron.Exit.NOTIFY_FAILED),
+    ("notify raised",           dict(result=_result("completed", total=1, attempted=1),
+                                     notify=_raise(RuntimeError("resend is down"))),                      cron.Exit.NOTIFY_FAILED),
+    ("one handle errored",      dict(result=_result("completed_with_errors", total=3, attempted=3, failed=1)),
+                                                                                                          cron.Exit.HANDLES_ERRORED),
+    ("every handle errored",    dict(result=_result("completed_with_errors", total=3, attempted=3, failed=3)),
+                                                                                                          cron.Exit.ALL_HANDLES_ERRORED),
+    ("validate: not found",     dict(result=_result("completed_with_errors", total=1, attempted=1, failed=1)),
+                                                                                                          cron.Exit.ALL_HANDLES_ERRORED),
+    ("crash outside the loop",  dict(result=_result("failed", total=0)),                                  cron.Exit.RUN_FAILED),
+    ("validate: adapter raised",dict(result=_result("failed", total=1, attempted=1, failed=1)),           cron.Exit.RUN_FAILED),
+    ("run deadline exceeded",   dict(result=_result("failed", total=5, attempted=5, failed=2)),           cron.Exit.RUN_FAILED),
+    ("scheduler wedged",        dict(tz="unknown timezone 'America/Chicgo'"),                             cron.Exit.SCHEDULER_WEDGED),
+    ("startup failed",          dict(init_db_error=sqlite3.OperationalError("database is locked")),       cron.Exit.STARTUP_FAILED),
+    ("clean + unsent email",    dict(result=_result("completed", total=1, attempted=1),
+                                     notify=lambda *a, **k: False),                                       cron.Exit.NOTIFY_FAILED),
+    ("errored + unsent email",  dict(result=_result("completed_with_errors", total=3, attempted=3, failed=1),
+                                     notify=lambda *a, **k: False),                                       cron.Exit.HANDLES_ERRORED),
+]
+
+
+@pytest.mark.parametrize("label,kwargs,expected", EXIT_CONTRACT, ids=[r[0] for r in EXIT_CONTRACT])
+def test_exit_code_contract(monkeypatch, repo_root, label, kwargs, expected):
+    """The whole of B-40/F-16 in one table. Before the fix, 8 of these 17 rows
+    returned 0 and were indistinguishable from a clean run."""
+    _stub(monkeypatch, **kwargs)
+    assert cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)]) == expected
+
+
+def test_exit_contract_covers_every_declared_exit_code():
+    """A new Exit member with no contract row is a state nobody can observe."""
+    covered = {expected for _, _, expected in EXIT_CONTRACT}
+    assert covered == set(cron.Exit)
+
+
+def test_bad_cli_arguments_still_exit_two():
+    with pytest.raises(SystemExit) as excinfo:
+        cron.main(["--mode", "nonsense"])
+    assert excinfo.value.code == 2
