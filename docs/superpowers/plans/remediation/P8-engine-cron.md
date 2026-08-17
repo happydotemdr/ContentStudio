@@ -2787,3 +2787,100 @@ six file updates and the directory move.
   wiring each adapter's own file to declare `handle_row=None` and read a cap override from it
   (no observable behavior until that lands — see Task 41's "open handoffs"). Received from P7:
   B-01's events half (Task 37) and B-21's call site (Task 38).
+
+## 8. Outcome (recorded 2026-08-17, PR #48 merged as `deb196f`)
+
+All 41 tasks (the original 40 plus the mid-programme Task 41 amendment) landed as written, plus
+7 plan corrections caught during task-level review and 6 Important findings from the mandatory
+final whole-branch review, all fixed and re-reviewed clean. This is by far the largest package in
+the programme (41 tasks vs. P7's 25, P4's 26) and hit the recurring bug class more often than any
+prior package except P4 — 7 instances, each caught by grepping the task's own shown code against
+the live repo before dispatch, per this plan's own §2's-neighbor "recurring bug class" discipline
+inherited from the programme's `RESUME-PROMPT.md`.
+
+**Plan corrections, for the record (all committed as their own docs-only commits before the
+corrected task was dispatched, per programme discipline):**
+
+1. **Task 8's `EXIT_CONTRACT` table called an undefined `_raise()` helper.** Neither this task's
+   own text, any earlier task, nor the live test file defined it. Amended with a 5-line factory
+   function before dispatch.
+2. **Task 9's `build_task_xml` called `escape()` on the `Arguments` element**, which turns
+   `"2>&1"` into `"2&gt;&amp;1"` — self-contradicting the same task's own
+   `test_task_xml_redirects_stdout_and_stderr_to_a_log_file`, which asserts the literal substring
+   `"2>&1"` survives. Fixed with a CDATA section instead (verified: the only inputs are Windows
+   filesystem paths, which cannot contain a literal `>`, so the CDATA-terminator collision risk
+   is structurally impossible here).
+3. **Task 11's premise was already resolved by Task 10.** Task 10 restructured `main()`'s dry-run
+   branch away from the flattened `" ".join(cmd)` B-45 targeted, before Task 11 ran — B-45's core
+   defect was already closed by construction. Task 11 was narrowed to its one genuinely open
+   item (the dry-run message didn't yet name the log path) and its kept `list2cmdline` unit test's
+   own fixture path had no spaces, so it couldn't actually distinguish `list2cmdline` from a naive
+   join (verified empirically) — fixed with a space-containing fixture path.
+4. **Task 18's own `is_due` pseudocode reopened B-48.** The shown code computed `last_date` via
+   `decode_watermark` but the pre-existing local-date comparison was left checking the raw,
+   now-encoded watermark string, which can never equal a bare date after the fix ships — silently
+   disabling the same-day guard for every watermark written from that point on. Caught by this
+   task's own review (a Critical finding), fixed in round 1, re-reviewed clean.
+5. **Task 37's test mock returned a bare `dict` instead of `list[dict]`** (`drained.pop(0)` on a
+   list holding one dict returns the dict itself) — would have `TypeError`'d on `**record`. Fixed
+   by nesting one more list level in the plan's own test data.
+6. **Task 41 itself is a plan amendment.** The operator approved P7's cost item C1 during the P7
+   session, unlocking the true per-handle cap residual — but the naive protocol-signature change
+   the residual implied would have broken all three real P6/P7-owned adapter modules immediately
+   (`TypeError: unexpected keyword argument`, verified via grep — none of them accept `**kwargs`).
+   Amended the plan with a narrower, non-breaking, introspection-gated seam instead of the
+   original implication of a blind signature change.
+7. (Not a plan-text bug, but the same discipline) **The exit-code table's row 17** originally
+   described "Unhandled exception → exit `1`" — the final review found this was still literally
+   true (see finding I-1 below) and, once fixed, needed the table updated to reflect the new
+   `Exit.ENGINE_CRASHED` contract row rather than the pre-fix behavior.
+
+**Mandatory final whole-branch review** (opus, range `65d182b..89b566a`) found 0 Critical, 6
+Important, 8 Minor — the pattern every package in this programme has hit without exception. All
+six Important findings were cross-task interaction bugs invisible to any single task's own
+review:
+
+1. **No catch-all around the engine call in `main()`** — an exception escaping `run_discovery`
+   produced Python's own uncontracted exit 1 with no durable trace, reopening B-42 through a
+   door the exit contract didn't cover. Compounded by Task 25's validate-mode recovery being
+   incomplete for a nonexistent `handle_id` (crashed mid-recovery, after already writing a
+   misleading `discovery.validate_transient_failure` event). Fixed: `Exit.ENGINE_CRASHED = 18`
+   added, a catch-all records `discovery.run_crashed` with a full traceback, and the validate
+   branch's `None`-handle path completed.
+2. **`sweep_stale_runs`'s call site in `main()` ignored `--stale-after-s`** (Task 16 × Task 35) —
+   the byte-duplicated reclaim block (accepted as a Minor by Task 16's own review) only got the
+   CLI-tunable threaded to the copy inside `run_discovery`, not the earlier sweep. Fixed: threaded
+   through both.
+3. **The B-49 "already active" gate wrongly blocked `--mode validate_handle`** (Task 17), which
+   never contends for the single-flight lock — a handle registered mid-run would sit at `pending`
+   forever with only an info-severity event. Fixed: scoped to the modes that actually take the
+   lock.
+4. **A deadline-exceeded run created an unbounded same-day retry loop** (Task 18 × Task 20) — the
+   watermark was never advanced on that specific failure, so the schedule re-fired the same hung
+   run every 15 minutes with no backoff. Fixed: the watermark's instant is now stamped on a
+   deadline-exceeded failure specifically, so `MIN_RUN_INTERVAL_H` applies.
+5. **The registered task's 4-hour `ExecutionTimeLimit` could let one wedged adapter thread
+   silently drop every 15-minute wake for up to 4 hours** (Task 9 × Task 20's honestly-documented
+   non-daemon-thread leak, combined with `MultipleInstancesPolicy=IgnoreNew`). Fixed: reduced to
+   2 hours.
+6. **`_apply_preflight`'s failure branch never called `record_handle_failure`** (Task 38 × Task
+   39) — a platform with a permanently broken credential accumulated nothing and never
+   downgraded, inverting B-82's signal (the milder, recoverable failure downgrades; the worse,
+   permanent one doesn't). This was flagged as an open question during Task 39's own session
+   (deliberately, per programme discipline — not silently resolved either way) and adjudicated
+   in-scope by the final review. Fixed: one `record_handle_failure` call added.
+
+All six fixed in one consolidated dispatch, re-reviewed (opus) and confirmed ADDRESSED with zero
+new Critical/Important breakage. Both suites re-verified green after the fix (app 1781 passed/4
+skipped, root 445 passed/1 skipped). 2 trivial Minor findings from the fix-wave re-review were
+parked, not fixed (doc-only exit-table drift, since folded into this outcome section and §3's
+table; and an imprecise code comment) — neither blocks anything.
+
+**S1 findings, confirmed closed with an observed-failing-first test:** B-47 (Task 7), B-50
+(Tasks 13-15), F-16 (Task 8), F-68 (Task 26). All four independently re-verified during task
+review with direct empirical reproduction of the pre-fix defect, not just a passing test taken
+on faith.
+
+**CI:** all three jobs (`app-suite`, `root-suite`, `no-live-credentials`) green on both the PR's
+final commit and the merge commit `deb196f` — the second package in a row (after P7) to ship
+fully green on a genuinely different machine. See `RESUME-PROMPT.md` for the current baseline.
