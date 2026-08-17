@@ -151,13 +151,23 @@ BrightDataResponseError = brightdata_job.BrightDataResponseError
 BrightDataConfigError = brightdata_job.BrightDataConfigError
 
 
-def api_key() -> str | None:
+def key_file_for(repo_root: Path | None) -> Path:
+    """The credential file, resolved against the same root everything else
+    uses. F-69: KEY_FILE was anchored to the real repo, so a test passing
+    repo_root=tmp_path was still one env var away from a live token."""
+    if repo_root is None:
+        return KEY_FILE
+    return Path(repo_root) / "pipeline-app" / KEY_FILE.name
+
+
+def api_key(repo_root: Path | None = None) -> str | None:
     """The Bright Data API token, or None if not configured. Reads this
-    module's KEY_ENV_VAR/KEY_FILE at call time so tests can patch them."""
-    return brightdata_job.read_key(KEY_ENV_VAR, KEY_FILE)
+    module's KEY_ENV_VAR and the repo_root-resolved key file at call time so
+    tests can patch them."""
+    return brightdata_job.read_key(KEY_ENV_VAR, key_file_for(repo_root))
 
 
-def preflight() -> str | None:
+def preflight(repo_root: Path | None = None) -> str | None:
     """None if this platform can run; one operator-facing message if it cannot.
 
     B-21: the per-job guard in _run_collection_job stays as a backstop, but it
@@ -166,7 +176,7 @@ def preflight() -> str | None:
     refusing to start. run_discovery_cron calls this once before the handle
     loop (P8).
     """
-    if api_key() is None:
+    if api_key(repo_root=repo_root) is None:
         return (f"facebook: Bright Data API key not configured "
                 f"(set {KEY_ENV_VAR} or {KEY_FILE.name}) -- every facebook "
                 f"handle in this run will fail")

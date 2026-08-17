@@ -42,6 +42,34 @@ def test_parse_published_rejects_unusable_values():
     assert li._parse_published("07/08/2026 14:00:09") is None
 
 
+def test_key_file_honours_the_repo_root_everything_else_uses(monkeypatch, tmp_path):
+    # li.KEY_FILE.name, not the literal "brightdata_api_key.txt": the
+    # autouse isolation fixture above already repoints KEY_FILE at
+    # tmp_path/"no-brightdata_api_key.txt" for this test, and key_file_for
+    # must resolve against whatever basename KEY_FILE currently carries.
+    (tmp_path / "pipeline-app").mkdir()
+    (tmp_path / "pipeline-app" / li.KEY_FILE.name).write_text("sandbox-key",
+                                                                encoding="utf-8")
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    assert li.profile_adapter().api_key(repo_root=tmp_path) == "sandbox-key"
+
+
+def test_a_sandboxed_root_without_a_key_file_yields_no_key(monkeypatch, tmp_path):
+    """The defect F-69 names: repo_root=tmp_path used to be ignored entirely,
+    so this returned the real repo's token."""
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    assert li.profile_adapter().api_key(repo_root=tmp_path) is None
+
+
+def test_api_key_without_a_repo_root_still_reads_the_module_key_file(monkeypatch, tmp_path):
+    """Existing callers pass nothing; the default must not change."""
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("module-key", encoding="utf-8")
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(li, "KEY_FILE", key_file)
+    assert li.profile_adapter().api_key() == "module-key"
+
+
 def test_preflight_reports_a_missing_key_once_without_calling_bright_data(monkeypatch, tmp_path):
     monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
     monkeypatch.setattr(li, "KEY_FILE", tmp_path / "absent.txt")

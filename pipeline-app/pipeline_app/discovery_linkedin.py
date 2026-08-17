@@ -190,10 +190,19 @@ class LinkedInAdapter:
 
     # -- credentials and request shape -----------------------------------
 
-    def api_key(self) -> str | None:
-        return brightdata_job.read_key(KEY_ENV_VAR, KEY_FILE)
+    def key_file_for(self, repo_root: Path | None) -> Path:
+        """The credential file, resolved against the same root everything
+        else uses. F-69: KEY_FILE was anchored to the real repo, so a test
+        passing repo_root=tmp_path was still one env var away from a live
+        token."""
+        if repo_root is None:
+            return KEY_FILE
+        return Path(repo_root) / "pipeline-app" / KEY_FILE.name
 
-    def preflight(self) -> str | None:
+    def api_key(self, repo_root: Path | None = None) -> str | None:
+        return brightdata_job.read_key(KEY_ENV_VAR, self.key_file_for(repo_root))
+
+    def preflight(self, repo_root: Path | None = None) -> str | None:
         """None if this platform can run; one operator-facing message if it
         cannot.
 
@@ -203,7 +212,7 @@ class LinkedInAdapter:
         'completed_with_errors' rather than refusing to start.
         run_discovery_cron calls this once before the handle loop (P8).
         """
-        if self.api_key() is None:
+        if self.api_key(repo_root=repo_root) is None:
             return (f"{self.platform}: Bright Data API key not configured "
                     f"(set {KEY_ENV_VAR} or {KEY_FILE.name}) -- every "
                     f"{self.platform} handle in this run will fail")
