@@ -206,11 +206,27 @@ def _write_abandoned_records_for_reclaimed_runs(conn: sqlite3.Connection, repo_r
     for reclaimed_id in reclaimed_ids:
         reclaimed_row = db_mod.get_run(conn, reclaimed_id)
         finished_at = now_iso(now)
+        # B-51: the dead process's completed handles are still on record in
+        # discovery_run_handles even though it never got to write its own
+        # record -- reconstruct handle_results from those rows (joined to
+        # `handles` for the display fields the row itself doesn't carry)
+        # instead of passing [], so the record reports the work actually
+        # done rather than contradicting its own DB rows.
+        handle_results = []
+        for row in db_mod.list_run_handle_results(conn, reclaimed_id):
+            handle_row = db_mod.get_handle(conn, row["handle_id"])
+            handle_results.append({
+                "handle": handle_row["handle"], "platform": handle_row["platform"],
+                "cohort": handle_row["cohort"], "status": row["status"],
+                "items_downloaded": row["items_downloaded"],
+                "last_seen_published_at": handle_row["last_seen_published_at"],
+                "error_message": row["error_message"],
+            })
         md_path = write_run_record(repo_root, {
             "run_id": reclaimed_row["run_id"], "trigger": reclaimed_row["trigger"], "mode": reclaimed_row["mode"],
             "status": "abandoned", "started_at": reclaimed_row["started_at"], "finished_at": finished_at,
             "backfill_start": reclaimed_row["backfill_start"], "backfill_end": reclaimed_row["backfill_end"],
-        }, [])  # no handle_results: we don't know how far the dead process got
+        }, handle_results, partial=True)
         _finish_run_guarded(conn, reclaimed_id, "abandoned", finished_at, str(md_path))
 
 

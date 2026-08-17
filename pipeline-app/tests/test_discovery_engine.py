@@ -470,6 +470,23 @@ def test_run_discovery_reclaims_stale_run_and_writes_abandoned_record(engine_con
     assert stale_row["md_path"] is not None
 
 
+def test_an_abandoned_record_reports_the_work_its_db_rows_prove(engine_conn, tmp_path):
+    """B-51: _write_abandoned_records_for_reclaimed_runs passed [] by design, so
+    the markdown record -- the durable artifact a future reader trusts -- said
+    'Pulled 0 new items across 0 handles' while discovery_run_handles held a row
+    per completed handle. On a hard reboot mid-run it is the only post-mortem."""
+    handle_id = db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    dead_id = db.insert_running_run(engine_conn, "dead", "manual", "incremental",
+                                    "2026-07-30T05:00:00+00:00")
+    db.record_handle_result(engine_conn, dead_id, handle_id, "ok", 4)
+    now = _dt.datetime(2026, 7, 30, 6, 0, tzinfo=_dt.timezone.utc)
+    run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({})},
+                  trigger="manual", mode="incremental", now=now)
+    record = Path(db.get_run(engine_conn, dead_id)["md_path"]).read_text(encoding="utf-8")
+    assert "items_downloaded: 4" in record
+    assert "partial" in record.lower()
+
+
 def test_run_discovery_validate_handle_bypasses_lock_while_a_run_is_active(engine_conn, tmp_path):
     db.insert_running_run(engine_conn, "already-running", "manual", "incremental", now_iso())
     handle_id = db.create_handle(engine_conn, "youtube", "@new", "New", "guru", None, now_iso())

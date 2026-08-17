@@ -10,7 +10,8 @@ import yaml
 from pipeline_app.discovery_paths import run_record_path
 
 
-def write_run_record(repo_root: Path, run_row: dict, handle_results: list[dict]) -> Path:
+def write_run_record(repo_root: Path, run_row: dict, handle_results: list[dict],
+                      partial: bool = False) -> Path:
     status_counts = {"ok": 0, "no_new_content": 0, "handle_not_found": 0, "error": 0}
     items_downloaded = 0
     for r in handle_results:
@@ -37,9 +38,10 @@ def write_run_record(repo_root: Path, run_row: dict, handle_results: list[dict])
         "handles_errored": status_counts["error"],
     }
 
+    summary_prefix = "Partial -- the process died; these counts are a floor. " if partial else ""
     lines = ["---", yaml.safe_dump(frontmatter, sort_keys=False).rstrip("\n"), "---", "",
               "## Summary", "",
-              f"Pulled {items_downloaded} new items across {status_counts['ok']} handles with "
+              f"{summary_prefix}Pulled {items_downloaded} new items across {status_counts['ok']} handles with "
               f"new content. {status_counts['handle_not_found']} handle(s) not found, "
               f"{status_counts['error']} errored.", "",
               "## Per-handle results", ""]
