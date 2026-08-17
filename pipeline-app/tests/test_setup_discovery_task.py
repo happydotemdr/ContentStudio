@@ -1,6 +1,16 @@
 from pathlib import Path
+from xml.etree import ElementTree
 
-from scripts.setup_discovery_task import build_schtasks_command, main
+from scripts.setup_discovery_task import build_schtasks_command, build_task_xml, main
+
+
+def _xml():
+    return build_task_xml(
+        Path("C:/venv/Scripts/python.exe"),
+        Path("C:/repo/pipeline-app/run_discovery_cron.py"),
+        log_path=Path("C:/repo/pipeline-app/logs/discovery-task.log"),
+        run_as="DOMAIN\\bking",
+    )
 
 
 def test_build_schtasks_command_shape():
@@ -42,3 +52,32 @@ def test_main_apply_executes_schtasks(monkeypatch):
     assert exit_code == 0
     assert len(calls) == 1
     assert calls[0][0] == "schtasks"
+
+
+def test_task_xml_redirects_stdout_and_stderr_to_a_log_file():
+    """D-02: the registered action captured no output, so all 35 stderr
+    diagnostics on the scheduled path were written and immediately discarded."""
+    xml = build_task_xml(Path("C:/venv/Scripts/python.exe"),
+                         Path("C:/repo/pipeline-app/run_discovery_cron.py"),
+                         log_path=Path("C:/repo/pipeline-app/logs/discovery-task.log"),
+                         run_as="DOMAIN\\bking")
+    assert ">>" in xml and "2>&1" in xml
+    assert "discovery-task.log" in xml
+
+
+def test_task_xml_runs_on_battery_and_catches_up_a_missed_start():
+    """B-44: schtasks-created tasks inherit DisallowStartIfOnBatteries, so on a
+    laptop on battery the run simply does not start, with no diagnostic."""
+    xml = _xml()
+    assert "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" in xml
+    assert "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" in xml
+    assert "<StartWhenAvailable>true</StartWhenAvailable>" in xml
+
+
+def test_task_xml_pins_the_logon_model_and_working_directory():
+    xml = _xml()
+    root = ElementTree.fromstring(xml)
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    assert root.find(".//t:Principal/t:LogonType", ns).text == "S4U"
+    assert root.find(".//t:Exec/t:WorkingDirectory", ns).text.endswith("pipeline-app")
+    assert root.find(".//t:Repetition/t:Interval", ns).text == "PT15M"

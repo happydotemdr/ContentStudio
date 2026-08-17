@@ -8,6 +8,9 @@ once, after cloning/setting up the repo.
 Usage:
   python scripts/setup_discovery_task.py            # dry run: prints the command
   python scripts/setup_discovery_task.py --apply     # actually registers the task
+
+The XML-based registration (build_task_xml) pins LogonType S4U -- the task runs
+whether the user is logged on or not, without Task Scheduler storing a password.
 """
 from __future__ import annotations
 
@@ -17,6 +20,53 @@ import sys
 from pathlib import Path
 
 TASK_NAME = "ContentStudio-Discovery"
+LOG_NAME = "discovery-task.log"
+
+
+def default_log_path(pipeline_app_root: Path) -> Path:
+    return pipeline_app_root / "logs" / LOG_NAME
+
+
+def build_task_action(python_exe: Path, cron_script: Path, log_path: Path) -> str:
+    """The command Task Scheduler actually runs. Wrapped in `cmd /c` purely for
+    the redirection: without it the child's stdout and stderr go to a console
+    that does not exist, which is D-02. The doubled outer quotes are cmd.exe's
+    rule for a command line that itself starts with a quote."""
+    return (f'/c ""{python_exe}" "{cron_script}" --mode scheduled '
+            f'>> "{log_path}" 2>&1"')
+
+
+def build_task_xml(python_exe: Path, cron_script: Path, *, log_path: Path,
+                   run_as: str, working_dir: Path | None = None) -> str:
+    working_dir = working_dir or cron_script.parent
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>ContentStudio discovery wake (15-minute trigger; run_discovery_cron.py decides per wake whether a run is due).</Description></RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Repetition><Interval>PT15M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals><Principal id="Author">
+    <UserId>{run_as}</UserId><LogonType>S4U</LogonType><RunLevel>LeastPrivilege</RunLevel>
+  </Principal></Principals>
+  <Settings>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <ExecutionTimeLimit>PT4H</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author"><Exec>
+    <Command>cmd.exe</Command>
+    <Arguments><![CDATA[{build_task_action(python_exe, cron_script, log_path)}]]></Arguments>
+    <WorkingDirectory>{working_dir}</WorkingDirectory>
+  </Exec></Actions>
+</Task>
+"""
 
 
 def build_schtasks_command(python_exe: Path, cron_script: Path) -> list[str]:
