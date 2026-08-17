@@ -467,3 +467,15 @@ def test_config_int_falls_back_to_the_default_and_reports_a_bad_override(monkeyp
 def test_config_int_rejects_a_nonpositive_override(monkeypatch):
     monkeypatch.setenv("BRIGHTDATA_TEST_KNOB", "0")
     assert bd.config_int("BRIGHTDATA_TEST_KNOB", 10) == 10
+
+
+def test_a_full_cap_batch_is_saturated():
+    assert bd.is_saturated(10, cap=10) is True
+    assert bd.is_saturated(11, cap=10) is True
+
+
+def test_a_short_batch_is_not_saturated():
+    """Distinguishability, at the unit level: a genuinely quiet account and a
+    truncated one must not compute the same."""
+    assert bd.is_saturated(9, cap=10) is False
+    assert bd.is_saturated(0, cap=10) is False

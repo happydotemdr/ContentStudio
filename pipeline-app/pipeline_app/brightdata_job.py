@@ -139,6 +139,17 @@ def config_int(name: str, default: int) -> int:
     return value
 
 
+def is_saturated(collected: int, *, cap: int) -> bool:
+    """True when the cap, not the account, decided where this batch ended.
+
+    B-02 (S1): the four Bright Data platforms fetch at most `cap` posts per
+    handle per run and are all excluded from BACKFILL_SUPPORTED_PLATFORMS, so
+    anything above the cap is dropped with no recovery path at all. A
+    saturated batch is therefore a data-loss event, not a busy day.
+    """
+    return cap > 0 and collected >= cap
+
+
 class _BrightDataJobError(Exception):
     """Base for job-level failures. Carries the snapshot id as an ATTRIBUTE,
     not only inside the message: a snapshot the operator paid for must be
