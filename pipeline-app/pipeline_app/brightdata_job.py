@@ -7,7 +7,9 @@ job that times out or reports 'failed' MUST raise, never return []. An empty
 list means "the job completed and there was genuinely nothing", which
 discovery_engine records as the healthy status 'no_new_content'. Returning []
 on failure would make a paid, failed job indistinguishable from a quiet day --
-the exact bug that shipped in the first Instagram adapter.
+the exact bug that shipped in the first Instagram adapter. The tests that pin
+this invariant are test_brightdata_job.py's *_never_fetches_* and
+*_distinguishable_* pair -- deleting them re-opens D-03.
 
 This module knows nothing about any particular dataset. Callers supply the
 dataset id, the query params that select the product mode, and the request
@@ -15,22 +17,248 @@ body.
 """
 from __future__ import annotations
 
+import datetime as _dt
+import json
 import os
 import time
 from pathlib import Path
 
 import requests
 
+from pipeline_app import obs
+
 BRIGHTDATA_API_BASE = "https://api.brightdata.com/datasets/v3"
 REQUEST_TIMEOUT_S = 30
 
+_DIAGNOSTICS: list[dict] = []
 
-class BrightDataJobTimeout(Exception):
+PENDING_STORE_PATH = Path(__file__).resolve().parent.parent / "logs" / "brightdata-pending.json"
+PENDING_MAX_AGE_H = 48
+
+
+def _read_store() -> dict:
+    try:
+        payload = json.loads(PENDING_STORE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_store(payload: dict) -> None:
+    # Write-temp-then-rename, same as every adapter's download_item: a killed
+    # process must never leave a half-written store that reads as valid.
+    PENDING_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = PENDING_STORE_PATH.with_name(PENDING_STORE_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(PENDING_STORE_PATH)
+
+
+PENDING_MAX_ENTRIES = 3
+
+
+def _entries_for(store: dict, key: str) -> list[dict]:
+    """Tolerate the pre-list single-dict store shape on read, so a store file
+    written by an older build of this module does not look corrupt."""
+    raw = store.get(key)
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        return [raw]
+    return []
+
+
+def record_pending(key: str, snapshot_id: str) -> None:
+    """Remember a snapshot that was paid for and not collected (B-19).
+
+    Stored as a small bounded LIST per platform/handle key, not a single
+    slot: a handle can time out twice in a row (243s measured against a 600s
+    ceiling is not exotic), and a single-slot store would silently overwrite
+    the first paid-for, uncollected snapshot id with the second, losing it
+    forever. `resume_pending` tries every entry here, oldest first.
+    """
+    store = _read_store()
+    entries = _entries_for(store, key)
+    entries = entries + [{
+        "snapshot_id": snapshot_id,
+        "recorded_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    }]
+    if len(entries) > PENDING_MAX_ENTRIES:
+        evicted = entries.pop(0)
+        record_diagnostic(
+            kind="brightdata.pending_snapshot_evicted", severity="error",
+            source="brightdata_job",
+            message=(f"{key}: more than {PENDING_MAX_ENTRIES} snapshots are pending "
+                     f"at once; evicted the oldest, snapshot {evicted['snapshot_id']!r}, "
+                     f"which is now unrecoverable"),
+            detail={"key": key, "snapshot_id": evicted["snapshot_id"],
+                    "cap": PENDING_MAX_ENTRIES},
+        )
+    store[key] = entries
+    _write_store(store)
+
+
+def _valid_entries(key: str) -> list[dict]:
+    """Every pending entry for this key not older than PENDING_MAX_AGE_H,
+    oldest first (Bright Data snapshots do not live forever, and a stale
+    entry would cost one wasted poll every run)."""
+    valid = []
+    for entry in _entries_for(_read_store(), key):
+        try:
+            recorded = _dt.datetime.fromisoformat(entry["recorded_at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        age_h = (_dt.datetime.now(_dt.timezone.utc) - recorded).total_seconds() / 3600
+        if age_h <= PENDING_MAX_AGE_H:
+            valid.append(entry)
+    return valid
+
+
+def load_pending(key: str) -> dict | None:
+    """The OLDEST non-expired pending entry for this platform/handle, or None
+    if there is none. A convenience for callers/tests that only care about a
+    single entry -- resume_pending itself walks every valid entry, not just
+    this one."""
+    valid = _valid_entries(key)
+    return valid[0] if valid else None
+
+
+def clear_pending(key: str, snapshot_id: str) -> None:
+    """Remove exactly the entry for `snapshot_id`, leaving any OTHER pending
+    entry for this key (e.g. an earlier snapshot that is still running)
+    untouched."""
+    store = _read_store()
+    entries = _entries_for(store, key)
+    remaining = [e for e in entries if e.get("snapshot_id") != snapshot_id]
+    if len(remaining) == len(entries):
+        return
+    if remaining:
+        store[key] = remaining
+    else:
+        store.pop(key, None)
+    _write_store(store)
+
+
+def record_diagnostic(*, kind: str, severity: str, source: str, message: str,
+                      detail: dict | None = None) -> dict:
+    """One structured, durable adapter diagnostic (B-01).
+
+    Writes through to obs.log -- stderr AND the dated log file, which is the
+    surface the scheduled task lacks entirely today -- and buffers a record
+    for drain_diagnostics(). Never raises: a failure to report must not mask
+    the degradation being reported.
+    """
+    record = {"kind": kind, "severity": severity, "source": source,
+              "message": message, "detail": dict(detail or {})}
+    _DIAGNOSTICS.append(record)
+    try:
+        obs.log(kind, level=severity, source=source, message=message, **record["detail"])
+    except Exception:  # noqa: BLE001 - see the docstring; never widened
+        pass
+    return record
+
+
+def drain_diagnostics() -> list[dict]:
+    """Take and clear the buffered diagnostics.
+
+    P8's run loop calls this once per handle and writes each record with
+    obs.record_event(conn, run_id=..., **record). Draining rather than
+    accumulating keeps one handle's diagnostics off another handle's row.
+    """
+    drained = list(_DIAGNOSTICS)
+    _DIAGNOSTICS.clear()
+    return drained
+
+
+def reset_state() -> None:
+    """Clear the buffered diagnostics without returning them.
+
+    F-67: like the per-adapter enumerate caches, _DIAGNOSTICS is a process
+    global no fixture cleared. Test isolation fixtures call this (as well as
+    each adapter's reset_caches) before and after every test.
+    """
+    _DIAGNOSTICS.clear()
+
+
+def config_int(name: str, default: int) -> int:
+    """An operational knob: environment override, module literal as default.
+
+    B-03: every cap and timeout was a source literal. Overrides are read PER
+    PLATFORM and never shared -- discovery_x.py:40-43 records why one number
+    does not fit all four. Note that raising an ITEM CAP raises Bright Data
+    spend proportionally; raising a TIMEOUT does not.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        record_diagnostic(kind="config.bad_override", severity="warning",
+                          source="brightdata_job",
+                          message=f"{name}={raw!r} is not a positive integer; using {default}",
+                          detail={"name": name, "raw": raw, "default": default})
+        return default
+    return value
+
+
+def is_saturated(collected: int, *, cap: int) -> bool:
+    """True when the cap, not the account, decided where this batch ended.
+
+    B-02 (S1): the four Bright Data platforms fetch at most `cap` posts per
+    handle per run and are all excluded from BACKFILL_SUPPORTED_PLATFORMS, so
+    anything above the cap is dropped with no recovery path at all. A
+    saturated batch is therefore a data-loss event, not a busy day.
+    """
+    return cap > 0 and collected >= cap
+
+
+class _BrightDataJobError(Exception):
+    """Base for job-level failures. Carries the snapshot id as an ATTRIBUTE,
+    not only inside the message: a snapshot the operator paid for must be
+    recoverable by code, not by reading prose out of error_message (B-19)."""
+
+    def __init__(self, message: str, *, snapshot_id: str | None = None,
+                 label: str = "", poll_timeout_s: float | None = None):
+        super().__init__(message)
+        self.snapshot_id = snapshot_id
+        self.label = label
+        self.poll_timeout_s = poll_timeout_s
+
+
+class BrightDataJobTimeout(_BrightDataJobError):
     """A Bright Data collection job did not reach 'ready' within the deadline."""
 
 
-class BrightDataJobFailed(Exception):
+class BrightDataJobFailed(_BrightDataJobError):
     """A Bright Data collection job reported status 'failed'."""
+
+
+class BrightDataResponseError(Exception):
+    """A Bright Data endpoint returned a body this client cannot use.
+
+    Distinct from an HTTP error: the call succeeded, the shape did not. The
+    message names the endpoint AND the keys actually received, which is the
+    difference between a five-minute and a two-hour diagnosis across four
+    platforms (B-20).
+    """
+
+
+class BrightDataConfigError(Exception):
+    """An adapter is configured with a dataset id that cannot be collected."""
+
+
+def _require_provisioned(dataset_id: str) -> None:
+    """B-24: the Instagram adapter carried this check privately, where it was
+    unreachable (its DATASET_ID has been real since 2026-08-06). Here it
+    covers all four adapters and any future one, and it runs before the POST
+    so an unprovisioned id can never start a billed job."""
+    if not (dataset_id or "").strip() or dataset_id.startswith("gd_REPLACE"):
+        raise BrightDataConfigError(
+            f"Bright Data dataset id {dataset_id!r} is not provisioned -- set the "
+            "real dataset id for this adapter before triggering a job"
+        )
 
 
 def read_key(env_var: str, key_file: Path) -> str | None:
@@ -51,6 +279,57 @@ def _auth(key: str) -> dict:
     return {"Authorization": f"Bearer {key}"}
 
 
+def _shape_of(payload) -> str:
+    if isinstance(payload, dict):
+        return f"keys {sorted(payload)}"
+    return type(payload).__name__
+
+
+def _json_field(response, endpoint: str, field: str):
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise BrightDataResponseError(
+            f"{endpoint} returned a non-JSON body"
+        ) from exc
+    if not isinstance(payload, dict) or field not in payload:
+        raise BrightDataResponseError(
+            f"{endpoint} response has no '{field}' -- received {_shape_of(payload)}"
+        )
+    return payload[field]
+
+
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+MAX_ATTEMPTS = 4
+RETRY_BASE_S = 2.0
+
+
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return True
+    response = getattr(exc, "response", None)
+    return response is not None and response.status_code in RETRY_STATUSES
+
+
+def _with_retry(call, *, what: str):
+    """Bounded retry with backoff for a NON-BILLING call.
+
+    B-18: a single transient 429/503 on one of up to 60 polls used to abandon
+    a collection job that was already triggered and billed. Polling and
+    fetching a snapshot cost nothing, so retrying them is free insurance.
+    trigger() is deliberately NOT wrapped -- see the comment there.
+    On exhaustion the original exception propagates, so a genuine failure
+    still reaches the engine's per-handle error path.
+    """
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 - re-raised below unless transient
+            if attempt == MAX_ATTEMPTS or not _is_transient(exc):
+                raise
+            time.sleep(RETRY_BASE_S * (2 ** (attempt - 1)))
+
+
 def trigger(api_base: str, dataset_id: str, params: dict, body: list[dict], key: str) -> str:
     """Start a collection job; returns its snapshot id.
 
@@ -61,6 +340,11 @@ def trigger(api_base: str, dataset_id: str, params: dict, body: list[dict], key:
     which no adapter uses: a discovery job takes minutes and would hang an
     HTTP call.
     """
+    _require_provisioned(dataset_id)
+    # NOT wrapped in _with_retry. Bright Data bills per record: a trigger whose
+    # response is lost in transit may have started a job on the vendor side, so
+    # a retry can create -- and pay for -- a second collection of the same
+    # posts. Poll and fetch are free and are retried; this one is not (B-18).
     response = requests.post(
         f"{api_base}/trigger",
         params={"dataset_id": dataset_id, **params},
@@ -69,49 +353,183 @@ def trigger(api_base: str, dataset_id: str, params: dict, body: list[dict], key:
         timeout=REQUEST_TIMEOUT_S,
     )
     response.raise_for_status()
-    return response.json()["snapshot_id"]
+    return _json_field(response, "trigger", "snapshot_id")
 
 
 def poll_status(api_base: str, job_id: str, key: str) -> str:
-    response = requests.get(
-        f"{api_base}/progress/{job_id}",
-        headers=_auth(key),
-        timeout=REQUEST_TIMEOUT_S,
-    )
-    response.raise_for_status()
-    return response.json()["status"]
+    def _do_poll():
+        response = requests.get(
+            f"{api_base}/progress/{job_id}",
+            headers=_auth(key),
+            timeout=REQUEST_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        return _json_field(response, f"progress/{job_id}", "status")
+
+    return _with_retry(_do_poll, what=f"progress/{job_id}")
 
 
 def fetch_results(api_base: str, job_id: str, key: str) -> list[dict]:
-    response = requests.get(
-        f"{api_base}/snapshot/{job_id}",
-        params={"format": "json"},
-        headers=_auth(key),
-        timeout=REQUEST_TIMEOUT_S,
-    )
-    response.raise_for_status()
-    return response.json()
+    def _do_fetch():
+        response = requests.get(
+            f"{api_base}/snapshot/{job_id}",
+            params={"format": "json"},
+            headers=_auth(key),
+            timeout=REQUEST_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise BrightDataResponseError(
+                f"snapshot/{job_id} returned {type(payload).__name__}, not a list of "
+                f"rows -- received {_shape_of(payload)}"
+            )
+        return payload
+
+    return _with_retry(_do_fetch, what=f"snapshot/{job_id}")
+
+
+# Default OFF. Deleting a snapshot is free but irreversible: run it only once
+# the operator is satisfied the fetched rows reached disk. It is NEVER called
+# on the timeout path -- that snapshot is the only copy of data already paid
+# for, and T8/T9 exist to recover it.
+DELETE_AFTER_FETCH = False
+
+
+def delete_snapshot(api_base: str, job_id: str, key: str) -> None:
+    """Delete a collected snapshot from Bright Data's side (B-19 cost item C6).
+
+    Free to call, but irreversible: a deleted snapshot cannot be recovered by
+    resume_pending or anything else. Callers must only invoke this once the
+    corresponding rows are already safely in hand -- see DELETE_AFTER_FETCH
+    and its use in await_results.
+    """
+    def _do_delete():
+        response = requests.delete(
+            f"{api_base}/snapshot/{job_id}",
+            headers=_auth(key),
+            timeout=REQUEST_TIMEOUT_S,
+        )
+        response.raise_for_status()
+        return response
+
+    _with_retry(_do_delete, what=f"delete snapshot/{job_id}")
 
 
 def await_results(trigger_fn, poll_fn, fetch_fn, *, label: str,
-                  poll_timeout_s: float, poll_interval_s: float) -> list[dict]:
+                  poll_timeout_s: float, poll_interval_s: float,
+                  pending_key: str | None = None,
+                  cleanup_fn=None) -> list[dict]:
     """Run one full trigger -> poll -> fetch cycle.
 
     The three callables are injected rather than called directly so each
     adapter keeps its own module-level trigger/poll/fetch functions -- which
     is what lets adapter tests monkeypatch them. `label` is interpolated into
     error messages (e.g. "for nike") so a failure names the handle.
+
+    `pending_key` identifies this platform/handle for the durable pending-
+    snapshot store (B-19). On timeout the job's snapshot id is persisted so a
+    later run can fetch it for free instead of abandoning paid-for data. A
+    failed job is not persisted -- there is nothing to recover.
+
+    `cleanup_fn`, if given, is called ONLY in the ready branch, after
+    fetch_fn has already returned successfully -- never on the failed or
+    timeout paths, where the snapshot may be the only copy of data already
+    paid for. Callers wire delete_snapshot in here when DELETE_AFTER_FETCH
+    is True; this function does not consult that flag itself.
     """
     job_id = trigger_fn()
     deadline = time.monotonic() + poll_timeout_s
     while True:
         status = poll_fn(job_id)
         if status == "ready":
-            return fetch_fn(job_id)
+            rows = fetch_fn(job_id)
+            if cleanup_fn is not None:
+                cleanup_fn(job_id)
+            return rows
         if status == "failed":
-            raise BrightDataJobFailed(f"Bright Data job {job_id} {label} failed")
+            raise BrightDataJobFailed(
+                f"Bright Data job {job_id} {label} failed",
+                snapshot_id=job_id, label=label, poll_timeout_s=poll_timeout_s
+            )
         if time.monotonic() >= deadline:
+            if pending_key:
+                record_pending(pending_key, job_id)
+            record_diagnostic(
+                kind="brightdata.snapshot_abandoned", severity="error",
+                source=label,
+                message=f"Bright Data job {job_id} {label} timed out after "
+                         f"{poll_timeout_s}s -- snapshot {job_id} left uncollected",
+                detail={"snapshot_id": job_id, "label": label,
+                        "poll_timeout_s": poll_timeout_s, "pending_key": pending_key},
+            )
             raise BrightDataJobTimeout(
-                f"Bright Data job {job_id} {label} timed out after {poll_timeout_s}s"
+                f"Bright Data job {job_id} {label} timed out after {poll_timeout_s}s",
+                snapshot_id=job_id, label=label, poll_timeout_s=poll_timeout_s
             )
         time.sleep(poll_interval_s)
+
+
+def resume_pending(key: str, poll_fn, fetch_fn) -> list[dict] | None:
+    """One free attempt to collect a snapshot a previous run paid for and
+    abandoned (B-19).
+
+    A key can have more than one pending entry (a handle that timed out on
+    two consecutive runs), so this tries every non-expired entry, oldest
+    first, and returns the rows for the first one that is ready -- clearing
+    only that entry. Any other still-pending entry is left alone.
+
+    Returns the rows if some snapshot is now ready, None otherwise. NEVER
+    triggers a new job: the whole point is that this data is already bought.
+
+    A poll error is swallowed into None for that entry -- deliberately,
+    because this is a best-effort recovery running before the real job, and
+    failing here must not fail a run that is otherwise fine -- but the loop
+    still moves on to try any other pending entry for this key.
+
+    A snapshot that polls 'ready' but then fails to FETCH is different: that
+    is loud and this function stops and returns None immediately, without
+    clearing the entry, so a transient fetch failure gets another chance
+    next run (and the entry still expires naturally at PENDING_MAX_AGE_H if
+    it never recovers) -- see resume_fetch_failed below.
+    """
+    for entry in _valid_entries(key):
+        snapshot_id = entry["snapshot_id"]
+        try:
+            status = poll_fn(snapshot_id)
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            record_diagnostic(kind="brightdata.resume_poll_failed", severity="warning",
+                              source="brightdata_job",
+                              message=f"could not poll abandoned snapshot {snapshot_id}: {exc}",
+                              detail={"key": key, "snapshot_id": snapshot_id})
+            continue
+        if status == "ready":
+            try:
+                rows = fetch_fn(snapshot_id)
+            except Exception as exc:  # noqa: BLE001 - see the docstring
+                record_diagnostic(
+                    kind="brightdata.resume_fetch_failed", severity="error",
+                    source="brightdata_job",
+                    message=(f"snapshot {snapshot_id} was ready but its fetch failed: "
+                             f"{exc}; leaving it pending for another attempt"),
+                    detail={"key": key, "snapshot_id": snapshot_id},
+                )
+                return None
+            clear_pending(key, snapshot_id)
+            record_diagnostic(kind="brightdata.resumed", severity="warning",
+                              source="brightdata_job",
+                              message=(f"recovered {len(rows)} row(s) from snapshot "
+                                       f"{snapshot_id}, abandoned by an earlier run"),
+                              detail={"key": key, "snapshot_id": snapshot_id, "rows": len(rows)})
+            return rows
+        if status == "failed":
+            clear_pending(key, snapshot_id)
+            record_diagnostic(kind="brightdata.resume_failed", severity="error",
+                              source="brightdata_job",
+                              message=(f"abandoned snapshot {snapshot_id} reported 'failed'; "
+                                       f"its records are lost"),
+                              detail={"key": key, "snapshot_id": snapshot_id})
+            continue
+        # status == "running" (or any other non-terminal value): leave this
+        # entry pending untouched and try the next one, if any.
+    return None

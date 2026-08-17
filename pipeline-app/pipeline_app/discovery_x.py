@@ -36,7 +36,8 @@ KEY_FILE = Path(__file__).resolve().parent.parent / "brightdata_api_key.txt"
 
 PLATFORM = "x"
 
-MAX_ITEMS_PER_RUN = 10
+MAX_ITEMS_PER_RUN = 10           # the default; override with the env var below
+MAX_ITEMS_ENV_VAR = "BRIGHTDATA_MAX_ITEMS_X"
 # 600, NOT the 300 Instagram and LinkedIn use. Measured latency was 243s at
 # limit_per_input=10 -- the production setting -- so 300 would leave under a
 # minute of margin and turn ordinary slowness into a BrightDataJobTimeout on
@@ -45,6 +46,14 @@ POLL_TIMEOUT_S = 600
 POLL_INTERVAL_S = 5
 
 TITLE_MAX_CHARS = 60
+
+
+def max_items() -> int:
+    return brightdata_job.config_int(MAX_ITEMS_ENV_VAR, MAX_ITEMS_PER_RUN)
+
+
+def poll_timeout_s() -> float:
+    return brightdata_job.config_int("BRIGHTDATA_POLL_TIMEOUT_X", POLL_TIMEOUT_S)
 
 
 def _parse_published(raw: str | None) -> str | None:
@@ -146,18 +155,45 @@ def _normalize_row(row: dict) -> dict | None:
 
 
 BRIGHTDATA_API_BASE = brightdata_job.BRIGHTDATA_API_BASE
-REQUEST_TIMEOUT_S = brightdata_job.REQUEST_TIMEOUT_S
 
 # Re-exported so `pytest.raises(discovery_x.BrightDataJobFailed)` works and
 # callers need not know where the exceptions live.
 BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
 BrightDataJobFailed = brightdata_job.BrightDataJobFailed
+BrightDataResponseError = brightdata_job.BrightDataResponseError
+BrightDataConfigError = brightdata_job.BrightDataConfigError
 
 
-def api_key() -> str | None:
+def key_file_for(repo_root: Path | None) -> Path:
+    """The credential file, resolved against the same root everything else
+    uses. F-69: KEY_FILE was anchored to the real repo, so a test passing
+    repo_root=tmp_path was still one env var away from a live token."""
+    if repo_root is None:
+        return KEY_FILE
+    return Path(repo_root) / "pipeline-app" / KEY_FILE.name
+
+
+def api_key(repo_root: Path | None = None) -> str | None:
     """The Bright Data API token, or None if not configured. Reads this
-    module's KEY_ENV_VAR/KEY_FILE at call time so tests can patch them."""
-    return brightdata_job.read_key(KEY_ENV_VAR, KEY_FILE)
+    module's KEY_ENV_VAR and the repo_root-resolved key file at call time so
+    tests can patch them."""
+    return brightdata_job.read_key(KEY_ENV_VAR, key_file_for(repo_root))
+
+
+def preflight(repo_root: Path | None = None) -> str | None:
+    """None if this platform can run; one operator-facing message if it cannot.
+
+    B-21: the per-job guard in _run_collection_job stays as a backstop, but it
+    fires once per handle, so one unset token used to produce twenty identical
+    error rows and a run that finished 'completed_with_errors' rather than
+    refusing to start. run_discovery_cron calls this once before the handle
+    loop (P8).
+    """
+    if api_key(repo_root=repo_root) is None:
+        return (f"x: Bright Data API key not configured "
+                f"(set {KEY_ENV_VAR} or {KEY_FILE.name}) -- every x "
+                f"handle in this run will fail")
+    return None
 
 
 def profile_url(handle: str) -> str:
@@ -175,7 +211,7 @@ def _trigger_job(handle: str, key: str) -> str:
             "type": "discover_new",
             "discover_by": "profile_url",
             # Server-side per-input record cap: the primary cost control.
-            "limit_per_input": MAX_ITEMS_PER_RUN,
+            "limit_per_input": max_items(),
             "include_errors": "true",
             "notify": "false",
         },
@@ -203,6 +239,17 @@ def _run_collection_job(handle: str) -> list[dict]:
             "Bright Data API key not configured "
             f"(set {KEY_ENV_VAR} or {KEY_FILE.name})"
         )
+    pending_key = f"{PLATFORM}/{handle}"
+    # Free recovery before any billed call: a snapshot an earlier run paid for
+    # and abandoned on timeout (B-19). None means "nothing pending", which is
+    # the ordinary case.
+    resumed = brightdata_job.resume_pending(
+        pending_key,
+        poll_fn=lambda job_id: _poll_job_status(job_id, key),
+        fetch_fn=lambda job_id: _fetch_job_results(job_id, key),
+    )
+    if resumed is not None:
+        return resumed
     # The three lambdas resolve _trigger_job/_poll_job_status/
     # _fetch_job_results through module globals when they run, which is what
     # lets the tests monkeypatch them by name.
@@ -211,8 +258,9 @@ def _run_collection_job(handle: str) -> list[dict]:
         poll_fn=lambda job_id: _poll_job_status(job_id, key),
         fetch_fn=lambda job_id: _fetch_job_results(job_id, key),
         label=f"for {PLATFORM}/{handle}",
-        poll_timeout_s=POLL_TIMEOUT_S,
+        poll_timeout_s=poll_timeout_s(),
         poll_interval_s=POLL_INTERVAL_S,
+        pending_key=pending_key,
     )
 
 
@@ -220,6 +268,27 @@ def _run_collection_job(handle: str) -> list[dict]:
 # read by download_item. Calling Bright Data again per item would double-pay
 # for posts already collected.
 _ENUMERATE_CACHE: dict[str, dict[str, dict]] = {}
+
+
+def reset_caches() -> None:
+    """Clear this module's per-process enumerate cache.
+
+    F-67: the cache is a process global that no fixture cleared, so the suite
+    passed only because each test file happened to use distinct handle names.
+    The repo-wide conftest fixture calls this before every test.
+    """
+    _ENUMERATE_CACHE.clear()
+
+
+def cached_ids(handle: str) -> set[str]:
+    """The item ids this handle's last enumerate retained. A read-only view so
+    tests never reach into _ENUMERATE_CACHE directly."""
+    return set(_ENUMERATE_CACHE.get(handle, {}))
+
+
+def cached_row(handle: str, item_id: str) -> dict:
+    """One retained row. KeyError if absent -- same contract download_item has."""
+    return _ENUMERATE_CACHE[handle][item_id]
 
 
 def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
@@ -249,6 +318,19 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
         print(f"  ! {PLATFORM}/{handle}: dropped {foreign} row(s) by another author",
               file=sys.stderr)
 
+    if unusable:
+        brightdata_job.record_diagnostic(
+            kind="adapter.rows_dropped", severity="warning",
+            source="discovery_x",
+            message=f"{PLATFORM}/{handle}: dropped {unusable} unusable row(s)",
+            detail={"platform": PLATFORM, "handle": handle, "dropped": unusable})
+    if foreign:
+        brightdata_job.record_diagnostic(
+            kind="adapter.foreign_rows_dropped", severity="warning",
+            source="discovery_x",
+            message=f"{PLATFORM}/{handle}: dropped {foreign} row(s) by another author",
+            detail={"platform": PLATFORM, "handle": handle, "dropped": foreign})
+
     if raw_rows and not kept:
         # This run was billed and produced nothing, but process_handle will
         # record the healthy status 'no_new_content' -- indistinguishable from
@@ -265,6 +347,14 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
         print(f"  !! {PLATFORM}/{handle}: Bright Data returned {len(raw_rows)} "
               f"row(s) but none survived filtering. This run was billed and "
               f"captured nothing -- {advice}.", file=sys.stderr)
+        brightdata_job.record_diagnostic(
+            kind="adapter.billed_captured_nothing", severity="error",
+            source="discovery_x",
+            message=(f"{PLATFORM}/{handle}: Bright Data returned {len(raw_rows)} "
+                     f"row(s) but none survived filtering. This run was billed "
+                     f"and captured nothing -- {advice}."),
+            detail={"platform": PLATFORM, "handle": handle,
+                    "raw_count": len(raw_rows)})
 
     # Rows arrive unsorted (verified live); the engine's early-stop dedup
     # assumes newest-first. Sort on the full timestamp, not the date-truncated
@@ -274,7 +364,37 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
     # early-stop dedup before reaching it. Cap AFTER filtering so it bounds
     # retained items.
     kept.sort(key=lambda n: n["published_ts"], reverse=True)
-    kept = kept[:MAX_ITEMS_PER_RUN]
+
+    # B-02 (S1): saturation must be computed on the PRE-cap count, right here
+    # before the client-side slice below discards everything past the cap --
+    # once that slice runs, how many rows Bright Data actually returned is
+    # gone. None of the four Bright Data platforms support backfill, so a
+    # batch that filled the cap is a data-loss event this run made, not a
+    # quiet-account day, and process_handle would otherwise report it as the
+    # healthy status 'ok'.
+    cap = max_items()
+    # Measured against raw_rows, NOT kept: kept has already dropped unusable
+    # and foreign-author rows -- X filters both -- so a batch that filled the
+    # cap but included one such row would otherwise show len(kept) == cap - 1
+    # and never trip the alarm, even though the same cap-truncation data loss
+    # occurred (plan correction, T17 task review, 2026-08-16).
+    if brightdata_job.is_saturated(len(raw_rows), cap=cap):
+        oldest = min((n["published_ts"] for n in kept), default=None)
+        brightdata_job.record_diagnostic(
+            kind="adapter.batch_saturated", severity="error",
+            source="discovery_x",
+            message=(f"{PLATFORM}/{handle}: the batch filled the cap of {cap}. Posts "
+                     f"older than {oldest} in this interval were dropped and there is "
+                     f"no backfill path for this platform. Raise "
+                     f"{MAX_ITEMS_ENV_VAR} (this increases Bright Data spend per run) "
+                     f"or shorten the run interval."),
+            detail={"platform": PLATFORM, "handle": handle, "cap": cap,
+                    "collected": len(kept), "raw_count": len(raw_rows),
+                    "oldest_kept": oldest})
+        print(f"  !! {PLATFORM}/{handle}: batch filled the cap of {cap}; older posts "
+              f"in this interval are unrecoverable", file=sys.stderr)
+
+    kept = kept[:cap]
 
     # Overwrite, not merge: a fresh successful enumerate replaces whatever this
     # handle held, so download_item never reads a stale id.

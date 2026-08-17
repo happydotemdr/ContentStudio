@@ -24,12 +24,13 @@ from pipeline_app import artifacts, brightdata_job
 from pipeline_app.discovery_paths import handle_dir
 
 BRIGHTDATA_API_BASE = brightdata_job.BRIGHTDATA_API_BASE
-REQUEST_TIMEOUT_S = brightdata_job.REQUEST_TIMEOUT_S
 
 # Re-exported so `pytest.raises(discovery_instagram.BrightDataJobFailed)` keeps
 # working and callers need not know the exceptions moved.
 BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
 BrightDataJobFailed = brightdata_job.BrightDataJobFailed
+BrightDataResponseError = brightdata_job.BrightDataResponseError
+BrightDataConfigError = brightdata_job.BrightDataConfigError
 
 # Key lookup order: env var first (works for the scheduled task, which
 # inherits the User environment), then a gitignored file for convenience --
@@ -44,25 +45,79 @@ KEY_FILE = Path(__file__).resolve().parent.parent / "brightdata_api_key.txt"
 # modes; the type/discover_by query params below are what select between them.
 DATASET_ID = "gd_lk5ns7kz21pck8jpis"
 
+# UNVERIFIED FIELD NAMES. Facebook's `profile_handle` and X's `user_posted`
+# were both confirmed against live snapshots on 2026-08-08; this dataset's
+# owner field was not. Read the candidates in order and report loudly when
+# none is present rather than inventing a name -- B-23 asks for the field to
+# be RECORDED (Facebook's rationale: it is what makes "this dataset started
+# returning other accounts" detectable after the fact), not filtered on.
+# Filtering waits for a live sample.
+AUTHOR_FIELD_CANDIDATES = ("user_posted", "profile_name", "owner_username",
+                           "user_username_raw", "username")
 
-def api_key() -> str | None:
+# Same unverified-field-name treatment as AUTHOR_FIELD_CANDIDATES above: the
+# appendix records that Instagram Reels carry a view count in this dataset,
+# but the exact field name was not confirmed against a live snapshot. Unlike
+# author, view_count is an OPTIONAL contract field -- a photo post genuinely
+# has no views, so a miss here means "omit the key", not "report loudly".
+VIEW_COUNT_FIELD_CANDIDATES = ("video_play_count", "video_view_count", "views")
+
+
+def _first_present(row: dict, candidates: tuple[str, ...]):
+    for name in candidates:
+        value = row.get(name)
+        if value not in (None, ""):
+            return name, value
+    return None, None
+
+
+def key_file_for(repo_root: Path | None) -> Path:
+    """The credential file, resolved against the same root everything else
+    uses. F-69: KEY_FILE was anchored to the real repo, so a test passing
+    repo_root=tmp_path was still one env var away from a live token."""
+    if repo_root is None:
+        return KEY_FILE
+    return Path(repo_root) / "pipeline-app" / KEY_FILE.name
+
+
+def api_key(repo_root: Path | None = None) -> str | None:
     """The Bright Data API token, or None if not configured. Reads this
-    module's KEY_ENV_VAR/KEY_FILE at call time so tests can patch them."""
-    return brightdata_job.read_key(KEY_ENV_VAR, KEY_FILE)
+    module's KEY_ENV_VAR and the repo_root-resolved key file at call time so
+    tests can patch them."""
+    return brightdata_job.read_key(KEY_ENV_VAR, key_file_for(repo_root))
 
 
-MAX_ITEMS_PER_RUN = 10
+def preflight(repo_root: Path | None = None) -> str | None:
+    """None if this platform can run; one operator-facing message if it cannot.
+
+    B-21: the per-job guard in _run_collection_job stays as a backstop, but it
+    fires once per handle, so one unset token used to produce twenty identical
+    error rows and a run that finished 'completed_with_errors' rather than
+    refusing to start. run_discovery_cron calls this once before the handle
+    loop (P8).
+    """
+    if api_key(repo_root=repo_root) is None:
+        return (f"instagram: Bright Data API key not configured "
+                f"(set {KEY_ENV_VAR} or {KEY_FILE.name}) -- every instagram "
+                f"handle in this run will fail")
+    return None
+
+
+MAX_ITEMS_PER_RUN = 10           # the default; override with the env var below
+MAX_ITEMS_ENV_VAR = "BRIGHTDATA_MAX_ITEMS_INSTAGRAM"
 POLL_TIMEOUT_S = 300
 POLL_INTERVAL_S = 5
 
 
+def max_items() -> int:
+    return brightdata_job.config_int(MAX_ITEMS_ENV_VAR, MAX_ITEMS_PER_RUN)
+
+
+def poll_timeout_s() -> float:
+    return brightdata_job.config_int("BRIGHTDATA_POLL_TIMEOUT_INSTAGRAM", POLL_TIMEOUT_S)
+
+
 def _trigger_job(handle: str, key: str) -> str:
-    if DATASET_ID.startswith("gd_REPLACE"):
-        raise RuntimeError(
-            "Instagram adapter DATASET_ID is still a placeholder -- provision the "
-            "Bright Data Instagram Posts Scraper API product and set the real "
-            "dataset id in discovery_instagram.py"
-        )
     profile_url = f"https://www.instagram.com/{handle.lstrip('@')}/"
     return brightdata_job.trigger(
         BRIGHTDATA_API_BASE,
@@ -76,13 +131,13 @@ def _trigger_job(handle: str, key: str) -> str:
             "discover_by": "url",
             # Server-side per-input record cap: the primary cost control, and
             # the one that binds even if the dataset ignores num_of_posts.
-            "limit_per_input": MAX_ITEMS_PER_RUN,
+            "limit_per_input": max_items(),
             "include_errors": "true",
             "notify": "false",
         },
         [{
             "url": profile_url,
-            "num_of_posts": MAX_ITEMS_PER_RUN,
+            "num_of_posts": max_items(),
             "start_date": "",
             "end_date": "",
             "post_type": "",
@@ -106,6 +161,17 @@ def _run_collection_job(handle: str) -> list[dict]:
             "Bright Data API key not configured "
             f"(set {KEY_ENV_VAR} or {KEY_FILE.name})"
         )
+    pending_key = f"instagram/{handle}"
+    # Free recovery before any billed call: a snapshot an earlier run paid for
+    # and abandoned on timeout (B-19). None means "nothing pending", which is
+    # the ordinary case.
+    resumed = brightdata_job.resume_pending(
+        pending_key,
+        poll_fn=lambda job_id: _poll_job_status(job_id, key),
+        fetch_fn=lambda job_id: _fetch_job_results(job_id, key),
+    )
+    if resumed is not None:
+        return resumed
     # The three lambdas resolve _trigger_job/_poll_job_status/_fetch_job_results
     # through module globals when they run, which is what keeps the existing
     # monkeypatch-based tests working after the extraction.
@@ -114,8 +180,9 @@ def _run_collection_job(handle: str) -> list[dict]:
         poll_fn=lambda job_id: _poll_job_status(job_id, key),
         fetch_fn=lambda job_id: _fetch_job_results(job_id, key),
         label=f"for {handle}",
-        poll_timeout_s=POLL_TIMEOUT_S,
+        poll_timeout_s=poll_timeout_s(),
         poll_interval_s=POLL_INTERVAL_S,
+        pending_key=pending_key,
     )
 
 
@@ -203,9 +270,21 @@ def _normalize_row(row: dict) -> dict | None:
         "content_type": (row.get("content_type") or "post").lower(),
         "caption": caption,
         "url": row.get("url") or "",
+        "author": str(_first_present(row, AUTHOR_FIELD_CANDIDATES)[1] or "").strip(),
         "like_count": row.get("likes"),
         "comment_count": row.get("num_comments"),
+        "view_count": _first_present(row, VIEW_COUNT_FIELD_CANDIDATES)[1],
     }
+
+
+def _error_codes(raw_rows: list[dict]) -> list[str]:
+    """Vendor error codes from an include_errors=true batch.
+
+    With include_errors=true a failure arrives as a ROW carrying `error` and
+    `error_code` rather than as an absence, so the adapter can log Bright
+    Data's own reason ('dead_page') instead of a bare drop count.
+    """
+    return [r.get("error_code") or "unknown" for r in raw_rows if r.get("error")]
 
 
 # handle -> item_id -> normalized row. Populated by enumerate_newest_first,
@@ -215,6 +294,27 @@ def _normalize_row(row: dict) -> dict | None:
 _ENUMERATE_CACHE: dict[str, dict[str, dict]] = {}
 
 
+def reset_caches() -> None:
+    """Clear this module's per-process enumerate cache.
+
+    F-67: the cache is a process global that no fixture cleared, so the suite
+    passed only because each test file happened to use distinct handle names.
+    The repo-wide conftest fixture calls this before every test.
+    """
+    _ENUMERATE_CACHE.clear()
+
+
+def cached_ids(handle: str) -> set[str]:
+    """The item ids this handle's last enumerate retained. A read-only view so
+    tests never reach into _ENUMERATE_CACHE directly."""
+    return set(_ENUMERATE_CACHE.get(handle, {}))
+
+
+def cached_row(handle: str, item_id: str) -> dict:
+    """One retained row. KeyError if absent -- same contract download_item has."""
+    return _ENUMERATE_CACHE[handle][item_id]
+
+
 def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict]:
     raw_rows = _run_collection_job(handle)  # raises BrightDataJobTimeout/Failed -- never swallowed here
     normalized = [_normalize_row(r) for r in raw_rows]
@@ -222,17 +322,90 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
     if dropped:
         print(f"  ! {dropped} Bright Data row(s) for {handle} dropped (missing id or unusable date)",
               file=sys.stderr)
+        brightdata_job.record_diagnostic(
+            kind="adapter.rows_dropped", severity="warning",
+            source="discovery_instagram",
+            message=(f"instagram/{handle}: {dropped} Bright Data row(s) dropped "
+                     f"(missing id or unusable date)"),
+            detail={"platform": "instagram", "handle": handle, "dropped": dropped})
     normalized = [n for n in normalized if n is not None]
+
+    if normalized and all(not n["author"] for n in normalized):
+        # The candidate list (AUTHOR_FIELD_CANDIDATES) is a hypothesis, never
+        # verified against a live snapshot the way Facebook's profile_handle
+        # and X's user_posted were (2026-08-08). Every kept row resolving to
+        # "" means every candidate missed -- report it loudly, with the real
+        # keys this batch actually carried, so the next edit is informed
+        # rather than another guess.
+        brightdata_job.record_diagnostic(
+            kind="adapter.author_field_unresolved", severity="warning",
+            source="discovery_instagram",
+            message=(f"instagram/{handle}: none of the candidate author fields "
+                     f"{AUTHOR_FIELD_CANDIDATES} were present on any kept row -- "
+                     f"the real field name is still unverified."),
+            detail={"platform": "instagram", "handle": handle,
+                    "candidates": list(AUTHOR_FIELD_CANDIDATES),
+                    "observed_keys": sorted(raw_rows[0])})
+
+    if raw_rows and not normalized:
+        # This run was billed and produced nothing, but process_handle will
+        # record the healthy status 'no_new_content' -- indistinguishable
+        # from a quiet day unless it is loud here.
+        codes = _error_codes(raw_rows)
+        detail = f" Bright Data reported: {', '.join(sorted(set(codes)))}." if codes else ""
+        print(f"  !! instagram/{handle}: Bright Data returned {len(raw_rows)} "
+              f"row(s) but none survived filtering. This run was billed and "
+              f"captured nothing -- check whether this handle is still valid."
+              f"{detail}", file=sys.stderr)
+        brightdata_job.record_diagnostic(
+            kind="adapter.billed_captured_nothing", severity="error",
+            source="discovery_instagram",
+            message=(f"instagram/{handle}: Bright Data returned {len(raw_rows)} "
+                     f"row(s) but none survived filtering. This run was billed "
+                     f"and captured nothing.{detail}"),
+            detail={"platform": "instagram", "handle": handle,
+                    "raw_count": len(raw_rows), "error_codes": sorted(set(codes))})
+
     # Sort on the full timestamp, not the date-truncated 'published': Python's
     # sort is stable and Bright Data returns rows unsorted, so same-day rows
     # sorted on 'published' alone would keep Bright Data's arbitrary arrival
     # order, which can put a genuinely newer post behind ones already on disk
     # and trip discovery_engine's early-stop dedup before reaching it.
     normalized.sort(key=lambda n: n["published_ts"], reverse=True)
+
+    # B-02 (S1): saturation must be computed on the PRE-cap count, right here
+    # before the client-side slice below discards everything past the cap --
+    # once that slice runs, how many rows Bright Data actually returned is
+    # gone. None of the four Bright Data platforms support backfill, so a
+    # batch that filled the cap is a data-loss event this run made, not a
+    # quiet-account day, and process_handle would otherwise report it as the
+    # healthy status 'ok'.
+    cap = max_items()
+    # Measured against raw_rows, NOT normalized: normalized has already
+    # dropped unusable rows, so a batch that filled the cap but included one
+    # id-less/undated row would otherwise show len(normalized) == cap - 1 and
+    # never trip the alarm, even though the same cap-truncation data loss
+    # occurred (plan correction, T17 task review, 2026-08-16).
+    if brightdata_job.is_saturated(len(raw_rows), cap=cap):
+        oldest = min((n["published_ts"] for n in normalized), default=None)
+        brightdata_job.record_diagnostic(
+            kind="adapter.batch_saturated", severity="error",
+            source="discovery_instagram",
+            message=(f"instagram/{handle}: the batch filled the cap of {cap}. Posts "
+                     f"older than {oldest} in this interval were dropped and there is "
+                     f"no backfill path for this platform. Raise "
+                     f"{MAX_ITEMS_ENV_VAR} (this increases Bright Data spend per run) "
+                     f"or shorten the run interval."),
+            detail={"platform": "instagram", "handle": handle, "cap": cap,
+                    "collected": len(normalized), "raw_count": len(raw_rows),
+                    "oldest_kept": oldest})
+        print(f"  !! instagram/{handle}: batch filled the cap of {cap}; older posts "
+              f"in this interval are unrecoverable", file=sys.stderr)
+
     # Client-side backstop cap, independent of whether Bright Data's trigger
     # actually honors num_of_posts (see Task 2's comment) -- bounds cost
     # regardless of that unverified assumption.
-    normalized = normalized[:MAX_ITEMS_PER_RUN]
+    normalized = normalized[:cap]
 
     # Overwrite, not merge: a fresh successful enumerate replaces whatever
     # this handle's cache held before, so download_item never reads a stale
@@ -279,12 +452,23 @@ def download_item(repo_root: Path, handle: str, item_id: str, title: str,
         "post_id": cached["id"],
         "url": cached["url"],
         "handle": handle,
+        # Recorded although never filtered on (the field name itself is
+        # unverified -- see AUTHOR_FIELD_CANDIDATES): it is what makes a
+        # regression (this dataset starting to return other accounts)
+        # detectable after the fact, same rationale as Facebook's `author`.
+        "author": cached["author"],
         "content_type": cached["content_type"],
         "published": cached["published"],
         "like_count": cached["like_count"],
         "comment_count": cached["comment_count"],
         "fetched_at": fetched_at,
     }
+    # Optional contract field: a photo post genuinely has no view count, so
+    # the key must be OMITTED, not written as 'view_count: null' (which would
+    # assert a measured zero-ish value) -- fetched_at above stays unconditional
+    # regardless (contract invariant 3).
+    if cached["view_count"] is not None:
+        meta["view_count"] = cached["view_count"]
     body = cached["caption"] or "(empty)"
 
     dest = out_dir / f"{item_id}.md"

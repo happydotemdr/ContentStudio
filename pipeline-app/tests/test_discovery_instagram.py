@@ -1,6 +1,25 @@
 from pathlib import Path
 
+import pytest
+
+from pipeline_app import brightdata_job
 from pipeline_app import discovery_instagram as ig
+
+
+@pytest.fixture(autouse=True)
+def _isolate_instagram_state(monkeypatch, tmp_path):
+    """F-67 + F-69, belt and braces with the repo-wide conftest guard (P0).
+    Clears the process-global cache and the diagnostics buffer, points the
+    pending store at tmp_path, and makes sure no test can see the real
+    BRIGHTDATA_API_KEY that is set in this machine's environment."""
+    monkeypatch.delenv(ig.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(ig, "KEY_FILE", tmp_path / "no-brightdata_api_key.txt")
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    ig.reset_caches()
+    brightdata_job.reset_state()
+    yield
+    ig.reset_caches()
+    brightdata_job.reset_state()
 
 
 def test_api_key_prefers_env_var(monkeypatch, tmp_path):
@@ -23,6 +42,56 @@ def test_api_key_none_when_unconfigured(monkeypatch, tmp_path):
     monkeypatch.delenv(ig.KEY_ENV_VAR, raising=False)
     monkeypatch.setattr(ig, "KEY_FILE", tmp_path / "absent.txt")
     assert ig.api_key() is None
+
+
+def test_key_file_honours_the_repo_root_everything_else_uses(monkeypatch, tmp_path):
+    # ig.KEY_FILE.name, not the literal "brightdata_api_key.txt": the
+    # autouse isolation fixture above already repoints KEY_FILE at
+    # tmp_path/"no-brightdata_api_key.txt" for this test, and key_file_for
+    # must resolve against whatever basename KEY_FILE currently carries.
+    (tmp_path / "pipeline-app").mkdir()
+    (tmp_path / "pipeline-app" / ig.KEY_FILE.name).write_text("sandbox-key",
+                                                                encoding="utf-8")
+    monkeypatch.delenv(ig.KEY_ENV_VAR, raising=False)
+    assert ig.api_key(repo_root=tmp_path) == "sandbox-key"
+
+
+def test_a_sandboxed_root_without_a_key_file_yields_no_key(monkeypatch, tmp_path):
+    """The defect F-69 names: repo_root=tmp_path used to be ignored entirely,
+    so this returned the real repo's token."""
+    monkeypatch.delenv(ig.KEY_ENV_VAR, raising=False)
+    assert ig.api_key(repo_root=tmp_path) is None
+
+
+def test_api_key_without_a_repo_root_still_reads_the_module_key_file(monkeypatch, tmp_path):
+    """Existing callers pass nothing; the default must not change."""
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("module-key", encoding="utf-8")
+    monkeypatch.delenv(ig.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(ig, "KEY_FILE", key_file)
+    assert ig.api_key() == "module-key"
+
+
+def test_preflight_reports_a_missing_key_once_without_calling_bright_data(monkeypatch, tmp_path):
+    monkeypatch.delenv(ig.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(ig, "KEY_FILE", tmp_path / "absent.txt")
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("preflight must not touch the network")
+
+    monkeypatch.setattr(ig.requests, "post", _fail_if_called)
+    message = ig.preflight()
+    assert message is not None
+    assert ig.KEY_ENV_VAR in message
+    assert "instagram" in message
+
+
+def test_preflight_returns_none_when_the_key_is_configured(monkeypatch, tmp_path):
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("k", encoding="utf-8")
+    monkeypatch.delenv(ig.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(ig, "KEY_FILE", key_file)
+    assert ig.preflight() is None
 
 
 import pytest
@@ -81,6 +150,23 @@ def test_run_collection_job_raises_clear_error_when_key_missing(monkeypatch):
     monkeypatch.setattr(ig, "_trigger_job", _fail_if_called)
     with pytest.raises(RuntimeError, match="Bright Data API key not configured"):
         ig._run_collection_job("somehandle")
+
+
+def test_run_collection_job_prefers_a_pending_snapshot_over_a_new_billed_job(monkeypatch, tmp_path):
+    """Bright Data bills per record. If the previous run paid for a snapshot
+    and timed out before collecting it, this run must take that data rather
+    than pay again."""
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    brightdata_job.record_pending("instagram/somehandle", "snap-abc")
+    _fake_key(monkeypatch)
+
+    def _fail_if_called(handle, key):
+        raise AssertionError("must not trigger a new job while a snapshot is pending")
+
+    monkeypatch.setattr(ig, "_trigger_job", _fail_if_called)
+    monkeypatch.setattr(ig, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(ig, "_fetch_job_results", lambda job_id, key: [{"post_id": "p1"}])
+    assert ig._run_collection_job("somehandle") == [{"post_id": "p1"}]
 
 
 def test_enumerate_newest_first_ready_with_empty_results_returns_empty_list(monkeypatch):
@@ -142,16 +228,6 @@ def test_trigger_job_requests_a_discovery_job_not_a_single_page_collect(monkeypa
     assert captured["discover_by"] == "url"
     # Server-side cost cap, independent of the num_of_posts input field.
     assert captured["limit_per_input"] == ig.MAX_ITEMS_PER_RUN
-
-
-def test_trigger_job_raises_when_dataset_id_still_placeholder(monkeypatch):
-    def _fail_if_called(*args, **kwargs):
-        raise AssertionError("requests.post must not be called when DATASET_ID is a placeholder")
-
-    monkeypatch.setattr(ig.requests, "post", _fail_if_called)
-    monkeypatch.setattr(ig, "DATASET_ID", "gd_REPLACE_WITH_REAL_DATASET_ID")
-    with pytest.raises(RuntimeError, match="DATASET_ID is still a placeholder"):
-        ig._trigger_job("somehandle", "the-key")
 
 
 def test_poll_job_status_gets_expected_request_and_returns_status(monkeypatch):
@@ -284,6 +360,20 @@ def test_normalize_row_empty_caption_still_normalizes():
     assert normalized["title"] == "p1"  # falls back to id when caption is empty
 
 
+def test_normalize_row_records_the_owner_when_the_row_carries_one():
+    row = {"post_id": "p1", "description": "x", "date_posted": "07/23/2026 16:00:22",
+           "user_posted": "nike"}
+    assert ig._normalize_row(row)["author"] == "nike"
+
+
+def test_normalize_row_records_an_empty_author_rather_than_dropping_the_row():
+    """An unknown owner field must never cost a paid row."""
+    row = {"post_id": "p1", "description": "x", "date_posted": "07/23/2026 16:00:22"}
+    normalized = ig._normalize_row(row)
+    assert normalized is not None
+    assert normalized["author"] == ""
+
+
 def _raw_row(post_id, date, caption="hello", content_type="post"):
     return {"post_id": post_id, "description": caption, "date_posted": f"{date}T00:00:00Z",
             "content_type": content_type, "url": f"https://instagram.com/p/{post_id}",
@@ -297,12 +387,190 @@ def test_enumerate_newest_first_sorts_newest_first(monkeypatch):
     assert [i["id"] for i in items] == ["new", "mid", "old"]
 
 
-def test_enumerate_newest_first_caps_at_max_items_per_run(monkeypatch):
+def test_full_cap_batch_records_a_saturation_error(monkeypatch):
+    """Fault test. Ten of ten means posts were dropped that no later run can
+    fetch -- the handle still reports 'ok', so this must be reported here."""
+    raw = [_raw_row(f"p{i}", "2026-08-01") for i in range(10)]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    saturation = [d for d in brightdata_job.drain_diagnostics()
+                  if d["kind"] == "adapter.batch_saturated"]
+    assert len(saturation) == 1
+    assert saturation[0]["severity"] == "error"
+
+
+def test_a_short_batch_records_no_saturation_diagnostic(monkeypatch):
+    """Distinguishability. Nine of ten is a quiet account; ten of ten is
+    truncation. The two must be observably different."""
+    raw = [_raw_row(f"p{i}", "2026-08-01") for i in range(9)]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    assert [d for d in brightdata_job.drain_diagnostics()
+            if d["kind"] == "adapter.batch_saturated"] == []
+
+
+def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(monkeypatch):
+    """Surfacing. The record must be actionable on its own: an operator
+    reading it in the log or the events table must know what to change."""
+    raw = [_raw_row(f"p{i}", "2026-08-01") for i in range(10)]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.batch_saturated"][0]
+    assert record["detail"]["cap"] == 10
+    assert record["detail"]["handle"] == "somehandle"
+    assert record["detail"]["platform"] == "instagram"
+    assert record["detail"]["raw_count"] == 10
+    assert ig.MAX_ITEMS_ENV_VAR in record["message"]
+    assert "no backfill" in record["message"]
+
+
+def test_dropped_rows_reach_a_durable_surface_not_only_stderr(monkeypatch, capsys):
+    """Fault test. The Scheduled Task command has no redirection, so a stderr
+    warning on the production path has no destination at all (B-01)."""
+    good = _raw_row("p1", "2026-08-01")
+    good["user_posted"] = "somehandle"
+    raw = [good, {"no": "id"}]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.rows_dropped"][0]
+    assert record["severity"] == "warning"
+    assert record["detail"]["dropped"] == 1
+    assert record["source"] == "discovery_instagram"
+    assert "dropped (missing id or unusable date)" in capsys.readouterr().err
+
+
+def test_a_clean_batch_produces_no_rows_dropped_diagnostic(monkeypatch):
+    """Distinguishability. A degraded run must be observably different from a
+    healthy one -- 'no diagnostics' is the healthy signal."""
+    good = _raw_row("p1", "2026-08-01")
+    good["user_posted"] = "somehandle"
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [good])
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    assert [d for d in brightdata_job.drain_diagnostics()
+            if d["kind"] == "adapter.rows_dropped"] == []
+
+
+def test_rows_dropped_diagnostic_carries_everything_obs_record_event_requires(monkeypatch):
+    """Surfacing. P8 writes these straight into the events table; a record
+    missing a column is a record that never becomes a row."""
+    good = _raw_row("p1", "2026-08-01")
+    good["user_posted"] = "somehandle"
+    raw = [good, {"no": "id"}]
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    records = [d for d in brightdata_job.drain_diagnostics()
+               if d["kind"] == "adapter.rows_dropped"]
+    assert records
+    for record in records:
+        assert set(record) == {"kind", "severity", "source", "message", "detail"}
+        assert record["severity"] in {"info", "warning", "error", "critical"}
+        assert record["message"]
+
+
+def _error_row(code="dead_page"):
+    """With include_errors=true a failure arrives as a ROW, not an absence."""
+    return {"input": {"url": "https://www.instagram.com/gone/"},
+            "error": "Page not found", "error_code": code}
+
+
+def test_all_error_rows_escalate_billed_and_captured_nothing(monkeypatch, capsys):
+    """Fault test. A renamed or deleted handle returns error rows; the run is
+    billed, captures nothing, and today records the healthy 'no_new_content'."""
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [_error_row()])
+    brightdata_job.drain_diagnostics()
+    assert ig.enumerate_newest_first("gone", keyword_filter=None) == []
+    err = capsys.readouterr().err
+    assert "billed and captured nothing" in err
+    assert "dead_page" in err
+
+
+def test_a_genuinely_empty_batch_does_not_escalate(monkeypatch, capsys):
+    """Distinguishability. Zero rows is a quiet day and must stay quiet;
+    N rows of which none survived is a paid-for failure."""
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [])
+    brightdata_job.drain_diagnostics()
+    assert ig.enumerate_newest_first("quiet", keyword_filter=None) == []
+    assert "billed and captured nothing" not in capsys.readouterr().err
+    assert brightdata_job.drain_diagnostics() == []
+
+
+def test_billed_nothing_records_an_error_diagnostic_carrying_the_vendor_codes(monkeypatch):
+    """Surfacing. stderr has no destination on the scheduled path (B-01)."""
+    monkeypatch.setattr(ig, "_run_collection_job",
+                        lambda handle: [_error_row("dead_page"), _error_row("blocked")])
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("gone", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.billed_captured_nothing"][0]
+    assert record["severity"] == "error"
+    assert record["detail"]["handle"] == "gone"
+    assert sorted(record["detail"]["error_codes"]) == ["blocked", "dead_page"]
+
+
+def test_an_unresolved_author_field_is_reported_once_with_the_real_row_keys(monkeypatch):
+    """The candidate list is a hypothesis, not a verified fact. When it misses,
+    the diagnostic must carry the keys the vendor actually sent so the next
+    edit is informed rather than another guess."""
+    monkeypatch.setattr(ig, "_run_collection_job",
+                        lambda handle: [_raw_row("p1", "2026-08-01")])
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.author_field_unresolved"][0]
+    assert record["severity"] == "warning"
+    assert "post_id" in record["detail"]["observed_keys"]
+
+
+def test_download_item_writes_the_author_to_frontmatter(tmp_path, monkeypatch):
+    row = _raw_row("p1", "2026-08-01")
+    row["user_posted"] = "nike"
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [row])
+    ig.enumerate_newest_first("nike", keyword_filter=None)
+    ig.download_item(tmp_path, "nike", "p1", "t")
+    text = (tmp_path / "output" / "brand-intel" / "instagram" / "nike" / "p1.md").read_text(
+        encoding="utf-8")
+    assert "author: nike" in text
+
+
+def test_normalize_row_maps_a_reel_view_count_when_present():
+    row = {"post_id": "p1", "description": "x", "date_posted": "07/23/2026 16:00:22",
+           "content_type": "Reel", "video_play_count": 88381}
+    assert ig._normalize_row(row)["view_count"] == 88381
+
+
+def test_view_count_is_omitted_not_nulled_when_the_row_has_none():
+    """The contract makes view_count optional. A photo post has no views;
+    writing 'view_count: null' would assert a measured zero-ish value."""
+    row = {"post_id": "p1", "description": "x", "date_posted": "07/23/2026 16:00:22",
+           "content_type": "Post"}
+    assert ig._normalize_row(row)["view_count"] is None
+
+
+def test_download_item_omits_view_count_for_a_non_video_post(tmp_path, monkeypatch):
+    monkeypatch.setattr(ig, "_run_collection_job",
+                        lambda handle: [_raw_row("p1", "2026-08-01")])
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    ig.download_item(tmp_path, "somehandle", "p1", "t")
+    text = (tmp_path / "output" / "brand-intel" / "instagram" / "somehandle" / "p1.md"
+            ).read_text(encoding="utf-8")
+    assert "view_count" not in text
+
+
+def test_enumerate_newest_first_caps_retained_items(monkeypatch):
+    """Consequence of truncation: the returned list itself is bounded to the
+    cap, independent of whether the diagnostic above also fires."""
     raw = [_raw_row(f"p{i}", "2026-08-01") for i in range(25)]
     monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
-    monkeypatch.setattr(ig, "MAX_ITEMS_PER_RUN", 10)
     items = ig.enumerate_newest_first("somehandle", keyword_filter=None)
-    assert len(items) == 10
+    assert len(items) == ig.MAX_ITEMS_PER_RUN
 
 
 def test_enumerate_newest_first_drops_undated_and_idless_rows(monkeypatch):
@@ -320,11 +588,14 @@ def test_enumerate_newest_first_applies_keyword_filter_to_caption(monkeypatch):
     assert [i["id"] for i in items] == ["a"]
 
 
-def test_enumerate_newest_first_populates_cache_for_download_item(monkeypatch):
+def test_enumerate_caches_the_full_caption_for_download_item(monkeypatch, tmp_path):
     raw = [_raw_row("p1", "2026-08-01", caption="full caption text")]
     monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
     ig.enumerate_newest_first("somehandle", keyword_filter=None)
-    assert ig._ENUMERATE_CACHE["somehandle"]["p1"]["caption"] == "full caption text"
+    ig.download_item(tmp_path, "somehandle", "p1", "truncated title")
+    text = (tmp_path / "output" / "brand-intel" / "instagram" / "somehandle" / "p1.md"
+            ).read_text(encoding="utf-8")
+    assert "full caption text" in text
 
 
 def test_enumerate_newest_first_overwrites_previous_cache_entry(monkeypatch):
@@ -332,8 +603,7 @@ def test_enumerate_newest_first_overwrites_previous_cache_entry(monkeypatch):
     ig.enumerate_newest_first("somehandle", keyword_filter=None)
     monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [_raw_row("new_batch", "2026-08-01")])
     ig.enumerate_newest_first("somehandle", keyword_filter=None)
-    assert "old_batch" not in ig._ENUMERATE_CACHE["somehandle"]
-    assert "new_batch" in ig._ENUMERATE_CACHE["somehandle"]
+    assert ig.cached_ids("somehandle") == {"new_batch"}
 
 
 def test_enumerate_newest_first_propagates_timeout(monkeypatch):
@@ -391,3 +661,17 @@ def test_download_item_raises_on_cache_miss(tmp_path, monkeypatch):
     ig.enumerate_newest_first("somehandle", keyword_filter=None)
     with pytest.raises(KeyError):
         ig.download_item(tmp_path, "somehandle", "not_in_cache", "title")
+
+
+def test_max_items_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_MAX_ITEMS_INSTAGRAM", "25")
+    assert ig.max_items() == 25
+    monkeypatch.delenv("BRIGHTDATA_MAX_ITEMS_INSTAGRAM")
+    assert ig.max_items() == ig.MAX_ITEMS_PER_RUN == 10
+
+
+def test_poll_timeout_s_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_POLL_TIMEOUT_INSTAGRAM", "45")
+    assert ig.poll_timeout_s() == 45
+    monkeypatch.delenv("BRIGHTDATA_POLL_TIMEOUT_INSTAGRAM")
+    assert ig.poll_timeout_s() == ig.POLL_TIMEOUT_S == 300

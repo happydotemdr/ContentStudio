@@ -31,11 +31,27 @@ DATASET_ID = "gd_lyy3tktm25m4avu764"
 KEY_ENV_VAR = "BRIGHTDATA_API_KEY"
 KEY_FILE = Path(__file__).resolve().parent.parent / "brightdata_api_key.txt"
 
-MAX_ITEMS_PER_RUN = 10
+MAX_ITEMS_PER_RUN = 10           # the default; override with the env var below
+MAX_ITEMS_ENV_VAR = "BRIGHTDATA_MAX_ITEMS_LINKEDIN"
 POLL_TIMEOUT_S = 300
 POLL_INTERVAL_S = 5
 
 TITLE_MAX_CHARS = 60
+
+
+def max_items() -> int:
+    return brightdata_job.config_int(MAX_ITEMS_ENV_VAR, MAX_ITEMS_PER_RUN)
+
+
+def poll_timeout_s() -> float:
+    return brightdata_job.config_int("BRIGHTDATA_POLL_TIMEOUT_LINKEDIN", POLL_TIMEOUT_S)
+
+# Re-exported so `pytest.raises(discovery_linkedin.BrightDataJobFailed)` works
+# and callers need not know the exceptions moved.
+BrightDataJobTimeout = brightdata_job.BrightDataJobTimeout
+BrightDataJobFailed = brightdata_job.BrightDataJobFailed
+BrightDataResponseError = brightdata_job.BrightDataResponseError
+BrightDataConfigError = brightdata_job.BrightDataConfigError
 
 
 def _parse_published(raw: str | None) -> str | None:
@@ -153,10 +169,54 @@ class LinkedInAdapter:
         # again per item would double-pay for posts already collected.
         self._cache: dict[str, dict[str, dict]] = {}
 
+    def reset_caches(self) -> None:
+        """Clear this instance's per-process enumerate cache.
+
+        F-67: the cache is a process global (per instance) that no fixture
+        cleared, so the suite passed only because each test file happened to
+        use distinct handle names. The repo-wide conftest fixture calls this
+        before every test.
+        """
+        self._cache.clear()
+
+    def cached_ids(self, handle: str) -> set[str]:
+        """The item ids this handle's last enumerate retained. A read-only
+        view so tests never reach into self._cache directly."""
+        return set(self._cache.get(handle, {}))
+
+    def cached_row(self, handle: str, item_id: str) -> dict:
+        """One retained row. KeyError if absent -- same contract download_item has."""
+        return self._cache[handle][item_id]
+
     # -- credentials and request shape -----------------------------------
 
-    def api_key(self) -> str | None:
-        return brightdata_job.read_key(KEY_ENV_VAR, KEY_FILE)
+    def key_file_for(self, repo_root: Path | None) -> Path:
+        """The credential file, resolved against the same root everything
+        else uses. F-69: KEY_FILE was anchored to the real repo, so a test
+        passing repo_root=tmp_path was still one env var away from a live
+        token."""
+        if repo_root is None:
+            return KEY_FILE
+        return Path(repo_root) / "pipeline-app" / KEY_FILE.name
+
+    def api_key(self, repo_root: Path | None = None) -> str | None:
+        return brightdata_job.read_key(KEY_ENV_VAR, self.key_file_for(repo_root))
+
+    def preflight(self, repo_root: Path | None = None) -> str | None:
+        """None if this platform can run; one operator-facing message if it
+        cannot.
+
+        B-21: the per-job guard in _run_collection_job stays as a backstop,
+        but it fires once per handle, so one unset token used to produce
+        twenty identical error rows and a run that finished
+        'completed_with_errors' rather than refusing to start.
+        run_discovery_cron calls this once before the handle loop (P8).
+        """
+        if self.api_key(repo_root=repo_root) is None:
+            return (f"{self.platform}: Bright Data API key not configured "
+                    f"(set {KEY_ENV_VAR} or {KEY_FILE.name}) -- every "
+                    f"{self.platform} handle in this run will fail")
+        return None
 
     def profile_url(self, handle: str) -> str:
         return self.mode.url_template.format(slug=handle.lstrip("@").strip())
@@ -172,7 +232,7 @@ class LinkedInAdapter:
                 "type": "discover_new",
                 "discover_by": self.mode.discover_by,
                 # Server-side per-input record cap: the primary cost control.
-                "limit_per_input": MAX_ITEMS_PER_RUN,
+                "limit_per_input": max_items(),
                 "include_errors": "true",
                 "notify": "false",
             },
@@ -193,13 +253,29 @@ class LinkedInAdapter:
                 "Bright Data API key not configured "
                 f"(set {KEY_ENV_VAR} or {KEY_FILE.name})"
             )
+        # self.platform, not a shared platform constant: linkedin-profile and
+        # linkedin-company must never share a pending entry for the same
+        # handle -- the same reason each adapter instance keeps its own
+        # enumerate cache (see the class docstring).
+        pending_key = f"{self.platform}/{handle}"
+        # Free recovery before any billed call: a snapshot an earlier run paid
+        # for and abandoned on timeout (B-19). None means "nothing pending",
+        # which is the ordinary case.
+        resumed = brightdata_job.resume_pending(
+            pending_key,
+            poll_fn=lambda job_id: self._poll_job_status(job_id, key),
+            fetch_fn=lambda job_id: self._fetch_job_results(job_id, key),
+        )
+        if resumed is not None:
+            return resumed
         return brightdata_job.await_results(
             trigger_fn=lambda: self._trigger_job(handle, key),
             poll_fn=lambda job_id: self._poll_job_status(job_id, key),
             fetch_fn=lambda job_id: self._fetch_job_results(job_id, key),
             label=f"for {self.platform}/{handle}",
-            poll_timeout_s=POLL_TIMEOUT_S,
+            poll_timeout_s=poll_timeout_s(),
             poll_interval_s=POLL_INTERVAL_S,
+            pending_key=pending_key,
         )
 
     # -- PlatformAdapter -------------------------------------------------
@@ -231,6 +307,19 @@ class LinkedInAdapter:
             print(f"  ! {self.platform}/{handle}: dropped {foreign} row(s) by another author",
                   file=sys.stderr)
 
+        if unusable:
+            brightdata_job.record_diagnostic(
+                kind="adapter.rows_dropped", severity="warning",
+                source="discovery_linkedin",
+                message=f"{self.platform}/{handle}: dropped {unusable} unusable row(s)",
+                detail={"platform": self.platform, "handle": handle, "dropped": unusable})
+        if foreign:
+            brightdata_job.record_diagnostic(
+                kind="adapter.foreign_rows_dropped", severity="warning",
+                source="discovery_linkedin",
+                message=f"{self.platform}/{handle}: dropped {foreign} row(s) by another author",
+                detail={"platform": self.platform, "handle": handle, "dropped": foreign})
+
         if raw_rows and not kept:
             # This run was billed and produced nothing, but process_handle will
             # record the healthy status 'no_new_content' -- indistinguishable
@@ -248,6 +337,14 @@ class LinkedInAdapter:
             print(f"  !! {self.platform}/{handle}: Bright Data returned "
                   f"{len(raw_rows)} row(s) but none survived filtering. This run "
                   f"was billed and captured nothing -- {advice}.", file=sys.stderr)
+            brightdata_job.record_diagnostic(
+                kind="adapter.billed_captured_nothing", severity="error",
+                source="discovery_linkedin",
+                message=(f"{self.platform}/{handle}: Bright Data returned "
+                         f"{len(raw_rows)} row(s) but none survived filtering. "
+                         f"This run was billed and captured nothing -- {advice}."),
+                detail={"platform": self.platform, "handle": handle,
+                        "raw_count": len(raw_rows)})
 
         # Rows arrive unsorted (verified live); the engine's early-stop dedup
         # assumes newest-first. Sort on the full timestamp, not the
@@ -257,7 +354,38 @@ class LinkedInAdapter:
         # already on disk and trip the early-stop dedup before reaching it.
         # Cap AFTER filtering so it bounds retained items.
         kept.sort(key=lambda n: n["published_ts"], reverse=True)
-        kept = kept[:MAX_ITEMS_PER_RUN]
+
+        # B-02 (S1): saturation must be computed on the PRE-cap count, right
+        # here before the client-side slice below discards everything past the
+        # cap -- once that slice runs, how many rows Bright Data actually
+        # returned is gone. None of the four Bright Data platforms support
+        # backfill, so a batch that filled the cap is a data-loss event this
+        # run made, not a quiet-account day, and process_handle would
+        # otherwise report it as the healthy status 'ok'.
+        cap = max_items()
+        # Measured against raw_rows, NOT kept: kept has already dropped
+        # unusable and (in profile mode) foreign-author rows, so a batch that
+        # filled the cap but included one such row would otherwise show
+        # len(kept) == cap - 1 and never trip the alarm, even though the same
+        # cap-truncation data loss occurred (plan correction, T17 task
+        # review, 2026-08-16).
+        if brightdata_job.is_saturated(len(raw_rows), cap=cap):
+            oldest = min((n["published_ts"] for n in kept), default=None)
+            brightdata_job.record_diagnostic(
+                kind="adapter.batch_saturated", severity="error",
+                source="discovery_linkedin",
+                message=(f"{self.platform}/{handle}: the batch filled the cap of "
+                         f"{cap}. Posts older than {oldest} in this interval were "
+                         f"dropped and there is no backfill path for this platform. "
+                         f"Raise {MAX_ITEMS_ENV_VAR} (this increases Bright Data "
+                         f"spend per run) or shorten the run interval."),
+                detail={"platform": self.platform, "handle": handle, "cap": cap,
+                        "collected": len(kept), "raw_count": len(raw_rows),
+                        "oldest_kept": oldest})
+            print(f"  !! {self.platform}/{handle}: batch filled the cap of {cap}; "
+                  f"older posts in this interval are unrecoverable", file=sys.stderr)
+
+        kept = kept[:cap]
 
         # Overwrite, not merge: a fresh successful enumerate replaces whatever
         # this handle held, so download_item never reads a stale id.

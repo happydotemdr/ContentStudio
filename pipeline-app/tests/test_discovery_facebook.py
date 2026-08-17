@@ -1,4 +1,23 @@
+import pytest
+
+from pipeline_app import brightdata_job
 from pipeline_app import discovery_facebook as fb
+
+
+@pytest.fixture(autouse=True)
+def _isolate_facebook_state(monkeypatch, tmp_path):
+    """F-67 + F-69, belt and braces with the repo-wide conftest guard (P0).
+    Clears the process-global cache and the diagnostics buffer, points the
+    pending store at tmp_path, and makes sure no test can see the real
+    BRIGHTDATA_API_KEY that is set in this machine's environment."""
+    monkeypatch.delenv(fb.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(fb, "KEY_FILE", tmp_path / "no-brightdata_api_key.txt")
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    fb.reset_caches()
+    brightdata_job.reset_state()
+    yield
+    fb.reset_caches()
+    brightdata_job.reset_state()
 
 
 def _raw_row(**overrides):
@@ -49,6 +68,58 @@ def test_parse_published_accepts_the_verified_iso_format():
     assert fb._parse_published("2026-07-06") == "2026-07-06"
 
 
+def test_key_file_honours_the_repo_root_everything_else_uses(monkeypatch, tmp_path):
+    # fb.KEY_FILE.name, not the literal "brightdata_api_key.txt": the
+    # autouse isolation fixture above already repoints KEY_FILE at
+    # tmp_path/"no-brightdata_api_key.txt" for this test, and key_file_for
+    # must resolve against whatever basename KEY_FILE currently carries.
+    (tmp_path / "pipeline-app").mkdir()
+    (tmp_path / "pipeline-app" / fb.KEY_FILE.name).write_text("sandbox-key",
+                                                                encoding="utf-8")
+    monkeypatch.delenv(fb.KEY_ENV_VAR, raising=False)
+    assert fb.api_key(repo_root=tmp_path) == "sandbox-key"
+
+
+def test_a_sandboxed_root_without_a_key_file_yields_no_key(monkeypatch, tmp_path):
+    """The defect F-69 names: repo_root=tmp_path used to be ignored entirely,
+    so this returned the real repo's token."""
+    monkeypatch.delenv(fb.KEY_ENV_VAR, raising=False)
+    assert fb.api_key(repo_root=tmp_path) is None
+
+
+def test_api_key_without_a_repo_root_still_reads_the_module_key_file(monkeypatch, tmp_path):
+    """Existing callers pass nothing; the default must not change."""
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("module-key", encoding="utf-8")
+    monkeypatch.delenv(fb.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(fb, "KEY_FILE", key_file)
+    assert fb.api_key() == "module-key"
+
+
+def test_preflight_reports_a_missing_key_once_without_calling_bright_data(monkeypatch, tmp_path):
+    monkeypatch.delenv(fb.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(fb, "KEY_FILE", tmp_path / "absent.txt")
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("preflight must not touch the network")
+
+    # discovery_facebook has no module-level `requests` import -- its HTTP
+    # calls all go through brightdata_job, so that is what must not be hit.
+    monkeypatch.setattr(brightdata_job.requests, "post", _fail_if_called)
+    message = fb.preflight()
+    assert message is not None
+    assert fb.KEY_ENV_VAR in message
+    assert "facebook" in message
+
+
+def test_preflight_returns_none_when_the_key_is_configured(monkeypatch, tmp_path):
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("k", encoding="utf-8")
+    monkeypatch.delenv(fb.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(fb, "KEY_FILE", key_file)
+    assert fb.preflight() is None
+
+
 def test_parse_published_rejects_unusable_values():
     assert fb._parse_published("") is None
     assert fb._parse_published(None) is None
@@ -57,6 +128,23 @@ def test_parse_published_rejects_unusable_values():
     # and DD/MM yields silently wrong dates, which is worse than a dropped
     # row -- and drops are counted and logged.
     assert fb._parse_published("07-06-2026") is None
+
+
+def test_run_collection_job_prefers_a_pending_snapshot_over_a_new_billed_job(monkeypatch, tmp_path):
+    """Bright Data bills per record. If the previous run paid for a snapshot
+    and timed out before collecting it, this run must take that data rather
+    than pay again."""
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    brightdata_job.record_pending("facebook/somehandle", "snap-abc")
+    monkeypatch.setattr(fb, "api_key", lambda: "test-key")
+
+    def _fail_if_called(handle, key):
+        raise AssertionError("must not trigger a new job while a snapshot is pending")
+
+    monkeypatch.setattr(fb, "_trigger_job", _fail_if_called)
+    monkeypatch.setattr(fb, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(fb, "_fetch_job_results", lambda job_id, key: [{"post_id": "p1"}])
+    assert fb._run_collection_job("somehandle") == [{"post_id": "p1"}]
 
 
 def test_normalize_row_maps_every_verified_field():
@@ -334,6 +422,81 @@ def test_enumerate_caps_retained_items(monkeypatch):
     assert len(items) == fb.MAX_ITEMS_PER_RUN
 
 
+def test_full_cap_batch_records_a_saturation_error(monkeypatch):
+    """Fault test. Ten of ten means posts were dropped that no later run can
+    fetch -- the handle still reports 'ok', so this must be reported here."""
+    _stub_job(monkeypatch, [_row(f"p{i}", f"2026-07-{i:02d}") for i in range(1, 11)])
+    brightdata_job.drain_diagnostics()
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    saturation = [d for d in brightdata_job.drain_diagnostics()
+                  if d["kind"] == "adapter.batch_saturated"]
+    assert len(saturation) == 1
+    assert saturation[0]["severity"] == "error"
+
+
+def test_a_short_batch_records_no_saturation_diagnostic(monkeypatch):
+    """Distinguishability. Nine of ten is a quiet account; ten of ten is
+    truncation. The two must be observably different."""
+    _stub_job(monkeypatch, [_row(f"p{i}", f"2026-07-{i:02d}") for i in range(1, 10)])
+    brightdata_job.drain_diagnostics()
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    assert [d for d in brightdata_job.drain_diagnostics()
+            if d["kind"] == "adapter.batch_saturated"] == []
+
+
+def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(monkeypatch):
+    """Surfacing. The record must be actionable on its own: an operator
+    reading it in the log or the events table must know what to change."""
+    _stub_job(monkeypatch, [_row(f"p{i}", f"2026-07-{i:02d}") for i in range(1, 11)])
+    brightdata_job.drain_diagnostics()
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.batch_saturated"][0]
+    assert record["detail"]["cap"] == 10
+    assert record["detail"]["handle"] == "NASA"
+    assert record["detail"]["platform"] == "facebook"
+    assert record["detail"]["raw_count"] == 10
+    assert fb.MAX_ITEMS_ENV_VAR in record["message"]
+    assert "no backfill" in record["message"]
+
+
+def test_dropped_rows_reach_a_durable_surface_not_only_stderr(monkeypatch, capsys):
+    """Fault test. The Scheduled Task command has no redirection, so a stderr
+    warning on the production path has no destination at all (B-01)."""
+    _stub_job(monkeypatch, [_row("p1", "2026-07-06"), {"no": "id"}])
+    brightdata_job.drain_diagnostics()
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.rows_dropped"][0]
+    assert record["severity"] == "warning"
+    assert record["detail"]["dropped"] == 1
+    assert record["source"] == "discovery_facebook"
+    assert "dropped 1 unusable" in capsys.readouterr().err   # the print stays
+
+
+def test_a_clean_batch_produces_no_diagnostics_at_all(monkeypatch):
+    """Distinguishability. A degraded run must be observably different from a
+    healthy one -- 'no diagnostics' is the healthy signal."""
+    _stub_job(monkeypatch, [_row("p1", "2026-07-06")])
+    brightdata_job.drain_diagnostics()
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    assert brightdata_job.drain_diagnostics() == []
+
+
+def test_diagnostics_carry_everything_obs_record_event_requires(monkeypatch):
+    """Surfacing. P8 writes these straight into the events table; a record
+    missing a column is a record that never becomes a row."""
+    _stub_job(monkeypatch, [_row("p1", "2026-07-06"), {"no": "id"}])
+    brightdata_job.drain_diagnostics()
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    records = brightdata_job.drain_diagnostics()
+    assert records
+    for record in records:
+        assert set(record) == {"kind", "severity", "source", "message", "detail"}
+        assert record["severity"] in {"info", "warning", "error", "critical"}
+        assert record["message"]
+
+
 def test_enumerate_applies_keyword_filter_against_content(monkeypatch):
     _stub_job(monkeypatch, [
         _row("hit", "2026-07-06", content="Artemis launch today"),
@@ -376,6 +539,28 @@ def test_enumerate_returns_empty_without_warning_for_a_genuinely_empty_job(monke
     assert "none survived" not in capsys.readouterr().err
 
 
+def test_billed_nothing_records_an_error_diagnostic_carrying_the_vendor_codes(monkeypatch):
+    """The stderr print alone is invisible on the production Scheduled Task
+    path (no redirection). A billed-and-captured-nothing run must also be
+    escalated through the durable diagnostics sink, same as Instagram."""
+    _stub_job(monkeypatch, [_error_row(code="dead_page"), _error_row(code="not_found")])
+    brightdata_job.drain_diagnostics()
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.billed_captured_nothing"][0]
+    assert record["severity"] == "error"
+    assert record["detail"]["handle"] == "NASA"
+    assert sorted(record["detail"]["error_codes"]) == ["dead_page", "not_found"]
+
+
+def test_a_genuinely_empty_batch_does_not_escalate(monkeypatch):
+    """Distinguishability: zero rows is a quiet day and must stay quiet."""
+    _stub_job(monkeypatch, [])
+    brightdata_job.drain_diagnostics()
+    assert fb.enumerate_newest_first("NASA", keyword_filter=None) == []
+    assert brightdata_job.drain_diagnostics() == []
+
+
 def test_enumerate_overwrites_rather_than_merges_the_cache(monkeypatch):
     """A fresh successful enumerate replaces whatever this handle held, so
     download_item never reads a stale id from an earlier run."""
@@ -383,7 +568,7 @@ def test_enumerate_overwrites_rather_than_merges_the_cache(monkeypatch):
     fb.enumerate_newest_first("NASA", keyword_filter=None)
     _stub_job(monkeypatch, [_row("new", "2026-07-06")])
     fb.enumerate_newest_first("NASA", keyword_filter=None)
-    assert set(fb._ENUMERATE_CACHE["NASA"]) == {"new"}
+    assert fb.cached_ids("NASA") == {"new"}
 
 
 def test_enumerate_caches_per_handle(monkeypatch):
@@ -391,8 +576,8 @@ def test_enumerate_caches_per_handle(monkeypatch):
     fb.enumerate_newest_first("NASA", keyword_filter=None)
     _stub_job(monkeypatch, [_row("b1", "2026-07-06")])
     fb.enumerate_newest_first("zuck", keyword_filter=None)
-    assert set(fb._ENUMERATE_CACHE["NASA"]) == {"a1"}
-    assert set(fb._ENUMERATE_CACHE["zuck"]) == {"b1"}
+    assert fb.cached_ids("NASA") == {"a1"}
+    assert fb.cached_ids("zuck") == {"b1"}
 
 
 def test_enumerate_caches_items_filtered_out_by_keyword(monkeypatch):
@@ -403,7 +588,7 @@ def test_enumerate_caches_items_filtered_out_by_keyword(monkeypatch):
         _row("miss", "2026-07-05", content="Other"),
     ])
     fb.enumerate_newest_first("NASA", keyword_filter="artemis")
-    assert set(fb._ENUMERATE_CACHE["NASA"]) == {"hit", "miss"}
+    assert fb.cached_ids("NASA") == {"hit", "miss"}
 
 
 def test_enumerate_does_not_filter_by_author(monkeypatch):
@@ -415,7 +600,7 @@ def test_enumerate_does_not_filter_by_author(monkeypatch):
     _stub_job(monkeypatch, [_raw_row(post_id="p1", profile_handle="NASA")])
     items = fb.enumerate_newest_first("100044561550831", keyword_filter=None)
     assert [i["id"] for i in items] == ["p1"]
-    assert fb._ENUMERATE_CACHE["100044561550831"]["p1"]["author"] == "NASA"
+    assert fb.cached_row("100044561550831", "p1")["author"] == "NASA"
 
 
 def test_enumerate_propagates_job_timeout(monkeypatch):
@@ -539,3 +724,17 @@ def test_download_item_makes_no_network_call(tmp_path, monkeypatch):
     monkeypatch.setattr(fb, "_run_collection_job", boom)
     monkeypatch.setattr(brightdata_job, "trigger", boom)
     assert fb.download_item(tmp_path, "MrBeast6000", "1479086397353733", "x")["ok"]
+
+
+def test_max_items_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_MAX_ITEMS_FACEBOOK", "25")
+    assert fb.max_items() == 25
+    monkeypatch.delenv("BRIGHTDATA_MAX_ITEMS_FACEBOOK")
+    assert fb.max_items() == fb.MAX_ITEMS_PER_RUN == 10
+
+
+def test_poll_timeout_s_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_POLL_TIMEOUT_FACEBOOK", "45")
+    assert fb.poll_timeout_s() == 45
+    monkeypatch.delenv("BRIGHTDATA_POLL_TIMEOUT_FACEBOOK")
+    assert fb.poll_timeout_s() == fb.POLL_TIMEOUT_S == 300

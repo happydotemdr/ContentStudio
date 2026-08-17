@@ -1,6 +1,23 @@
 import pytest
 
+from pipeline_app import brightdata_job
 from pipeline_app import discovery_x as x
+
+
+@pytest.fixture(autouse=True)
+def _isolate_x_state(monkeypatch, tmp_path):
+    """F-67 + F-69, belt and braces with the repo-wide conftest guard (P0).
+    Clears the process-global cache and the diagnostics buffer, points the
+    pending store at tmp_path, and makes sure no test can see the real
+    BRIGHTDATA_API_KEY that is set in this machine's environment."""
+    monkeypatch.delenv(x.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(x, "KEY_FILE", tmp_path / "no-brightdata_api_key.txt")
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    x.reset_caches()
+    brightdata_job.reset_state()
+    yield
+    x.reset_caches()
+    brightdata_job.reset_state()
 
 
 def test_parse_published_accepts_the_verified_iso_format():
@@ -13,6 +30,56 @@ def test_parse_published_accepts_the_verified_iso_format():
     assert x._parse_published("2026-08-08") == "2026-08-08"
 
 
+def test_key_file_honours_the_repo_root_everything_else_uses(monkeypatch, tmp_path):
+    # x.KEY_FILE.name, not the literal "brightdata_api_key.txt": the
+    # autouse isolation fixture above already repoints KEY_FILE at
+    # tmp_path/"no-brightdata_api_key.txt" for this test, and key_file_for
+    # must resolve against whatever basename KEY_FILE currently carries.
+    (tmp_path / "pipeline-app").mkdir()
+    (tmp_path / "pipeline-app" / x.KEY_FILE.name).write_text("sandbox-key",
+                                                                encoding="utf-8")
+    monkeypatch.delenv(x.KEY_ENV_VAR, raising=False)
+    assert x.api_key(repo_root=tmp_path) == "sandbox-key"
+
+
+def test_a_sandboxed_root_without_a_key_file_yields_no_key(monkeypatch, tmp_path):
+    """The defect F-69 names: repo_root=tmp_path used to be ignored entirely,
+    so this returned the real repo's token."""
+    monkeypatch.delenv(x.KEY_ENV_VAR, raising=False)
+    assert x.api_key(repo_root=tmp_path) is None
+
+
+def test_api_key_without_a_repo_root_still_reads_the_module_key_file(monkeypatch, tmp_path):
+    """Existing callers pass nothing; the default must not change."""
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("module-key", encoding="utf-8")
+    monkeypatch.delenv(x.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(x, "KEY_FILE", key_file)
+    assert x.api_key() == "module-key"
+
+
+def test_preflight_reports_a_missing_key_once_without_calling_bright_data(monkeypatch, tmp_path):
+    monkeypatch.delenv(x.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(x, "KEY_FILE", tmp_path / "absent.txt")
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("preflight must not touch the network")
+
+    monkeypatch.setattr(x.requests, "post", _fail_if_called)
+    message = x.preflight()
+    assert message is not None
+    assert x.KEY_ENV_VAR in message
+    assert "x" in message
+
+
+def test_preflight_returns_none_when_the_key_is_configured(monkeypatch, tmp_path):
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("k", encoding="utf-8")
+    monkeypatch.delenv(x.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(x, "KEY_FILE", key_file)
+    assert x.preflight() is None
+
+
 def test_parse_published_rejects_unusable_values():
     assert x._parse_published("") is None
     assert x._parse_published(None) is None
@@ -21,6 +88,23 @@ def test_parse_published_rejects_unusable_values():
     # MM/DD and DD/MM produces wrong dates, which is worse than a dropped
     # row, and dropped rows are counted and logged.
     assert x._parse_published("08/08/2026 01:11:45") is None
+
+
+def test_run_collection_job_prefers_a_pending_snapshot_over_a_new_billed_job(monkeypatch, tmp_path):
+    """Bright Data bills per record. If the previous run paid for a snapshot
+    and timed out before collecting it, this run must take that data rather
+    than pay again."""
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    brightdata_job.record_pending("x/somehandle", "snap-abc")
+    monkeypatch.setattr(x, "api_key", lambda: "test-key")
+
+    def _fail_if_called(handle, key):
+        raise AssertionError("must not trigger a new job while a snapshot is pending")
+
+    monkeypatch.setattr(x, "_trigger_job", _fail_if_called)
+    monkeypatch.setattr(x, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(x, "_fetch_job_results", lambda job_id, key: [{"id": "p1"}])
+    assert x._run_collection_job("somehandle") == [{"id": "p1"}]
 
 
 def _raw_row(**overrides):
@@ -397,6 +481,133 @@ def test_enumerate_caps_after_filtering_so_the_cap_bounds_retained_items(monkeyp
     assert [i["id"] for i in items] == ["10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
 
 
+def test_full_cap_batch_records_a_saturation_error(monkeypatch):
+    """Fault test. Ten of ten means posts were dropped that no later run can
+    fetch -- the handle still reports 'ok', so this must be reported here."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id=str(i), user_posted="CNN", date_posted=f"2026-08-{i:02d}T00:00:00.000Z")
+        for i in range(1, 11)
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    saturation = [d for d in brightdata_job.drain_diagnostics()
+                  if d["kind"] == "adapter.batch_saturated"]
+    assert len(saturation) == 1
+    assert saturation[0]["severity"] == "error"
+
+
+def test_a_short_batch_records_no_saturation_diagnostic(monkeypatch):
+    """Distinguishability. Nine of ten is a quiet account; ten of ten is
+    truncation. The two must be observably different."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id=str(i), user_posted="CNN", date_posted=f"2026-08-{i:02d}T00:00:00.000Z")
+        for i in range(1, 10)
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    assert [d for d in brightdata_job.drain_diagnostics()
+            if d["kind"] == "adapter.batch_saturated"] == []
+
+
+def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(monkeypatch):
+    """Surfacing. The record must be actionable on its own: an operator
+    reading it in the log or the events table must know what to change."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id=str(i), user_posted="CNN", date_posted=f"2026-08-{i:02d}T00:00:00.000Z")
+        for i in range(1, 11)
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.batch_saturated"][0]
+    assert record["detail"]["cap"] == 10
+    assert record["detail"]["handle"] == "CNN"
+    assert record["detail"]["platform"] == "x"
+    assert record["detail"]["raw_count"] == 10
+    assert x.MAX_ITEMS_ENV_VAR in record["message"]
+    assert "no backfill" in record["message"]
+
+
+def test_dropped_rows_reach_a_durable_surface_not_only_stderr(monkeypatch, capsys):
+    """Fault test. The Scheduled Task command has no redirection, so a stderr
+    warning on the production path has no destination at all (B-01)."""
+    _enumerate_with(monkeypatch, [_raw_row(id="1", user_posted="CNN"), {"no": "id"}])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.rows_dropped"][0]
+    assert record["severity"] == "warning"
+    assert record["detail"]["dropped"] == 1
+    assert record["source"] == "discovery_x"
+    assert "dropped 1 unusable row(s)" in capsys.readouterr().err   # the print stays
+
+
+def test_foreign_author_rows_reach_a_durable_surface_not_only_stderr(monkeypatch, capsys):
+    """Fault test, the foreign-author case: X filters both unusable and
+    foreign-author rows and today only unusable rows reach a durable
+    surface -- this must be true for the foreign-author drop too."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id="1", user_posted="CNN"),
+        _raw_row(id="2", user_posted="someone_else"),
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.foreign_rows_dropped"][0]
+    assert record["severity"] == "warning"
+    assert record["detail"]["dropped"] == 1
+    assert record["source"] == "discovery_x"
+    assert "dropped 1 row(s) by another author" in capsys.readouterr().err
+
+
+def test_a_clean_batch_produces_no_diagnostics_at_all(monkeypatch):
+    """Distinguishability. A degraded run must be observably different from a
+    healthy one -- 'no diagnostics' is the healthy signal."""
+    _enumerate_with(monkeypatch, [_raw_row(id="1", user_posted="CNN")])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    assert brightdata_job.drain_diagnostics() == []
+
+
+def test_diagnostics_carry_everything_obs_record_event_requires(monkeypatch):
+    """Surfacing. P8 writes these straight into the events table; a record
+    missing a column is a record that never becomes a row."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id="1", user_posted="CNN"),
+        {"no": "id"},
+        _raw_row(id="2", user_posted="someone_else"),
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    records = brightdata_job.drain_diagnostics()
+    assert records
+    for record in records:
+        assert set(record) == {"kind", "severity", "source", "message", "detail"}
+        assert record["severity"] in {"info", "warning", "error", "critical"}
+        assert record["message"]
+
+
+def test_saturation_fires_even_when_a_filtered_row_drops_kept_below_the_cap(monkeypatch):
+    """Plan correction (T17 task review, 2026-08-16): saturation must be
+    measured on the RAW Bright Data count, not the post-filter 'kept' count.
+    Ten raw rows at cap=10, but one is by a foreign author -- kept drops to
+    9. The cap still truncated the batch (Bright Data returned exactly 10,
+    its per-input limit), so the alarm must still fire even though
+    len(kept) < cap. X is the most exposed adapter: it filters both unusable
+    rows and foreign-author rows."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id=str(i), user_posted="CNN", date_posted=f"2026-08-{i:02d}T00:00:00.000Z")
+        for i in range(1, 10)
+    ] + [_raw_row(id="10", user_posted="someone_else", date_posted="2026-08-10T00:00:00.000Z")])
+    brightdata_job.drain_diagnostics()
+    items = x.enumerate_newest_first("CNN", None)
+    assert len(items) == 9  # kept < cap after the foreign-author row is dropped
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.batch_saturated"][0]
+    assert record["detail"]["raw_count"] == 10
+    assert record["detail"]["collected"] == 9
+
+
 def test_enumerate_keeps_media_only_posts(monkeypatch):
     """A media-only post (description: null) is a normal X post, not an
     unusable row. 3 of 10 live rows for one account were media-only."""
@@ -447,10 +658,29 @@ def test_enumerate_warns_differently_when_all_rows_were_unusable(monkeypatch, ca
     assert "posts its own content" not in err
 
 
+def test_billed_nothing_records_an_error_diagnostic(monkeypatch):
+    """The stderr print alone is invisible on the production Scheduled Task
+    path (no redirection). A billed-and-captured-nothing run must also be
+    escalated through the durable diagnostics sink, same as Instagram."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id="1", user_posted="stranger"),
+        _raw_row(id="2", user_posted="another_stranger"),
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.billed_captured_nothing"][0]
+    assert record["severity"] == "error"
+    assert record["source"] == "discovery_x"
+    assert record["detail"]["platform"] == x.PLATFORM
+    assert record["detail"]["handle"] == "CNN"
+    assert record["detail"]["raw_count"] == 2
+
+
 def test_enumerate_caches_rows_for_download_item(monkeypatch):
     _enumerate_with(monkeypatch, [_raw_row(id="1")])
     x.enumerate_newest_first("CNN", None)
-    assert x._ENUMERATE_CACHE["CNN"]["1"]["author"] == "CNN"
+    assert x.cached_row("CNN", "1")["author"] == "CNN"
 
 
 def test_enumerate_overwrites_rather_than_merges_the_cache(monkeypatch):
@@ -460,7 +690,7 @@ def test_enumerate_overwrites_rather_than_merges_the_cache(monkeypatch):
     x.enumerate_newest_first("CNN", None)
     _enumerate_with(monkeypatch, [_raw_row(id="fresh")])
     x.enumerate_newest_first("CNN", None)
-    assert set(x._ENUMERATE_CACHE["CNN"]) == {"fresh"}
+    assert x.cached_ids("CNN") == {"fresh"}
 
 
 def test_enumerate_warns_about_both_causes_when_they_are_mixed(monkeypatch, capsys):
@@ -490,7 +720,7 @@ def test_enumerate_keys_identity_on_id_not_url(monkeypatch):
     ])
     items = x.enumerate_newest_first("CNN", None)
     assert [i["id"] for i in items] == ["2", "1"]
-    assert set(x._ENUMERATE_CACHE["CNN"]) == {"1", "2"}
+    assert x.cached_ids("CNN") == {"1", "2"}
 
 
 def test_enumerate_returns_a_constant_content_type(monkeypatch):
@@ -605,3 +835,24 @@ def test_download_item_leaves_no_tmp_file(monkeypatch, tmp_path):
     x.download_item(tmp_path, "CNN", "1", "title")
     directory = tmp_path / "output" / "brand-intel" / "x" / "cnn"
     assert [p.name for p in directory.iterdir()] == ["1.md"]
+
+
+def test_max_items_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_MAX_ITEMS_X", "25")
+    assert x.max_items() == 25
+    monkeypatch.delenv("BRIGHTDATA_MAX_ITEMS_X")
+    assert x.max_items() == x.MAX_ITEMS_PER_RUN == 10
+
+
+def test_instagram_override_does_not_change_x(monkeypatch):
+    """One knob per platform: raising Instagram's cap must not silently raise
+    the spend on an account posting hundreds of times a day."""
+    monkeypatch.setenv("BRIGHTDATA_MAX_ITEMS_INSTAGRAM", "50")
+    assert x.max_items() == 10
+
+
+def test_poll_timeout_s_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_POLL_TIMEOUT_X", "45")
+    assert x.poll_timeout_s() == 45
+    monkeypatch.delenv("BRIGHTDATA_POLL_TIMEOUT_X")
+    assert x.poll_timeout_s() == x.POLL_TIMEOUT_S == 600

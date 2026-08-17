@@ -1,4 +1,26 @@
+import pytest
+
+from pipeline_app import brightdata_job
 from pipeline_app import discovery_linkedin as li
+
+
+@pytest.fixture(autouse=True)
+def _isolate_linkedin_state(monkeypatch, tmp_path):
+    """F-67 + F-69, belt and braces with the repo-wide conftest guard (P0).
+    Unlike the module adapters, LinkedInAdapter's enumerate cache is
+    per-instance (self._cache) and profile_adapter()/company_adapter() hand
+    back a fresh instance every call, so there is no module-global cache
+    here to clear -- only the shared credential lookup and the diagnostics
+    buffer/pending store that brightdata_job owns on every adapter's
+    behalf. Points the pending store at tmp_path and makes sure no test can
+    see the real BRIGHTDATA_API_KEY that is set in this machine's
+    environment."""
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(li, "KEY_FILE", tmp_path / "no-brightdata_api_key.txt")
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    brightdata_job.reset_state()
+    yield
+    brightdata_job.reset_state()
 
 
 def test_parse_published_accepts_the_verified_iso_format():
@@ -18,6 +40,99 @@ def test_parse_published_rejects_unusable_values():
     # MM/DD and DD/MM would produce wrong dates, which is worse than a
     # dropped row, and dropped rows are logged.
     assert li._parse_published("07/08/2026 14:00:09") is None
+
+
+def test_key_file_honours_the_repo_root_everything_else_uses(monkeypatch, tmp_path):
+    # li.KEY_FILE.name, not the literal "brightdata_api_key.txt": the
+    # autouse isolation fixture above already repoints KEY_FILE at
+    # tmp_path/"no-brightdata_api_key.txt" for this test, and key_file_for
+    # must resolve against whatever basename KEY_FILE currently carries.
+    (tmp_path / "pipeline-app").mkdir()
+    (tmp_path / "pipeline-app" / li.KEY_FILE.name).write_text("sandbox-key",
+                                                                encoding="utf-8")
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    assert li.profile_adapter().api_key(repo_root=tmp_path) == "sandbox-key"
+
+
+def test_a_sandboxed_root_without_a_key_file_yields_no_key(monkeypatch, tmp_path):
+    """The defect F-69 names: repo_root=tmp_path used to be ignored entirely,
+    so this returned the real repo's token."""
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    assert li.profile_adapter().api_key(repo_root=tmp_path) is None
+
+
+def test_api_key_without_a_repo_root_still_reads_the_module_key_file(monkeypatch, tmp_path):
+    """Existing callers pass nothing; the default must not change."""
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("module-key", encoding="utf-8")
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(li, "KEY_FILE", key_file)
+    assert li.profile_adapter().api_key() == "module-key"
+
+
+def test_preflight_reports_a_missing_key_once_without_calling_bright_data(monkeypatch, tmp_path):
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(li, "KEY_FILE", tmp_path / "absent.txt")
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("preflight must not touch the network")
+
+    # discovery_linkedin has no module-level `requests` import -- its HTTP
+    # calls all go through brightdata_job, so that is what must not be hit.
+    monkeypatch.setattr(brightdata_job.requests, "post", _fail_if_called)
+    for adapter in (li.profile_adapter(), li.company_adapter()):
+        message = adapter.preflight()
+        assert message is not None
+        assert li.KEY_ENV_VAR in message
+        assert adapter.platform in message
+
+
+def test_preflight_returns_none_when_the_key_is_configured(monkeypatch, tmp_path):
+    key_file = tmp_path / "brightdata_api_key.txt"
+    key_file.write_text("k", encoding="utf-8")
+    monkeypatch.delenv(li.KEY_ENV_VAR, raising=False)
+    monkeypatch.setattr(li, "KEY_FILE", key_file)
+    assert li.profile_adapter().preflight() is None
+    assert li.company_adapter().preflight() is None
+
+
+def test_run_collection_job_prefers_a_pending_snapshot_over_a_new_billed_job(monkeypatch, tmp_path):
+    """Bright Data bills per record. If the previous run paid for a snapshot
+    and timed out before collecting it, this run must take that data rather
+    than pay again."""
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    brightdata_job.record_pending("linkedin-profile/somehandle", "snap-abc")
+    person = li.profile_adapter()
+    monkeypatch.setattr(person, "api_key", lambda: "test-key")
+
+    def _fail_if_called(handle, key):
+        raise AssertionError("must not trigger a new job while a snapshot is pending")
+
+    monkeypatch.setattr(person, "_trigger_job", _fail_if_called)
+    monkeypatch.setattr(person, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(person, "_fetch_job_results", lambda job_id, key: [{"id": "p1"}])
+    assert person._run_collection_job("somehandle") == [{"id": "p1"}]
+
+
+def test_profile_and_company_pending_snapshots_never_collide(monkeypatch, tmp_path):
+    """A person and a company can share a slug. One pending entry must not
+    serve the other mode -- the same reason the two adapters keep separate
+    caches."""
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    brightdata_job.record_pending("linkedin-profile/acme", "snap-person")
+    person, company = li.profile_adapter(), li.company_adapter()
+    monkeypatch.setattr(person, "api_key", lambda: "k")
+    monkeypatch.setattr(company, "api_key", lambda: "k")
+    monkeypatch.setattr(person, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(person, "_fetch_job_results", lambda job_id, key: [{"id": "c1"}])
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("company mode must not see the profile snapshot")
+
+    monkeypatch.setattr(company, "_poll_job_status", _fail_if_called)
+    monkeypatch.setattr(company, "_trigger_job", lambda handle, key: "fresh")
+    monkeypatch.setattr(company, "_fetch_job_results", lambda job_id, key: [])
+    assert person._run_collection_job("acme") == [{"id": "c1"}]
 
 
 def _raw_row(**overrides):
@@ -313,6 +428,113 @@ def test_enumerate_caps_at_max_items_per_run(monkeypatch):
     assert len(adapter.enumerate_newest_first("lanieri", keyword_filter=None)) == 10
 
 
+def test_full_cap_batch_records_a_saturation_error(monkeypatch):
+    """Fault test. Ten of ten means posts were dropped that no later run can
+    fetch -- the handle still reports 'ok', so this must be reported here."""
+    adapter = _company()
+    _stub_job(adapter, [_row(f"p{i}", "2026-07-08") for i in range(10)], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    saturation = [d for d in brightdata_job.drain_diagnostics()
+                  if d["kind"] == "adapter.batch_saturated"]
+    assert len(saturation) == 1
+    assert saturation[0]["severity"] == "error"
+
+
+def test_a_short_batch_records_no_saturation_diagnostic(monkeypatch):
+    """Distinguishability. Nine of ten is a quiet account; ten of ten is
+    truncation. The two must be observably different."""
+    adapter = _company()
+    _stub_job(adapter, [_row(f"p{i}", "2026-07-08") for i in range(9)], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    assert [d for d in brightdata_job.drain_diagnostics()
+            if d["kind"] == "adapter.batch_saturated"] == []
+
+
+def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(monkeypatch):
+    """Surfacing. The record must be actionable on its own: an operator
+    reading it in the log or the events table must know what to change. Uses
+    the profile adapter -- self.platform, not a shared PLATFORM constant, is
+    what LinkedIn must report, since linkedin-profile and linkedin-company
+    share this same module."""
+    adapter = _profile()
+    _stub_job(adapter, [_row(f"p{i}", "2026-07-08") for i in range(10)], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.batch_saturated"][0]
+    assert record["detail"]["cap"] == 10
+    assert record["detail"]["handle"] == "bettywliu"
+    assert record["detail"]["platform"] == "linkedin-profile"
+    assert record["detail"]["raw_count"] == 10
+    assert li.MAX_ITEMS_ENV_VAR in record["message"]
+    assert "no backfill" in record["message"]
+
+
+def test_dropped_rows_reach_a_durable_surface_not_only_stderr(monkeypatch, capsys):
+    """Fault test. The Scheduled Task command has no redirection, so a stderr
+    warning on the production path has no destination at all (B-01)."""
+    adapter = _company()
+    _stub_job(adapter, [_row("good", "2026-07-08"), {"post_text": "no id"}], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.rows_dropped"][0]
+    assert record["severity"] == "warning"
+    assert record["detail"]["dropped"] == 1
+    assert record["source"] == "discovery_linkedin"
+    assert "dropped 1 unusable row(s)" in capsys.readouterr().err   # the print stays
+
+
+def test_foreign_author_rows_reach_a_durable_surface_not_only_stderr(monkeypatch, capsys):
+    """Fault test, the foreign-author case: profile mode filters posts
+    written by other people and today only unusable rows reach a durable
+    surface -- this must be true for the foreign-author drop too."""
+    adapter = _profile()
+    _stub_job(adapter, [
+        _row("own1", "2026-07-08", author="bettywliu"),
+        _row("foreign", "2026-07-14", author="mattwilkerson"),
+    ], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.foreign_rows_dropped"][0]
+    assert record["severity"] == "warning"
+    assert record["detail"]["dropped"] == 1
+    assert record["source"] == "discovery_linkedin"
+    assert "dropped 1 row(s) by another author" in capsys.readouterr().err
+
+
+def test_a_clean_batch_produces_no_diagnostics_at_all(monkeypatch):
+    """Distinguishability. A degraded run must be observably different from a
+    healthy one -- 'no diagnostics' is the healthy signal."""
+    adapter = _company()
+    _stub_job(adapter, [_row("good", "2026-07-08")], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    assert brightdata_job.drain_diagnostics() == []
+
+
+def test_diagnostics_carry_everything_obs_record_event_requires(monkeypatch):
+    """Surfacing. P8 writes these straight into the events table; a record
+    missing a column is a record that never becomes a row."""
+    adapter = _profile()
+    _stub_job(adapter, [
+        _row("own1", "2026-07-08", author="bettywliu"),
+        {"post_text": "no id"},
+        _row("foreign", "2026-07-14", author="mattwilkerson"),
+    ], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+    records = brightdata_job.drain_diagnostics()
+    assert records
+    for record in records:
+        assert set(record) == {"kind", "severity", "source", "message", "detail"}
+        assert record["severity"] in {"info", "warning", "error", "critical"}
+        assert record["message"]
+
+
 def test_enumerate_drops_unusable_rows_and_logs(monkeypatch, capsys):
     adapter = _company()
     _stub_job(adapter, [
@@ -377,6 +599,26 @@ def test_enumerate_warns_loudly_when_rows_returned_but_none_survive(monkeypatch,
     assert "billed" in err
 
 
+def test_billed_nothing_records_an_error_diagnostic(monkeypatch):
+    """The stderr print alone is invisible on the production Scheduled Task
+    path (no redirection). A billed-and-captured-nothing run must also be
+    escalated through the durable diagnostics sink, same as Instagram."""
+    adapter = _profile()
+    _stub_job(adapter, [
+        _row("f1", "2026-07-08", author="someone-else"),
+        _row("f2", "2026-07-09", author="another-person"),
+    ], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.billed_captured_nothing"][0]
+    assert record["severity"] == "error"
+    assert record["source"] == "discovery_linkedin"
+    assert record["detail"]["platform"] == adapter.platform
+    assert record["detail"]["handle"] == "bettywliu"
+    assert record["detail"]["raw_count"] == 2
+
+
 def test_enumerate_does_not_warn_when_the_job_genuinely_returned_nothing(monkeypatch, capsys):
     adapter = _company()
     _stub_job(adapter, [], monkeypatch)
@@ -408,7 +650,7 @@ def test_enumerate_populates_the_cache_before_the_keyword_filter(monkeypatch):
     adapter = _company()
     _stub_job(adapter, [_row("c1", "2026-07-08", text="full body text")], monkeypatch)
     adapter.enumerate_newest_first("lanieri", keyword_filter="nomatch")
-    assert adapter._cache["lanieri"]["c1"]["body"] == "full body text"
+    assert adapter.cached_row("lanieri", "c1")["body"] == "full body text"
 
 
 def test_enumerate_overwrites_a_previous_cache_entry(monkeypatch):
@@ -417,8 +659,7 @@ def test_enumerate_overwrites_a_previous_cache_entry(monkeypatch):
     adapter.enumerate_newest_first("lanieri", keyword_filter=None)
     _stub_job(adapter, [_row("new_batch", "2026-08-01")], monkeypatch)
     adapter.enumerate_newest_first("lanieri", keyword_filter=None)
-    assert "old_batch" not in adapter._cache["lanieri"]
-    assert "new_batch" in adapter._cache["lanieri"]
+    assert adapter.cached_ids("lanieri") == {"new_batch"}
 
 
 def test_two_adapters_sharing_a_handle_slug_do_not_share_cache(monkeypatch):
@@ -432,8 +673,8 @@ def test_two_adapters_sharing_a_handle_slug_do_not_share_cache(monkeypatch):
     person.enumerate_newest_first("acme", keyword_filter=None)
     company.enumerate_newest_first("acme", keyword_filter=None)
 
-    assert set(person._cache["acme"]) == {"person_post"}
-    assert set(company._cache["acme"]) == {"company_post"}
+    assert person.cached_ids("acme") == {"person_post"}
+    assert company.cached_ids("acme") == {"company_post"}
 
 
 def test_on_disk_ids_empty_when_directory_missing(tmp_path):
@@ -532,3 +773,17 @@ def test_download_item_makes_no_network_call(tmp_path, monkeypatch):
     monkeypatch.setattr(adapter, "_run_collection_job", _fail)
     monkeypatch.setattr(brightdata_job, "trigger", _fail)
     assert adapter.download_item(tmp_path, "lanieri", "c1", "t")["ok"] is True
+
+
+def test_max_items_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_MAX_ITEMS_LINKEDIN", "25")
+    assert li.max_items() == 25
+    monkeypatch.delenv("BRIGHTDATA_MAX_ITEMS_LINKEDIN")
+    assert li.max_items() == li.MAX_ITEMS_PER_RUN == 10
+
+
+def test_poll_timeout_s_honours_the_per_platform_override(monkeypatch):
+    monkeypatch.setenv("BRIGHTDATA_POLL_TIMEOUT_LINKEDIN", "45")
+    assert li.poll_timeout_s() == 45
+    monkeypatch.delenv("BRIGHTDATA_POLL_TIMEOUT_LINKEDIN")
+    assert li.poll_timeout_s() == li.POLL_TIMEOUT_S == 300
