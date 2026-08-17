@@ -30,20 +30,28 @@ def register_client(
     existing = conn.execute("SELECT 1 FROM clients WHERE slug = ?", (slug,)).fetchone()
     if existing is not None:
         raise ClientAlreadyExists(f"client {slug!r} is already registered")
-    with db.transaction(conn):
-        conn.execute(
-            """
-            INSERT INTO clients
-                (slug, display_name, primary_email, alias_emails_json,
-                 session_outlines_dir, drive_folder_id, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
-            """,
-            (
-                slug, display_name, primary_email.strip().lower(),
-                json.dumps(alias_emails or []), session_outlines_dir,
-                drive_folder_id, _now_iso(),
-            ),
-        )
+
+    normalized_email = primary_email.strip().lower()
+    try:
+        with db.transaction(conn):
+            conn.execute(
+                """
+                INSERT INTO clients
+                    (slug, display_name, primary_email, alias_emails_json,
+                     session_outlines_dir, drive_folder_id, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+                """,
+                (
+                    slug, display_name, normalized_email,
+                    json.dumps(alias_emails or []), session_outlines_dir,
+                    drive_folder_id, _now_iso(),
+                ),
+            )
+    except sqlite3.IntegrityError as e:
+        # The primary_email unique constraint was violated
+        raise ClientAlreadyExists(
+            f"email {normalized_email!r} is already registered under a different client"
+        ) from e
 
 
 def get_active_clients(conn: sqlite3.Connection) -> list[dict]:

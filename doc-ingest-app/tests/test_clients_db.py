@@ -39,6 +39,18 @@ def test_register_duplicate_slug_raises(conn):
         )
 
 
+def test_register_duplicate_email_different_slug_raises(conn):
+    clients_db.register_client(
+        conn, slug="sean", display_name="Sean", primary_email="shared@example.com",
+        session_outlines_dir="x", drive_folder_id="y",
+    )
+    with pytest.raises(clients_db.ClientAlreadyExists):
+        clients_db.register_client(
+            conn, slug="frank", display_name="Frank", primary_email="shared@example.com",
+            session_outlines_dir="x", drive_folder_id="y",
+        )
+
+
 def test_deactivate_client_removes_it_from_active_list(conn):
     clients_db.register_client(
         conn, slug="sean", display_name="Sean", primary_email="sean@example.com",
