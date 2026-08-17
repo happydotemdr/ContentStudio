@@ -8,6 +8,7 @@ from pipeline_app.discovery_paths import (
     run_owner_path,
     run_record_path,
     slugify,
+    spawn_log_path,
 )
 
 
@@ -119,3 +120,8 @@ def test_group_slug_collisions_does_not_report_an_exactly_repeated_handle():
 
 def test_run_owner_path_is_namespaced_and_does_not_collide_with_run_records(tmp_path: Path):
     assert run_owner_path(tmp_path, 7) == tmp_path / "output" / "discovery-runs" / ".owners" / "7.json"
+
+
+def test_spawn_log_path_is_namespaced_under_discovery_runs(tmp_path: Path):
+    assert (spawn_log_path(tmp_path, "abc123")
+            == tmp_path / "output" / "discovery-runs" / "spawn-logs" / "abc123.log")

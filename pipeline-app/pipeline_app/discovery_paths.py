@@ -82,6 +82,15 @@ def run_record_path(repo_root: Path, run_id: str) -> Path:
     return repo_root / "output" / "discovery-runs" / f"{run_id}.md"
 
 
+def spawn_log_path(repo_root: Path, spawn_id: str) -> Path:
+    """Where a spawned cron child's captured stdout/stderr live (B-61/E-11).
+
+    Named by spawn_id rather than PID: PIDs are reused by the OS, so naming
+    by PID would let a later, unrelated child silently overwrite an earlier
+    dead child's diagnostic output."""
+    return repo_root / "output" / "discovery-runs" / "spawn-logs" / f"{spawn_id}.log"
+
+
 def run_owner_path(repo_root: Path, run_row_id: int) -> Path:
     """Sidecar recording which OS process owns a 'running' row. Lives on disk
     rather than on the row because discovery_runs' schema belongs to another

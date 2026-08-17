@@ -1,6 +1,7 @@
 import datetime
 import subprocess
 import sys
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -11,7 +12,8 @@ from pipeline_app import db as db_mod
 from pipeline_app import discovery_engine
 from pipeline_app import discovery_scheduling
 from pipeline_app import email_render
-from pipeline_app.discovery_paths import find_slug_collision, handle_slug
+from pipeline_app import obs
+from pipeline_app.discovery_paths import find_slug_collision, handle_slug, spawn_log_path
 
 router = APIRouter()
 
@@ -61,12 +63,37 @@ def _popen(cmd: list[str], **kwargs):
     return subprocess.Popen(cmd, **kwargs)
 
 
-def _spawn_cron(repo_root: Path, args: list[str]) -> None:
+def _spawn_cron(conn, repo_root: Path, args: list[str]):
+    """Spawn the cron child and make it observable (B-61/E-11).
+
+    Before this, all three call sites fired the child fully detached: no PID
+    retained, no returncode ever checked, stdout/stderr inherited straight
+    from uvicorn's own console -- so a child that died on launch produced the
+    exact same 303 redirect as a healthy one. This captures the PID, redirects
+    the child's stdout/stderr to a per-spawn log file (named by spawn_id, not
+    PID, since PIDs get reused), and records a discovery.spawn_requested event
+    so discovery_runs_page can flag a spawn that never produced a run.
+    """
     cron_script = repo_root / "pipeline-app" / "run_discovery_cron.py"
-    _popen(
-        [sys.executable, str(cron_script), *args, "--repo-root", str(repo_root)],
-        cwd=str(repo_root),
+    argv = [sys.executable, str(cron_script), *args, "--repo-root", str(repo_root)]
+    spawn_id = uuid.uuid4().hex
+    log_path = spawn_log_path(repo_root, spawn_id)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    requested_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    with open(log_path, "wb") as log_file:
+        proc = _popen(argv, cwd=str(repo_root), stdout=log_file, stderr=log_file)
+    obs.record_event(
+        conn, kind="discovery.spawn_requested", severity="info", source="routes.discovery",
+        message=f"spawned discovery cron child (pid={proc.pid})",
+        detail={
+            "spawn_id": spawn_id,
+            "pid": proc.pid,
+            "argv": argv,
+            "log_path": str(log_path),
+            "requested_at": requested_at,
+        },
     )
+    return proc
 
 
 @router.get("/discovery/handles")
@@ -128,7 +155,7 @@ def add_handle(
     handle_id = db_mod.create_handle(
         conn, platform, handle, display_name or None, cohort, keyword_filter or None, added_at,
     )
-    _spawn_cron(repo_root, ["--mode", "validate_handle", "--handle-id", str(handle_id)])
+    _spawn_cron(conn, repo_root, ["--mode", "validate_handle", "--handle-id", str(handle_id)])
     return RedirectResponse(url="/discovery/handles", status_code=303)
 
 
@@ -170,7 +197,7 @@ def run_now(request: Request):
     conn = request.app.state.conn
     if db_mod.get_running_run(conn) is not None:
         return PlainTextResponse("a discovery run is already active", status_code=409)
-    _spawn_cron(request.app.state.repo_root, ["--mode", "incremental"])
+    _spawn_cron(conn, request.app.state.repo_root, ["--mode", "incremental"])
     return RedirectResponse(url="/discovery/runs", status_code=303)
 
 
@@ -180,7 +207,8 @@ def run_now_backfill(request: Request, start: str = Form(...), end: str = Form(.
         _parse_backfill_dates(start, end)
     except ValueError as exc:
         return PlainTextResponse(str(exc), status_code=400)
-    _spawn_cron(request.app.state.repo_root, [
+    conn = request.app.state.conn
+    _spawn_cron(conn, request.app.state.repo_root, [
         "--mode", "backfill", "--backfill-start", start, "--backfill-end", end,
     ])
     return RedirectResponse(url="/discovery/runs", status_code=303)
@@ -201,6 +229,22 @@ def update_settings(request: Request, time_of_day: str = Form(...), timezone: st
     return RedirectResponse(url="/discovery/handles", status_code=303)
 
 
+def _list_pending_spawns(conn) -> list:
+    """E-11: a discovery.spawn_requested event with no discovery_runs row
+    started after it. That is a spawn that never produced a visible run --
+    the child died, hung, or never got as far as inserting its run row -- and
+    without this the redirected /discovery/runs page renders the PREVIOUS
+    state, so the operator's honest read is 'nothing happened' and the
+    natural response is to click Run Now again (another billable spawn)."""
+    return conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.spawn_requested' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM discovery_runs WHERE discovery_runs.started_at > events.occurred_at"
+        ") "
+        "ORDER BY occurred_at DESC"
+    ).fetchall()
+
+
 @router.get("/discovery/runs")
 def discovery_runs_page(request: Request):
     conn = request.app.state.conn
@@ -212,7 +256,9 @@ def discovery_runs_page(request: Request):
     return request.app.state.templates.TemplateResponse(
         request, "discovery_runs.html",
         {
-            "runs_with_results": runs_with_results, "active_nav": "discovery_runs",
+            "runs_with_results": runs_with_results,
+            "pending_spawns": _list_pending_spawns(conn),
+            "active_nav": "discovery_runs",
             "cli_available": request.app.state.cli_available,
         },
     )

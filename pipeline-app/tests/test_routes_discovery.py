@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -200,6 +201,38 @@ def test_backfill_rejects_a_malformed_date(client, spawns):
     assert client.post("/discovery/run-now-backfill",
                        data={"start": "June 1st", "end": "2026-06-30"}).status_code == 400
     assert spawns == []
+
+
+def test_a_spawn_is_recorded_with_its_pid_and_a_captured_output_path(client, spawns, tmp_path):
+    """B-61: all three spawn sites redirected 303 immediately with no PID
+    retained, no returncode checked and stdout/stderr inherited from uvicorn.
+    Every failure that kills the child produced the identical experience: a
+    clean redirect to a page with nothing new on it."""
+    client.post("/discovery/run-now")
+    row = client.app.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.spawn_requested'").fetchone()
+    assert row is not None
+    detail = json.loads(row["detail"])
+    assert detail["pid"] == 1
+    assert detail["log_path"].endswith(".log")
+
+
+def test_the_child_s_stdout_and_stderr_are_captured_to_a_file(client, monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr("pipeline_app.routes.discovery._popen",
+                        lambda cmd, **kw: captured.update(kw) or _FakeProc())
+    client.post("/discovery/run-now")
+    assert captured["stdout"] is not None and captured["stderr"] is not None
+
+
+def test_the_runs_page_context_names_a_spawn_that_never_produced_a_run(client, spawns):
+    """E-11: the redirected page almost always rendered the PREVIOUS state, so
+    the operator's honest read was 'nothing happened' and the natural response
+    was to click Run Now again."""
+    client.post("/discovery/run-now")
+    response = client.get("/discovery/runs")
+    assert response.status_code == 200
+    assert response.context["pending_spawns"]
 
 
 def test_backfill_rejects_an_argv_like_value(client, spawns):
