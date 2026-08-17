@@ -1259,4 +1259,77 @@ def test_run_discovery_normalizes_a_naive_now_to_aware_utc(engine_conn, tmp_path
     result = run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({})},
                            trigger="manual", mode="incremental", now=naive)
     assert result["status"] == "completed"
+
+
+def test_preflight_runs_once_per_run_not_once_per_handle(engine_conn, tmp_path):
+    """P7's B-21: a missing credential failed N times, once per handle, with N
+    identical unhelpful errors. One check, before the loop, one message."""
+    calls = {"n": 0}
+
+    class PreflightAdapter(SingleFakeAdapter):
+        def preflight(self, repo_root=None):
+            calls["n"] += 1
+            return None
+
+    for handle in ("@a", "@b", "@c"):
+        db.create_handle(engine_conn, "instagram", handle, handle, "guru", None, now_iso())
+    run_discovery(engine_conn, tmp_path, {"instagram": PreflightAdapter({})},
+                  trigger="manual", mode="incremental")
+    assert calls["n"] == 1
+
+
+def test_a_failed_preflight_skips_that_platform_and_reports_once(engine_conn, tmp_path):
+    class Unconfigured(SingleFakeAdapter):
+        def preflight(self, repo_root=None):
+            return "BRIGHTDATA_API_KEY is not set; instagram cannot run"
+
+        def enumerate_newest_first(self, handle, keyword_filter):
+            raise AssertionError("must not be reached when preflight failed")
+
+    for handle in ("@a", "@b", "@c"):
+        db.create_handle(engine_conn, "instagram", handle, handle, "guru", None, now_iso())
+    result = run_discovery(engine_conn, tmp_path, {"instagram": Unconfigured({})},
+                           trigger="manual", mode="incremental")
+    results = db.list_run_handle_results(engine_conn, result["run_row_id"])
+    assert len(results) == 3
+    for row in results:
+        assert row["status"] == "error"
+        assert "BRIGHTDATA_API_KEY" in row["error_message"]
+    events = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.preflight_failed'").fetchall()
+    assert len(events) == 1
+    assert events[0]["severity"] == "error"
+
+
+def test_a_failed_preflight_does_not_block_other_platforms(engine_conn, tmp_path):
+    class Unconfigured(SingleFakeAdapter):
+        def preflight(self, repo_root=None):
+            return "BRIGHTDATA_API_KEY is not set; instagram cannot run"
+
+        def enumerate_newest_first(self, handle, keyword_filter):
+            raise AssertionError("must not be reached when preflight failed")
+
+    db.create_handle(engine_conn, "instagram", "@bad", "Bad", "guru", None, now_iso())
+    db.create_handle(engine_conn, "youtube", "@good", "Good", "guru", None, now_iso())
+    good_adapter = SingleFakeAdapter({"@good": [{"id": "v1", "title": "x", "published": "2026-07-29"}]})
+    result = run_discovery(engine_conn, tmp_path,
+                           {"instagram": Unconfigured({}), "youtube": good_adapter},
+                           trigger="manual", mode="incremental")
+    results = {r["handle_id"]: r["status"] for r in db.list_run_handle_results(engine_conn, result["run_row_id"])}
+    assert list(results.values()).count("error") == 1
+    assert list(results.values()).count("ok") == 1
+
+
+def test_an_adapter_without_preflight_is_not_an_error(engine_conn, tmp_path):
+    """preflight() is optional -- the native adapters have no credentials to
+    check. getattr, not hasattr-then-call."""
+    assert getattr(SingleFakeAdapter, "preflight", None) is None
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": "2026-07-29"}]})
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter},
+                           trigger="manual", mode="incremental")
+    assert result["status"] == "completed"
+    events = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.preflight_failed'").fetchall()
+    assert events == []
     assert db.get_run(engine_conn, result["run_row_id"])["run_id"].endswith("+0000")

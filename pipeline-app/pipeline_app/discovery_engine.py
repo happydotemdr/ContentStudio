@@ -438,6 +438,62 @@ def _warn_on_directory_collisions(conn: sqlite3.Connection, handle_rows) -> None
                              detail={"platform": platform, "handles": colliding, "slug": slug})
 
 
+def _apply_preflight(conn: sqlite3.Connection, repo_root: Path, adapters: dict,
+                     run_row_id: int, handles, handle_results: list[dict]) -> tuple[list, bool]:
+    """P7's B-21: a missing credential (e.g. no BRIGHTDATA_API_KEY) failed N
+    times, once per handle, with N identical unhelpful errors -- each one an
+    attempted, billed adapter call. `preflight()` is an OPTIONAL per-adapter
+    hook (only the real Bright Data adapters define it; the native
+    youtube/bluesky adapters don't), so this uses `getattr(..., None)` and
+    calls it, never `hasattr`-then-call. Checked once per DISTINCT platform
+    among the included handles -- not once per handle -- before any adapter's
+    enumerate_newest_first/download_item is ever reached. A platform whose
+    preflight fails gets exactly one `discovery.preflight_failed` event, and
+    every handle on that platform is recorded 'error' with that same message
+    and excluded from the main per-handle loop that follows, so it isn't
+    processed (and doesn't buy a second, adapter-calling attempt) twice."""
+    platforms = sorted({handle_row["platform"] for handle_row in handles})
+    failed_platforms: dict[str, str] = {}
+    for platform in platforms:
+        adapter = adapters.get(platform)
+        if adapter is None:
+            # No adapter registered for this platform at all -- not this
+            # function's problem to diagnose. Leave it be; the per-handle
+            # loop's existing `adapters[platform]` lookup will raise the same
+            # KeyError it always has, caught by that loop's own per-handle
+            # except branch (B-55) rather than escaping here and crashing the
+            # whole run before any handle result is ever recorded.
+            continue
+        preflight_fn = getattr(adapter, "preflight", None)
+        if preflight_fn is None:
+            continue
+        message = preflight_fn(repo_root)
+        if message is None:
+            continue
+        failed_platforms[platform] = message
+        obs.record_event(conn, kind="discovery.preflight_failed", severity="error",
+                         source="discovery_engine", message=message, run_id=run_row_id,
+                         detail={"platform": platform})
+
+    if not failed_platforms:
+        return handles, False
+
+    remaining: list = []
+    for handle_row in handles:
+        platform = handle_row["platform"]
+        if platform not in failed_platforms:
+            remaining.append(handle_row)
+            continue
+        message = failed_platforms[platform]
+        db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", 0, message)
+        handle_results.append({
+            "handle": handle_row["handle"], "platform": platform,
+            "cohort": handle_row["cohort"], "status": "error", "items_downloaded": 0,
+            "last_seen_published_at": None, "error_message": message,
+        })
+    return remaining, True
+
+
 def _drain_adapter_diagnostics(conn, run_row_id: int) -> None:
     """P7 owns the sink; P8 owns the durable surface. Drained per handle, in a
     finally, so a handle that failed still yields its retry/truncation record --
@@ -631,6 +687,9 @@ def run_discovery(
     try:
         handles = db_mod.list_handles(conn, included_only=True)
         _warn_on_directory_collisions(conn, handles)
+        handles, preflight_failed = _apply_preflight(conn, repo_root, adapters, run_row_id,
+                                                      handles, handle_results)
+        any_error = any_error or preflight_failed
         for handle_row in handles:
             elapsed_s = (_dt.datetime.now(_dt.timezone.utc) - run_started).total_seconds()
             if elapsed_s >= run_deadline_s:
