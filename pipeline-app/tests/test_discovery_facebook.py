@@ -518,7 +518,7 @@ def test_enumerate_overwrites_rather_than_merges_the_cache(monkeypatch):
     fb.enumerate_newest_first("NASA", keyword_filter=None)
     _stub_job(monkeypatch, [_row("new", "2026-07-06")])
     fb.enumerate_newest_first("NASA", keyword_filter=None)
-    assert set(fb._ENUMERATE_CACHE["NASA"]) == {"new"}
+    assert fb.cached_ids("NASA") == {"new"}
 
 
 def test_enumerate_caches_per_handle(monkeypatch):
@@ -526,8 +526,8 @@ def test_enumerate_caches_per_handle(monkeypatch):
     fb.enumerate_newest_first("NASA", keyword_filter=None)
     _stub_job(monkeypatch, [_row("b1", "2026-07-06")])
     fb.enumerate_newest_first("zuck", keyword_filter=None)
-    assert set(fb._ENUMERATE_CACHE["NASA"]) == {"a1"}
-    assert set(fb._ENUMERATE_CACHE["zuck"]) == {"b1"}
+    assert fb.cached_ids("NASA") == {"a1"}
+    assert fb.cached_ids("zuck") == {"b1"}
 
 
 def test_enumerate_caches_items_filtered_out_by_keyword(monkeypatch):
@@ -538,7 +538,7 @@ def test_enumerate_caches_items_filtered_out_by_keyword(monkeypatch):
         _row("miss", "2026-07-05", content="Other"),
     ])
     fb.enumerate_newest_first("NASA", keyword_filter="artemis")
-    assert set(fb._ENUMERATE_CACHE["NASA"]) == {"hit", "miss"}
+    assert fb.cached_ids("NASA") == {"hit", "miss"}
 
 
 def test_enumerate_does_not_filter_by_author(monkeypatch):
@@ -550,7 +550,7 @@ def test_enumerate_does_not_filter_by_author(monkeypatch):
     _stub_job(monkeypatch, [_raw_row(post_id="p1", profile_handle="NASA")])
     items = fb.enumerate_newest_first("100044561550831", keyword_filter=None)
     assert [i["id"] for i in items] == ["p1"]
-    assert fb._ENUMERATE_CACHE["100044561550831"]["p1"]["author"] == "NASA"
+    assert fb.cached_row("100044561550831", "p1")["author"] == "NASA"
 
 
 def test_enumerate_propagates_job_timeout(monkeypatch):

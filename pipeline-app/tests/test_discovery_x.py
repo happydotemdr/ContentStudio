@@ -633,7 +633,7 @@ def test_enumerate_warns_differently_when_all_rows_were_unusable(monkeypatch, ca
 def test_enumerate_caches_rows_for_download_item(monkeypatch):
     _enumerate_with(monkeypatch, [_raw_row(id="1")])
     x.enumerate_newest_first("CNN", None)
-    assert x._ENUMERATE_CACHE["CNN"]["1"]["author"] == "CNN"
+    assert x.cached_row("CNN", "1")["author"] == "CNN"
 
 
 def test_enumerate_overwrites_rather_than_merges_the_cache(monkeypatch):
@@ -643,7 +643,7 @@ def test_enumerate_overwrites_rather_than_merges_the_cache(monkeypatch):
     x.enumerate_newest_first("CNN", None)
     _enumerate_with(monkeypatch, [_raw_row(id="fresh")])
     x.enumerate_newest_first("CNN", None)
-    assert set(x._ENUMERATE_CACHE["CNN"]) == {"fresh"}
+    assert x.cached_ids("CNN") == {"fresh"}
 
 
 def test_enumerate_warns_about_both_causes_when_they_are_mixed(monkeypatch, capsys):
@@ -673,7 +673,7 @@ def test_enumerate_keys_identity_on_id_not_url(monkeypatch):
     ])
     items = x.enumerate_newest_first("CNN", None)
     assert [i["id"] for i in items] == ["2", "1"]
-    assert set(x._ENUMERATE_CACHE["CNN"]) == {"1", "2"}
+    assert x.cached_ids("CNN") == {"1", "2"}
 
 
 def test_enumerate_returns_a_constant_content_type(monkeypatch):

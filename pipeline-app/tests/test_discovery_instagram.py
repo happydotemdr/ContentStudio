@@ -560,11 +560,14 @@ def test_enumerate_newest_first_applies_keyword_filter_to_caption(monkeypatch):
     assert [i["id"] for i in items] == ["a"]
 
 
-def test_enumerate_newest_first_populates_cache_for_download_item(monkeypatch):
+def test_enumerate_caches_the_full_caption_for_download_item(monkeypatch, tmp_path):
     raw = [_raw_row("p1", "2026-08-01", caption="full caption text")]
     monkeypatch.setattr(ig, "_run_collection_job", lambda handle: raw)
     ig.enumerate_newest_first("somehandle", keyword_filter=None)
-    assert ig._ENUMERATE_CACHE["somehandle"]["p1"]["caption"] == "full caption text"
+    ig.download_item(tmp_path, "somehandle", "p1", "truncated title")
+    text = (tmp_path / "output" / "brand-intel" / "instagram" / "somehandle" / "p1.md"
+            ).read_text(encoding="utf-8")
+    assert "full caption text" in text
 
 
 def test_enumerate_newest_first_overwrites_previous_cache_entry(monkeypatch):
@@ -572,8 +575,7 @@ def test_enumerate_newest_first_overwrites_previous_cache_entry(monkeypatch):
     ig.enumerate_newest_first("somehandle", keyword_filter=None)
     monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [_raw_row("new_batch", "2026-08-01")])
     ig.enumerate_newest_first("somehandle", keyword_filter=None)
-    assert "old_batch" not in ig._ENUMERATE_CACHE["somehandle"]
-    assert "new_batch" in ig._ENUMERATE_CACHE["somehandle"]
+    assert ig.cached_ids("somehandle") == {"new_batch"}
 
 
 def test_enumerate_newest_first_propagates_timeout(monkeypatch):

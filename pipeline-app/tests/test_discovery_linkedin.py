@@ -602,7 +602,7 @@ def test_enumerate_populates_the_cache_before_the_keyword_filter(monkeypatch):
     adapter = _company()
     _stub_job(adapter, [_row("c1", "2026-07-08", text="full body text")], monkeypatch)
     adapter.enumerate_newest_first("lanieri", keyword_filter="nomatch")
-    assert adapter._cache["lanieri"]["c1"]["body"] == "full body text"
+    assert adapter.cached_row("lanieri", "c1")["body"] == "full body text"
 
 
 def test_enumerate_overwrites_a_previous_cache_entry(monkeypatch):
@@ -611,8 +611,7 @@ def test_enumerate_overwrites_a_previous_cache_entry(monkeypatch):
     adapter.enumerate_newest_first("lanieri", keyword_filter=None)
     _stub_job(adapter, [_row("new_batch", "2026-08-01")], monkeypatch)
     adapter.enumerate_newest_first("lanieri", keyword_filter=None)
-    assert "old_batch" not in adapter._cache["lanieri"]
-    assert "new_batch" in adapter._cache["lanieri"]
+    assert adapter.cached_ids("lanieri") == {"new_batch"}
 
 
 def test_two_adapters_sharing_a_handle_slug_do_not_share_cache(monkeypatch):
@@ -626,8 +625,8 @@ def test_two_adapters_sharing_a_handle_slug_do_not_share_cache(monkeypatch):
     person.enumerate_newest_first("acme", keyword_filter=None)
     company.enumerate_newest_first("acme", keyword_filter=None)
 
-    assert set(person._cache["acme"]) == {"person_post"}
-    assert set(company._cache["acme"]) == {"company_post"}
+    assert person.cached_ids("acme") == {"person_post"}
+    assert company.cached_ids("acme") == {"company_post"}
 
 
 def test_on_disk_ids_empty_when_directory_missing(tmp_path):
