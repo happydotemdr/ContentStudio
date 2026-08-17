@@ -6,10 +6,24 @@ network access; discovery_youtube/discovery_bluesky (Tasks 7-8) are wired in
 at Task 11 via the ADAPTERS registry."""
 from __future__ import annotations
 
+import concurrent.futures
 import datetime as _dt
+import json
+import os
+import platform
+import sqlite3
+import sys
+import threading
+import traceback
 from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
+
+from pipeline_app import db as db_mod
+from pipeline_app import obs
+from pipeline_app.discovery_paths import group_slug_collisions, run_owner_path
+from pipeline_app.discovery_records import write_run_record
+from pipeline_app.discovery_scheduling import encode_watermark
 
 NEW_HANDLE_LOOKBACK_DAYS = 90
 EXISTING_HANDLE_STOP_GRACE = 3
@@ -43,7 +57,7 @@ SUPPORTED_PLATFORMS: frozenset[str] = frozenset({
 class PlatformAdapter(Protocol):
     def on_disk_ids(self, repo_root: Path, handle: str) -> set[str]: ...
     def enumerate_newest_first(self, handle: str, keyword_filter: str | None) -> list[dict]: ...
-    def peek_upload_date(self, *args) -> str | None: ...
+    def peek_upload_date(self, item_id: str) -> str | None: ...
     def download_item(self, repo_root: Path, handle: str, item_id: str, title: str,
                       content_type: str | None = None) -> dict: ...
 
@@ -57,12 +71,13 @@ class HandleFailure(Exception):
         self.cause, self.downloaded = cause, downloaded
 
 
-def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _dt.datetime) -> list[dict]:
+def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _dt.datetime,
+                    new_handle_lookback_days: int = NEW_HANDLE_LOOKBACK_DAYS) -> list[dict]:
     handle = handle_row["handle"]
     keyword_filter = handle_row["keyword_filter"]
     on_disk = adapter.on_disk_ids(repo_root, handle)
     is_new = len(on_disk) == 0
-    cutoff = now - _dt.timedelta(days=NEW_HANDLE_LOOKBACK_DAYS) if is_new else None
+    cutoff = now - _dt.timedelta(days=new_handle_lookback_days) if is_new else None
 
     downloaded: list[dict] = []
     try:
@@ -142,22 +157,6 @@ def process_handle_validate(adapter: PlatformAdapter, repo_root: Path, handle_ro
     result = adapter.download_item(repo_root, handle, newest["id"], newest["title"],
                                    newest.get("content_type"))
     return {"ok": bool(result.get("ok")), "item": result if result.get("ok") else None}
-
-
-import concurrent.futures
-import json
-import os
-import platform
-import sqlite3
-import sys
-import threading
-import traceback
-
-from pipeline_app import db as db_mod
-from pipeline_app import obs
-from pipeline_app.discovery_paths import group_slug_collisions, run_owner_path
-from pipeline_app.discovery_records import write_run_record
-from pipeline_app.discovery_scheduling import encode_watermark
 
 
 class HandleNotFound(Exception):
@@ -300,6 +299,8 @@ def sweep_stale_runs(conn: sqlite3.Connection, repo_root: Path, *, now: _dt.date
     isn't due, so a Run Now that died hard after the day's scheduled run would
     otherwise sit 'running' until the next due day (B-52)."""
     now = now or _dt.datetime.now(_dt.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_dt.timezone.utc)
     with db_mod.transaction(conn):
         reclaimed_ids = reclaim_stale_runs_owned(conn, repo_root, now, stale_after_s)
         _write_abandoned_records_for_reclaimed_runs(conn, repo_root, reclaimed_ids, now)
@@ -382,7 +383,8 @@ def _run_heartbeat_loop(conn: sqlite3.Connection, run_row_id: int, interval_s: f
                              run_id=run_row_id)
 
 
-def _process_one_handle(adapters: dict, repo_root, handle_row, mode, backfill_start, backfill_end, now):
+def _process_one_handle(adapters: dict, repo_root, handle_row, mode, backfill_start, backfill_end, now,
+                         new_handle_lookback_days: int = NEW_HANDLE_LOOKBACK_DAYS):
     adapter = adapters[handle_row["platform"]]
     if mode == "backfill":
         return process_handle_backfill(
@@ -390,7 +392,8 @@ def _process_one_handle(adapters: dict, repo_root, handle_row, mode, backfill_st
             start_date=_dt.datetime.strptime(backfill_start, "%Y-%m-%d").date(),
             end_date=_dt.datetime.strptime(backfill_end, "%Y-%m-%d").date(),
         )
-    return process_handle(adapter, repo_root, handle_row, now=now)
+    return process_handle(adapter, repo_root, handle_row, now=now,
+                          new_handle_lookback_days=new_handle_lookback_days)
 
 
 def _warn_on_directory_collisions(conn: sqlite3.Connection, handle_rows) -> None:
@@ -438,6 +441,7 @@ def run_discovery(
     handle_id: int | None = None, now: _dt.datetime | None = None,
     heartbeat_interval_s: float = 30.0, stale_after_s: int = 600,
     per_handle_deadline_s: float = 900.0, run_deadline_s: float = 5400.0,
+    new_handle_lookback_days: int = NEW_HANDLE_LOOKBACK_DAYS,
 ) -> dict:
     """...
 
@@ -463,6 +467,8 @@ def run_discovery(
     a backstop, not a substitute for that.
     """
     now = now or _dt.datetime.now(_dt.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_dt.timezone.utc)
     started_at = now_iso(now)
     run_id = make_run_id(now)
 
@@ -639,7 +645,8 @@ def run_discovery(
                 # docstring's caveat about what that means for that thread.
                 pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                 future = pool.submit(_process_one_handle, adapters, repo_root, handle_row,
-                                     mode, backfill_start, backfill_end, now)
+                                     mode, backfill_start, backfill_end, now,
+                                     new_handle_lookback_days)
                 downloaded = future.result(timeout=per_handle_deadline_s)
                 pool.shutdown(wait=False)
                 # Not every downloaded item is guaranteed to carry a date (a

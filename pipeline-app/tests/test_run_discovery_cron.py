@@ -494,3 +494,11 @@ def test_the_scheduled_path_short_circuits_when_a_run_is_already_active(monkeypa
         assert len(db.list_runs(conn)) == 1     # no junk 'locked' row was added
     finally:
         conn.close()
+
+
+def test_every_tunable_is_reachable_from_the_command_line():
+    """B-64(3): five module/default constants with no settings or CLI exposure,
+    so tuning any of them was a code edit."""
+    parser_flags = {a.dest for a in cron._build_parser()._actions}
+    assert {"heartbeat_interval_s", "stale_after_s", "per_handle_deadline_s",
+            "run_deadline_s", "new_handle_lookback_days"} <= parser_flags

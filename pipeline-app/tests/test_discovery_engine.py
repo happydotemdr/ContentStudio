@@ -1,6 +1,10 @@
+import ast
 import datetime as _dt
+import inspect
+from pathlib import Path as _Path
 
-from pipeline_app.discovery_engine import process_handle
+from pipeline_app import discovery_engine
+from pipeline_app.discovery_engine import PlatformAdapter, process_handle
 
 
 class FakeHandleRow(dict):
@@ -1094,3 +1098,31 @@ def test_a_run_that_blows_its_overall_deadline_ends_failed_not_running(engine_co
         "SELECT kind, severity FROM events WHERE kind = 'discovery.run_deadline_exceeded'").fetchone()
     assert row is not None
     assert row["severity"] == "error"
+
+
+def test_the_engine_module_has_no_mid_file_imports():
+    """B-64(1): import sqlite3/sys/threading and the pipeline_app imports sat at
+    line 117, so importing the pure walk functions dragged in the DB layer."""
+    tree = ast.parse(_Path(discovery_engine.__file__).read_text(encoding="utf-8"))
+    import_lines = [n.lineno for n in ast.walk(tree)
+                    if isinstance(n, (ast.Import, ast.ImportFrom)) and n.col_offset == 0]
+    first_def = min(n.lineno for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef)))
+    assert max(import_lines) < first_def
+
+
+def test_peek_upload_date_has_a_real_signature():
+    """B-64(2): (self, *args) type-checks nothing -- adapters can and do
+    disagree on arity with no signal."""
+    sig = inspect.signature(PlatformAdapter.peek_upload_date)
+    assert list(sig.parameters) == ["self", "item_id"]
+
+
+def test_run_discovery_normalizes_a_naive_now_to_aware_utc(engine_conn, tmp_path):
+    """B-64(4): a naive `now` made make_run_id's %z render empty and made
+    reclaim_stale_runs subtract a naive from an aware datetime -- an uncaught
+    TypeError. No production caller passes it; the parameter is public."""
+    naive = _dt.datetime(2026, 7, 30, 6, 0, 0)
+    result = run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({})},
+                           trigger="manual", mode="incremental", now=naive)
+    assert result["status"] == "completed"
+    assert db.get_run(engine_conn, result["run_row_id"])["run_id"].endswith("+0000")

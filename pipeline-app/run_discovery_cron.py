@@ -23,7 +23,7 @@ from pathlib import Path
 from pipeline_app import db, obs
 from pipeline_app import (discovery_bluesky, discovery_facebook, discovery_instagram,
                           discovery_linkedin, discovery_x, discovery_youtube)
-from pipeline_app.discovery_engine import run_discovery, sweep_stale_runs
+from pipeline_app.discovery_engine import NEW_HANDLE_LOOKBACK_DAYS, run_discovery, sweep_stale_runs
 from pipeline_app.discovery_notify import notify
 from pipeline_app.discovery_scheduling import ScheduleConfigError, decode_watermark, is_due
 
@@ -108,7 +108,7 @@ def _is_due_now(conn) -> bool:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", required=True,
                      choices=["scheduled", "incremental", "backfill", "validate_handle"])
@@ -116,6 +116,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--backfill-end")
     ap.add_argument("--handle-id", type=int)
     ap.add_argument("--repo-root", default=str(HERE.parent))
+    # B-64(3): these five were module/default constants with no settings or
+    # CLI exposure, so tuning any of them was a code edit. Defaults below
+    # match run_discovery's own current defaults (discovery_engine.py) and
+    # NEW_HANDLE_LOOKBACK_DAYS, so passing none of these flags is a no-op.
+    ap.add_argument("--heartbeat-interval-s", type=float, default=30.0)
+    ap.add_argument("--stale-after-s", type=int, default=600)
+    ap.add_argument("--per-handle-deadline-s", type=float, default=900.0)
+    ap.add_argument("--run-deadline-s", type=float, default=5400.0)
+    ap.add_argument("--new-handle-lookback-days", type=int, default=NEW_HANDLE_LOOKBACK_DAYS)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = _build_parser()
     args = ap.parse_args(argv)
 
     repo_root = Path(args.repo_root)
@@ -204,6 +218,9 @@ def main(argv: list[str] | None = None) -> int:
             conn, repo_root, build_adapters(), trigger=trigger, mode=mode,
             backfill_start=args.backfill_start, backfill_end=args.backfill_end,
             handle_id=args.handle_id,
+            heartbeat_interval_s=args.heartbeat_interval_s, stale_after_s=args.stale_after_s,
+            per_handle_deadline_s=args.per_handle_deadline_s, run_deadline_s=args.run_deadline_s,
+            new_handle_lookback_days=args.new_handle_lookback_days,
         )
         print(f"run {result['run_row_id']}: {result['status']}")
 
