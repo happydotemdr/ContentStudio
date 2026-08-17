@@ -172,6 +172,37 @@ def test_run_now_backfill_spawns_backfill_mode_with_dates(client: TestClient, sp
     assert "2026-06-30" in spawns[0]
 
 
+def test_backfill_rejects_an_inverted_date_range(client, spawns):
+    """B-60: start > end passed every check, called enumerate_newest_first for
+    every YouTube and Bluesky handle -- the BILLABLE step -- then filtered out
+    100% of items and reported a healthy 'no_new_content' for every handle.
+    Paid for, captured nothing, looks like a quiet day."""
+    response = client.post("/discovery/run-now-backfill",
+                           data={"start": "2026-06-30", "end": "2026-06-01"})
+    assert response.status_code == 400
+    assert spawns == []
+
+
+def test_backfill_rejects_a_malformed_date(client, spawns):
+    assert client.post("/discovery/run-now-backfill",
+                       data={"start": "June 1st", "end": "2026-06-30"}).status_code == 400
+    assert spawns == []
+
+
+def test_backfill_rejects_an_argv_like_value(client, spawns):
+    """A value beginning with '--' was consumed by the child's argparse as a
+    flag, producing exit 2 and total silence in the UI."""
+    assert client.post("/discovery/run-now-backfill",
+                       data={"start": "--repo-root", "end": "2026-06-30"}).status_code == 400
+    assert spawns == []
+
+
+def test_backfill_rejects_an_absurd_window(client, spawns):
+    assert client.post("/discovery/run-now-backfill",
+                       data={"start": "1970-01-01", "end": "2026-06-30"}).status_code == 400
+    assert spawns == []
+
+
 def test_a_discovery_post_without_the_spawn_stub_raises_instead_of_billing(client: TestClient):
     """The guard, asserted. Without it this POST launches a detached, live,
     per-record-billed collection job and the test still passes, because the

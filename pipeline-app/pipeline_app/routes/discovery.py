@@ -1,6 +1,7 @@
 import datetime
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
@@ -15,6 +16,41 @@ router = APIRouter()
 
 COHORT_SUGGESTIONS = ["guru", "shorts-specialist", "midjourney-source", "general-interest"]
 BRAND_CHOICES = list(email_render.BRAND_SECTION_ORDER)
+
+# B-60: a window longer than this is almost certainly a fat-fingered year, and
+# every day in it is a billable enumerate_newest_first call per handle.
+MAX_BACKFILL_DAYS = 730
+
+
+def _parse_backfill_dates(start: str, end: str) -> tuple[date, date]:
+    """Strictly parse and validate a backfill date range before it is ever
+    handed to the spawned (billable) cron child.
+
+    Rejects: anything not in strict YYYY-MM-DD form (including a value
+    starting with '-', which argparse on the child would otherwise consume
+    as a flag rather than a value); start > end; and a window wider than
+    MAX_BACKFILL_DAYS.
+    """
+    parsed = {}
+    for label, value in (("start", start), ("end", end)):
+        if not value or value.startswith("-"):
+            raise ValueError(f"invalid {label} date: {value!r}. Expected YYYY-MM-DD.")
+        try:
+            parsed_date = datetime.datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError:
+            raise ValueError(f"invalid {label} date: {value!r}. Expected YYYY-MM-DD.")
+        if parsed_date.isoformat() != value:
+            raise ValueError(f"invalid {label} date: {value!r}. Expected YYYY-MM-DD.")
+        parsed[label] = parsed_date
+
+    start_date, end_date = parsed["start"], parsed["end"]
+    if start_date > end_date:
+        raise ValueError(f"start ({start}) must not be after end ({end}).")
+    if (end_date - start_date).days > MAX_BACKFILL_DAYS:
+        raise ValueError(
+            f"backfill window {start} to {end} exceeds the {MAX_BACKFILL_DAYS}-day maximum."
+        )
+    return start_date, end_date
 
 
 def _popen(cmd: list[str], **kwargs):
@@ -130,7 +166,11 @@ def run_now(request: Request) -> RedirectResponse:
 
 
 @router.post("/discovery/run-now-backfill")
-def run_now_backfill(request: Request, start: str = Form(...), end: str = Form(...)) -> RedirectResponse:
+def run_now_backfill(request: Request, start: str = Form(...), end: str = Form(...)):
+    try:
+        _parse_backfill_dates(start, end)
+    except ValueError as exc:
+        return PlainTextResponse(str(exc), status_code=400)
     _spawn_cron(request.app.state.repo_root, [
         "--mode", "backfill", "--backfill-start", start, "--backfill-end", end,
     ])
