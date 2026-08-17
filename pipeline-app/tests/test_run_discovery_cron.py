@@ -441,3 +441,18 @@ def test_bad_cli_arguments_still_exit_two():
     with pytest.raises(SystemExit) as excinfo:
         cron.main(["--mode", "nonsense"])
     assert excinfo.value.code == 2
+
+
+def test_a_stale_run_is_reclaimed_even_when_today_is_not_due(monkeypatch, repo_root):
+    """B-52: reclaim lived inside run_discovery, which the scheduled path never
+    reaches once is_due returns False -- so a Run Now that died hard after the
+    day's scheduled run left a row 'in progress' until tomorrow."""
+    conn = db.get_connection(repo_root / "pipeline-app" / "pipeline.db")
+    try:
+        stale_id = db.insert_running_run(conn, "dead", "manual", "incremental", "2026-07-30T05:00:00+00:00")
+        conn.commit()
+        monkeypatch.setattr(cron, "_is_due_now", lambda c: False)
+        assert cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)]) == cron.Exit.OK
+        assert db.get_run(conn, stale_id)["status"] == "abandoned"
+    finally:
+        conn.close()

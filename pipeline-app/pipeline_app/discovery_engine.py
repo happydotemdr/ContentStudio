@@ -233,6 +233,23 @@ def reclaim_stale_runs_owned(conn: sqlite3.Connection, repo_root: Path, now: _dt
     return db_mod.reclaim_stale_runs(conn, now_iso(now), stale_after_s)
 
 
+def sweep_stale_runs(conn: sqlite3.Connection, repo_root: Path, *, now: _dt.datetime | None = None,
+                     stale_after_s: int = 600) -> list[int]:
+    """The reclaim-and-abandon cascade (reclaim_stale_runs_owned +
+    _write_abandoned_records_for_reclaimed_runs), exported so the cron entrypoint
+    can run it without starting a run. run_discovery still runs this same cascade
+    itself right before claiming the single-flight lock -- that stays in place as
+    a safety net for direct incremental/backfill/validate_handle callers -- but
+    the scheduled path returns before ever reaching run_discovery when today
+    isn't due, so a Run Now that died hard after the day's scheduled run would
+    otherwise sit 'running' until the next due day (B-52)."""
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    with db_mod.transaction(conn):
+        reclaimed_ids = reclaim_stale_runs_owned(conn, repo_root, now, stale_after_s)
+        _write_abandoned_records_for_reclaimed_runs(conn, repo_root, reclaimed_ids, now)
+    return reclaimed_ids
+
+
 def _open_heartbeat_connection(conn: sqlite3.Connection) -> sqlite3.Connection | None:
     """Best-effort: open a dedicated sqlite3.Connection to the same database
     file for the heartbeat thread, so it doesn't commit through the same

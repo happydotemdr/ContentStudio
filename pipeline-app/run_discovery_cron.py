@@ -23,7 +23,7 @@ from pathlib import Path
 from pipeline_app import db, obs
 from pipeline_app import (discovery_bluesky, discovery_facebook, discovery_instagram,
                           discovery_linkedin, discovery_x, discovery_youtube)
-from pipeline_app.discovery_engine import run_discovery
+from pipeline_app.discovery_engine import run_discovery, sweep_stale_runs
 from pipeline_app.discovery_notify import notify
 from pipeline_app.discovery_scheduling import ScheduleConfigError, is_due
 
@@ -146,6 +146,17 @@ def main(argv: list[str] | None = None) -> int:
         return Exit.STARTUP_FAILED
     obs.record_event(conn, kind="discovery.wake", severity="info",
                      source="run_discovery_cron", message=f"wake: mode={args.mode}")
+
+    # Reclaim stale runs before the due-check, not just inside run_discovery: the
+    # scheduled path returns early below when today isn't due and never reaches
+    # run_discovery at all, so a Run Now that died hard after the day's scheduled
+    # run would otherwise sit "running" until the next due day (B-52).
+    reclaimed = sweep_stale_runs(conn, repo_root)
+    if reclaimed:
+        obs.record_event(conn, kind="discovery.runs_reclaimed", severity="warning",
+                         source="run_discovery_cron",
+                         message=f"reclaimed {len(reclaimed)} stale run(s): {reclaimed}")
+
     notify_ok = True
     result = None
     try:
