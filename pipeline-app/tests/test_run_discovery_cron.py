@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_app import db
+from pipeline_app.discovery_engine import now_iso
 from pipeline_app.discovery_scheduling import ScheduleConfigError
 import run_discovery_cron as cron
 
@@ -454,5 +455,22 @@ def test_a_stale_run_is_reclaimed_even_when_today_is_not_due(monkeypatch, repo_r
         monkeypatch.setattr(cron, "_is_due_now", lambda c: False)
         assert cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)]) == cron.Exit.OK
         assert db.get_run(conn, stale_id)["status"] == "abandoned"
+    finally:
+        conn.close()
+
+
+def test_the_scheduled_path_short_circuits_when_a_run_is_already_active(monkeypatch, repo_root):
+    """B-49: a 90-minute Bright Data run left five locked rows and five junk
+    files -- one per 15-minute scheduled wake that found the lock held. The
+    engine must never even be reached when a run is already active."""
+    conn = db.get_connection(repo_root / "pipeline-app" / "pipeline.db")
+    try:
+        db.insert_running_run(conn, "in-flight", "manual", "incremental", now_iso())
+        conn.commit()
+        monkeypatch.setattr(cron, "_is_due_now", lambda c: True)
+        monkeypatch.setattr(cron, "run_discovery",
+                            lambda *a, **k: pytest.fail("the engine must not be reached"))
+        assert cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)]) == cron.Exit.LOCKED
+        assert len(db.list_runs(conn)) == 1     # no junk 'locked' row was added
     finally:
         conn.close()

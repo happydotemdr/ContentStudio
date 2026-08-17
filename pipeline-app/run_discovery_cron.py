@@ -178,6 +178,17 @@ def main(argv: list[str] | None = None) -> int:
         else:
             trigger, mode = "manual", "validate_handle"
 
+        # B-49: a long-running call must never generate a locked row (and a
+        # paired junk file) for every scheduled wake that finds the
+        # single-flight lock held -- refuse before the engine is even
+        # reached, for every mode that would otherwise call run_discovery.
+        if db.get_running_run(conn) is not None:
+            obs.record_event(conn, kind="discovery.run_already_active", severity="info",
+                             source="run_discovery_cron",
+                             message="a discovery run is already active; skipping this wake "
+                                     "without calling the engine")
+            return Exit.LOCKED
+
         result = run_discovery(
             conn, repo_root, build_adapters(), trigger=trigger, mode=mode,
             backfill_start=args.backfill_start, backfill_end=args.backfill_end,

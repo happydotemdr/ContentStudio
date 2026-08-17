@@ -413,7 +413,8 @@ def test_run_discovery_second_concurrent_call_is_locked(engine_conn, tmp_path):
     assert result["status"] == "locked"
     assert db.list_run_handle_results(engine_conn, result["run_row_id"]) == []
     locked_row = db.get_run(engine_conn, result["run_row_id"])
-    assert locked_row["md_path"] is not None  # locked runs still get a paired record
+    assert locked_row["md_path"] is None  # B-49: a no-op lock loss gets no paired record
+    assert list((tmp_path / "output" / "discovery-runs").glob("*.md")) == []
 
 
 def test_run_discovery_reclaims_stale_run_and_writes_abandoned_record(engine_conn, tmp_path):
