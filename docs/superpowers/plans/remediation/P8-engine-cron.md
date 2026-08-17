@@ -2381,6 +2381,149 @@ and the registered task is pointing at nothing.
 
 ---
 
+#### - [ ] Task 41 — The per-handle Bright Data cap seam, opt-in (P7's C1, operator-approved)
+
+> **Plan amendment, P8 kickoff session.** The résumé brief for this session records that the
+> operator approved P7's cost item C1 during the P7 session (`P7-brightdata.md` §6's amendment
+> blockquote, and commit `55109b8`). Verified against the live plan text this session: C1 itself
+> is the **per-platform** item-cap override (`BRIGHTDATA_MAX_ITEMS_<PLATFORM>`), which P7 already
+> shipped (its T14/T15) — C1's approval did not by itself add a task anywhere. What C1's approval
+> unlocks is P7's own residual #1 (§7): *"A true per-handle cap needs `handle_row` threaded into
+> `enumerate_newest_first` — a `PlatformAdapter` protocol change in `discovery_engine.py` (P8)...
+> the per-handle setting is P8's to add if the operator approves C1."* C1 is approved, so this
+> residual is now in scope.
+>
+> **What is safe to build in this session, and what is not.** `PlatformAdapter` is declared in
+> `discovery_engine.py`, which P8 owns. But grep against the live repo (this session) shows the
+> three real adapter functions — `discovery_bluesky.enumerate_newest_first`,
+> `discovery_youtube.enumerate_newest_first`, `discovery_instagram.enumerate_newest_first` — take
+> exactly `(handle, keyword_filter[, ...])` with **no `**kwargs`**, and all three files belong to
+> **P6/P7**, not P8. If the engine's call site started passing a new `handle_row=` keyword
+> unconditionally, every one of those adapters would raise `TypeError: unexpected keyword
+> argument` on the very next run — a P8 change silently breaking P6/P7-owned files, which is
+> exactly the cross-package boundary this programme's per-package file ownership exists to
+> prevent. A blind protocol-signature change is therefore **not** implemented here.
+>
+> **What this task ships instead:** the seam only — `discovery_engine.py` offers `handle_row` to
+> an adapter's `enumerate_newest_first` **only when that adapter's own signature declares the
+> parameter** (checked via `inspect.signature`, not `hasattr`/`try`/`except TypeError`, so a
+> genuine `TypeError` raised *inside* an opted-in adapter is never mistaken for "this adapter
+> hasn't opted in yet"). An adapter that has not been updated to accept `handle_row` is called
+> exactly as it is today — zero behavior change for P6/P7's current adapters. Actually reading a
+> per-handle cap value out of `handle_row` needs a DB column (P1's `schema.sql`, not shipped) and
+> adapter-side cap logic (P6/P7's files) — both stay explicitly out of scope and are named as open
+> handoffs below, not silently implied as "done" by this task's name.
+
+**Test** (`tests/test_discovery_engine.py`):
+
+```python
+def test_an_adapter_that_declares_handle_row_receives_it(engine_conn, tmp_path):
+    """C1 (operator-approved 2026-08-16, P7-brightdata.md Sec 6 / commit 55109b8):
+    the true per-handle cap needs handle_row threaded into enumerate_newest_first.
+    The adapters that would read it are P6/P7-owned files P8 cannot edit, so this
+    only proves the engine offers the row to an adapter that opts in."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    received = {}
+
+    class OptedInAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter, handle_row=None):
+            received["handle_row"] = handle_row
+            return []
+
+    run_discovery(engine_conn, tmp_path, {"youtube": OptedInAdapter({})},
+                  trigger="manual", mode="incremental")
+    assert received["handle_row"] is not None
+    assert received["handle_row"]["handle"] == "@a"
+
+
+def test_an_adapter_that_has_not_opted_in_is_called_exactly_as_before(engine_conn, tmp_path):
+    """Zero behavior change for discovery_bluesky/discovery_youtube/discovery_instagram
+    until each is updated on its own package's side to declare the parameter."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    calls = []
+
+    class LegacyAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter):
+            calls.append((handle, keyword_filter))
+            return []
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": LegacyAdapter({})},
+                           trigger="manual", mode="incremental")
+    assert result["status"] == "completed"
+    assert calls == [("@a", None)]
+
+
+def test_the_seam_is_offered_at_every_enumerate_call_site(engine_conn, tmp_path):
+    """process_handle, process_handle_backfill and process_handle_validate all
+    call enumerate_newest_first -- the seam must not be wired into only one."""
+    handle_id = db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    seen = []
+
+    class OptedInAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter, handle_row=None):
+            seen.append(handle_row["handle"] if handle_row else None)
+            return []
+
+    run_discovery(engine_conn, tmp_path, {"youtube": OptedInAdapter({})},
+                  trigger="manual", mode="validate_handle", handle_id=handle_id)
+    assert seen == ["@a"]
+
+
+def test_a_real_typeerror_inside_an_opted_in_adapter_still_propagates(engine_conn, tmp_path):
+    """Detection is by signature introspection, not by catching TypeError --
+    a bug inside an adapter that HAS opted in must not be swallowed and
+    misread as 'this adapter doesn't take handle_row'."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+
+    class BuggyOptedInAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter, handle_row=None):
+            raise TypeError("unrelated bug inside the adapter")
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": BuggyOptedInAdapter({})},
+                           trigger="manual", mode="incremental")
+    row = db.list_run_handle_results(engine_conn, result["run_row_id"])[0]
+    assert row["status"] == "error"
+    assert "unrelated bug inside the adapter" in row["error_message"]
+```
+
+**Implement** in `discovery_engine.py`:
+
+```python
+def _call_enumerate(adapter: PlatformAdapter, handle: str, keyword_filter: str | None,
+                    handle_row) -> list[dict]:
+    """Calls adapter.enumerate_newest_first, passing handle_row only when the
+    adapter's own signature declares it. The true per-handle Bright Data item
+    cap (operator-approved cost item C1, P7-brightdata.md Sec 6) needs the row
+    threaded through, but the adapters that would read it are P6/P7-owned
+    files P8 cannot edit -- introspection (not hasattr/try-except) keeps every
+    adapter that has not opted in working exactly as before, and never mistakes
+    a real bug inside an opted-in adapter for "hasn't opted in"."""
+    if "handle_row" in inspect.signature(adapter.enumerate_newest_first).parameters:
+        return adapter.enumerate_newest_first(handle, keyword_filter, handle_row=handle_row)
+    return adapter.enumerate_newest_first(handle, keyword_filter)
+```
+
+(`import inspect` alongside the module's other imports -- Task 35 hoists all of them to the top
+in the same pass if it has not already run.) Update `PlatformAdapter`'s declared signature to
+`def enumerate_newest_first(self, handle: str, keyword_filter: str | None, handle_row: dict |
+None = None) -> list[dict]: ...` (documentation for type checkers only -- `PlatformAdapter` is
+never used as a runtime `isinstance` check, so this is not a breaking change by itself). Replace
+all three call sites (`process_handle`, `process_handle_backfill`, `process_handle_validate`)
+with `_call_enumerate(adapter, handle, keyword_filter, handle_row)`.
+
+**Open handoffs from this task, stated so they are not later assumed done:**
+- **P1** — a per-handle cap override needs a `handles` column (e.g. `max_items_override`) to
+  populate `handle_row` with; none exists today. Until it does, an opted-in adapter's
+  `handle_row` carries only the columns `handle_row` already has (handle, keyword_filter, cohort,
+  etc.) — no cap value.
+- **P6/P7** — each adapter's own file must add `handle_row=None` to its
+  `enumerate_newest_first` signature and read a cap override from it before this seam does
+  anything observable end to end. P8 cannot make that edit; those files are not in P8's scope.
+
+**Commit:** `feat(engine): offer handle_row to adapters that opt in, the per-handle cap seam (P7 C1)`
+
+---
+
 ## 5. Finding → test map
 
 Three-Test-Rule roles are given for every `failure_mode: silent` finding (24 of the 31). The
@@ -2556,8 +2699,9 @@ six file updates and the directory move.
 - **P6** — raise `discovery_engine.HandleNotFound` for a definitive 404/"no such account", so
   B-57's auto-exclude fires for genuinely dead handles; until then nothing is auto-excluded,
   which is the safe direction. Received from P6: B-06's engine half (Task 36).
-- **P7** — add socket timeouts so B-53's leaked worker thread has an upper bound; a true
-  per-handle item cap needs `handle_row` threaded into `enumerate_newest_first`, a
-  `PlatformAdapter` protocol change P8 will make **only** if the operator approves P7's cost
-  item C1 (P7 §6/§7). Received from P7: B-01's events half (Task 37) and B-21's call site
-  (Task 38).
+- **P7** — add socket timeouts so B-53's leaked worker thread has an upper bound. The per-handle
+  item cap: C1 is operator-approved, and Task 41 ships the non-breaking opt-in seam
+  (`_call_enumerate`, introspection-gated `handle_row`) in `discovery_engine.py`; P7 still owns
+  wiring each adapter's own file to declare `handle_row=None` and read a cap override from it
+  (no observable behavior until that lands — see Task 41's "open handoffs"). Received from P7:
+  B-01's events half (Task 37) and B-21's call site (Task 38).
