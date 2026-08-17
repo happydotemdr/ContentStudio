@@ -46,6 +46,24 @@ KEY_FILE = Path(__file__).resolve().parent.parent / "brightdata_api_key.txt"
 # modes; the type/discover_by query params below are what select between them.
 DATASET_ID = "gd_lk5ns7kz21pck8jpis"
 
+# UNVERIFIED FIELD NAMES. Facebook's `profile_handle` and X's `user_posted`
+# were both confirmed against live snapshots on 2026-08-08; this dataset's
+# owner field was not. Read the candidates in order and report loudly when
+# none is present rather than inventing a name -- B-23 asks for the field to
+# be RECORDED (Facebook's rationale: it is what makes "this dataset started
+# returning other accounts" detectable after the fact), not filtered on.
+# Filtering waits for a live sample.
+AUTHOR_FIELD_CANDIDATES = ("user_posted", "profile_name", "owner_username",
+                           "user_username_raw", "username")
+
+
+def _first_present(row: dict, candidates: tuple[str, ...]):
+    for name in candidates:
+        value = row.get(name)
+        if value not in (None, ""):
+            return name, value
+    return None, None
+
 
 def api_key() -> str | None:
     """The Bright Data API token, or None if not configured. Reads this
@@ -236,6 +254,7 @@ def _normalize_row(row: dict) -> dict | None:
         "content_type": (row.get("content_type") or "post").lower(),
         "caption": caption,
         "url": row.get("url") or "",
+        "author": str(_first_present(row, AUTHOR_FIELD_CANDIDATES)[1] or "").strip(),
         "like_count": row.get("likes"),
         "comment_count": row.get("num_comments"),
     }
@@ -266,6 +285,23 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
         print(f"  ! {dropped} Bright Data row(s) for {handle} dropped (missing id or unusable date)",
               file=sys.stderr)
     normalized = [n for n in normalized if n is not None]
+
+    if normalized and all(not n["author"] for n in normalized):
+        # The candidate list (AUTHOR_FIELD_CANDIDATES) is a hypothesis, never
+        # verified against a live snapshot the way Facebook's profile_handle
+        # and X's user_posted were (2026-08-08). Every kept row resolving to
+        # "" means every candidate missed -- report it loudly, with the real
+        # keys this batch actually carried, so the next edit is informed
+        # rather than another guess.
+        brightdata_job.record_diagnostic(
+            kind="adapter.author_field_unresolved", severity="warning",
+            source="discovery_instagram",
+            message=(f"instagram/{handle}: none of the candidate author fields "
+                     f"{AUTHOR_FIELD_CANDIDATES} were present on any kept row -- "
+                     f"the real field name is still unverified."),
+            detail={"platform": "instagram", "handle": handle,
+                    "candidates": list(AUTHOR_FIELD_CANDIDATES),
+                    "observed_keys": sorted(raw_rows[0])})
 
     if raw_rows and not normalized:
         # This run was billed and produced nothing, but process_handle will
@@ -372,6 +408,11 @@ def download_item(repo_root: Path, handle: str, item_id: str, title: str,
         "post_id": cached["id"],
         "url": cached["url"],
         "handle": handle,
+        # Recorded although never filtered on (the field name itself is
+        # unverified -- see AUTHOR_FIELD_CANDIDATES): it is what makes a
+        # regression (this dataset starting to return other accounts)
+        # detectable after the fact, same rationale as Facebook's `author`.
+        "author": cached["author"],
         "content_type": cached["content_type"],
         "published": cached["published"],
         "like_count": cached["like_count"],

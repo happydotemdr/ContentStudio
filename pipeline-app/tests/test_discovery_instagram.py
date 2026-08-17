@@ -314,6 +314,20 @@ def test_normalize_row_empty_caption_still_normalizes():
     assert normalized["title"] == "p1"  # falls back to id when caption is empty
 
 
+def test_normalize_row_records_the_owner_when_the_row_carries_one():
+    row = {"post_id": "p1", "description": "x", "date_posted": "07/23/2026 16:00:22",
+           "user_posted": "nike"}
+    assert ig._normalize_row(row)["author"] == "nike"
+
+
+def test_normalize_row_records_an_empty_author_rather_than_dropping_the_row():
+    """An unknown owner field must never cost a paid row."""
+    row = {"post_id": "p1", "description": "x", "date_posted": "07/23/2026 16:00:22"}
+    normalized = ig._normalize_row(row)
+    assert normalized is not None
+    assert normalized["author"] == ""
+
+
 def _raw_row(post_id, date, caption="hello", content_type="post"):
     return {"post_id": post_id, "description": caption, "date_posted": f"{date}T00:00:00Z",
             "content_type": content_type, "url": f"https://instagram.com/p/{post_id}",
@@ -406,6 +420,31 @@ def test_billed_nothing_records_an_error_diagnostic_carrying_the_vendor_codes(mo
     assert record["severity"] == "error"
     assert record["detail"]["handle"] == "gone"
     assert sorted(record["detail"]["error_codes"]) == ["blocked", "dead_page"]
+
+
+def test_an_unresolved_author_field_is_reported_once_with_the_real_row_keys(monkeypatch):
+    """The candidate list is a hypothesis, not a verified fact. When it misses,
+    the diagnostic must carry the keys the vendor actually sent so the next
+    edit is informed rather than another guess."""
+    monkeypatch.setattr(ig, "_run_collection_job",
+                        lambda handle: [_raw_row("p1", "2026-08-01")])
+    brightdata_job.drain_diagnostics()
+    ig.enumerate_newest_first("somehandle", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.author_field_unresolved"][0]
+    assert record["severity"] == "warning"
+    assert "post_id" in record["detail"]["observed_keys"]
+
+
+def test_download_item_writes_the_author_to_frontmatter(tmp_path, monkeypatch):
+    row = _raw_row("p1", "2026-08-01")
+    row["user_posted"] = "nike"
+    monkeypatch.setattr(ig, "_run_collection_job", lambda handle: [row])
+    ig.enumerate_newest_first("nike", keyword_filter=None)
+    ig.download_item(tmp_path, "nike", "p1", "t")
+    text = (tmp_path / "output" / "brand-intel" / "instagram" / "nike" / "p1.md").read_text(
+        encoding="utf-8")
+    assert "author: nike" in text
 
 
 def test_enumerate_newest_first_caps_retained_items(monkeypatch):
