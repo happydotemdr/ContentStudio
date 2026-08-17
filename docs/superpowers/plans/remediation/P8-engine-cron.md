@@ -2207,14 +2207,22 @@ P7's `brightdata_job.drain_diagnostics()` returns records already shaped for
 **Test:**
 
 ```python
+> **Plan correction, task implementation session.** `drained` below is a list holding ONE dict;
+> `drained.pop(0)` returns that dict directly, not a one-element list containing it — so the stub
+> returns a bare `dict` on the first call where the real `drain_diagnostics()` returns
+> `list[dict]`. `for record in records:` over a dict iterates its keys (strings), and
+> `obs.record_event(conn, run_id=..., **record)` on a string raises `TypeError` immediately.
+> **Fix:** nest one more level — `drained = [[{...}]]` (a list of batches, each batch a
+> `list[dict]`), so `.pop(0)` returns a genuine `list[dict]` matching the real return type.
+
 def test_brightdata_diagnostics_are_drained_into_event_rows(engine_conn, tmp_path, monkeypatch):
     """P7's B-01: the diagnostics sink is written on every Bright Data call and
     read by nobody, so a job that retried three times and truncated its results
     leaves no durable trace."""
-    drained = [{"kind": "brightdata.truncated", "severity": "warning",
+    drained = [[{"kind": "brightdata.truncated", "severity": "warning",
                 "source": "discovery_instagram",
                 "message": "instagram/@nasa returned exactly limit_per_input=10 items",
-                "detail": {"platform": "instagram", "records": 10}}]
+                "detail": {"platform": "instagram", "records": 10}}]]
     monkeypatch.setattr(discovery_engine.brightdata_job, "drain_diagnostics",
                         lambda: drained.pop(0) if drained else [])
     db.create_handle(engine_conn, "instagram", "@nasa", "N", "guru", None, now_iso())
