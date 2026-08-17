@@ -2666,7 +2666,7 @@ def test_not_due_after_watermark_already_set(conn):
 def test_a_different_event_instance_is_independently_due(conn):
     now = _utc(2026, 8, 19, 12, 30)
     trigger.mark_done(conn, "sean", "evt1", now.isoformat())
-    meeting_start_2 = _utc(2026, 8, 27, 15, 0)
+    meeting_start_2 = _utc(2026, 8, 20, 15, 0)
     assert trigger.is_due(conn, "sean", "evt2", meeting_start_2, now, TZ, 7) is True
 
 
