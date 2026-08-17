@@ -61,7 +61,7 @@ def is_due(now: _dt.datetime, timezone_name: str, time_of_day: str, last_schedul
         return False
     local_now = now.astimezone(resolve_timezone(timezone_name))
     today = local_now.date().isoformat()
-    if last_scheduled_run_date == today:
+    if last_date == today:
         return False
     target_time = parse_time_of_day(time_of_day)
     return local_now.time() >= target_time
