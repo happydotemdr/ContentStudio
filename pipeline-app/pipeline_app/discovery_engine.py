@@ -6,10 +6,26 @@ network access; discovery_youtube/discovery_bluesky (Tasks 7-8) are wired in
 at Task 11 via the ADAPTERS registry."""
 from __future__ import annotations
 
+import concurrent.futures
 import datetime as _dt
+import inspect
+import json
+import os
+import platform
+import sqlite3
+import sys
+import threading
+import traceback
 from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo
+
+from pipeline_app import brightdata_job
+from pipeline_app import db as db_mod
+from pipeline_app import obs
+from pipeline_app.discovery_paths import group_slug_collisions, run_owner_path
+from pipeline_app.discovery_records import write_run_record
+from pipeline_app.discovery_scheduling import encode_watermark
 
 NEW_HANDLE_LOOKBACK_DAYS = 90
 EXISTING_HANDLE_STOP_GRACE = 3
@@ -28,51 +44,92 @@ NEW_HANDLE_UNDATED_STOP_GRACE = 5
 # here before the adapter is ever called.
 BACKFILL_SUPPORTED_PLATFORMS = {"youtube", "bluesky"}
 
+# The canonical set of platforms this engine can serve: the exact keys
+# run_discovery_cron.build_adapters() returns, and the exact vocabulary of
+# schema.sql's `handles.platform` CHECK constraint (B-73). The route gate
+# (routes/discovery.py::add_handle) validates against this before persisting
+# a handle or spawning a validation job; a test in test_routes_discovery.py
+# asserts all three stay in lockstep so they cannot silently drift apart.
+SUPPORTED_PLATFORMS: frozenset[str] = frozenset({
+    "youtube", "bluesky", "instagram", "linkedin-profile", "linkedin-company",
+    "facebook", "x",
+})
+
 
 class PlatformAdapter(Protocol):
     def on_disk_ids(self, repo_root: Path, handle: str) -> set[str]: ...
-    def enumerate_newest_first(self, handle: str, keyword_filter: str | None) -> list[dict]: ...
-    def peek_upload_date(self, *args) -> str | None: ...
+    def enumerate_newest_first(self, handle: str, keyword_filter: str | None,
+                               handle_row: dict | None = None) -> list[dict]: ...
+    def peek_upload_date(self, item_id: str) -> str | None: ...
     def download_item(self, repo_root: Path, handle: str, item_id: str, title: str,
                       content_type: str | None = None) -> dict: ...
 
 
-def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _dt.datetime) -> list[dict]:
+class HandleFailure(Exception):
+    """Carries the items already written to disk when a walk fails partway, so
+    the run records real work instead of 0 (B-54). The engine's per-handle
+    except branch reads .downloaded and .cause."""
+    def __init__(self, cause: BaseException, downloaded: list[dict]):
+        super().__init__(f"{type(cause).__name__}: {cause}")
+        self.cause, self.downloaded = cause, downloaded
+
+
+def _call_enumerate(adapter: PlatformAdapter, handle: str, keyword_filter: str | None,
+                    handle_row) -> list[dict]:
+    """Calls adapter.enumerate_newest_first, passing handle_row only when the
+    adapter's own signature declares it. The true per-handle Bright Data item
+    cap (operator-approved cost item C1, P7-brightdata.md Sec 6) needs the row
+    threaded through, but the adapters that would read it are P6/P7-owned
+    files P8 cannot edit -- introspection (not hasattr/try-except) keeps every
+    adapter that has not opted in working exactly as before, and never mistakes
+    a real bug inside an opted-in adapter for "hasn't opted in"."""
+    if "handle_row" in inspect.signature(adapter.enumerate_newest_first).parameters:
+        return adapter.enumerate_newest_first(handle, keyword_filter, handle_row=handle_row)
+    return adapter.enumerate_newest_first(handle, keyword_filter)
+
+
+def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _dt.datetime,
+                    new_handle_lookback_days: int = NEW_HANDLE_LOOKBACK_DAYS) -> list[dict]:
     handle = handle_row["handle"]
     keyword_filter = handle_row["keyword_filter"]
     on_disk = adapter.on_disk_ids(repo_root, handle)
     is_new = len(on_disk) == 0
-    cutoff = now - _dt.timedelta(days=NEW_HANDLE_LOOKBACK_DAYS) if is_new else None
+    cutoff = now - _dt.timedelta(days=new_handle_lookback_days) if is_new else None
 
-    enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
     downloaded: list[dict] = []
-    consecutive_on_disk = 0
-    consecutive_undated = 0
-
-    for item in enumerated:
-        item_id = item["id"]
-        if item_id in on_disk:
-            consecutive_on_disk += 1
-            if not is_new and consecutive_on_disk >= EXISTING_HANDLE_STOP_GRACE:
-                break
-            continue
+    try:
+        enumerated = _call_enumerate(adapter, handle, keyword_filter, handle_row)
         consecutive_on_disk = 0
+        consecutive_undated = 0
 
-        if is_new:
-            published = item.get("published") or adapter.peek_upload_date(item_id)
-            if published is None:
-                consecutive_undated += 1
-                if consecutive_undated >= NEW_HANDLE_UNDATED_STOP_GRACE:
+        for item in enumerated:
+            item_id = item["id"]
+            if item_id in on_disk:
+                consecutive_on_disk += 1
+                if not is_new and consecutive_on_disk >= EXISTING_HANDLE_STOP_GRACE:
                     break
                 continue
-            consecutive_undated = 0
-            if _dt.datetime.strptime(published, "%Y-%m-%d").replace(tzinfo=_dt.timezone.utc) < cutoff:
-                break
+            consecutive_on_disk = 0
 
-        result = adapter.download_item(repo_root, handle, item_id, item["title"],
-                                       item.get("content_type"))
-        if result.get("ok"):
-            downloaded.append(result)
+            if is_new:
+                published = item.get("published") or adapter.peek_upload_date(item_id)
+                if published is None:
+                    consecutive_undated += 1
+                    if consecutive_undated >= NEW_HANDLE_UNDATED_STOP_GRACE:
+                        break
+                    continue
+                consecutive_undated = 0
+                if _dt.datetime.strptime(published, "%Y-%m-%d").replace(tzinfo=_dt.timezone.utc) < cutoff:
+                    break
+
+            result = adapter.download_item(repo_root, handle, item_id, item["title"],
+                                           item.get("content_type"))
+            if result.get("ok"):
+                downloaded.append(result)
+    except HandleFailure:
+        raise
+    except Exception as exc:
+        raise HandleFailure(exc, downloaded) from exc
 
     return downloaded
 
@@ -80,24 +137,29 @@ def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _
 def process_handle_backfill(adapter: PlatformAdapter, repo_root: Path, handle_row, start_date: _dt.date, end_date: _dt.date) -> list[dict]:
     handle = handle_row["handle"]
     keyword_filter = handle_row["keyword_filter"]
-    on_disk = adapter.on_disk_ids(repo_root, handle)
-    enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
     downloaded: list[dict] = []
+    try:
+        on_disk = adapter.on_disk_ids(repo_root, handle)
+        enumerated = _call_enumerate(adapter, handle, keyword_filter, handle_row)
 
-    for item in enumerated:
-        item_id = item["id"]
-        if item_id in on_disk:
-            continue
-        published = item.get("published") or adapter.peek_upload_date(item_id)
-        if published is None:
-            continue
-        pub_date = _dt.datetime.strptime(published, "%Y-%m-%d").date()
-        if pub_date < start_date or pub_date > end_date:
-            continue
-        result = adapter.download_item(repo_root, handle, item_id, item["title"],
-                                       item.get("content_type"))
-        if result.get("ok"):
-            downloaded.append(result)
+        for item in enumerated:
+            item_id = item["id"]
+            if item_id in on_disk:
+                continue
+            published = item.get("published") or adapter.peek_upload_date(item_id)
+            if published is None:
+                continue
+            pub_date = _dt.datetime.strptime(published, "%Y-%m-%d").date()
+            if pub_date < start_date or pub_date > end_date:
+                continue
+            result = adapter.download_item(repo_root, handle, item_id, item["title"],
+                                           item.get("content_type"))
+            if result.get("ok"):
+                downloaded.append(result)
+    except HandleFailure:
+        raise
+    except Exception as exc:
+        raise HandleFailure(exc, downloaded) from exc
 
     return downloaded
 
@@ -105,7 +167,7 @@ def process_handle_backfill(adapter: PlatformAdapter, repo_root: Path, handle_ro
 def process_handle_validate(adapter: PlatformAdapter, repo_root: Path, handle_row) -> dict:
     handle = handle_row["handle"]
     keyword_filter = handle_row["keyword_filter"]
-    enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
+    enumerated = _call_enumerate(adapter, handle, keyword_filter, handle_row)
     if not enumerated:
         return {"ok": False, "item": None}
     newest = enumerated[0]
@@ -114,13 +176,22 @@ def process_handle_validate(adapter: PlatformAdapter, repo_root: Path, handle_ro
     return {"ok": bool(result.get("ok")), "item": result if result.get("ok") else None}
 
 
-import sqlite3
-import sys
-import threading
+class HandleNotFound(Exception):
+    """The account provably does not exist. Only this excludes a handle (B-57).
+    Adapters (packages P6/P7) must raise it for a definitive 404/'no such
+    account'; until they do, nothing is auto-excluded -- the safe direction,
+    since B-57's damage is a VALID handle silently dropped from every run."""
 
-from pipeline_app import db as db_mod
-from pipeline_app.discovery_paths import group_slug_collisions
-from pipeline_app.discovery_records import write_run_record
+
+EXCLUDING_ERRORS: tuple[type[BaseException], ...] = (HandleNotFound,)
+"""The ONLY errors that mark a handle invalid and clear `included`.
+
+Everything else -- BlueskyFetchError, YouTubeEnumerationError,
+TranscriptFetchBlocked, YtDlpUnavailable, a socket timeout, a 503 -- is
+transient by default and leaves the handle retryable (P6's B-06, S1). The
+default direction matters: the damage in B-06 is a VALID handle silently
+dropped from every future run, which nothing retries and nothing reports.
+"""
 
 
 def now_iso(now: _dt.datetime | None = None) -> str:
@@ -137,16 +208,131 @@ def make_run_id(now: _dt.datetime) -> str:
     return now.strftime("%Y-%m-%dT%H-%M-%S-%f%z")
 
 
+def _summarize(handle_results: list[dict]) -> dict:
+    """Counts the exit-code contract is computed from. `attempted` excludes
+    'skipped' handles: a backfill that skipped every handle made zero adapter
+    calls, which is a different outcome from a run in which everything failed."""
+    by_status: dict[str, int] = {}
+    for r in handle_results:
+        by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+    skipped = by_status.get("skipped", 0)
+    failed = by_status.get("error", 0) + by_status.get("handle_not_found", 0)
+    return {
+        "total": len(handle_results),
+        "attempted": len(handle_results) - skipped,
+        "skipped": skipped,
+        "failed": failed,
+        "by_status": by_status,
+    }
+
+
+TERMINAL_RUN_STATUSES = frozenset({"completed", "completed_with_errors", "failed",
+                                   "abandoned", "locked"})
+
+
+def _finish_run_guarded(conn, run_row_id: int, status: str, finished_at: str, md_path: str) -> bool:
+    """Status precondition db.finish_run lacks. Read-then-write, not atomic:
+    the durable fix is a `WHERE status = 'running'` inside db.finish_run, which
+    belongs to P1. This closes the realistic case (minutes apart, not
+    microseconds) and reports the refusal instead of silently overwriting."""
+    current = db_mod.get_run(conn, run_row_id)
+    if current is not None and current["status"] in TERMINAL_RUN_STATUSES and current["status"] != status:
+        obs.record_event(conn, kind="discovery.finish_run_refused", severity="error",
+                         source="discovery_engine",
+                         message=(f"run {run_row_id} is already {current['status']}; refusing to "
+                                  f"overwrite it with {status} -- it was reclaimed while still live"),
+                         run_id=run_row_id)
+        return False
+    db_mod.finish_run(conn, run_row_id, status, finished_at, md_path)
+    return True
+
+
 def _write_abandoned_records_for_reclaimed_runs(conn: sqlite3.Connection, repo_root: Path, reclaimed_ids: list[int], now: _dt.datetime) -> None:
     for reclaimed_id in reclaimed_ids:
         reclaimed_row = db_mod.get_run(conn, reclaimed_id)
         finished_at = now_iso(now)
+        # B-51: the dead process's completed handles are still on record in
+        # discovery_run_handles even though it never got to write its own
+        # record -- reconstruct handle_results from those rows (joined to
+        # `handles` for the display fields the row itself doesn't carry)
+        # instead of passing [], so the record reports the work actually
+        # done rather than contradicting its own DB rows.
+        handle_results = []
+        for row in db_mod.list_run_handle_results(conn, reclaimed_id):
+            handle_row = db_mod.get_handle(conn, row["handle_id"])
+            handle_results.append({
+                "handle": handle_row["handle"], "platform": handle_row["platform"],
+                "cohort": handle_row["cohort"], "status": row["status"],
+                "items_downloaded": row["items_downloaded"],
+                "last_seen_published_at": handle_row["last_seen_published_at"],
+                "error_message": row["error_message"],
+            })
         md_path = write_run_record(repo_root, {
             "run_id": reclaimed_row["run_id"], "trigger": reclaimed_row["trigger"], "mode": reclaimed_row["mode"],
             "status": "abandoned", "started_at": reclaimed_row["started_at"], "finished_at": finished_at,
             "backfill_start": reclaimed_row["backfill_start"], "backfill_end": reclaimed_row["backfill_end"],
-        }, [])  # no handle_results: we don't know how far the dead process got
-        db_mod.finish_run(conn, reclaimed_id, "abandoned", finished_at, str(md_path))
+        }, handle_results, partial=True)
+        _finish_run_guarded(conn, reclaimed_id, "abandoned", finished_at, str(md_path))
+
+
+def _read_run_owner(repo_root: Path, run_row_id: int) -> dict | None:
+    """Read the sidecar written by `_claim_run_ownership`. Never raises: a
+    missing, unreadable, or corrupt file must not block the reclaim sweep --
+    it just means this run's ownership can't be confirmed and reclaim falls
+    through to the plain heartbeat-age check."""
+    path = run_owner_path(repo_root, run_row_id)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def reclaim_stale_runs_owned(conn: sqlite3.Connection, repo_root: Path, now: _dt.datetime, stale_after_s: int) -> list[int]:
+    """db.reclaim_stale_runs decides purely on heartbeat age. A sleeping machine
+    and a locked-DB heartbeat both freeze that clock while the run is very much
+    alive, so ask the OS before stealing the lock (B-50)."""
+    protected: list[int] = []
+    for row in conn.execute("SELECT id FROM discovery_runs WHERE status = 'running'").fetchall():
+        owner = _read_run_owner(repo_root, row["id"])
+        # `_read_run_owner` only guards the JSON *parse* -- a sidecar can be
+        # valid JSON with a missing/truncated/non-integer "pid" (plausible
+        # exactly because this file exists to survive crash/sleep scenarios).
+        # An unvalidated owner["pid"] would raise KeyError, or a non-int pid
+        # would raise ctypes.ArgumentError inside _process_is_alive's Windows
+        # branch, either of which would crash the whole reclaim sweep -- a
+        # strictly worse failure mode than B-50 itself. Treat a malformed
+        # owner file the same as a missing one: not protected, reclaim
+        # proceeds normally for that row.
+        if not (isinstance(owner, dict) and isinstance(owner.get("pid"), int)):
+            continue
+        if _process_is_alive(owner["pid"]):
+            protected.append(row["id"])
+            obs.record_event(conn, kind="discovery.reclaim_refused", severity="warning",
+                             source="discovery_engine",
+                             message=f"run {row['id']} looks stale but pid {owner['pid']} is alive",
+                             detail=owner, run_id=row["id"])
+    if protected:
+        return []      # a live owner exists: back off entirely, do not reclaim
+    return db_mod.reclaim_stale_runs(conn, now_iso(now), stale_after_s)
+
+
+def sweep_stale_runs(conn: sqlite3.Connection, repo_root: Path, *, now: _dt.datetime | None = None,
+                     stale_after_s: int = 600) -> list[int]:
+    """The reclaim-and-abandon cascade (reclaim_stale_runs_owned +
+    _write_abandoned_records_for_reclaimed_runs), exported so the cron entrypoint
+    can run it without starting a run. run_discovery still runs this same cascade
+    itself right before claiming the single-flight lock -- that stays in place as
+    a safety net for direct incremental/backfill/validate_handle callers -- but
+    the scheduled path returns before ever reaching run_discovery when today
+    isn't due, so a Run Now that died hard after the day's scheduled run would
+    otherwise sit 'running' until the next due day (B-52)."""
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_dt.timezone.utc)
+    with db_mod.transaction(conn):
+        reclaimed_ids = reclaim_stale_runs_owned(conn, repo_root, now, stale_after_s)
+        _write_abandoned_records_for_reclaimed_runs(conn, repo_root, reclaimed_ids, now)
+    return reclaimed_ids
 
 
 def _open_heartbeat_connection(conn: sqlite3.Connection) -> sqlite3.Connection | None:
@@ -177,6 +363,38 @@ def _open_heartbeat_connection(conn: sqlite3.Connection) -> sqlite3.Connection |
         return None
 
 
+def _process_is_alive(pid: int) -> bool:
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True     # exists, owned by someone else
+        return True
+    import ctypes
+    SYNCHRONIZE, WAIT_TIMEOUT = 0x00100000, 0x00000102
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+    if not handle:
+        return False
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _claim_run_ownership(repo_root: Path, run_row_id: int, started_at: str) -> None:
+    path = run_owner_path(repo_root, run_row_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"pid": os.getpid(), "started_at": started_at,
+                                "host": platform.node()}), encoding="utf-8")
+
+
+def _release_run_ownership(repo_root: Path, run_row_id: int) -> None:
+    run_owner_path(repo_root, run_row_id).unlink(missing_ok=True)
+
+
 def _run_heartbeat_loop(conn: sqlite3.Connection, run_row_id: int, interval_s: float, stop_event: threading.Event) -> None:
     while not stop_event.wait(interval_s):
         try:
@@ -188,9 +406,13 @@ def _run_heartbeat_loop(conn: sqlite3.Connection, run_row_id: int, interval_s: f
             # single-flight lock -- so log and keep ticking instead of letting
             # the exception propagate out of the thread target.
             print(f"heartbeat update failed: {exc}", file=sys.stderr)
+            obs.record_event(conn, kind="discovery.heartbeat_failed", severity="error",
+                             source="discovery_engine", message=f"heartbeat update failed: {exc}",
+                             run_id=run_row_id)
 
 
-def _process_one_handle(adapters: dict, repo_root, handle_row, mode, backfill_start, backfill_end, now):
+def _process_one_handle(adapters: dict, repo_root, handle_row, mode, backfill_start, backfill_end, now,
+                         new_handle_lookback_days: int = NEW_HANDLE_LOOKBACK_DAYS):
     adapter = adapters[handle_row["platform"]]
     if mode == "backfill":
         return process_handle_backfill(
@@ -198,10 +420,11 @@ def _process_one_handle(adapters: dict, repo_root, handle_row, mode, backfill_st
             start_date=_dt.datetime.strptime(backfill_start, "%Y-%m-%d").date(),
             end_date=_dt.datetime.strptime(backfill_end, "%Y-%m-%d").date(),
         )
-    return process_handle(adapter, repo_root, handle_row, now=now)
+    return process_handle(adapter, repo_root, handle_row, now=now,
+                          new_handle_lookback_days=new_handle_lookback_days)
 
 
-def _warn_on_directory_collisions(handle_rows) -> None:
+def _warn_on_directory_collisions(conn: sqlite3.Connection, handle_rows) -> None:
     """Name any two handles in this run that write to one output directory.
 
     slugify() is lossy (it strips periods and lowercases), so two distinct
@@ -220,11 +443,101 @@ def _warn_on_directory_collisions(handle_rows) -> None:
         by_platform.setdefault(row["platform"], []).append(row["handle"])
     for platform, handles in sorted(by_platform.items()):
         for slug, colliding in sorted(group_slug_collisions(handles).items()):
-            print(f"  !! {platform}: handles {', '.join(colliding)} all share one "
-                  f"output directory (output/brand-intel/{platform}/{slug}). Each is "
-                  f"billed separately while writing to the same files, so all but "
-                  f"one will report 'no_new_content' after reading the others' "
-                  f"captures. Rename or remove all but one.", file=sys.stderr)
+            message = (f"  !! {platform}: handles {', '.join(colliding)} all share one "
+                      f"output directory (output/brand-intel/{platform}/{slug}). Each is "
+                      f"billed separately while writing to the same files, so all but "
+                      f"one will report 'no_new_content' after reading the others' "
+                      f"captures. Rename or remove all but one.")
+            print(message, file=sys.stderr)
+            obs.record_event(conn, kind="discovery.slug_collision", severity="warning",
+                             source="discovery_engine", message=message,
+                             detail={"platform": platform, "handles": colliding, "slug": slug})
+
+
+def _apply_preflight(conn: sqlite3.Connection, repo_root: Path, adapters: dict,
+                     run_row_id: int, handles, handle_results: list[dict]) -> tuple[list, bool]:
+    """P7's B-21: a missing credential (e.g. no BRIGHTDATA_API_KEY) failed N
+    times, once per handle, with N identical unhelpful errors -- each one an
+    attempted, billed adapter call. `preflight()` is an OPTIONAL per-adapter
+    hook (only the real Bright Data adapters define it; the native
+    youtube/bluesky adapters don't), so this uses `getattr(..., None)` and
+    calls it, never `hasattr`-then-call. Checked once per DISTINCT platform
+    among the included handles -- not once per handle -- before any adapter's
+    enumerate_newest_first/download_item is ever reached. A platform whose
+    preflight fails gets exactly one `discovery.preflight_failed` event, and
+    every handle on that platform is recorded 'error' with that same message
+    and excluded from the main per-handle loop that follows, so it isn't
+    processed (and doesn't buy a second, adapter-calling attempt) twice."""
+    platforms = sorted({handle_row["platform"] for handle_row in handles})
+    failed_platforms: dict[str, str] = {}
+    for platform in platforms:
+        adapter = adapters.get(platform)
+        if adapter is None:
+            # No adapter registered for this platform at all -- not this
+            # function's problem to diagnose. Leave it be; the per-handle
+            # loop's existing `adapters[platform]` lookup will raise the same
+            # KeyError it always has, caught by that loop's own per-handle
+            # except branch (B-55) rather than escaping here and crashing the
+            # whole run before any handle result is ever recorded.
+            continue
+        preflight_fn = getattr(adapter, "preflight", None)
+        if preflight_fn is None:
+            continue
+        message = preflight_fn(repo_root)
+        if message is None:
+            continue
+        failed_platforms[platform] = message
+        obs.record_event(conn, kind="discovery.preflight_failed", severity="error",
+                         source="discovery_engine", message=message, run_id=run_row_id,
+                         detail={"platform": platform})
+
+    if not failed_platforms:
+        return handles, False
+
+    remaining: list = []
+    for handle_row in handles:
+        platform = handle_row["platform"]
+        if platform not in failed_platforms:
+            remaining.append(handle_row)
+            continue
+        message = failed_platforms[platform]
+        db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", 0, message)
+        # I-6 / P1's B-82: a platform-wide preflight failure is a real failure
+        # for every handle on that platform, just as much as a per-handle
+        # TimeoutError/generic exception in the main loop below -- it must
+        # feed the same consecutive-failure counter, or a permanently
+        # unconfigured platform (e.g. no BRIGHTDATA_API_KEY) never downgrades
+        # its handles to 'failing' and keeps looking healthy on the roster.
+        db_mod.record_handle_failure(conn, handle_row["id"], now_iso=now_iso())
+        handle_results.append({
+            "handle": handle_row["handle"], "platform": platform,
+            "cohort": handle_row["cohort"], "status": "error", "items_downloaded": 0,
+            "last_seen_published_at": None, "error_message": message,
+        })
+    return remaining, True
+
+
+def _drain_adapter_diagnostics(conn, run_row_id: int) -> None:
+    """P7 owns the sink; P8 owns the durable surface. Drained per handle, in a
+    finally, so a handle that failed still yields its retry/truncation record --
+    that is exactly when the evidence is worth having."""
+    try:
+        records = brightdata_job.drain_diagnostics()
+    except Exception as exc:  # noqa: BLE001 - reporting must never take down the run
+        obs.log("discovery.diagnostics_drain_failed", level="error",
+                error=f"{type(exc).__name__}: {exc}")
+        return
+    for record in records:
+        obs.record_event(conn, run_id=run_row_id, **record)
+
+
+class RunDeadlineExceeded(Exception):
+    """Raised internally when a run has been going longer than run_deadline_s.
+
+    Never escapes run_discovery -- it is caught by the same outer `except
+    Exception` that handles any other crash outside the per-handle loop, so
+    the run ends with status 'failed' through the existing path rather than a
+    second, duplicate failure-handling branch."""
 
 
 def run_discovery(
@@ -232,16 +545,52 @@ def run_discovery(
     trigger: str, mode: str, backfill_start: str | None = None, backfill_end: str | None = None,
     handle_id: int | None = None, now: _dt.datetime | None = None,
     heartbeat_interval_s: float = 30.0, stale_after_s: int = 600,
+    per_handle_deadline_s: float = 900.0, run_deadline_s: float = 5400.0,
+    new_handle_lookback_days: int = NEW_HANDLE_LOOKBACK_DAYS,
 ) -> dict:
+    """...
+
+    B-53: `per_handle_deadline_s` bounds any single handle's adapter call (run
+    through a one-worker ThreadPoolExecutor so `future.result(timeout=...)`
+    can actually interrupt a blocking network call) and `run_deadline_s`
+    bounds the whole run, checked between handles. Both exist so one hung
+    adapter call can no longer hold the status='running' row -- and the
+    single-flight lock -- forever.
+
+    Honest caveat: `future.result(timeout=...)` abandons the worker thread,
+    it does not kill it. That thread is NOT a daemon -- ThreadPoolExecutor
+    workers are created non-daemon, and concurrent.futures.thread registers
+    an atexit hook (_python_exit) that JOINS any still-running worker thread
+    before the interpreter exits. So if the adapter call is truly wedged on a
+    socket with no client-side timeout of its own, that thread doesn't just
+    run quietly in the background -- it keeps running (connection still open)
+    for as long as the underlying call takes to fail, AND it can block this
+    process's own shutdown/exit until that happens. This unwedges the *run*
+    (the DB row and the single-flight lock are released), not the thread and
+    not necessarily the process. The durable fix is socket-level timeouts
+    inside the adapters themselves (T4 / packages P6-P7) -- this deadline is
+    a backstop, not a substitute for that.
+    """
     now = now or _dt.datetime.now(_dt.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_dt.timezone.utc)
     started_at = now_iso(now)
     run_id = make_run_id(now)
 
     if mode == "validate_handle":
-        handle_row = db_mod.get_handle(conn, handle_id)
-        adapter = adapters[handle_row["platform"]]
         db_mod.set_handle_status(conn, handle_id, "validating")
+        handle_row = None
         try:
+            handle_row = db_mod.get_handle(conn, handle_id)
+            if handle_row is None:
+                # I-1 Part A: a handle_id that doesn't exist is not a transient
+                # adapter/network failure -- it's a caller error (a stale ID, a
+                # race with deletion). Raise here rather than let the next line
+                # crash on `None["platform"]`, so the branch below can tell this
+                # case apart from a real adapter exception and avoid recording
+                # it with the misleading "transient failure" framing.
+                raise LookupError(f"handle_id {handle_id} not found")
+            adapter = adapters[handle_row["platform"]]
             outcome = process_handle_validate(adapter, repo_root, handle_row)
             finished_at = now_iso()
             if outcome["ok"]:
@@ -252,52 +601,92 @@ def run_discovery(
                                   "cohort": handle_row["cohort"], "status": "ok", "items_downloaded": 1,
                                   "last_seen_published_at": outcome["item"]["published"], "error_message": None}
             else:
-                db_mod.set_handle_status(conn, handle_id, "invalid")
-                db_mod.set_handle_included(conn, handle_id, False)
+                # B-57: an empty enumeration is D-03's ambiguity -- a dead
+                # handle and a failed fetch look alike. Only HandleNotFound
+                # (raised by an adapter for a definitive 404/"no such
+                # account") is proof of non-existence, so leave the handle
+                # retryable rather than permanently excluding it.
+                db_mod.set_handle_status(conn, handle_id, "pending")
                 status = "completed_with_errors"
                 handle_result = {"handle": handle_row["handle"], "platform": handle_row["platform"],
                                   "cohort": handle_row["cohort"], "status": "handle_not_found",
                                   "items_downloaded": 0, "last_seen_published_at": None,
                                   "error_message": "enumerate returned no results"}
+                obs.record_event(conn, kind="discovery.validate_transient_failure", severity="warning",
+                                 source="discovery_engine",
+                                 message="enumerate returned no results -- not treated as proof of non-existence",
+                                 run_id=None,
+                                 detail={"handle": handle_row["handle"], "platform": handle_row["platform"]})
             run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
             db_mod.record_handle_result(conn, run_row_id, handle_id, handle_result["status"],
                                          handle_result["items_downloaded"], handle_result["error_message"])
-            db_mod.finish_run(conn, run_row_id, status, finished_at,
+            _finish_run_guarded(conn, run_row_id, status, finished_at,
                                str(write_run_record(repo_root, {
                                    "run_id": run_id, "trigger": trigger, "mode": mode, "status": status,
                                    "started_at": started_at, "finished_at": finished_at,
                                    "backfill_start": None, "backfill_end": None,
                                }, [handle_result])))
-            return {"run_row_id": run_row_id, "status": status}
+            return {"run_row_id": run_row_id, "status": status, "counts": _summarize([handle_result])}
         except Exception as exc:  # noqa: BLE001 - an unguarded network/adapter
             # failure here must not leave the handle stuck forever in
-            # status='validating' with no run row and no paired record --
-            # match the existing "enumeration returned nothing" failure path
-            # (set the handle back to 'invalid' AND excluded, per the spec's
-            # auto-exclude-on-invalid behavior) and still produce a terminal
-            # run row + markdown record documenting the error.
-            db_mod.set_handle_status(conn, handle_id, "invalid")
-            db_mod.set_handle_included(conn, handle_id, False)
-            status = "failed"
+            # status='validating' with no run row and no paired record.
+            # B-57: only HandleNotFound is a definitive "this account does
+            # not exist" -- everything else (a network blip, the VPN being
+            # up, a transient adapter error) must leave the handle pending
+            # and included, not silently and permanently excluded.
             finished_at = now_iso()
+            status = "failed"
+            if handle_row is None:
+                # I-1 Part A: handle_id doesn't exist at all -- this is not a
+                # transient adapter/network failure (the "validate_transient_
+                # failure" framing would be misleading here, and there is no
+                # real handle to downgrade to 'pending' or 'invalid', or to
+                # attach a discovery_run_handles row to -- handles.id is a
+                # foreign key, and record_handle_result would raise its own
+                # IntegrityError for an id that was never real). Still produce
+                # a terminal run row and a markdown record so the attempt is
+                # not silently lost, with a handle_result carrying placeholder
+                # values and an honest, specific error message.
+                error_message = f"handle_id {handle_id} not found"
+                handle_result = {"handle": f"(unknown handle {handle_id})", "platform": None,
+                                  "cohort": None, "status": "error",
+                                  "items_downloaded": 0, "last_seen_published_at": None,
+                                  "error_message": error_message}
+                run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
+                _finish_run_guarded(conn, run_row_id, status, finished_at,
+                                   str(write_run_record(repo_root, {
+                                       "run_id": run_id, "trigger": trigger, "mode": mode, "status": status,
+                                       "started_at": started_at, "finished_at": finished_at,
+                                       "backfill_start": None, "backfill_end": None,
+                                   }, [handle_result])))
+                return {"run_row_id": run_row_id, "status": status, "counts": _summarize([handle_result])}
+            error_message = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, EXCLUDING_ERRORS):
+                db_mod.set_handle_status(conn, handle_id, "invalid")
+                db_mod.set_handle_included(conn, handle_id, False)
+            else:
+                db_mod.set_handle_status(conn, handle_id, "pending")
+                obs.record_event(conn, kind="discovery.validate_transient_failure", severity="warning",
+                                 source="discovery_engine", message=error_message, run_id=None,
+                                 detail={"error_type": type(exc).__name__})
             handle_result = {"handle": handle_row["handle"], "platform": handle_row["platform"],
                               "cohort": handle_row["cohort"], "status": "error",
                               "items_downloaded": 0, "last_seen_published_at": None,
-                              "error_message": str(exc)}
+                              "error_message": error_message}
             run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
             db_mod.record_handle_result(conn, run_row_id, handle_id, handle_result["status"],
                                          handle_result["items_downloaded"], handle_result["error_message"])
-            db_mod.finish_run(conn, run_row_id, status, finished_at,
+            _finish_run_guarded(conn, run_row_id, status, finished_at,
                                str(write_run_record(repo_root, {
                                    "run_id": run_id, "trigger": trigger, "mode": mode, "status": status,
                                    "started_at": started_at, "finished_at": finished_at,
                                    "backfill_start": None, "backfill_end": None,
                                }, [handle_result])))
-            return {"run_row_id": run_row_id, "status": status}
+            return {"run_row_id": run_row_id, "status": status, "counts": _summarize([handle_result])}
 
     # incremental / backfill: single-flight lock applies.
     with db_mod.transaction(conn):
-        reclaimed_ids = db_mod.reclaim_stale_runs(conn, now_iso(now), stale_after_s)
+        reclaimed_ids = reclaim_stale_runs_owned(conn, repo_root, now, stale_after_s)
         _write_abandoned_records_for_reclaimed_runs(conn, repo_root, reclaimed_ids, now)
     try:
         run_row_id = db_mod.insert_running_run(conn, run_id, trigger, mode, started_at, backfill_start, backfill_end)
@@ -311,21 +700,34 @@ def run_discovery(
         # the IntegrityError was something else entirely and must not be
         # silently swallowed.
         if db_mod.get_running_run(conn) is None:
-            raise
-        # A fresh run_id for the locked row -- reusing `run_id` here would
-        # collide with the very row that just won the lock (both share the
-        # same run_id UNIQUE constraint), raising a second, unrelated
-        # IntegrityError instead of cleanly recording "locked".
-        finished_at = now_iso()
-        locked_run_id = make_run_id(_dt.datetime.now(_dt.timezone.utc))
-        locked_id = db_mod.insert_locked_run(conn, locked_run_id, trigger, mode, started_at, finished_at)
-        md_path = write_run_record(repo_root, {
-            "run_id": locked_run_id, "trigger": trigger, "mode": mode, "status": "locked",
-            "started_at": started_at, "finished_at": finished_at,
-            "backfill_start": backfill_start, "backfill_end": backfill_end,
-        }, [])
-        db_mod.finish_run(conn, locked_id, "locked", finished_at, str(md_path))
-        return {"run_row_id": locked_id, "status": "locked"}
+            # B-59: no running row exists, so the IntegrityError above wasn't
+            # the single-flight lock firing at all -- it's a TOCTOU race: some
+            # other run held the lock at insert time but finished (and
+            # cleared it) in the gap between that failed insert and this
+            # check. Retry the exact same insert once, as if we'd been first
+            # in line the whole time. A second collision within this narrow
+            # retry window is a real, unrelated problem (e.g. an actual
+            # run_id collision) and must not be swallowed a second time.
+            run_row_id = db_mod.insert_running_run(
+                conn, run_id, trigger, mode, started_at, backfill_start, backfill_end,
+            )
+        else:
+            # A fresh run_id for the locked row -- reusing `run_id` here would
+            # collide with the very row that just won the lock (both share the
+            # same run_id UNIQUE constraint), raising a second, unrelated
+            # IntegrityError instead of cleanly recording "locked".
+            # B-49: a lock loss is a no-op, not an event worth a paired markdown
+            # file -- a 90-minute Bright Data run left five locked rows and five
+            # junk files, one per 15-minute scheduled wake that found the lock
+            # held. Keep the DB row (the honest record that a call was refused);
+            # drop the file it would otherwise burn a write on.
+            finished_at = now_iso()
+            locked_run_id = make_run_id(_dt.datetime.now(_dt.timezone.utc))
+            locked_id = db_mod.insert_locked_run(conn, locked_run_id, trigger, mode, started_at, finished_at)
+            _finish_run_guarded(conn, locked_id, "locked", finished_at, None)
+            return {"run_row_id": locked_id, "status": "locked", "counts": _summarize([])}
+
+    _claim_run_ownership(repo_root, run_row_id, started_at)
 
     heartbeat_conn = _open_heartbeat_connection(conn)
     stop_event = threading.Event()
@@ -337,15 +739,37 @@ def run_discovery(
     handle_results = []
     any_error = False
     outer_crash: Exception | None = None
+    run_started = _dt.datetime.now(_dt.timezone.utc)
     try:
         handles = db_mod.list_handles(conn, included_only=True)
-        _warn_on_directory_collisions(handles)
+        _warn_on_directory_collisions(conn, handles)
+        handles, preflight_failed = _apply_preflight(conn, repo_root, adapters, run_row_id,
+                                                      handles, handle_results)
+        any_error = any_error or preflight_failed
         for handle_row in handles:
+            elapsed_s = (_dt.datetime.now(_dt.timezone.utc) - run_started).total_seconds()
+            if elapsed_s >= run_deadline_s:
+                deadline_message = (f"  !! run exceeded its {run_deadline_s}s overall deadline "
+                                    f"after {elapsed_s:.1f}s -- stopping before the remaining "
+                                    f"handles, run will end 'failed'")
+                print(deadline_message, file=sys.stderr)
+                obs.record_event(conn, kind="discovery.run_deadline_exceeded", severity="error",
+                                 source="discovery_engine", message=deadline_message,
+                                 run_id=run_row_id,
+                                 detail={"run_deadline_s": run_deadline_s, "elapsed_s": elapsed_s})
+                raise RunDeadlineExceeded(
+                    f"run exceeded its {run_deadline_s}s overall deadline after {elapsed_s:.1f}s")
             try:
                 if mode == "backfill" and handle_row["platform"] not in BACKFILL_SUPPORTED_PLATFORMS:
-                    print(f"  ! backfill not supported for platform '{handle_row['platform']}' "
-                          f"(handle {handle_row['handle']}) -- skipping, no adapter call made",
-                          file=sys.stderr)
+                    skip_message = (f"  ! backfill not supported for platform "
+                                    f"'{handle_row['platform']}' (handle {handle_row['handle']}) "
+                                    f"-- skipping, no adapter call made")
+                    print(skip_message, file=sys.stderr)
+                    obs.record_event(conn, kind="discovery.backfill_unsupported", severity="warning",
+                                     source="discovery_engine", message=skip_message,
+                                     run_id=run_row_id,
+                                     detail={"platform": handle_row["platform"],
+                                             "handle": handle_row["handle"]})
                     status = "skipped"
                     db_mod.record_handle_result(conn, run_row_id, handle_row["id"], status, 0)
                     handle_results.append({
@@ -354,7 +778,18 @@ def run_discovery(
                         "last_seen_published_at": None, "error_message": None,
                     })
                     continue
-                downloaded = _process_one_handle(adapters, repo_root, handle_row, mode, backfill_start, backfill_end, now)
+                # Not `with ThreadPoolExecutor(...) as pool:` -- __exit__ calls
+                # shutdown(wait=True), which blocks until the worker thread
+                # finishes, defeating the whole point of the timeout below. No
+                # explicit shutdown() is called either: on a timeout the pool
+                # (and its one worker thread) is simply abandoned. See the
+                # docstring's caveat about what that means for that thread.
+                pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                future = pool.submit(_process_one_handle, adapters, repo_root, handle_row,
+                                     mode, backfill_start, backfill_end, now,
+                                     new_handle_lookback_days)
+                downloaded = future.result(timeout=per_handle_deadline_s)
+                pool.shutdown(wait=False)
                 # Not every downloaded item is guaranteed to carry a date (a
                 # YouTube item whose info.json write failed reports
                 # published=None) -- guard max() against an empty sequence
@@ -365,20 +800,74 @@ def run_discovery(
                     db_mod.set_handle_last_seen(conn, handle_row["id"], max(published_dates))
                 status = "ok" if downloaded else "no_new_content"
                 db_mod.record_handle_result(conn, run_row_id, handle_row["id"], status, len(downloaded))
+                # P1's B-82: both "ok" and "no_new_content" are healthy outcomes --
+                # either one resets the consecutive-failure counter and lifts a
+                # 'failing' handle back to 'validated'.
+                db_mod.clear_handle_failures(conn, handle_row["id"])
                 handle_results.append({
                     "handle": handle_row["handle"], "platform": handle_row["platform"],
                     "cohort": handle_row["cohort"], "status": status, "items_downloaded": len(downloaded),
                     "last_seen_published_at": db_mod.get_handle(conn, handle_row["id"])["last_seen_published_at"],
                     "error_message": None,
                 })
-            except Exception as exc:  # noqa: BLE001 - per-handle isolation is the whole point
+            except concurrent.futures.TimeoutError:
+                # Must come BEFORE the generic `except Exception` below --
+                # concurrent.futures.TimeoutError IS an Exception subclass, so
+                # Python matches except clauses top-to-bottom and this one
+                # needs its own distinct error_message, not the generic
+                # str(exc) from the catch-all.
                 any_error = True
-                db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", 0, str(exc))
+                timeout_message = f"TimeoutError: handle exceeded its {per_handle_deadline_s}s deadline"
+                db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", 0, timeout_message)
+                # P1's B-82: a timeout is a real failure mode, not a shrug -- it
+                # feeds the same consecutive-failure counter as the generic
+                # exception branch below.
+                db_mod.record_handle_failure(conn, handle_row["id"], now_iso=now_iso())
                 handle_results.append({
                     "handle": handle_row["handle"], "platform": handle_row["platform"],
                     "cohort": handle_row["cohort"], "status": "error", "items_downloaded": 0,
-                    "last_seen_published_at": None, "error_message": str(exc),
+                    "last_seen_published_at": None, "error_message": timeout_message,
                 })
+            except Exception as exc:  # noqa: BLE001 - per-handle isolation is the whole point
+                any_error = True
+                # B-54: a handle that fails partway through its walk still has
+                # real items on disk -- HandleFailure (raised by process_handle
+                # / process_handle_backfill) carries them via .downloaded so
+                # this branch can record actual counts instead of hardcoding 0.
+                partial = getattr(exc, "downloaded", [])
+                partial_dates = [d["published"] for d in partial if d.get("published")]
+                if partial_dates:
+                    db_mod.set_handle_last_seen(conn, handle_row["id"], max(partial_dates))
+                # B-55: str(exc) alone is the whole post-mortem when there's no
+                # log file -- str(KeyError('youtube')) stores just "'youtube'"
+                # with no hint it's even a KeyError, and str(IndexError()) is
+                # the empty string. Name the exception type too, and stash the
+                # full traceback on an event so the actual failure site is
+                # still recoverable after the fact. HandleFailure already
+                # carries the true underlying exception on .cause (it formats
+                # its own str() the same way) -- use that when present so the
+                # message names the real failure, not "HandleFailure".
+                cause = getattr(exc, "cause", exc)
+                error_message = f"{type(cause).__name__}: {cause}"
+                obs.record_event(conn, kind="discovery.handle_failed", severity="error",
+                                 source="discovery_engine", message=error_message,
+                                 run_id=run_row_id,
+                                 detail={"handle": handle_row["handle"], "platform": handle_row["platform"],
+                                         "traceback": traceback.format_exc()})
+                db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", len(partial), error_message)
+                # P1's B-82: count this consecutive per-handle failure and
+                # downgrade the handle to 'failing' once it crosses the
+                # threshold, so a permanently broken source stops looking
+                # healthy on the roster.
+                db_mod.record_handle_failure(conn, handle_row["id"], now_iso=now_iso())
+                handle_results.append({
+                    "handle": handle_row["handle"], "platform": handle_row["platform"],
+                    "cohort": handle_row["cohort"], "status": "error", "items_downloaded": len(partial),
+                    "last_seen_published_at": db_mod.get_handle(conn, handle_row["id"])["last_seen_published_at"],
+                    "error_message": error_message,
+                })
+            finally:
+                _drain_adapter_diagnostics(conn, run_row_id)
     except Exception as exc:  # noqa: BLE001 - a crash OUTSIDE the per-handle loop
         # (e.g. db_mod.list_handles itself raising) -- distinct from any
         # individual handle's error above. The run still gets a terminal
@@ -394,6 +883,7 @@ def run_discovery(
         heartbeat_thread.join(timeout=5)
         if heartbeat_conn is not None:
             heartbeat_conn.close()
+        _release_run_ownership(repo_root, run_row_id)
 
     if outer_crash is not None:
         final_status = "failed"
@@ -405,15 +895,37 @@ def run_discovery(
         "started_at": started_at, "finished_at": finished_at,
         "backfill_start": backfill_start, "backfill_end": backfill_end,
     }, handle_results)
-    db_mod.finish_run(conn, run_row_id, final_status, finished_at, str(md_path))
-    if trigger == "scheduled" and final_status != "failed":
+    finished_cleanly = _finish_run_guarded(conn, run_row_id, final_status, finished_at, str(md_path))
+    if finished_cleanly and trigger == "scheduled" and final_status != "failed":
         # Store the LOCAL calendar date in the configured timezone, not the
         # UTC date -- discovery_scheduling.is_due compares this value against
         # local_now.date().isoformat(), so storing a UTC date here would
         # desync from that comparison for any schedule time where the UTC and
         # local calendar dates diverge, causing the scheduled run to re-fire
-        # repeatedly.
+        # repeatedly. Skipped entirely when the guard refused the write: a
+        # run reclaimed out from under itself (row already 'abandoned') must
+        # not also stamp the watermark with its stale finished_at -- that
+        # would desync is_due from reality on top of erasing the reclaim
+        # evidence (B-50).
         timezone_name = db_mod.get_settings(conn)["timezone"]
         local_date = now.astimezone(ZoneInfo(timezone_name)).date().isoformat()
-        db_mod.set_last_scheduled_run_date(conn, local_date)
-    return {"run_row_id": run_row_id, "status": final_status}
+        db_mod.set_last_scheduled_run_date(conn, encode_watermark(local_date, timezone_name, now_iso(now)))
+    elif finished_cleanly and trigger == "scheduled" and isinstance(outer_crash, RunDeadlineExceeded):
+        # I-4: a deadline-exceeded run is `final_status == "failed"`, so the
+        # branch above correctly skips the watermark -- but that means
+        # is_due() sees no recent instant at all and fires again at the very
+        # next 15-minute wake, with no backoff: a hung run just keeps
+        # re-attempting for the rest of the day, burning up to run_deadline_s
+        # of billable adapter calls each time. A startup crash or any other
+        # outer exception is NOT covered here -- those should still allow
+        # tomorrow's normal schedule to run unaffected -- but a run that
+        # genuinely ran for run_deadline_s seconds warrants a real backoff.
+        # Write the watermark's INSTANT only (same encode_watermark call, same
+        # local_date/timezone_name derivation as the successful path above) so
+        # MIN_RUN_INTERVAL_H's instant-based check in is_due blocks a same-day
+        # re-fire for MIN_RUN_INTERVAL_H hours, giving the operator time to
+        # notice and intervene -- without claiming the day's run "succeeded".
+        timezone_name = db_mod.get_settings(conn)["timezone"]
+        local_date = now.astimezone(ZoneInfo(timezone_name)).date().isoformat()
+        db_mod.set_last_scheduled_run_date(conn, encode_watermark(local_date, timezone_name, now_iso(now)))
+    return {"run_row_id": run_row_id, "status": final_status, "counts": _summarize(handle_results)}

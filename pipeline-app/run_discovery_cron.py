@@ -16,17 +16,73 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import enum
 import sys
+import traceback
 from pathlib import Path
 
-from pipeline_app import db
+from pipeline_app import db, obs
 from pipeline_app import (discovery_bluesky, discovery_facebook, discovery_instagram,
                           discovery_linkedin, discovery_x, discovery_youtube)
-from pipeline_app.discovery_engine import run_discovery
+from pipeline_app.discovery_engine import NEW_HANDLE_LOOKBACK_DAYS, run_discovery, sweep_stale_runs
 from pipeline_app.discovery_notify import notify
-from pipeline_app.discovery_scheduling import is_due
+from pipeline_app.discovery_scheduling import ScheduleConfigError, decode_watermark, is_due
 
 HERE = Path(__file__).resolve().parent
+
+
+class Exit(enum.IntEnum):
+    OK                  = 0
+    LOCKED              = 10
+    NO_WORK             = 11
+    NOTIFY_FAILED       = 12
+    HANDLES_ERRORED     = 13
+    ALL_HANDLES_ERRORED = 14
+    RUN_FAILED          = 15
+    SCHEDULER_WEDGED    = 16
+    STARTUP_FAILED      = 17
+    ENGINE_CRASHED      = 18
+
+
+EXIT_REASON: dict[Exit, str] = {
+    Exit.OK: "clean run, or nothing was due",
+    Exit.LOCKED: "another discovery run holds the single-flight lock",
+    Exit.NO_WORK: "every included handle was skipped -- no adapter call was made",
+    Exit.NOTIFY_FAILED: "the run finished but the notification email was not sent",
+    Exit.HANDLES_ERRORED: "one or more handles errored",
+    Exit.ALL_HANDLES_ERRORED: "every handle this run attempted errored",
+    Exit.RUN_FAILED: "the run crashed or exceeded its deadline",
+    Exit.SCHEDULER_WEDGED: "the stored schedule settings cannot be evaluated",
+    Exit.STARTUP_FAILED: "startup failed before any run could be recorded",
+    Exit.ENGINE_CRASHED: "run_discovery() raised an exception outside its own error handling",
+}
+
+
+def classify_exit(result: dict | None, *, notify_ok: bool = True) -> Exit:
+    """Map one terminal run outcome onto the documented exit-code contract.
+
+    Pure -- no DB, no clock, no I/O -- so the contract table is testable as
+    data. When several conditions hold the code is the numeric maximum, and
+    Exit's values are ordered by severity precisely so that max() is the rule.
+    """
+    codes = [Exit.OK]
+    if result is not None:
+        status = result["status"]
+        counts = result.get("counts") or {}
+        attempted, failed = counts.get("attempted", 0), counts.get("failed", 0)
+        if status == "locked":
+            codes.append(Exit.LOCKED)
+        elif status == "failed":
+            codes.append(Exit.RUN_FAILED)
+        elif failed and attempted and failed >= attempted:
+            codes.append(Exit.ALL_HANDLES_ERRORED)
+        elif failed:
+            codes.append(Exit.HANDLES_ERRORED)
+        elif attempted == 0 and counts.get("skipped", 0):
+            codes.append(Exit.NO_WORK)
+    if not notify_ok:
+        codes.append(Exit.NOTIFY_FAILED)
+    return Exit(max(codes))
 
 
 def build_adapters():
@@ -55,7 +111,7 @@ def _is_due_now(conn) -> bool:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", required=True,
                      choices=["scheduled", "incremental", "backfill", "validate_handle"])
@@ -63,6 +119,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--backfill-end")
     ap.add_argument("--handle-id", type=int)
     ap.add_argument("--repo-root", default=str(HERE.parent))
+    # B-64(3): these five were module/default constants with no settings or
+    # CLI exposure, so tuning any of them was a code edit. Defaults below
+    # match run_discovery's own current defaults (discovery_engine.py) and
+    # NEW_HANDLE_LOOKBACK_DAYS, so passing none of these flags is a no-op.
+    ap.add_argument("--heartbeat-interval-s", type=float, default=30.0)
+    ap.add_argument("--stale-after-s", type=int, default=600)
+    ap.add_argument("--per-handle-deadline-s", type=float, default=900.0)
+    ap.add_argument("--run-deadline-s", type=float, default=5400.0)
+    ap.add_argument("--new-handle-lookback-days", type=int, default=NEW_HANDLE_LOOKBACK_DAYS)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = _build_parser()
     args = ap.parse_args(argv)
 
     repo_root = Path(args.repo_root)
@@ -79,12 +149,55 @@ def main(argv: list[str] | None = None) -> int:
     # always safe.
     db_path = repo_root / "pipeline-app" / "pipeline.db"
     schema_path = HERE / "pipeline_app" / "schema.sql"
-    db.init_db(db_path, schema_path)
-    conn = db.get_connection(db_path)
+    obs.log("discovery.wake", level="info", mode=args.mode, repo_root=str(repo_root))
+    try:
+        db.init_db(db_path, schema_path)
+        conn = db.get_connection(db_path)
+    except Exception as exc:  # noqa: BLE001 - a corrupt/locked pipeline.db, a
+        # missing schema.sql or a broken venv kills the run before any row
+        # exists, which is otherwise indistinguishable from "the scheduler
+        # never fired" (D-06).
+        obs.log("discovery.startup_failed", level="error",
+                error=f"{type(exc).__name__}: {exc}", db_path=str(db_path))
+        print(f"discovery startup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return Exit.STARTUP_FAILED
+    obs.record_event(conn, kind="discovery.wake", severity="info",
+                     source="run_discovery_cron", message=f"wake: mode={args.mode}")
+
+    # Reclaim stale runs before the due-check, not just inside run_discovery: the
+    # scheduled path returns early below when today isn't due and never reaches
+    # run_discovery at all, so a Run Now that died hard after the day's scheduled
+    # run would otherwise sit "running" until the next due day (B-52).
+    reclaimed = sweep_stale_runs(conn, repo_root, stale_after_s=args.stale_after_s)
+    if reclaimed:
+        obs.record_event(conn, kind="discovery.runs_reclaimed", severity="warning",
+                         source="run_discovery_cron",
+                         message=f"reclaimed {len(reclaimed)} stale run(s): {reclaimed}")
+
+    notify_ok = True
+    result = None
     try:
         if args.mode == "scheduled":
-            if not _is_due_now(conn):
-                return 0
+            try:
+                due = _is_due_now(conn)
+            except ScheduleConfigError as exc:
+                obs.record_event(conn, kind="discovery.scheduler_wedged", severity="critical",
+                                 source="run_discovery_cron", message=str(exc))
+                print(f"discovery scheduler is wedged: {exc}", file=sys.stderr)
+                return Exit.SCHEDULER_WEDGED
+            if not due:
+                return classify_exit(result, notify_ok=notify_ok)
+            # A machine asleep across time_of_day would otherwise skip the day
+            # with no signal at all: the run below simply catches up and looks
+            # like any other scheduled wake. Surface the gap explicitly so it
+            # is visible AS a gap rather than as silence (B-48, D-06).
+            now = _dt.datetime.now(_dt.timezone.utc)
+            last_date, last_instant = decode_watermark(db.get_settings(conn)["last_scheduled_run_date"])
+            if last_instant is not None and (now - last_instant) > _dt.timedelta(hours=44):
+                obs.record_event(conn, kind="discovery.days_skipped", severity="warning",
+                                 source="run_discovery_cron",
+                                 message=f"scheduled discovery appears to have skipped one or more "
+                                         f"days: the last successful scheduled run was {last_date}")
             trigger, mode = "scheduled", "incremental"
         elif args.mode == "incremental":
             trigger, mode = "manual", "incremental"
@@ -93,21 +206,69 @@ def main(argv: list[str] | None = None) -> int:
         else:
             trigger, mode = "manual", "validate_handle"
 
-        result = run_discovery(
-            conn, repo_root, build_adapters(), trigger=trigger, mode=mode,
-            backfill_start=args.backfill_start, backfill_end=args.backfill_end,
-            handle_id=args.handle_id,
-        )
+        # B-49: a long-running call must never generate a locked row (and a
+        # paired junk file) for every scheduled wake that finds the
+        # single-flight lock held -- refuse before the engine is even
+        # reached. Scoped to the modes that actually take the single-flight
+        # lock (ux_discovery_single_running): "incremental" covers both the
+        # scheduled-due path and a manual incremental/backfill run -- but
+        # NOT "validate_handle", which uses insert_terminal_run and never
+        # contends for that lock, so it must never be blocked by it (I-3).
+        if mode in ("incremental", "backfill") and db.get_running_run(conn) is not None:
+            obs.record_event(conn, kind="discovery.run_already_active", severity="info",
+                             source="run_discovery_cron",
+                             message="a discovery run is already active; skipping this wake "
+                                     "without calling the engine")
+            return Exit.LOCKED
+
+        try:
+            result = run_discovery(
+                conn, repo_root, build_adapters(), trigger=trigger, mode=mode,
+                backfill_start=args.backfill_start, backfill_end=args.backfill_end,
+                handle_id=args.handle_id,
+                heartbeat_interval_s=args.heartbeat_interval_s, stale_after_s=args.stale_after_s,
+                per_handle_deadline_s=args.per_handle_deadline_s, run_deadline_s=args.run_deadline_s,
+                new_handle_lookback_days=args.new_handle_lookback_days,
+            )
+        except Exception as exc:  # noqa: BLE001 - I-1 Part B: run_discovery is
+            # supposed to catch its own crashes and return a terminal 'failed'
+            # result, but that guarantee has already been proven incomplete
+            # once (I-1 Part A). Without this, an exception that still slips
+            # past run_discovery's own handling would propagate out of main()
+            # entirely, producing Python's own uncontracted exit code 1 with
+            # no durable trace anywhere -- the exact failure mode this whole
+            # exit-code contract exists to prevent.
+            tb = traceback.format_exc()
+            obs.record_event(conn, kind="discovery.run_crashed", severity="error",
+                             source="run_discovery_cron",
+                             message=f"run_discovery() raised {type(exc).__name__}: {exc}",
+                             detail={"error_type": type(exc).__name__, "traceback": tb})
+            print(f"discovery run crashed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return Exit.ENGINE_CRASHED
         print(f"run {result['run_row_id']}: {result['status']}")
 
         if args.mode == "scheduled" and result["status"] != "locked":
             try:
-                notify(conn, repo_root, result["run_row_id"])
-            except Exception as exc:  # noqa: BLE001 - notification must never affect run status/exit code
-                print(f"discovery notification failed: {exc}", file=sys.stderr)
+                notify_ok = bool(notify(conn, repo_root, result["run_row_id"]))
+                if not notify_ok:
+                    message = "notification email was not sent (no API key, or the send failed)"
+            except Exception as exc:  # noqa: BLE001 - notification must never abort the run,
+                # but it must not be invisible either: the email is the only push
+                # channel this system has, so a failure to send is exactly the
+                # failure that cannot announce itself (D-01).
+                notify_ok = False
+                message = f"notification raised: {type(exc).__name__}: {exc}"
+            if not notify_ok:
+                print(f"discovery notification failed: {message}", file=sys.stderr)
+                obs.record_event(conn, kind="discovery.notify_failed", severity="error",
+                                 source="run_discovery_cron", message=message,
+                                 run_id=result["run_row_id"])
     finally:
         conn.close()
-    return 0
+    code = classify_exit(result, notify_ok=notify_ok)
+    if code is not Exit.OK:
+        print(f"exit {int(code)} ({code.name}): {EXIT_REASON[code]}", file=sys.stderr)
+    return code
 
 
 if __name__ == "__main__":

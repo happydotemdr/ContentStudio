@@ -1,9 +1,45 @@
+import itertools
+import json
+import re
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from pipeline_app import db as db_mod
+from pipeline_app import discovery_engine
+from pipeline_app.discovery_paths import SlugCollisionError, assert_no_slug_collision
 from pipeline_app.main import create_app
+from pipeline_app.routes import discovery as discovery_routes
+
+import run_discovery_cron as cron
+
+_now_counter = itertools.count()
+
+
+def _now() -> str:
+    """A monotonically-increasing ISO timestamp -- each call is one second
+    later than the last, so runs inserted in test order sort in that same
+    order without relying on same-second ties."""
+    base = datetime(2026, 8, 1)
+    return (base + timedelta(seconds=next(_now_counter))).isoformat() + "Z"
+
+
+class _FakeProc:
+    pid = 1
+
+
+@pytest.fixture
+def spawns(monkeypatch):
+    """The single spawn stub for this module. Replaces routes.discovery._popen,
+    NOT subprocess.Popen, so the repo-wide conftest guard stays armed for
+    everything else -- and a route test that forgets this fixture hits the real
+    Popen, trips the guard, and FAILS instead of launching a billed job (F-68)."""
+    recorded: list[list[str]] = []
+    monkeypatch.setattr("pipeline_app.routes.discovery._popen",
+                        lambda cmd, **kw: recorded.append(cmd) or _FakeProc())
+    return recorded
 
 
 @pytest.fixture
@@ -28,16 +64,7 @@ def test_get_handles_page_lists_no_handles_initially(client: TestClient):
     assert "No handles yet" in response.text
 
 
-def test_add_handle_creates_pending_row_and_spawns_validation(client: TestClient, monkeypatch):
-    spawned = {}
-
-    def fake_popen(cmd, **kwargs):
-        spawned["cmd"] = cmd
-        class FakeProc:
-            pid = 999
-        return FakeProc()
-
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", fake_popen)
+def test_add_handle_creates_pending_row_and_spawns_validation(client: TestClient, spawns):
     response = client.post("/discovery/handles", data={
         "platform": "youtube", "handle": "@NewChannel", "display_name": "New Channel",
         "cohort": "guru", "keyword_filter": "",
@@ -46,19 +73,8 @@ def test_add_handle_creates_pending_row_and_spawns_validation(client: TestClient
     listing = client.get("/discovery/handles")
     assert "@NewChannel" in listing.text
     assert "pending" in listing.text.lower() or "validating" in listing.text.lower()
-    assert "--mode" in spawned["cmd"]
-    assert "validate_handle" in spawned["cmd"]
-
-
-def _no_spawn(monkeypatch):
-    """Stub the validate subprocess. A validate run costs a billable Bright Data
-    job on the paid platforms, so tests must never let one launch."""
-    spawned = []
-    monkeypatch.setattr(
-        "pipeline_app.routes.discovery.subprocess.Popen",
-        lambda cmd, **k: spawned.append(cmd) or type("P", (), {"pid": 1})(),
-    )
-    return spawned
+    assert "--mode" in spawns[0]
+    assert "validate_handle" in spawns[0]
 
 
 def _add(client: TestClient, platform: str, handle: str):
@@ -68,12 +84,24 @@ def _add(client: TestClient, platform: str, handle: str):
     })
 
 
-def test_add_handle_rejects_a_handle_that_would_share_a_directory(client: TestClient, monkeypatch):
+def test_assert_no_slug_collision_is_the_single_enforcement_point(client: TestClient, spawns):
+    """B-63: find_slug_collision was called from exactly one place -- the web
+    form. migrate_handles_from_manifest writes through upsert_handle_from_migration,
+    which enforces only UNIQUE(platform, handle) and can introduce exactly the
+    collision the route refuses."""
+    with pytest.raises(SlugCollisionError) as excinfo:
+        assert_no_slug_collision("john.doe.5", ["johndoe5"])
+    assert "johndoe5" in str(excinfo.value)
+    # the route's 400 message is produced from the same exception
+    assert _add(client, "facebook", "johndoe5").status_code in (200, 303, 307)
+    assert _add(client, "facebook", "john.doe.5").status_code == 400
+
+
+def test_add_handle_rejects_a_handle_that_would_share_a_directory(client: TestClient, spawns):
     """slugify strips periods, so facebook/john.doe.5 and facebook/johndoe5 both
     resolve to output/brand-intel/facebook/johndoe5. Registering both means two
     billed jobs per run writing to one directory, and the second reports the
     healthy 'no_new_content' after reading the first's files."""
-    _no_spawn(monkeypatch)
     assert _add(client, "facebook", "johndoe5").status_code in (200, 303, 307)
 
     response = _add(client, "facebook", "john.doe.5")
@@ -84,25 +112,22 @@ def test_add_handle_rejects_a_handle_that_would_share_a_directory(client: TestCl
     assert "johndoe5" in response.text
 
 
-def test_add_handle_rejects_a_case_only_difference(client: TestClient, monkeypatch):
-    _no_spawn(monkeypatch)
+def test_add_handle_rejects_a_case_only_difference(client: TestClient, spawns):
     _add(client, "facebook", "NASA")
     assert _add(client, "facebook", "nasa").status_code == 400
 
 
-def test_add_handle_does_not_spawn_validation_for_a_rejected_handle(client: TestClient, monkeypatch):
+def test_add_handle_does_not_spawn_validation_for_a_rejected_handle(client: TestClient, spawns):
     """A rejected registration must not launch a validate run -- on the Bright
     Data platforms that is a billable job for a handle we refused to store."""
-    spawned = _no_spawn(monkeypatch)
     _add(client, "facebook", "johndoe5")
-    spawned.clear()
+    spawns.clear()
 
     assert _add(client, "facebook", "john.doe.5").status_code == 400
-    assert spawned == []
+    assert spawns == []
 
 
-def test_add_handle_does_not_store_a_rejected_handle(client: TestClient, monkeypatch):
-    _no_spawn(monkeypatch)
+def test_add_handle_does_not_store_a_rejected_handle(client: TestClient, spawns):
     _add(client, "facebook", "johndoe5")
     _add(client, "facebook", "john.doe.5")
 
@@ -110,18 +135,16 @@ def test_add_handle_does_not_store_a_rejected_handle(client: TestClient, monkeyp
     assert "john.doe.5" not in listing.text
 
 
-def test_add_handle_allows_the_same_slug_on_a_different_platform(client: TestClient, monkeypatch):
+def test_add_handle_allows_the_same_slug_on_a_different_platform(client: TestClient, spawns):
     """Directories are namespaced by platform, so facebook/nasa and
     instagram/nasa never share one -- this must not be rejected."""
-    _no_spawn(monkeypatch)
     assert _add(client, "facebook", "nasa").status_code in (200, 303, 307)
     assert _add(client, "instagram", "NASA").status_code in (200, 303, 307)
 
 
-def test_add_handle_still_rejects_an_exact_duplicate_with_its_own_message(client: TestClient, monkeypatch):
+def test_add_handle_still_rejects_an_exact_duplicate_with_its_own_message(client: TestClient, spawns):
     """Regression: the pre-existing exact-match check keeps its own wording, so
     'already registered' and 'shares a directory' stay distinguishable."""
-    _no_spawn(monkeypatch)
     _add(client, "facebook", "nasa")
 
     response = _add(client, "facebook", "nasa")
@@ -129,8 +152,7 @@ def test_add_handle_still_rejects_an_exact_duplicate_with_its_own_message(client
     assert "already exists" in response.text
 
 
-def test_toggle_include_flips_and_persists(client: TestClient, monkeypatch):
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", lambda *a, **k: type("P", (), {"pid": 1})())
+def test_toggle_include_flips_and_persists(client: TestClient, spawns):
     client.post("/discovery/handles", data={
         "platform": "youtube", "handle": "@a", "display_name": "A", "cohort": "guru", "keyword_filter": "",
     })
@@ -143,8 +165,7 @@ def test_toggle_include_flips_and_persists(client: TestClient, monkeypatch):
     assert response.status_code in (200, 303, 307)
 
 
-def test_handle_status_endpoint_returns_json(client: TestClient, monkeypatch):
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", lambda *a, **k: type("P", (), {"pid": 1})())
+def test_handle_status_endpoint_returns_json(client: TestClient, spawns):
     client.post("/discovery/handles", data={
         "platform": "youtube", "handle": "@a", "display_name": "A", "cohort": "guru", "keyword_filter": "",
     })
@@ -156,8 +177,7 @@ def test_handle_status_endpoint_returns_json(client: TestClient, monkeypatch):
     assert response.json()["status"] in ("pending", "validating", "validated", "invalid")
 
 
-def test_add_duplicate_handle_returns_400_not_500(client: TestClient, monkeypatch):
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", lambda *a, **k: type("P", (), {"pid": 1})())
+def test_add_duplicate_handle_returns_400_not_500(client: TestClient, spawns):
     data = {"platform": "youtube", "handle": "@a", "display_name": "A", "cohort": "guru", "keyword_filter": ""}
     first = client.post("/discovery/handles", data=data)
     assert first.status_code in (200, 303, 307)
@@ -165,28 +185,126 @@ def test_add_duplicate_handle_returns_400_not_500(client: TestClient, monkeypatc
     assert second.status_code == 400
 
 
-def test_run_now_spawns_incremental_mode(client: TestClient, monkeypatch):
-    spawned = {}
-    def fake_popen(cmd, **kwargs):
-        spawned["cmd"] = cmd
-        return type("P", (), {"pid": 1})()
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", fake_popen)
+def test_run_now_spawns_incremental_mode(client: TestClient, spawns):
     response = client.post("/discovery/run-now")
     assert response.status_code in (200, 303, 307)
-    assert "incremental" in spawned["cmd"]
+    assert "incremental" in spawns[0]
 
 
-def test_run_now_backfill_spawns_backfill_mode_with_dates(client: TestClient, monkeypatch):
-    spawned = {}
-    def fake_popen(cmd, **kwargs):
-        spawned["cmd"] = cmd
-        return type("P", (), {"pid": 1})()
-    monkeypatch.setattr("pipeline_app.routes.discovery.subprocess.Popen", fake_popen)
+def test_run_now_refuses_to_spawn_while_a_run_is_active(client, spawns):
+    """B-59: Run Now had no concurrency guard -- a second click (or a second
+    tab) while a run was already active spawned a duplicate billable cron
+    child that was doomed to lose the single-flight lock (or worse, race it)."""
+    db_mod.insert_running_run(
+        client.app.state.conn, "in-flight", "manual", "incremental",
+        discovery_engine.now_iso(),
+    )
+    response = client.post("/discovery/run-now")
+    assert response.status_code == 409
+    assert spawns == []
+
+
+def test_run_now_backfill_spawns_backfill_mode_with_dates(client: TestClient, spawns):
     response = client.post("/discovery/run-now-backfill", data={"start": "2026-06-01", "end": "2026-06-30"})
     assert response.status_code in (200, 303, 307)
-    assert "backfill" in spawned["cmd"]
-    assert "2026-06-01" in spawned["cmd"]
-    assert "2026-06-30" in spawned["cmd"]
+    assert "backfill" in spawns[0]
+    assert "2026-06-01" in spawns[0]
+    assert "2026-06-30" in spawns[0]
+
+
+def test_backfill_rejects_an_inverted_date_range(client, spawns):
+    """B-60: start > end passed every check, called enumerate_newest_first for
+    every YouTube and Bluesky handle -- the BILLABLE step -- then filtered out
+    100% of items and reported a healthy 'no_new_content' for every handle.
+    Paid for, captured nothing, looks like a quiet day."""
+    response = client.post("/discovery/run-now-backfill",
+                           data={"start": "2026-06-30", "end": "2026-06-01"})
+    assert response.status_code == 400
+    assert spawns == []
+
+
+def test_backfill_rejects_a_malformed_date(client, spawns):
+    assert client.post("/discovery/run-now-backfill",
+                       data={"start": "June 1st", "end": "2026-06-30"}).status_code == 400
+    assert spawns == []
+
+
+def test_a_spawn_is_recorded_with_its_pid_and_a_captured_output_path(client, spawns, tmp_path):
+    """B-61: all three spawn sites redirected 303 immediately with no PID
+    retained, no returncode checked and stdout/stderr inherited from uvicorn.
+    Every failure that kills the child produced the identical experience: a
+    clean redirect to a page with nothing new on it."""
+    client.post("/discovery/run-now")
+    row = client.app.state.conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.spawn_requested'").fetchone()
+    assert row is not None
+    detail = json.loads(row["detail"])
+    assert detail["pid"] == 1
+    assert detail["log_path"].endswith(".log")
+
+
+def test_the_child_s_stdout_and_stderr_are_captured_to_a_file(client, monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr("pipeline_app.routes.discovery._popen",
+                        lambda cmd, **kw: captured.update(kw) or _FakeProc())
+    client.post("/discovery/run-now")
+    assert captured["stdout"] is not None and captured["stderr"] is not None
+
+
+def test_the_runs_page_context_names_a_spawn_that_never_produced_a_run(client, spawns):
+    """E-11: the redirected page almost always rendered the PREVIOUS state, so
+    the operator's honest read was 'nothing happened' and the natural response
+    was to click Run Now again."""
+    client.post("/discovery/run-now")
+    response = client.get("/discovery/runs")
+    assert response.status_code == 200
+    assert response.context["pending_spawns"]
+
+
+def test_backfill_rejects_an_argv_like_value(client, spawns):
+    """A value beginning with '--' was consumed by the child's argparse as a
+    flag, producing exit 2 and total silence in the UI."""
+    assert client.post("/discovery/run-now-backfill",
+                       data={"start": "--repo-root", "end": "2026-06-30"}).status_code == 400
+    assert spawns == []
+
+
+def test_backfill_rejects_an_absurd_window(client, spawns):
+    assert client.post("/discovery/run-now-backfill",
+                       data={"start": "1970-01-01", "end": "2026-06-30"}).status_code == 400
+    assert spawns == []
+
+
+def test_backfill_accepts_a_window_at_exactly_the_730_day_cap(client, spawns):
+    """Pins the MAX_BACKFILL_DAYS boundary: a 730-day window is the largest
+    that must still be accepted."""
+    response = client.post("/discovery/run-now-backfill",
+                           data={"start": "2024-01-01", "end": "2025-12-31"})
+    assert response.status_code in (200, 303, 307)
+    assert len(spawns) == 1
+
+
+def test_backfill_rejects_a_window_one_day_past_the_cap(client, spawns):
+    """731 days must be rejected -- distinguishes '>' from '>=' at the
+    MAX_BACKFILL_DAYS boundary, which the absurd-window test (a ~56-year
+    range) cannot."""
+    response = client.post("/discovery/run-now-backfill",
+                           data={"start": "2024-01-01", "end": "2026-01-01"})
+    assert response.status_code == 400
+    assert spawns == []
+
+
+def test_a_discovery_post_without_the_spawn_stub_raises_instead_of_billing(client: TestClient):
+    """The guard, asserted. Without it this POST launches a detached, live,
+    per-record-billed collection job and the test still passes, because the
+    spawn is fire-and-forget and nothing asserts on it."""
+    with pytest.raises(RuntimeError, match="subprocess"):
+        client.post("/discovery/run-now")
+
+
+def test_every_spawn_site_goes_through_the_single_seam():
+    source = Path(discovery_routes.__file__).read_text(encoding="utf-8")
+    assert source.count("subprocess.Popen") == 1  # only inside _popen
 
 
 def test_update_settings_persists_time_and_timezone(client: TestClient):
@@ -196,6 +314,24 @@ def test_update_settings_persists_time_and_timezone(client: TestClient):
     row = db_mod.get_settings(client.app.state.conn)
     assert row["time_of_day"] == "07:30"
     assert row["timezone"] == "America/New_York"
+
+
+def test_settings_route_rejects_an_unknown_timezone(client: TestClient):
+    response = client.post("/discovery/settings",
+                           data={"time_of_day": "06:00", "timezone": "America/Chicgo"})
+    assert response.status_code == 400
+    assert "America/Chicgo" in response.text
+
+
+def test_settings_route_rejects_a_non_hhmm_time(client: TestClient):
+    assert client.post("/discovery/settings",
+                       data={"time_of_day": "6am", "timezone": "America/Chicago"}).status_code == 400
+
+
+def test_a_rejected_setting_is_not_persisted(client: TestClient):
+    client.post("/discovery/settings", data={"time_of_day": "06:00", "timezone": "America/Chicago"})
+    client.post("/discovery/settings", data={"time_of_day": "06:00", "timezone": "America/Chicgo"})
+    assert db_mod.get_settings(client.app.state.conn)["timezone"] == "America/Chicago"
 
 
 def test_handles_page_shows_current_schedule(client: TestClient):
@@ -226,8 +362,40 @@ def test_discovery_runs_page_empty_state(client: TestClient):
     assert "No discovery runs yet" in response.text
 
 
-def test_handles_page_shows_a_handles_current_brand_tags(client: TestClient, monkeypatch):
-    _no_spawn(monkeypatch)
+def test_the_runs_page_is_capped_and_does_not_grow_without_bound(client: TestClient):
+    conn = client.app.state.conn
+    for i in range(60):
+        db_mod.insert_terminal_run(conn, f"r{i}", "scheduled", "incremental",
+                                    "completed", _now(), _now())
+    assert len(client.get("/discovery/runs").context["runs_with_results"]) == 25
+
+
+def test_the_runs_page_exposes_a_health_summary_of_the_recent_window(client: TestClient):
+    """B-43: the route did no aggregation, so an operator could not answer 'have
+    any of my last seven runs been unhealthy?' without reading every row."""
+    conn = client.app.state.conn
+    db_mod.insert_terminal_run(conn, "ok1", "scheduled", "incremental", "completed", _now(), _now())
+    db_mod.insert_terminal_run(conn, "bad1", "scheduled", "incremental",
+                                "completed_with_errors", _now(), _now())
+    health = client.get("/discovery/runs").context["health"]
+    assert health["unhealthy_recent"] == 1
+    assert health["latest_status"] == "completed_with_errors"
+
+
+def test_the_runs_page_can_be_filtered_to_unhealthy_runs_only(client: TestClient):
+    conn = client.app.state.conn
+    db_mod.insert_terminal_run(conn, "ok1", "scheduled", "incremental", "completed", _now(), _now())
+    db_mod.insert_terminal_run(conn, "bad1", "scheduled", "incremental",
+                                "completed_with_errors", _now(), _now())
+    db_mod.insert_terminal_run(conn, "ok2", "scheduled", "incremental", "completed", _now(), _now())
+
+    response = client.get("/discovery/runs", params={"status": "unhealthy"})
+    runs_with_results = response.context["runs_with_results"]
+    assert len(runs_with_results) == 1
+    assert runs_with_results[0]["run"]["run_id"] == "bad1"
+
+
+def test_handles_page_shows_a_handles_current_brand_tags(client: TestClient, spawns):
     _add(client, "instagram", "aspenprojectplay")
     from pipeline_app import db as db_mod
     conn = client.app.state.conn
@@ -239,8 +407,7 @@ def test_handles_page_shows_a_handles_current_brand_tags(client: TestClient, mon
     assert "raisinggoodsports" in response.text
 
 
-def test_update_handle_brands_replaces_the_tag_set(client: TestClient, monkeypatch):
-    _no_spawn(monkeypatch)
+def test_update_handle_brands_replaces_the_tag_set(client: TestClient, spawns):
     _add(client, "instagram", "aspenprojectplay")
     from pipeline_app import db as db_mod
     conn = client.app.state.conn
@@ -253,8 +420,7 @@ def test_update_handle_brands_replaces_the_tag_set(client: TestClient, monkeypat
     assert db_mod.get_handle_brands(conn, handle_id) == ["guru", "raisinggoodsports"]
 
 
-def test_update_handle_brands_to_no_boxes_checked_clears_all_tags(client: TestClient, monkeypatch):
-    _no_spawn(monkeypatch)
+def test_update_handle_brands_to_no_boxes_checked_clears_all_tags(client: TestClient, spawns):
     _add(client, "instagram", "aspenprojectplay")
     from pipeline_app import db as db_mod
     conn = client.app.state.conn
@@ -274,3 +440,53 @@ def test_brand_choices_matches_email_render_brand_section_order():
     from pipeline_app import email_render
     from pipeline_app.routes.discovery import BRAND_CHOICES
     assert BRAND_CHOICES == list(email_render.BRAND_SECTION_ORDER)
+
+
+def test_add_handle_rejects_a_platform_no_adapter_serves(client, spawns):
+    """B-58: an unvalidated platform was persisted, then adapters[platform]
+    raised KeyError OUTSIDE run_discovery's try -- the fire-and-forget child
+    died with a traceback nobody saw, no run row was written, and the handle
+    sat at 'pending' forever with no explanation."""
+    response = client.post("/discovery/handles", data={
+        "platform": "youtub", "handle": "@a", "display_name": "",
+        "cohort": "guru", "keyword_filter": ""})
+    assert response.status_code == 400
+    assert "youtub" in response.text and "youtube" in response.text   # names the valid set
+
+
+def test_a_rejected_platform_is_neither_stored_nor_spawned(client, spawns):
+    client.post("/discovery/handles", data={"platform": "youtub", "handle": "@a",
+                                            "display_name": "", "cohort": "guru", "keyword_filter": ""})
+    assert spawns == []
+    assert "@a" not in client.get("/discovery/handles").text
+
+
+def test_the_adapter_registry_and_the_declared_platform_set_agree():
+    """The route's gate and the engine's lookup must not drift: build_adapters
+    is what adapters[platform] indexes."""
+    assert set(cron.build_adapters()) == discovery_engine.SUPPORTED_PLATFORMS
+
+
+def test_the_declared_platform_set_matches_the_storage_constraint():
+    """B-73 (P1) complementarity. P1's schema CHECK and P8's route gate must
+    carry ONE vocabulary; two lists drift, and a drifted route gate rejects a
+    platform the storage layer would have accepted (or vice versa)."""
+    schema = (Path(db_mod.__file__).parent / "schema.sql").read_text(encoding="utf-8")
+    declared = set(re.findall(r"'([a-z-]+)'", schema.split("platform TEXT NOT NULL CHECK")[1]
+                                                     .split(")")[0]))
+    assert declared == discovery_engine.SUPPORTED_PLATFORMS
+
+
+def test_a_bad_platform_is_rejected_before_the_storage_constraint_can_fire(client, spawns, monkeypatch):
+    """B-73's two halves are complementary, not duplicated. P1's CHECK is the
+    durable backstop that also covers the migration path; this gate exists so
+    the operator gets a message naming the valid set instead of a 500 carrying
+    'CHECK constraint failed: handles'."""
+    def explode(*a, **k):
+        raise AssertionError("the route must reject before reaching create_handle")
+    monkeypatch.setattr(db_mod, "create_handle", explode)
+    response = client.post("/discovery/handles", data={
+        "platform": "youtub", "handle": "@a", "display_name": "",
+        "cohort": "guru", "keyword_filter": ""})
+    assert response.status_code == 400
+    assert "CHECK constraint" not in response.text

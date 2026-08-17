@@ -3,11 +3,17 @@ Ported from download_brandintel.py's slugify (that script is left unmodified
 -- see the design spec's "Relationship to the existing manual script")."""
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
+
+WINDOWS_RESERVED = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
+)
 
 
 def slugify(value: str, maxlen: int = 80) -> str:
@@ -33,8 +39,22 @@ def handle_slug(handle: str) -> str:
     directories, on_disk_ids() would return an empty set, and the engine would
     re-download and re-pay for each account's whole back-catalogue. So the
     collision is fenced off at registration instead of being encoded away.
+
+    B-62: slugify()'s \\w preserves Windows reserved device names --
+    con/prn/aux/nul/com1..com9/lpt1..lpt9 -- which cannot exist as directory
+    names on Windows; mkdir fails on every run and records an opaque OS
+    error. It also collapses any all-punctuation handle to the fixed
+    fallback 'untitled', so two such handles would collide. Both cases get a
+    short sha1-of-handle suffix appended here to disambiguate. The audit's
+    other proposal -- also reject reserved names at registration with a 400
+    -- is deliberately NOT implemented: disambiguating makes the handle work,
+    so a 400 would refuse a registration that is now perfectly serviceable.
+    The two are alternatives; this is the better one.
     """
-    return slugify(handle.lstrip("@"))
+    slug = slugify(handle.lstrip("@"))
+    if slug in WINDOWS_RESERVED or slug == "untitled":
+        slug = f"{slug}-{hashlib.sha1(handle.encode('utf-8')).hexdigest()[:8]}"
+    return slug
 
 
 def find_slug_collision(handle: str, existing_handles: Iterable[str]) -> str | None:
@@ -56,6 +76,44 @@ def find_slug_collision(handle: str, existing_handles: Iterable[str]) -> str | N
         if existing != handle and handle_slug(existing) == slug:
             return existing
     return None
+
+
+class SlugCollisionError(Exception):
+    """Raised by assert_no_slug_collision when `handle` would share a directory
+    with an already-registered handle. str(exc) is the full operator-facing
+    message -- callers should not construct their own text on top of it."""
+
+
+def assert_no_slug_collision(handle: str, existing_handles: Iterable[str], platform: str = "") -> None:
+    """Raise SlugCollisionError if `handle` would collide (see
+    find_slug_collision); otherwise return None.
+
+    B-63: find_slug_collision was called from exactly one place -- the web
+    form's add_handle route. That left every other write path free to
+    introduce the exact same collision: migrate_handles_from_manifest.py
+    (P10) writes through db.upsert_handle_from_migration (P1), which enforces
+    only UNIQUE(platform, handle) and has no idea handle_slug() can map two
+    distinct strings onto one directory. This function is the one gate both
+    should call -- P8 owns discovery_paths.py but cannot reach db.py or
+    migrate_handles_from_manifest.py, so this publishes the check for P1 and
+    P10 to adopt rather than implementing it a second time in each of their
+    files. Until they do, a migration-introduced collision is caught instead
+    by the runtime detector: discovery_engine._warn_on_directory_collisions
+    records a 'discovery.slug_collision' event on every run, which is a
+    durable, queryable record -- not the stderr-only print that made B-42
+    invisible.
+    """
+    clash = find_slug_collision(handle, existing_handles)
+    if clash is not None:
+        raise SlugCollisionError(
+            f"handle shares a directory with an existing one: {platform}/{handle} and "
+            f"{platform}/{clash} both resolve to "
+            f"output/brand-intel/{platform}/{handle_slug(handle)}. They would be "
+            f"billed separately every run while writing to one directory, and "
+            f"whichever ran second would read the other's files and report "
+            f"'no_new_content'. Register one, or use handles differing by more "
+            f"than punctuation or capitalization."
+        )
 
 
 def group_slug_collisions(handles: Iterable[str]) -> dict[str, list[str]]:
@@ -80,3 +138,20 @@ def handle_dir(repo_root: Path, platform: str, handle: str) -> Path:
 
 def run_record_path(repo_root: Path, run_id: str) -> Path:
     return repo_root / "output" / "discovery-runs" / f"{run_id}.md"
+
+
+def spawn_log_path(repo_root: Path, spawn_id: str) -> Path:
+    """Where a spawned cron child's captured stdout/stderr live (B-61/E-11).
+
+    Named by spawn_id rather than PID: PIDs are reused by the OS, so naming
+    by PID would let a later, unrelated child silently overwrite an earlier
+    dead child's diagnostic output."""
+    return repo_root / "output" / "discovery-runs" / "spawn-logs" / f"{spawn_id}.log"
+
+
+def run_owner_path(repo_root: Path, run_row_id: int) -> Path:
+    """Sidecar recording which OS process owns a 'running' row. Lives on disk
+    rather than on the row because discovery_runs' schema belongs to another
+    package; the reclaim sweep reads it to answer "is that process actually
+    gone?" instead of trusting a heartbeat that a sleeping machine freezes."""
+    return repo_root / "output" / "discovery-runs" / ".owners" / f"{run_row_id}.json"

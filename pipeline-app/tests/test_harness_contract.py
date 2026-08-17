@@ -392,34 +392,37 @@ def test_setup_py_declares_install_requires_from_the_runtime_manifest():
     assert not any(r.startswith("pytest") for r in requires), "test deps must not be install_requires"
 
 
-def test_the_f64_scripts_rename_has_not_silently_landed():
+def test_the_f64_scripts_rename_has_landed_completely():
     """F-64 tripwire, not a record. `pipeline-app/scripts/` -> `pipeline-app/tools/`
-    is a deferred, cross-package, must-be-atomic rename (its modules are owned
-    by P8: setup_discovery_task.py; P10: migrate_handles_from_manifest.py,
-    backfill_youtube_frontmatter.py). A Windows scheduled task is registered
-    against scripts/setup_discovery_task.py's current path -- if the rename
-    lands without every reference updated in the same commit, that task keeps
-    running against a directory that no longer exists, failing forever and
-    invisibly.
+    was a deferred, cross-package, must-be-atomic rename (its modules were
+    owned by P8: setup_discovery_task.py; P10: migrate_handles_from_manifest.py,
+    backfill_youtube_frontmatter.py, tag_handle_brands_2026_08.py). A Windows
+    scheduled task is registered against setup_discovery_task.py's path -- if
+    the rename lands without every reference updated in the same commit, that
+    task keeps running against a directory that no longer exists, failing
+    forever and invisibly.
 
     A bare `"F-64" in source` substring check cannot detect any of that: it
     stays green whether the rename is pending, half-done, or the directory is
     deleted outright, so it cannot tell "still deferred" from "silently
-    forgotten." This asserts the actual tree state instead.
+    forgotten," or "done" from "half-done." This asserts the actual tree
+    state instead -- now that P8 has landed the move, the correct invariant
+    is the opposite of the old one: `tools/` must exist and `scripts/` must
+    not.
     """
     source = (APP_ROOT / "setup.py").read_text(encoding="utf-8")
     assert "F-64" in source
 
     scripts_dir = APP_ROOT / "scripts"
     tools_dir = APP_ROOT / "tools"
-    assert scripts_dir.is_dir() and not tools_dir.exists(), (
+    assert tools_dir.is_dir() and not scripts_dir.exists(), (
         "The F-64 scripts rename (pipeline-app/scripts/ -> pipeline-app/tools/) "
-        "appears to have landed: pipeline-app/scripts/ is gone or "
-        "pipeline-app/tools/ now exists. This test, setup.py's F-64 docstring, "
-        "and every doc reference to pipeline-app/scripts must be updated in "
-        "THE SAME COMMIT as the rename -- the directory move, the Windows "
-        "scheduled-task registration path (setup_discovery_task.py), and the "
-        "doc updates are one atomic change, not a follow-up."
+        "landed only partially: either pipeline-app/tools/ is missing or "
+        "pipeline-app/scripts/ still exists. This test, setup.py's F-64 "
+        "docstring, and every doc reference to pipeline-app/scripts must be "
+        "updated in THE SAME COMMIT as the rename -- the directory move, the "
+        "Windows scheduled-task registration path (setup_discovery_task.py), "
+        "and the test imports are one atomic change, not a partial one."
     )
 
 

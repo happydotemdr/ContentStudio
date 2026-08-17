@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_app import db
-from scripts import tag_handle_brands_2026_08 as tagger
+from tools import tag_handle_brands_2026_08 as tagger
 
 
 @pytest.fixture

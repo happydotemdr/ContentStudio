@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 
 from pipeline_app import db
-from scripts import migrate_handles_from_manifest as mig
-from scripts.migrate_handles_from_manifest import derive_cohort, migrate
+from tools import migrate_handles_from_manifest as mig
+from tools.migrate_handles_from_manifest import derive_cohort, migrate
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -90,7 +90,7 @@ def test_migrate_seeds_the_rest_despite_one_collision(conn, tmp_path):
 
 
 from run_discovery_cron import build_adapters
-from scripts.migrate_handles_from_manifest import PLATFORMS
+from tools.migrate_handles_from_manifest import PLATFORMS
 
 
 def test_platforms_tuple_matches_the_adapter_registry():

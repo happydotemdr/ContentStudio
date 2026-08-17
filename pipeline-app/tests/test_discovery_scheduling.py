@@ -1,6 +1,8 @@
 import datetime as _dt
 
-from pipeline_app.discovery_scheduling import is_due
+import pytest
+
+from pipeline_app.discovery_scheduling import ScheduleConfigError, encode_watermark, is_due
 
 
 def test_not_due_before_time_of_day():
@@ -26,3 +28,51 @@ def test_catch_up_fires_once_after_multiple_missed_days():
 def test_due_again_next_day_after_time_of_day():
     now = _dt.datetime(2026, 7, 31, 11, 30, tzinfo=_dt.timezone.utc)  # 06:30 America/Chicago
     assert is_due(now, "America/Chicago", "06:00", last_scheduled_run_date="2026-07-30") is True
+
+
+def test_is_due_rejects_an_unknown_timezone_as_a_schedule_config_error():
+    now = _dt.datetime(2026, 7, 30, 11, 0, tzinfo=_dt.timezone.utc)
+    with pytest.raises(ScheduleConfigError):
+        is_due(now, "America/Chicgo", "06:00", last_scheduled_run_date=None)
+
+
+def test_is_due_rejects_a_non_hhmm_time_of_day():
+    now = _dt.datetime(2026, 7, 30, 11, 0, tzinfo=_dt.timezone.utc)
+    with pytest.raises(ScheduleConfigError):
+        is_due(now, "America/Chicago", "6am", last_scheduled_run_date=None)
+
+
+def test_a_timezone_change_cannot_fire_a_second_run_the_same_day():
+    """B-48: last_scheduled_run_date was a bare local date computed under the
+    timezone configured at WRITE time and compared under the one configured at
+    READ time. Changing the setting made today's date differ from the stored
+    string while the same day was still in progress -- a full second run, a
+    duplicate billable Bright Data pass for every handle."""
+    ran_at = _dt.datetime(2026, 7, 30, 12, 0, tzinfo=_dt.timezone.utc)   # 07:00 Chicago
+    watermark = encode_watermark("2026-07-30", "America/Chicago", ran_at.isoformat(timespec="seconds"))
+    two_hours_later = _dt.datetime(2026, 7, 30, 14, 0, tzinfo=_dt.timezone.utc)
+    assert is_due(two_hours_later, "Pacific/Auckland", "06:00", watermark) is False
+
+
+def test_a_legacy_bare_date_watermark_still_works():
+    now = _dt.datetime(2026, 7, 30, 12, 0, tzinfo=_dt.timezone.utc)
+    assert is_due(now, "America/Chicago", "06:00", "2026-07-30") is False
+
+
+def test_the_next_day_still_fires_after_the_minimum_interval():
+    ran_at = _dt.datetime(2026, 7, 30, 11, 0, tzinfo=_dt.timezone.utc)
+    watermark = encode_watermark("2026-07-30", "America/Chicago", ran_at.isoformat(timespec="seconds"))
+    tomorrow = _dt.datetime(2026, 7, 31, 11, 30, tzinfo=_dt.timezone.utc)
+    assert is_due(tomorrow, "America/Chicago", "06:00", watermark) is True
+
+
+def test_same_calendar_day_past_the_minimum_interval_still_does_not_refire():
+    """Regression for a Critical review finding on this task: the pre-existing
+    bare-date comparison must decode the watermark before comparing, or an
+    early schedule time (here 02:00 local) can double-fire the same calendar
+    day once MIN_RUN_INTERVAL_H has elapsed but the day hasn't turned over --
+    reopening the exact class of bug B-48 exists to close."""
+    ran_at = _dt.datetime(2026, 7, 30, 7, 0, tzinfo=_dt.timezone.utc)   # 02:00 America/Chicago
+    watermark = encode_watermark("2026-07-30", "America/Chicago", ran_at.isoformat(timespec="seconds"))
+    same_day_23h_later = _dt.datetime(2026, 7, 31, 4, 0, tzinfo=_dt.timezone.utc)  # 23:00 America/Chicago, same 07-30
+    assert is_due(same_day_23h_later, "America/Chicago", "02:00", watermark) is False

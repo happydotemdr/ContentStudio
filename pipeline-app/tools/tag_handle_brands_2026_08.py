@@ -12,7 +12,7 @@ exactly what makes it destructive to an operator's later changes. Treat this
 as a one-time initial-application script, not something to run again after
 the handles page exists.
 
-Usage: python scripts/tag_handle_brands_2026_08.py
+Usage: python tools/tag_handle_brands_2026_08.py
 """
 from __future__ import annotations
 

@@ -10,8 +10,10 @@ import yaml
 from pipeline_app.discovery_paths import run_record_path
 
 
-def write_run_record(repo_root: Path, run_row: dict, handle_results: list[dict]) -> Path:
-    status_counts = {"ok": 0, "no_new_content": 0, "handle_not_found": 0, "error": 0}
+def write_run_record(repo_root: Path, run_row: dict, handle_results: list[dict],
+                      partial: bool = False) -> Path:
+    KNOWN = ("ok", "no_new_content", "handle_not_found", "error", "skipped")
+    status_counts = dict.fromkeys(KNOWN, 0)
     items_downloaded = 0
     for r in handle_results:
         status_counts[r["status"]] = status_counts.get(r["status"], 0) + 1
@@ -31,17 +33,22 @@ def write_run_record(repo_root: Path, run_row: dict, handle_results: list[dict])
         "backfill_range": backfill_range,
         "handles_processed": len(handle_results),
         "items_downloaded": items_downloaded,
-        "handles_ok": status_counts["ok"],
-        "handles_no_new_content": status_counts["no_new_content"],
-        "handles_not_found": status_counts["handle_not_found"],
-        "handles_errored": status_counts["error"],
     }
+    # Two statuses publish under legacy frontmatter key names (existing parsers
+    # depend on "handles_not_found"/"handles_errored", not the raw status text)
+    # -- every other status, known or future, publishes as "handles_<status>".
+    LEGACY_KEY_NAMES = {"handle_not_found": "not_found", "error": "errored"}
+    frontmatter.update({
+        f"handles_{LEGACY_KEY_NAMES.get(status, status)}": count
+        for status, count in status_counts.items()
+    })
 
+    summary_prefix = "Partial -- the process died; these counts are a floor. " if partial else ""
     lines = ["---", yaml.safe_dump(frontmatter, sort_keys=False).rstrip("\n"), "---", "",
               "## Summary", "",
-              f"Pulled {items_downloaded} new items across {status_counts['ok']} handles with "
+              f"{summary_prefix}Pulled {items_downloaded} new items across {status_counts['ok']} handles with "
               f"new content. {status_counts['handle_not_found']} handle(s) not found, "
-              f"{status_counts['error']} errored.", "",
+              f"{status_counts['error']} errored, {status_counts['skipped']} skipped.", "",
               "## Per-handle results", ""]
     for r in handle_results:
         detail = f"{r['items_downloaded']} new items" if r["status"] == "ok" else r["status"]

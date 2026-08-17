@@ -1,12 +1,19 @@
 from pathlib import Path
 
+import pytest
+
 from pipeline_app.discovery_paths import (
+    WINDOWS_RESERVED,
+    SlugCollisionError,
+    assert_no_slug_collision,
     find_slug_collision,
     group_slug_collisions,
     handle_dir,
     handle_slug,
+    run_owner_path,
     run_record_path,
     slugify,
+    spawn_log_path,
 )
 
 
@@ -95,6 +102,17 @@ def test_find_slug_collision_reports_the_first_colliding_handle():
     assert find_slug_collision("na.sa", ["esa", "NASA", "nasa"]) == "NASA"
 
 
+def test_assert_no_slug_collision_raises_with_the_full_operator_message_on_a_clash():
+    with pytest.raises(SlugCollisionError) as excinfo:
+        assert_no_slug_collision("john.doe.5", ["johndoe5"])
+    assert "johndoe5" in str(excinfo.value)
+    assert "john.doe.5" in str(excinfo.value)
+
+
+def test_assert_no_slug_collision_returns_normally_when_clean():
+    assert assert_no_slug_collision("nasa", ["spacex", "esa"]) is None
+
+
 def test_group_slug_collisions_returns_only_groups_of_two_or_more():
     assert group_slug_collisions(["NASA", "nasa", "spacex"]) == {"nasa": ["NASA", "nasa"]}
 
@@ -114,3 +132,34 @@ def test_group_slug_collisions_does_not_report_an_exactly_repeated_handle():
     """A repeated identical string cannot happen per platform (UNIQUE constraint)
     and is not a directory collision between two accounts -- it is one account."""
     assert group_slug_collisions(["NASA", "NASA"]) == {}
+
+
+def test_run_owner_path_is_namespaced_and_does_not_collide_with_run_records(tmp_path: Path):
+    assert run_owner_path(tmp_path, 7) == tmp_path / "output" / "discovery-runs" / ".owners" / "7.json"
+
+
+def test_spawn_log_path_is_namespaced_under_discovery_runs(tmp_path: Path):
+    assert (spawn_log_path(tmp_path, "abc123")
+            == tmp_path / "output" / "discovery-runs" / "spawn-logs" / "abc123.log")
+
+
+@pytest.mark.parametrize("handle", ["con", "AUX", "@nul", "com1", "lpt9", "prn"])
+def test_a_handle_slugging_to_a_windows_device_name_gets_a_disambiguator(handle):
+    """B-62: \\w preserves con/aux/nul/prn/com1..lpt9, which cannot exist as
+    directory names on Windows -- mkdir fails on every run and records a
+    per-handle error with an opaque OS message."""
+    slug = handle_slug(handle)
+    assert slug not in WINDOWS_RESERVED
+    assert slug.startswith(handle.lstrip("@").lower())
+
+
+def test_two_all_punctuation_handles_no_longer_share_the_untitled_bucket():
+    assert handle_slug("!!!") != handle_slug("???")
+
+
+def test_the_frozen_mapping_for_existing_handles_is_unchanged():
+    """The suffix must not repoint a directory that already holds captured
+    content -- on_disk_ids() would return empty and the engine would re-download
+    and re-pay for each account's whole back-catalogue."""
+    assert handle_slug("adamgrant.bsky.social") == "adamgrantbskysocial"
+    assert handle_slug("@Romayroh") == "romayroh"

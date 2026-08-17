@@ -183,8 +183,10 @@ precisely so that `max()` is the whole rule.
 | 14 | Run exceeded its wall-clock deadline | engine deadline check | `failed` | `RUN_FAILED` | 0xF |
 | 15 | Stored `timezone` / `time_of_day` unparseable — due-check impossible | cron, `ScheduleConfigError` | *(no row)* | `SCHEDULER_WEDGED` | 0x10 |
 | 16 | Startup failed before any DB write (`init_db`, missing schema, corrupt DB) | cron, pre-engine | *(no row)* | `STARTUP_FAILED` | 0x11 |
-| 17 | Unhandled exception | *(no handler)* | may remain `running` | `1` | 0x1 |
+| 17 | The engine raised outside `main()`'s own handling | cron, catch-all around `run_discovery(...)` | *(unchanged)* | `ENGINE_CRASHED` | 0x12 |
 | 18 | Bad CLI arguments | argparse `ap.error` | *(no row)* | `2` | 0x2 |
+
+> **Plan amendment, final whole-branch review.** Row 17 originally read "Unhandled exception → *(no handler)* → may remain `running` → exit `1`" — this was the exact B-42 gap the final review found: `main()` had no catch-all around `run_discovery(...)`, so an engine crash escaped to Python's own uncontracted exit 1 with no durable trace. Fixed in the review's fix wave: `Exit.ENGINE_CRASHED = 18` (0x12) added to the enum (no existing member renumbered), a catch-all records `discovery.run_crashed` (severity "error", detail carries `traceback.format_exc()`) and returns the new code. The CLI-argument-error row shifts to using the same table-row number 18 as a coincidence of numbering, not a collision — `Exit.ENGINE_CRASHED`'s enum *value* is 18 (0x12) while the CLI-error exit code is the unrelated literal `2` (argparse's own convention, never touched by the `Exit` enum) — see `run_discovery_cron.py`'s `Exit` class for the authoritative value list.
 | — | *combination:* clean run + unsent email | `max(OK, NOTIFY_FAILED)` | `completed` | `NOTIFY_FAILED` | 0xC |
 | — | *combination:* errored handles + unsent email | `max(HANDLES_ERRORED, NOTIFY_FAILED)` | `completed_with_errors` | `HANDLES_ERRORED` | 0xD |
 
@@ -624,6 +626,19 @@ makes the always-zero defect impossible to reintroduce.
 **Test** (`tests/test_run_discovery_cron.py`):
 
 ```python
+> **Plan correction, P8 session.** The table below calls `_raise(RuntimeError("resend is down"))`
+> as a `notify=` value, but `_raise` is not defined anywhere in this task's shown code, in any
+> earlier P8 task, or in the live `tests/test_run_discovery_cron.py` (grepped this session — zero
+> hits). Task 5 already wrote an equivalent literal callable inline
+> (`def raising_notify(*a, **k): raise RuntimeError(...)`) for a single test; this table needs the
+> same shape as a reusable factory. Add it alongside `_stub`:
+> ```python
+> def _raise(exc: BaseException):
+>     def _fn(*a, **k):
+>         raise exc
+>     return _fn
+> ```
+
 def _stub(monkeypatch, *, due=True, result=None, notify=None, init_db_error=None, tz=None):
     if init_db_error is not None:
         monkeypatch.setattr(cron.db, "init_db",
@@ -788,7 +803,19 @@ def build_task_xml(python_exe: Path, cron_script: Path, *, log_path: Path,
 """
 ```
 
-(`from xml.sax.saxutils import escape`. `LogonType S4U` is the "runs whether the user is logged
+> **Plan correction, task implementation session.** The `escape(build_task_action(...))` call
+> shown above is self-contradicting with `test_task_xml_redirects_stdout_and_stderr_to_a_log_file`
+> in this same task: `escape()` turns `2>&1` into `2&gt;&amp;1`, so the literal substring `"2>&1"`
+> the test asserts for is never present in the output. Verified empirically this session.
+> **Fix:** wrap the `<Arguments>` element's text in a CDATA section instead of calling `escape()`
+> — `ElementTree.fromstring` parses CDATA-wrapped text identically to escaped text (`.text`
+> returns the literal content either way), so the other elements' assertions are unaffected. A
+> CDATA section is corrupted only by a literal `]]>` inside it; the only inputs that flow into
+> `Arguments` are Windows filesystem paths, and Windows forbids `>` in any path component, so the
+> collision is structurally impossible for this call site, not merely unlikely. Drop the
+> `from xml.sax.saxutils import escape` import (unused once `Arguments` no longer calls it).
+
+`LogonType S4U` is the "runs whether the user is logged
 on or not, without storing a password" model B-44 asks to be chosen and documented — state it in
 the module docstring.)
 
@@ -841,6 +868,35 @@ finding B-10), never bare `text=True`. Mark these tests `@pytest.mark.allow_subp
 
 #### - [ ] Task 11 — The dry run prints a runnable command (B-45)
 
+> **Plan correction, task implementation session.** This task's premise assumes `main()`'s dry-run
+> branch still prints a flattened `" ".join(cmd)` schtasks command line, the way it did before
+> Task 9/10. It does not: Task 10 rewrote `main()` around `build_task_xml` + a temp-file write,
+> and its dry-run branch (verified against the live file this session) prints a fixed descriptive
+> string — `"Write the task XML to a temp file and run: schtasks /Create /TN <name> /XML <tmpfile>
+> /F"` — with no `cmd` list ever built or flattened in that branch. B-45's underlying defect (a
+> naive join corrupting a quoted `/TR` payload) is therefore already structurally impossible in
+> the current dry-run path, since there is no longer any multi-word quoted argument for a join to
+> corrupt. `test_dry_run_prints_a_command_that_survives_a_round_trip_through_the_shell_parser`, as
+> originally written, does not exercise `main()` at all — it is a standalone unit test of
+> `subprocess.list2cmdline` in the abstract, which stays true regardless of what `main()` prints,
+> so it is **kept, unmodified**, as documentation of the correct pattern, not as regression
+> coverage for `main()`'s current dry-run output.
+>
+> **What remains genuinely open:** the dry-run branch does not mention where the log will be —
+> `test_dry_run_tells_the_operator_where_the_log_will_be` still fails against the live file (grep
+> confirms `default_log_path`/`discovery-task.log` do not appear in the current dry-run print
+> block). That is this task's real remaining work: add the log path to the dry-run message.
+>
+> **Second correction, same session, found during Task 11's implementation.** The kept
+> `list2cmdline` unit test's own fixture path, `r"C:\repo\pipeline-app\logs\task.xml"`, contains no
+> spaces or quote characters — verified empirically: `subprocess.list2cmdline(cmd) ==
+> " ".join(cmd)` is `True` for this exact `cmd` list, so the test's own
+> `assert printed != " ".join(cmd)` would fail against the brief's own literal fixture. `list2cmdline`
+> only diverges from a naive join when an argument needs quoting (contains a space, quote, or is
+> empty). Fix: use a path containing a space (e.g. `C:\Program Files\repo\...` or any directory
+> segment with a space) so the two functions genuinely produce different output and the test
+> demonstrates the real distinction it names.
+
 **Test:**
 
 ```python
@@ -860,8 +916,9 @@ def test_dry_run_tells_the_operator_where_the_log_will_be(monkeypatch, capsys):
     assert "discovery-task.log" in capsys.readouterr().out
 ```
 
-**Implement:** `print(subprocess.list2cmdline(cmd))` in place of `print(" ".join(cmd))`, and
-print `default_log_path(...)` plus the XML's destination in the dry-run block.
+**Implement:** print `default_log_path(...)` (which resolves to `discovery-task.log`) in the
+dry-run block, alongside the existing description of the XML/`/Create` step. Do not reintroduce a
+flattened `cmd` list — the current dry-run message already avoids the B-45 defect by construction.
 
 **Commit:** `fix(setup): print the registration command with list2cmdline (B-45)`
 
@@ -1244,6 +1301,23 @@ def decode_watermark(raw: str | None) -> tuple[str | None, _dt.datetime | None]:
 and `discovery_engine.py` writes `set_last_scheduled_run_date(conn, encode_watermark(local_date,
 timezone_name, now_iso(now)))`. The engine tests at `:503`, `:518` assert the bare date and are
 **extended** to `assert decode_watermark(stored)[0] == "2026-07-30"`.
+
+> **Plan correction, found during Task 18's review (Critical).** The pseudocode above computes
+> `last_date` but never uses it — `is_due`'s pre-existing local-date comparison
+> (`if last_scheduled_run_date == today:`) was left comparing the RAW, still-encoded watermark
+> string, not the decoded `last_date`. Reproduced empirically this session: once a watermark is
+> written in the new `encode_watermark` form, a 3-part pipe-delimited string can never equal a
+> bare `YYYY-MM-DD`, so this comparison is permanently `False` for every watermark written after
+> this task ships — the ONLY remaining same-day guard becomes the 20-hour instant timer, which is
+> deliberately shorter than 24h by its own stated rationale ("< 24 so a schedule time change still
+> fires"). Net effect: an early-in-day schedule time (roughly before 04:00 local) can still
+> double-fire the same calendar day once the elapsed time exceeds `MIN_RUN_INTERVAL_H` but the
+> calendar day hasn't turned over yet — reopening the exact class of bug B-48 exists to close,
+> just with a narrower trigger window. **Fix:** the local-date comparison must read
+> `if last_date == today:`, not `if last_scheduled_run_date == today:`. This is a no-op for
+> legacy bare-date watermarks (`decode_watermark` returns the raw string unchanged as `last_date`
+> when no separator is present) and closes the gap for encoded ones. Add a regression test for
+> "same calendar day, elapsed time past `MIN_RUN_INTERVAL_H`" alongside the task's other new tests.
 
 **Commit:** `fix(scheduling): watermark carries its instant, so a timezone edit cannot double-fire (B-48)`
 
@@ -2135,14 +2209,22 @@ P7's `brightdata_job.drain_diagnostics()` returns records already shaped for
 **Test:**
 
 ```python
+> **Plan correction, task implementation session.** `drained` below is a list holding ONE dict;
+> `drained.pop(0)` returns that dict directly, not a one-element list containing it — so the stub
+> returns a bare `dict` on the first call where the real `drain_diagnostics()` returns
+> `list[dict]`. `for record in records:` over a dict iterates its keys (strings), and
+> `obs.record_event(conn, run_id=..., **record)` on a string raises `TypeError` immediately.
+> **Fix:** nest one more level — `drained = [[{...}]]` (a list of batches, each batch a
+> `list[dict]`), so `.pop(0)` returns a genuine `list[dict]` matching the real return type.
+
 def test_brightdata_diagnostics_are_drained_into_event_rows(engine_conn, tmp_path, monkeypatch):
     """P7's B-01: the diagnostics sink is written on every Bright Data call and
     read by nobody, so a job that retried three times and truncated its results
     leaves no durable trace."""
-    drained = [{"kind": "brightdata.truncated", "severity": "warning",
+    drained = [[{"kind": "brightdata.truncated", "severity": "warning",
                 "source": "discovery_instagram",
                 "message": "instagram/@nasa returned exactly limit_per_input=10 items",
-                "detail": {"platform": "instagram", "records": 10}}]
+                "detail": {"platform": "instagram", "records": 10}}]]
     monkeypatch.setattr(discovery_engine.brightdata_job, "drain_diagnostics",
                         lambda: drained.pop(0) if drained else [])
     db.create_handle(engine_conn, "instagram", "@nasa", "N", "guru", None, now_iso())
@@ -2381,6 +2463,149 @@ and the registered task is pointing at nothing.
 
 ---
 
+#### - [ ] Task 41 — The per-handle Bright Data cap seam, opt-in (P7's C1, operator-approved)
+
+> **Plan amendment, P8 kickoff session.** The résumé brief for this session records that the
+> operator approved P7's cost item C1 during the P7 session (`P7-brightdata.md` §6's amendment
+> blockquote, and commit `55109b8`). Verified against the live plan text this session: C1 itself
+> is the **per-platform** item-cap override (`BRIGHTDATA_MAX_ITEMS_<PLATFORM>`), which P7 already
+> shipped (its T14/T15) — C1's approval did not by itself add a task anywhere. What C1's approval
+> unlocks is P7's own residual #1 (§7): *"A true per-handle cap needs `handle_row` threaded into
+> `enumerate_newest_first` — a `PlatformAdapter` protocol change in `discovery_engine.py` (P8)...
+> the per-handle setting is P8's to add if the operator approves C1."* C1 is approved, so this
+> residual is now in scope.
+>
+> **What is safe to build in this session, and what is not.** `PlatformAdapter` is declared in
+> `discovery_engine.py`, which P8 owns. But grep against the live repo (this session) shows the
+> three real adapter functions — `discovery_bluesky.enumerate_newest_first`,
+> `discovery_youtube.enumerate_newest_first`, `discovery_instagram.enumerate_newest_first` — take
+> exactly `(handle, keyword_filter[, ...])` with **no `**kwargs`**, and all three files belong to
+> **P6/P7**, not P8. If the engine's call site started passing a new `handle_row=` keyword
+> unconditionally, every one of those adapters would raise `TypeError: unexpected keyword
+> argument` on the very next run — a P8 change silently breaking P6/P7-owned files, which is
+> exactly the cross-package boundary this programme's per-package file ownership exists to
+> prevent. A blind protocol-signature change is therefore **not** implemented here.
+>
+> **What this task ships instead:** the seam only — `discovery_engine.py` offers `handle_row` to
+> an adapter's `enumerate_newest_first` **only when that adapter's own signature declares the
+> parameter** (checked via `inspect.signature`, not `hasattr`/`try`/`except TypeError`, so a
+> genuine `TypeError` raised *inside* an opted-in adapter is never mistaken for "this adapter
+> hasn't opted in yet"). An adapter that has not been updated to accept `handle_row` is called
+> exactly as it is today — zero behavior change for P6/P7's current adapters. Actually reading a
+> per-handle cap value out of `handle_row` needs a DB column (P1's `schema.sql`, not shipped) and
+> adapter-side cap logic (P6/P7's files) — both stay explicitly out of scope and are named as open
+> handoffs below, not silently implied as "done" by this task's name.
+
+**Test** (`tests/test_discovery_engine.py`):
+
+```python
+def test_an_adapter_that_declares_handle_row_receives_it(engine_conn, tmp_path):
+    """C1 (operator-approved 2026-08-16, P7-brightdata.md Sec 6 / commit 55109b8):
+    the true per-handle cap needs handle_row threaded into enumerate_newest_first.
+    The adapters that would read it are P6/P7-owned files P8 cannot edit, so this
+    only proves the engine offers the row to an adapter that opts in."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    received = {}
+
+    class OptedInAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter, handle_row=None):
+            received["handle_row"] = handle_row
+            return []
+
+    run_discovery(engine_conn, tmp_path, {"youtube": OptedInAdapter({})},
+                  trigger="manual", mode="incremental")
+    assert received["handle_row"] is not None
+    assert received["handle_row"]["handle"] == "@a"
+
+
+def test_an_adapter_that_has_not_opted_in_is_called_exactly_as_before(engine_conn, tmp_path):
+    """Zero behavior change for discovery_bluesky/discovery_youtube/discovery_instagram
+    until each is updated on its own package's side to declare the parameter."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    calls = []
+
+    class LegacyAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter):
+            calls.append((handle, keyword_filter))
+            return []
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": LegacyAdapter({})},
+                           trigger="manual", mode="incremental")
+    assert result["status"] == "completed"
+    assert calls == [("@a", None)]
+
+
+def test_the_seam_is_offered_at_every_enumerate_call_site(engine_conn, tmp_path):
+    """process_handle, process_handle_backfill and process_handle_validate all
+    call enumerate_newest_first -- the seam must not be wired into only one."""
+    handle_id = db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    seen = []
+
+    class OptedInAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter, handle_row=None):
+            seen.append(handle_row["handle"] if handle_row else None)
+            return []
+
+    run_discovery(engine_conn, tmp_path, {"youtube": OptedInAdapter({})},
+                  trigger="manual", mode="validate_handle", handle_id=handle_id)
+    assert seen == ["@a"]
+
+
+def test_a_real_typeerror_inside_an_opted_in_adapter_still_propagates(engine_conn, tmp_path):
+    """Detection is by signature introspection, not by catching TypeError --
+    a bug inside an adapter that HAS opted in must not be swallowed and
+    misread as 'this adapter doesn't take handle_row'."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+
+    class BuggyOptedInAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter, handle_row=None):
+            raise TypeError("unrelated bug inside the adapter")
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": BuggyOptedInAdapter({})},
+                           trigger="manual", mode="incremental")
+    row = db.list_run_handle_results(engine_conn, result["run_row_id"])[0]
+    assert row["status"] == "error"
+    assert "unrelated bug inside the adapter" in row["error_message"]
+```
+
+**Implement** in `discovery_engine.py`:
+
+```python
+def _call_enumerate(adapter: PlatformAdapter, handle: str, keyword_filter: str | None,
+                    handle_row) -> list[dict]:
+    """Calls adapter.enumerate_newest_first, passing handle_row only when the
+    adapter's own signature declares it. The true per-handle Bright Data item
+    cap (operator-approved cost item C1, P7-brightdata.md Sec 6) needs the row
+    threaded through, but the adapters that would read it are P6/P7-owned
+    files P8 cannot edit -- introspection (not hasattr/try-except) keeps every
+    adapter that has not opted in working exactly as before, and never mistakes
+    a real bug inside an opted-in adapter for "hasn't opted in"."""
+    if "handle_row" in inspect.signature(adapter.enumerate_newest_first).parameters:
+        return adapter.enumerate_newest_first(handle, keyword_filter, handle_row=handle_row)
+    return adapter.enumerate_newest_first(handle, keyword_filter)
+```
+
+(`import inspect` alongside the module's other imports -- Task 35 hoists all of them to the top
+in the same pass if it has not already run.) Update `PlatformAdapter`'s declared signature to
+`def enumerate_newest_first(self, handle: str, keyword_filter: str | None, handle_row: dict |
+None = None) -> list[dict]: ...` (documentation for type checkers only -- `PlatformAdapter` is
+never used as a runtime `isinstance` check, so this is not a breaking change by itself). Replace
+all three call sites (`process_handle`, `process_handle_backfill`, `process_handle_validate`)
+with `_call_enumerate(adapter, handle, keyword_filter, handle_row)`.
+
+**Open handoffs from this task, stated so they are not later assumed done:**
+- **P1** — a per-handle cap override needs a `handles` column (e.g. `max_items_override`) to
+  populate `handle_row` with; none exists today. Until it does, an opted-in adapter's
+  `handle_row` carries only the columns `handle_row` already has (handle, keyword_filter, cohort,
+  etc.) — no cap value.
+- **P6/P7** — each adapter's own file must add `handle_row=None` to its
+  `enumerate_newest_first` signature and read a cap override from it before this seam does
+  anything observable end to end. P8 cannot make that edit; those files are not in P8's scope.
+
+**Commit:** `feat(engine): offer handle_row to adapters that opt in, the per-handle cap seam (P7 C1)`
+
+---
+
 ## 5. Finding → test map
 
 Three-Test-Rule roles are given for every `failure_mode: silent` finding (24 of the 31). The
@@ -2556,8 +2781,9 @@ six file updates and the directory move.
 - **P6** — raise `discovery_engine.HandleNotFound` for a definitive 404/"no such account", so
   B-57's auto-exclude fires for genuinely dead handles; until then nothing is auto-excluded,
   which is the safe direction. Received from P6: B-06's engine half (Task 36).
-- **P7** — add socket timeouts so B-53's leaked worker thread has an upper bound; a true
-  per-handle item cap needs `handle_row` threaded into `enumerate_newest_first`, a
-  `PlatformAdapter` protocol change P8 will make **only** if the operator approves P7's cost
-  item C1 (P7 §6/§7). Received from P7: B-01's events half (Task 37) and B-21's call site
-  (Task 38).
+- **P7** — add socket timeouts so B-53's leaked worker thread has an upper bound. The per-handle
+  item cap: C1 is operator-approved, and Task 41 ships the non-breaking opt-in seam
+  (`_call_enumerate`, introspection-gated `handle_row`) in `discovery_engine.py`; P7 still owns
+  wiring each adapter's own file to declare `handle_row=None` and read a cap override from it
+  (no observable behavior until that lands — see Task 41's "open handoffs"). Received from P7:
+  B-01's events half (Task 37) and B-21's call site (Task 38).

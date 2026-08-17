@@ -11,8 +11,8 @@ re-derive. Files already in frontmatter format are re-enriched in place.
 
 Dry run by default; pass --apply to write.
 
-    python scripts/backfill_youtube_frontmatter.py
-    python scripts/backfill_youtube_frontmatter.py --apply
+    python tools/backfill_youtube_frontmatter.py
+    python tools/backfill_youtube_frontmatter.py --apply
 """
 from __future__ import annotations
 
