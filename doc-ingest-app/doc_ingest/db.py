@@ -102,7 +102,23 @@ SCHEMA_VERSION = 1
 
 _TXN_DEPTH: dict[int, int] = {}
 
-_MIGRATIONS: list[tuple[int, str]] = []  # (target_version, DDL/DML) -- empty until schema changes
+_MIGRATIONS: list[tuple[int, str]] = [
+    (2, """
+        CREATE TABLE IF NOT EXISTS clients (
+            slug                  TEXT PRIMARY KEY,
+            display_name          TEXT NOT NULL,
+            primary_email         TEXT NOT NULL,
+            alias_emails_json     TEXT NOT NULL DEFAULT '[]',
+            session_outlines_dir  TEXT NOT NULL,
+            drive_folder_id       TEXT NOT NULL,
+            status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
+            created_at            TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_primary_email ON clients(primary_email);
+        ALTER TABLE conversions ADD COLUMN client TEXT;
+        CREATE INDEX IF NOT EXISTS idx_conversions_client ON conversions(client);
+    """),
+]
 
 
 @contextmanager
@@ -142,23 +158,26 @@ def transaction(conn: sqlite3.Connection):
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
     """Runs any migration whose target version is above the DB's current
-    schema_version, in order, each in its own BEGIN IMMEDIATE (DDL commits
-    immediately regardless, same caveat as pipeline_app.db.apply_migrations).
-    Empty today -- Task 2's schema is version 1 and this app has shipped
-    nothing yet to migrate away from. Add entries here, never edit _SCHEMA's
-    already-shipped shape in place."""
+    schema_version, in order. Each migration's DDL is run via executescript,
+    which implicitly commits any open transaction before executing, so it
+    cannot be wrapped in a BEGIN/COMMIT pair -- it establishes its own
+    transaction boundary per statement under isolation_level=None. The
+    UPDATE afterward is therefore a separate, second autocommit
+    statement, not part of the same transaction as the DDL. That is an
+    accepted gap for a single-operator local tool: a crash between the
+    two would leave the DDL applied but schema_version stale, which
+    apply_migrations' own IF NOT EXISTS / ADD COLUMN idempotence
+    already tolerates on the next run (a second CREATE TABLE IF NOT
+    EXISTS is a no-op; re-running ADD COLUMN on an already-altered
+    table is the one non-idempotent case migrations must avoid, so
+    every ALTER TABLE ADD COLUMN in this codebase's migrations must be
+    a one-time, never-repeated entry)."""
     current = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
     for target_version, ddl in _MIGRATIONS:
         if target_version <= current:
             continue
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            conn.executescript(ddl)
-            conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (target_version,))
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+        conn.executescript(ddl)
+        conn.execute("UPDATE schema_version SET version = ? WHERE id = 1", (target_version,))
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
