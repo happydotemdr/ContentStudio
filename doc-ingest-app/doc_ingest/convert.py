@@ -52,7 +52,11 @@ def convert_local_file(staged_path: Path, source_type: str, cfg) -> ConversionRe
     from firecrawl import Firecrawl
     from firecrawl.v2.types import ParseOptions
 
-    client = Firecrawl()
+    # max_retries=1 disables the SDK's own internal retry/backoff (HttpClient
+    # defaults to 3 attempts per call, retrying any requests.RequestException
+    # and any 502 response) so it can't stack invisibly under the loop below
+    # -- one HTTP attempt per loop iteration, one retry policy, ours.
+    client = Firecrawl(max_retries=1)
     content_type = _CONTENT_TYPES.get(source_type)
 
     parsed = None

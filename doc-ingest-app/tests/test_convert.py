@@ -1,5 +1,5 @@
 # tests/test_convert.py
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import requests
 from firecrawl.v2.utils.error_handler import BadRequestError, FirecrawlError, RateLimitError
@@ -28,7 +28,7 @@ def test_successful_conversion_returns_the_parsed_markdown(tmp_path):
 
     mock_client = MagicMock()
     mock_client.parse.return_value = MagicMock(markdown="# Converted body\n")
-    with patch("firecrawl.Firecrawl", return_value=mock_client):
+    with patch("firecrawl.Firecrawl", return_value=mock_client) as mock_firecrawl_cls:
         result = convert.convert_local_file(staged, "pdf", cfg)
 
     assert result.success is True
@@ -38,6 +38,9 @@ def test_successful_conversion_returns_the_parsed_markdown(tmp_path):
     _, kwargs = mock_client.parse.call_args
     assert kwargs["filename"] == "sample.pdf"
     assert kwargs["content_type"] == "application/pdf"
+    # max_retries=1 disables the SDK's own internal retry/backoff so it can't
+    # stack invisibly under our own retry loop's attempts and delays.
+    mock_firecrawl_cls.assert_called_once_with(max_retries=1)
 
 
 def test_parse_exception_is_a_failure_not_a_crash(tmp_path):
@@ -113,6 +116,20 @@ def test_rate_limit_error_gives_up_after_max_attempts(tmp_path):
     assert result.success is False
     assert "Rate Limit Exceeded" in result.error
     assert mock_client.parse.call_count == 3
+
+
+def test_retry_backoff_delays_double_each_attempt(tmp_path):
+    cfg = Config(firecrawl_retry_max_attempts=3, firecrawl_retry_base_delay_s=2.0)
+    staged = tmp_path / "sample.pdf"
+    staged.write_bytes(b"%PDF-1.4 fake")
+
+    mock_client = MagicMock()
+    mock_client.parse.side_effect = RateLimitError("Rate Limit Exceeded", status_code=429)
+    with patch("firecrawl.Firecrawl", return_value=mock_client), \
+            patch("doc_ingest.convert.time.sleep") as mock_sleep:
+        convert.convert_local_file(staged, "pdf", cfg)
+
+    assert mock_sleep.call_args_list == [call(2.0), call(4.0)]
 
 
 def test_connection_reset_is_retried_then_succeeds(tmp_path):
