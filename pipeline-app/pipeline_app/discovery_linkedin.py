@@ -305,7 +305,31 @@ class LinkedInAdapter:
         # already on disk and trip the early-stop dedup before reaching it.
         # Cap AFTER filtering so it bounds retained items.
         kept.sort(key=lambda n: n["published_ts"], reverse=True)
-        kept = kept[:max_items()]
+
+        # B-02 (S1): saturation must be computed on the PRE-cap count, right
+        # here before the client-side slice below discards everything past the
+        # cap -- once that slice runs, how many rows Bright Data actually
+        # returned is gone. None of the four Bright Data platforms support
+        # backfill, so a batch that filled the cap is a data-loss event this
+        # run made, not a quiet-account day, and process_handle would
+        # otherwise report it as the healthy status 'ok'.
+        cap = max_items()
+        if brightdata_job.is_saturated(len(kept), cap=cap):
+            oldest = min((n["published_ts"] for n in kept), default=None)
+            brightdata_job.record_diagnostic(
+                kind="adapter.batch_saturated", severity="error",
+                source="discovery_linkedin",
+                message=(f"{self.platform}/{handle}: the batch filled the cap of "
+                         f"{cap}. Posts older than {oldest} in this interval were "
+                         f"dropped and there is no backfill path for this platform. "
+                         f"Raise {MAX_ITEMS_ENV_VAR} (this increases Bright Data "
+                         f"spend per run) or shorten the run interval."),
+                detail={"platform": self.platform, "handle": handle, "cap": cap,
+                        "collected": len(kept), "oldest_kept": oldest})
+            print(f"  !! {self.platform}/{handle}: batch filled the cap of {cap}; "
+                  f"older posts in this interval are unrecoverable", file=sys.stderr)
+
+        kept = kept[:cap]
 
         # Overwrite, not merge: a fresh successful enumerate replaces whatever
         # this handle held, so download_item never reads a stale id.

@@ -437,6 +437,52 @@ def test_enumerate_caps_after_filtering_so_the_cap_bounds_retained_items(monkeyp
     assert [i["id"] for i in items] == ["10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
 
 
+def test_full_cap_batch_records_a_saturation_error(monkeypatch):
+    """Fault test. Ten of ten means posts were dropped that no later run can
+    fetch -- the handle still reports 'ok', so this must be reported here."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id=str(i), user_posted="CNN", date_posted=f"2026-08-{i:02d}T00:00:00.000Z")
+        for i in range(1, 11)
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    saturation = [d for d in brightdata_job.drain_diagnostics()
+                  if d["kind"] == "adapter.batch_saturated"]
+    assert len(saturation) == 1
+    assert saturation[0]["severity"] == "error"
+
+
+def test_a_short_batch_records_no_saturation_diagnostic(monkeypatch):
+    """Distinguishability. Nine of ten is a quiet account; ten of ten is
+    truncation. The two must be observably different."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id=str(i), user_posted="CNN", date_posted=f"2026-08-{i:02d}T00:00:00.000Z")
+        for i in range(1, 10)
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    assert [d for d in brightdata_job.drain_diagnostics()
+            if d["kind"] == "adapter.batch_saturated"] == []
+
+
+def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(monkeypatch):
+    """Surfacing. The record must be actionable on its own: an operator
+    reading it in the log or the events table must know what to change."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id=str(i), user_posted="CNN", date_posted=f"2026-08-{i:02d}T00:00:00.000Z")
+        for i in range(1, 11)
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.batch_saturated"][0]
+    assert record["detail"]["cap"] == 10
+    assert record["detail"]["handle"] == "CNN"
+    assert record["detail"]["platform"] == "x"
+    assert x.MAX_ITEMS_ENV_VAR in record["message"]
+    assert "no backfill" in record["message"]
+
+
 def test_enumerate_keeps_media_only_posts(monkeypatch):
     """A media-only post (description: null) is a normal X post, not an
     unusable row. 3 of 10 live rows for one account were media-only."""

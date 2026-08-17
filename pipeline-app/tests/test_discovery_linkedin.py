@@ -379,6 +379,49 @@ def test_enumerate_caps_at_max_items_per_run(monkeypatch):
     assert len(adapter.enumerate_newest_first("lanieri", keyword_filter=None)) == 10
 
 
+def test_full_cap_batch_records_a_saturation_error(monkeypatch):
+    """Fault test. Ten of ten means posts were dropped that no later run can
+    fetch -- the handle still reports 'ok', so this must be reported here."""
+    adapter = _company()
+    _stub_job(adapter, [_row(f"p{i}", "2026-07-08") for i in range(10)], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    saturation = [d for d in brightdata_job.drain_diagnostics()
+                  if d["kind"] == "adapter.batch_saturated"]
+    assert len(saturation) == 1
+    assert saturation[0]["severity"] == "error"
+
+
+def test_a_short_batch_records_no_saturation_diagnostic(monkeypatch):
+    """Distinguishability. Nine of ten is a quiet account; ten of ten is
+    truncation. The two must be observably different."""
+    adapter = _company()
+    _stub_job(adapter, [_row(f"p{i}", "2026-07-08") for i in range(9)], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("lanieri", keyword_filter=None)
+    assert [d for d in brightdata_job.drain_diagnostics()
+            if d["kind"] == "adapter.batch_saturated"] == []
+
+
+def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(monkeypatch):
+    """Surfacing. The record must be actionable on its own: an operator
+    reading it in the log or the events table must know what to change. Uses
+    the profile adapter -- self.platform, not a shared PLATFORM constant, is
+    what LinkedIn must report, since linkedin-profile and linkedin-company
+    share this same module."""
+    adapter = _profile()
+    _stub_job(adapter, [_row(f"p{i}", "2026-07-08") for i in range(10)], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.batch_saturated"][0]
+    assert record["detail"]["cap"] == 10
+    assert record["detail"]["handle"] == "bettywliu"
+    assert record["detail"]["platform"] == "linkedin-profile"
+    assert li.MAX_ITEMS_ENV_VAR in record["message"]
+    assert "no backfill" in record["message"]
+
+
 def test_enumerate_drops_unusable_rows_and_logs(monkeypatch, capsys):
     adapter = _company()
     _stub_job(adapter, [

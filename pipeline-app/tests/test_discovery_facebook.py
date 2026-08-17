@@ -376,6 +376,43 @@ def test_enumerate_caps_retained_items(monkeypatch):
     assert len(items) == fb.MAX_ITEMS_PER_RUN
 
 
+def test_full_cap_batch_records_a_saturation_error(monkeypatch):
+    """Fault test. Ten of ten means posts were dropped that no later run can
+    fetch -- the handle still reports 'ok', so this must be reported here."""
+    _stub_job(monkeypatch, [_row(f"p{i}", f"2026-07-{i:02d}") for i in range(1, 11)])
+    brightdata_job.drain_diagnostics()
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    saturation = [d for d in brightdata_job.drain_diagnostics()
+                  if d["kind"] == "adapter.batch_saturated"]
+    assert len(saturation) == 1
+    assert saturation[0]["severity"] == "error"
+
+
+def test_a_short_batch_records_no_saturation_diagnostic(monkeypatch):
+    """Distinguishability. Nine of ten is a quiet account; ten of ten is
+    truncation. The two must be observably different."""
+    _stub_job(monkeypatch, [_row(f"p{i}", f"2026-07-{i:02d}") for i in range(1, 10)])
+    brightdata_job.drain_diagnostics()
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    assert [d for d in brightdata_job.drain_diagnostics()
+            if d["kind"] == "adapter.batch_saturated"] == []
+
+
+def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(monkeypatch):
+    """Surfacing. The record must be actionable on its own: an operator
+    reading it in the log or the events table must know what to change."""
+    _stub_job(monkeypatch, [_row(f"p{i}", f"2026-07-{i:02d}") for i in range(1, 11)])
+    brightdata_job.drain_diagnostics()
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.batch_saturated"][0]
+    assert record["detail"]["cap"] == 10
+    assert record["detail"]["handle"] == "NASA"
+    assert record["detail"]["platform"] == "facebook"
+    assert fb.MAX_ITEMS_ENV_VAR in record["message"]
+    assert "no backfill" in record["message"]
+
+
 def test_enumerate_applies_keyword_filter_against_content(monkeypatch):
     _stub_job(monkeypatch, [
         _row("hit", "2026-07-06", content="Artemis launch today"),

@@ -262,10 +262,34 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
     # order, which can put a genuinely newer post behind ones already on disk
     # and trip discovery_engine's early-stop dedup before reaching it.
     normalized.sort(key=lambda n: n["published_ts"], reverse=True)
+
+    # B-02 (S1): saturation must be computed on the PRE-cap count, right here
+    # before the client-side slice below discards everything past the cap --
+    # once that slice runs, how many rows Bright Data actually returned is
+    # gone. None of the four Bright Data platforms support backfill, so a
+    # batch that filled the cap is a data-loss event this run made, not a
+    # quiet-account day, and process_handle would otherwise report it as the
+    # healthy status 'ok'.
+    cap = max_items()
+    if brightdata_job.is_saturated(len(normalized), cap=cap):
+        oldest = min((n["published_ts"] for n in normalized), default=None)
+        brightdata_job.record_diagnostic(
+            kind="adapter.batch_saturated", severity="error",
+            source="discovery_instagram",
+            message=(f"instagram/{handle}: the batch filled the cap of {cap}. Posts "
+                     f"older than {oldest} in this interval were dropped and there is "
+                     f"no backfill path for this platform. Raise "
+                     f"{MAX_ITEMS_ENV_VAR} (this increases Bright Data spend per run) "
+                     f"or shorten the run interval."),
+            detail={"platform": "instagram", "handle": handle, "cap": cap,
+                    "collected": len(normalized), "oldest_kept": oldest})
+        print(f"  !! instagram/{handle}: batch filled the cap of {cap}; older posts "
+              f"in this interval are unrecoverable", file=sys.stderr)
+
     # Client-side backstop cap, independent of whether Bright Data's trigger
     # actually honors num_of_posts (see Task 2's comment) -- bounds cost
     # regardless of that unverified assumption.
-    normalized = normalized[:max_items()]
+    normalized = normalized[:cap]
 
     # Overwrite, not merge: a fresh successful enumerate replaces whatever
     # this handle's cache held before, so download_item never reads a stale
