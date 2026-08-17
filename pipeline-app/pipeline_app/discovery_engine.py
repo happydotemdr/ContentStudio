@@ -171,6 +171,36 @@ def _write_abandoned_records_for_reclaimed_runs(conn: sqlite3.Connection, repo_r
         db_mod.finish_run(conn, reclaimed_id, "abandoned", finished_at, str(md_path))
 
 
+def _read_run_owner(repo_root: Path, run_row_id: int) -> dict | None:
+    """Read the sidecar written by `_claim_run_ownership`. Never raises: a
+    missing, unreadable, or corrupt file must not block the reclaim sweep --
+    it just means this run's ownership can't be confirmed and reclaim falls
+    through to the plain heartbeat-age check."""
+    path = run_owner_path(repo_root, run_row_id)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def reclaim_stale_runs_owned(conn: sqlite3.Connection, repo_root: Path, now: _dt.datetime, stale_after_s: int) -> list[int]:
+    """db.reclaim_stale_runs decides purely on heartbeat age. A sleeping machine
+    and a locked-DB heartbeat both freeze that clock while the run is very much
+    alive, so ask the OS before stealing the lock (B-50)."""
+    protected: list[int] = []
+    for row in conn.execute("SELECT id FROM discovery_runs WHERE status = 'running'").fetchall():
+        owner = _read_run_owner(repo_root, row["id"])
+        if owner and _process_is_alive(owner["pid"]):
+            protected.append(row["id"])
+            obs.record_event(conn, kind="discovery.reclaim_refused", severity="warning",
+                             source="discovery_engine",
+                             message=f"run {row['id']} looks stale but pid {owner['pid']} is alive",
+                             detail=owner, run_id=row["id"])
+    if protected:
+        return []      # a live owner exists: back off entirely, do not reclaim
+    return db_mod.reclaim_stale_runs(conn, now_iso(now), stale_after_s)
+
+
 def _open_heartbeat_connection(conn: sqlite3.Connection) -> sqlite3.Connection | None:
     """Best-effort: open a dedicated sqlite3.Connection to the same database
     file for the heartbeat thread, so it doesn't commit through the same
@@ -358,7 +388,7 @@ def run_discovery(
 
     # incremental / backfill: single-flight lock applies.
     with db_mod.transaction(conn):
-        reclaimed_ids = db_mod.reclaim_stale_runs(conn, now_iso(now), stale_after_s)
+        reclaimed_ids = reclaim_stale_runs_owned(conn, repo_root, now, stale_after_s)
         _write_abandoned_records_for_reclaimed_runs(conn, repo_root, reclaimed_ids, now)
     try:
         run_row_id = db_mod.insert_running_run(conn, run_id, trigger, mode, started_at, backfill_start, backfill_end)

@@ -205,6 +205,7 @@ def test_validate_reports_not_ok_when_enumeration_empty():
     assert adapter.downloaded_ids == []
 
 
+import json
 import os
 import sqlite3
 import threading
@@ -214,7 +215,13 @@ from pathlib import Path
 import pytest
 
 from pipeline_app import db
-from pipeline_app.discovery_engine import _process_is_alive, make_run_id, now_iso, run_discovery
+from pipeline_app.discovery_engine import (
+    _claim_run_ownership,
+    _process_is_alive,
+    make_run_id,
+    now_iso,
+    run_discovery,
+)
 from pipeline_app.discovery_paths import run_owner_path
 
 
@@ -667,5 +674,50 @@ def test_a_backfill_skip_leaves_an_event(engine_conn, tmp_path):
     )
     row = engine_conn.execute(
         "SELECT * FROM events WHERE kind = 'discovery.backfill_unsupported'").fetchone()
+    assert row is not None
+    assert row["severity"] == "warning"
+
+
+def test_a_stale_heartbeat_does_not_reclaim_a_run_whose_owner_is_still_alive(engine_conn, tmp_path):
+    """B-50 (S1): a laptop lid-close freezes the heartbeat thread while the run
+    survives; on resume the next wake reclaimed the LIVE run, freeing the
+    single-flight index and starting a second, concurrently-billing run."""
+    stale_id = db.insert_running_run(engine_conn, "live-run", "manual", "incremental",
+                                     "2026-07-30T05:00:00+00:00")
+    _claim_run_ownership(tmp_path, stale_id, "2026-07-30T05:00:00+00:00")  # this process: alive
+    now = _dt.datetime(2026, 7, 30, 6, 0, 0, tzinfo=_dt.timezone.utc)
+    result = run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({})},
+                           trigger="manual", mode="incremental", now=now)
+    assert db.get_run(engine_conn, stale_id)["status"] == "running"   # not stolen
+    assert result["status"] == "locked"                                # and we backed off
+
+
+def test_a_stale_run_whose_owner_is_gone_is_still_reclaimed(engine_conn, tmp_path):
+    stale_id = db.insert_running_run(engine_conn, "dead-run", "manual", "incremental",
+                                     "2026-07-30T05:00:00+00:00")
+    _claim_run_ownership(tmp_path, stale_id, "2026-07-30T05:00:00+00:00")
+    run_owner_path(tmp_path, stale_id).write_text(json.dumps({"pid": 0x7FFFFFFE, "started_at": "x"}),
+                                                  encoding="utf-8")
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    now = _dt.datetime(2026, 7, 30, 6, 0, 0, tzinfo=_dt.timezone.utc)
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({"@a": []})},
+                           trigger="manual", mode="incremental", now=now)
+
+    assert result["status"] == "completed"  # the new run itself succeeds
+    assert db.get_run(engine_conn, stale_id)["status"] == "abandoned"
+
+
+def test_a_refused_reclaim_leaves_a_warning_event(engine_conn, tmp_path):
+    stale_id = db.insert_running_run(engine_conn, "live-run", "manual", "incremental",
+                                     "2026-07-30T05:00:00+00:00")
+    _claim_run_ownership(tmp_path, stale_id, "2026-07-30T05:00:00+00:00")
+    now = _dt.datetime(2026, 7, 30, 6, 0, 0, tzinfo=_dt.timezone.utc)
+
+    run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({})},
+                  trigger="manual", mode="incremental", now=now)
+
+    row = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.reclaim_refused'").fetchone()
     assert row is not None
     assert row["severity"] == "warning"
