@@ -1383,18 +1383,24 @@ In `worker.py`, right after `gate2_result, dest_rel_path = gauntlet.run_gate2(..
 from doc_ingest import calendar_client, client_tagging, convert, db, drive_client, frontmatter, gauntlet, jobs, lock, metadata_readers, naming, program_sources
 ```
 
-Call site, immediately after `gate2_result, dest_rel_path = gauntlet.run_gate2(...)`:
+Call site, immediately after `gate2_result, dest_rel_path = gauntlet.run_gate2(...)`. This block is wrapped in its own `try/except` — the global constraint is that a drift-check failure must NEVER fail or block a conversion job, but this call site sits inside `process_job`'s existing outer `try` block, which a blanket `except Exception` elsewhere in the function turns into a failed job. `load_program_sources` parses a human-maintained YAML file (a bad hand-edit is a real risk, per that module's own docstring) and the `events` INSERT is itself a DB write that can raise (lock contention, disk error) — neither may propagate out of this diagnostic, log-only path. `worker.py` has no logging module anywhere in it today (confirmed: no `import logging` in this file or elsewhere in `doc-ingest-app`) — introducing one for a single best-effort diagnostic is out of this task's scope, so a failure here is silently swallowed, exactly like the "gap this task detects and reports, nothing more" framing the brief already uses for `check_drift` itself:
 
 ```python
-            app_root = Path(__file__).resolve().parents[1]
-            allowlist = program_sources.load_program_sources(app_root / "program_sources.yaml")
-            drift_warning = program_sources.check_drift(dest_rel_path, allowlist)
-            if drift_warning:
-                with db.transaction(conn):
-                    conn.execute(
-                        "INSERT INTO events (ts, event_type, source_file_id, details_json) VALUES (?, ?, ?, ?)",
-                        (_now_iso(), "program_source_drift", source_file_id, json.dumps({"warning": drift_warning})),
-                    )
+            try:
+                app_root = Path(__file__).resolve().parents[1]
+                allowlist = program_sources.load_program_sources(app_root / "program_sources.yaml")
+                drift_warning = program_sources.check_drift(dest_rel_path, allowlist)
+                if drift_warning:
+                    with db.transaction(conn):
+                        conn.execute(
+                            "INSERT INTO events (ts, event_type, source_file_id, details_json) VALUES (?, ?, ?, ?)",
+                            (_now_iso(), "program_source_drift", source_file_id, json.dumps({"warning": drift_warning})),
+                        )
+            except Exception:
+                # Best-effort diagnostic only -- a bad program_sources.yaml
+                # edit or a transient DB hiccup on this one INSERT must
+                # never fail a real conversion job.
+                pass
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1437,10 +1443,23 @@ def test_process_job_logs_drift_for_an_unlisted_program_doc(conn, tmp_path):
         (source_file_id,),
     ).fetchone()
     assert event is not None
+
+    # The whole point of the log-only constraint: drift firing must not
+    # abort the job or skip the write. Assert the job actually finished and
+    # the converted file actually landed, not just that the diagnostic
+    # event exists.
+    job_status = conn.execute(
+        "SELECT status FROM conversion_jobs WHERE id = ?", (job_id,)
+    ).fetchone()[0]
+    assert job_status == "complete"
+    output_files = list(
+        (cfg.converted_root / "Offer & Coaching Framework" / "Current finalized documents").glob("*.md")
+    )
+    assert len(output_files) == 1
 ```
 
 Run: `python -m pytest tests/test_worker.py -v`
-Expected: PASS (this fixture's file is genuinely absent from the seeded `program_sources.yaml`, so drift is expected to fire)
+Expected: PASS (this fixture's file is genuinely absent from the seeded `program_sources.yaml`, so drift is expected to fire, and the job must still complete with its output written)
 
 - [ ] **Step 5: Commit**
 
