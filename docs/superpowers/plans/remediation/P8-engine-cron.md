@@ -183,8 +183,10 @@ precisely so that `max()` is the whole rule.
 | 14 | Run exceeded its wall-clock deadline | engine deadline check | `failed` | `RUN_FAILED` | 0xF |
 | 15 | Stored `timezone` / `time_of_day` unparseable — due-check impossible | cron, `ScheduleConfigError` | *(no row)* | `SCHEDULER_WEDGED` | 0x10 |
 | 16 | Startup failed before any DB write (`init_db`, missing schema, corrupt DB) | cron, pre-engine | *(no row)* | `STARTUP_FAILED` | 0x11 |
-| 17 | Unhandled exception | *(no handler)* | may remain `running` | `1` | 0x1 |
+| 17 | The engine raised outside `main()`'s own handling | cron, catch-all around `run_discovery(...)` | *(unchanged)* | `ENGINE_CRASHED` | 0x12 |
 | 18 | Bad CLI arguments | argparse `ap.error` | *(no row)* | `2` | 0x2 |
+
+> **Plan amendment, final whole-branch review.** Row 17 originally read "Unhandled exception → *(no handler)* → may remain `running` → exit `1`" — this was the exact B-42 gap the final review found: `main()` had no catch-all around `run_discovery(...)`, so an engine crash escaped to Python's own uncontracted exit 1 with no durable trace. Fixed in the review's fix wave: `Exit.ENGINE_CRASHED = 18` (0x12) added to the enum (no existing member renumbered), a catch-all records `discovery.run_crashed` (severity "error", detail carries `traceback.format_exc()`) and returns the new code. The CLI-argument-error row shifts to using the same table-row number 18 as a coincidence of numbering, not a collision — `Exit.ENGINE_CRASHED`'s enum *value* is 18 (0x12) while the CLI-error exit code is the unrelated literal `2` (argparse's own convention, never touched by the `Exit` enum) — see `run_discovery_cron.py`'s `Exit` class for the authoritative value list.
 | — | *combination:* clean run + unsent email | `max(OK, NOTIFY_FAILED)` | `completed` | `NOTIFY_FAILED` | 0xC |
 | — | *combination:* errored handles + unsent email | `max(HANDLES_ERRORED, NOTIFY_FAILED)` | `completed_with_errors` | `HANDLES_ERRORED` | 0xD |
 
