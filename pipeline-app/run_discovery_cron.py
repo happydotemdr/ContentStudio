@@ -25,7 +25,7 @@ from pipeline_app import (discovery_bluesky, discovery_facebook, discovery_insta
                           discovery_linkedin, discovery_x, discovery_youtube)
 from pipeline_app.discovery_engine import run_discovery, sweep_stale_runs
 from pipeline_app.discovery_notify import notify
-from pipeline_app.discovery_scheduling import ScheduleConfigError, is_due
+from pipeline_app.discovery_scheduling import ScheduleConfigError, decode_watermark, is_due
 
 HERE = Path(__file__).resolve().parent
 
@@ -170,6 +170,17 @@ def main(argv: list[str] | None = None) -> int:
                 return Exit.SCHEDULER_WEDGED
             if not due:
                 return classify_exit(result, notify_ok=notify_ok)
+            # A machine asleep across time_of_day would otherwise skip the day
+            # with no signal at all: the run below simply catches up and looks
+            # like any other scheduled wake. Surface the gap explicitly so it
+            # is visible AS a gap rather than as silence (B-48, D-06).
+            now = _dt.datetime.now(_dt.timezone.utc)
+            last_date, last_instant = decode_watermark(db.get_settings(conn)["last_scheduled_run_date"])
+            if last_instant is not None and (now - last_instant) > _dt.timedelta(hours=44):
+                obs.record_event(conn, kind="discovery.days_skipped", severity="warning",
+                                 source="run_discovery_cron",
+                                 message=f"scheduled discovery appears to have skipped one or more "
+                                         f"days: the last successful scheduled run was {last_date}")
             trigger, mode = "scheduled", "incremental"
         elif args.mode == "incremental":
             trigger, mode = "manual", "incremental"

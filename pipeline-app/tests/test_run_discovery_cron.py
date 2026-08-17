@@ -6,7 +6,7 @@ import pytest
 
 from pipeline_app import db
 from pipeline_app.discovery_engine import now_iso
-from pipeline_app.discovery_scheduling import ScheduleConfigError
+from pipeline_app.discovery_scheduling import ScheduleConfigError, encode_watermark
 import run_discovery_cron as cron
 
 
@@ -211,6 +211,26 @@ def test_an_unsent_email_leaves_an_error_event(monkeypatch, repo_root):
         rows = conn.execute(
             "SELECT kind, severity FROM events WHERE kind = 'discovery.notify_failed'").fetchall()
         assert [r["severity"] for r in rows] == ["error"]
+    finally:
+        conn.close()
+
+
+def test_a_machine_that_was_off_for_two_days_records_a_gap_warning(monkeypatch, repo_root):
+    """D-06's proposed fix: surface 'last successful scheduled run' so a gap is
+    visible AS a gap rather than as silence. A machine asleep across
+    time_of_day skips the day with no signal whatsoever today."""
+    conn = db.get_connection(repo_root / "pipeline-app" / "pipeline.db")
+    try:
+        db.set_last_scheduled_run_date(conn, encode_watermark(
+            "2026-07-28", "America/Chicago", "2026-07-28T11:00:00+00:00"))
+        conn.commit()
+        monkeypatch.setattr(cron, "_is_due_now", lambda c: True)
+        monkeypatch.setattr(cron, "notify", lambda *a, **k: True)
+        monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: _result("completed", total=1, attempted=1))
+        cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+        row = conn.execute("SELECT * FROM events WHERE kind = 'discovery.days_skipped'").fetchone()
+        assert row is not None and row["severity"] == "warning"
+        assert "2026-07-28" in row["message"]
     finally:
         conn.close()
 
