@@ -884,6 +884,16 @@ finding B-10), never bare `text=True`. Mark these tests `@pytest.mark.allow_subp
 > `test_dry_run_tells_the_operator_where_the_log_will_be` still fails against the live file (grep
 > confirms `default_log_path`/`discovery-task.log` do not appear in the current dry-run print
 > block). That is this task's real remaining work: add the log path to the dry-run message.
+>
+> **Second correction, same session, found during Task 11's implementation.** The kept
+> `list2cmdline` unit test's own fixture path, `r"C:\repo\pipeline-app\logs\task.xml"`, contains no
+> spaces or quote characters — verified empirically: `subprocess.list2cmdline(cmd) ==
+> " ".join(cmd)` is `True` for this exact `cmd` list, so the test's own
+> `assert printed != " ".join(cmd)` would fail against the brief's own literal fixture. `list2cmdline`
+> only diverges from a naive join when an argument needs quoting (contains a space, quote, or is
+> empty). Fix: use a path containing a space (e.g. `C:\Program Files\repo\...` or any directory
+> segment with a space) so the two functions genuinely produce different output and the test
+> demonstrates the real distinction it names.
 
 **Test:**
 
