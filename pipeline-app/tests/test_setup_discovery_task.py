@@ -1,3 +1,5 @@
+import shlex
+import subprocess
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -153,3 +155,19 @@ def test_task_xml_pins_the_logon_model_and_working_directory():
     assert root.find(".//t:Principal/t:LogonType", ns).text == "S4U"
     assert root.find(".//t:Exec/t:WorkingDirectory", ns).text.endswith("pipeline-app")
     assert root.find(".//t:Repetition/t:Interval", ns).text == "PT15M"
+
+
+def test_dry_run_prints_a_command_that_survives_a_round_trip_through_the_shell_parser():
+    """B-45: ' '.join(cmd) flattened the /TR payload, so pasting the printed
+    line bound /TR to the python path alone and left the script as a stray
+    argument. The printed line must be byte-for-byte executable."""
+    cmd = ["schtasks", "/Create", "/TN", "ContentStudio-Discovery",
+           "/XML", r"C:\Program Files\repo\pipeline-app\logs\task.xml", "/F"]
+    printed = subprocess.list2cmdline(cmd)
+    assert printed != " ".join(cmd)
+    assert shlex.split(printed, posix=False)[5].strip('"') == r"C:\Program Files\repo\pipeline-app\logs\task.xml"
+
+
+def test_dry_run_tells_the_operator_where_the_log_will_be(monkeypatch, capsys):
+    main([])
+    assert "discovery-task.log" in capsys.readouterr().out

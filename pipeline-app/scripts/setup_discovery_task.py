@@ -117,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Dry run -- this is what --apply would do:")
         print(f"Write the task XML to a temp file and run: "
               f"schtasks /Create /TN {TASK_NAME} /XML <tmpfile> /F")
+        print(f"Task log will be written to: {default_log_path(pipeline_app_root)}")
         print("\nRe-run with --apply to actually register it.")
         return 0
 
