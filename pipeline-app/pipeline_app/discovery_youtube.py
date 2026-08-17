@@ -22,8 +22,6 @@ from pipeline_app import discovery_youtube_api as youtube_api
 from pipeline_app import obs
 from pipeline_app.discovery_paths import handle_dir, slugify
 
-USER_AGENT = "ContentStudio-discovery-engine/1.0 (personal archival; local inspection)"
-
 # YouTube's per-video metadata/subtitle fetch (unlike channel-listing) requires
 # an authenticated session or it fails with "Sign in to confirm you're not a
 # bot" -- see download_brandintel.py's --cookies-from-browser flag, which this
