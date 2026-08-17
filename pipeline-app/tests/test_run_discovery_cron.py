@@ -21,7 +21,7 @@ def test_scheduled_mode_skips_when_not_due(monkeypatch, repo_root):
     called = {"n": 0}
     monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: called.__setitem__("n", called["n"] + 1))
     exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
-    assert exit_code == 0
+    assert exit_code == cron.Exit.OK
     assert called["n"] == 0
 
 
@@ -30,7 +30,7 @@ def test_scheduled_mode_runs_when_due(monkeypatch, repo_root):
     calls = []
     monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: (calls.append(k), {"run_row_id": 1, "status": "completed"})[1])
     exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
-    assert exit_code == 0
+    assert exit_code == cron.Exit.OK
     assert calls[0]["trigger"] == "scheduled"
     assert calls[0]["mode"] == "incremental"
 
@@ -39,7 +39,7 @@ def test_incremental_mode_always_runs(monkeypatch, repo_root):
     calls = []
     monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: (calls.append(k), {"run_row_id": 1, "status": "completed"})[1])
     exit_code = cron.main(["--mode", "incremental", "--repo-root", str(repo_root)])
-    assert exit_code == 0
+    assert exit_code == cron.Exit.OK
     assert calls[0]["trigger"] == "manual"
     assert calls[0]["mode"] == "incremental"
 
@@ -56,7 +56,7 @@ def test_backfill_mode_passes_dates_through(monkeypatch, repo_root):
         "--mode", "backfill", "--backfill-start", "2026-06-01", "--backfill-end", "2026-06-30",
         "--repo-root", str(repo_root),
     ])
-    assert exit_code == 0
+    assert exit_code == cron.Exit.OK
     assert calls[0]["mode"] == "backfill"
     assert calls[0]["backfill_start"] == "2026-06-01"
     assert calls[0]["backfill_end"] == "2026-06-30"
@@ -71,7 +71,7 @@ def test_validate_handle_mode_passes_handle_id_through(monkeypatch, repo_root):
     calls = []
     monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: (calls.append(k), {"run_row_id": 1, "status": "completed"})[1])
     exit_code = cron.main(["--mode", "validate_handle", "--handle-id", "42", "--repo-root", str(repo_root)])
-    assert exit_code == 0
+    assert exit_code == cron.Exit.OK
     assert calls[0]["handle_id"] == 42
     assert calls[0]["mode"] == "validate_handle"
 
@@ -89,7 +89,7 @@ def test_scheduled_due_run_calls_notify(monkeypatch, repo_root):
     assert calls == [1]
 
 
-def test_scheduled_locked_run_does_not_call_notify(monkeypatch, repo_root):
+def test_a_locked_run_does_not_notify_and_exits_locked(monkeypatch, repo_root):
     monkeypatch.setattr(cron, "_is_due_now", lambda repo_root_arg: True)
     monkeypatch.setattr(cron, "run_discovery",
                          lambda *a, **k: {"run_row_id": 2, "status": "locked"})
@@ -98,7 +98,7 @@ def test_scheduled_locked_run_does_not_call_notify(monkeypatch, repo_root):
 
     exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
 
-    assert exit_code == 0
+    assert exit_code == cron.Exit.LOCKED
     assert calls == []
 
 
@@ -109,7 +109,7 @@ def test_scheduled_not_due_does_not_call_notify(monkeypatch, repo_root):
 
     exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
 
-    assert exit_code == 0
+    assert exit_code == cron.Exit.OK
     assert calls == []
 
 
@@ -121,7 +121,7 @@ def test_incremental_mode_does_not_call_notify(monkeypatch, repo_root):
 
     exit_code = cron.main(["--mode", "incremental", "--repo-root", str(repo_root)])
 
-    assert exit_code == 0
+    assert exit_code == cron.Exit.OK
     assert calls == []
 
 
@@ -136,7 +136,7 @@ def test_backfill_mode_does_not_call_notify(monkeypatch, repo_root):
         "--repo-root", str(repo_root),
     ])
 
-    assert exit_code == 0
+    assert exit_code == cron.Exit.OK
     assert calls == []
 
 
@@ -148,7 +148,7 @@ def test_validate_handle_mode_does_not_call_notify(monkeypatch, repo_root):
 
     exit_code = cron.main(["--mode", "validate_handle", "--handle-id", "1", "--repo-root", str(repo_root)])
 
-    assert exit_code == 0
+    assert exit_code == cron.Exit.OK
     assert calls == []
 
 
@@ -282,3 +282,23 @@ def test_classify_exit_distinguishes_a_partial_failure_from_a_total_one():
     assert partial != total
     assert partial == cron.Exit.HANDLES_ERRORED
     assert total == cron.Exit.ALL_HANDLES_ERRORED
+
+
+def test_a_run_with_errored_handles_exits_nonzero(monkeypatch, repo_root):
+    """B-40: Task Scheduler's Last Run Result was 0x0 for a run in which every
+    tracked handle failed. That is the whole defect, in one assertion."""
+    monkeypatch.setattr(cron, "_is_due_now", lambda conn: True)
+    monkeypatch.setattr(cron, "notify", lambda *a, **k: True)
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: _result(
+        "completed_with_errors", total=3, attempted=3, failed=3))
+    assert cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)]) == cron.Exit.ALL_HANDLES_ERRORED
+
+
+def test_a_broken_run_and_a_clean_run_do_not_share_an_exit_code(monkeypatch, repo_root):
+    monkeypatch.setattr(cron, "_is_due_now", lambda conn: True)
+    monkeypatch.setattr(cron, "notify", lambda *a, **k: True)
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: _result("completed", total=3, attempted=3))
+    clean = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: _result("failed", total=0))
+    broken = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+    assert clean != broken

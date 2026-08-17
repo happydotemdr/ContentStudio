@@ -134,10 +134,12 @@ def main(argv: list[str] | None = None) -> int:
     schema_path = HERE / "pipeline_app" / "schema.sql"
     db.init_db(db_path, schema_path)
     conn = db.get_connection(db_path)
+    notify_ok = True
+    result = None
     try:
         if args.mode == "scheduled":
             if not _is_due_now(conn):
-                return 0
+                return classify_exit(result, notify_ok=notify_ok)
             trigger, mode = "scheduled", "incremental"
         elif args.mode == "incremental":
             trigger, mode = "manual", "incremental"
@@ -160,7 +162,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"discovery notification failed: {exc}", file=sys.stderr)
     finally:
         conn.close()
-    return 0
+    code = classify_exit(result, notify_ok=notify_ok)
+    if code is not Exit.OK:
+        print(f"exit {int(code)} ({code.name}): {EXIT_REASON[code]}", file=sys.stderr)
+    return code
 
 
 if __name__ == "__main__":
