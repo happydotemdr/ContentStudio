@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from pipeline_app import db as db_mod
 from pipeline_app import discovery_engine
+from pipeline_app.discovery_paths import SlugCollisionError, assert_no_slug_collision
 from pipeline_app.main import create_app
 from pipeline_app.routes import discovery as discovery_routes
 
@@ -81,6 +82,19 @@ def _add(client: TestClient, platform: str, handle: str):
         "platform": platform, "handle": handle, "display_name": "",
         "cohort": "guru", "keyword_filter": "",
     })
+
+
+def test_assert_no_slug_collision_is_the_single_enforcement_point(client: TestClient, spawns):
+    """B-63: find_slug_collision was called from exactly one place -- the web
+    form. migrate_handles_from_manifest writes through upsert_handle_from_migration,
+    which enforces only UNIQUE(platform, handle) and can introduce exactly the
+    collision the route refuses."""
+    with pytest.raises(SlugCollisionError) as excinfo:
+        assert_no_slug_collision("john.doe.5", ["johndoe5"])
+    assert "johndoe5" in str(excinfo.value)
+    # the route's 400 message is produced from the same exception
+    assert _add(client, "facebook", "johndoe5").status_code in (200, 303, 307)
+    assert _add(client, "facebook", "john.doe.5").status_code == 400
 
 
 def test_add_handle_rejects_a_handle_that_would_share_a_directory(client: TestClient, spawns):

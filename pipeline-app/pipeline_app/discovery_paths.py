@@ -78,6 +78,44 @@ def find_slug_collision(handle: str, existing_handles: Iterable[str]) -> str | N
     return None
 
 
+class SlugCollisionError(Exception):
+    """Raised by assert_no_slug_collision when `handle` would share a directory
+    with an already-registered handle. str(exc) is the full operator-facing
+    message -- callers should not construct their own text on top of it."""
+
+
+def assert_no_slug_collision(handle: str, existing_handles: Iterable[str], platform: str = "") -> None:
+    """Raise SlugCollisionError if `handle` would collide (see
+    find_slug_collision); otherwise return None.
+
+    B-63: find_slug_collision was called from exactly one place -- the web
+    form's add_handle route. That left every other write path free to
+    introduce the exact same collision: migrate_handles_from_manifest.py
+    (P10) writes through db.upsert_handle_from_migration (P1), which enforces
+    only UNIQUE(platform, handle) and has no idea handle_slug() can map two
+    distinct strings onto one directory. This function is the one gate both
+    should call -- P8 owns discovery_paths.py but cannot reach db.py or
+    migrate_handles_from_manifest.py, so this publishes the check for P1 and
+    P10 to adopt rather than implementing it a second time in each of their
+    files. Until they do, a migration-introduced collision is caught instead
+    by the runtime detector: discovery_engine._warn_on_directory_collisions
+    records a 'discovery.slug_collision' event on every run, which is a
+    durable, queryable record -- not the stderr-only print that made B-42
+    invisible.
+    """
+    clash = find_slug_collision(handle, existing_handles)
+    if clash is not None:
+        raise SlugCollisionError(
+            f"handle shares a directory with an existing one: {platform}/{handle} and "
+            f"{platform}/{clash} both resolve to "
+            f"output/brand-intel/{platform}/{handle_slug(handle)}. They would be "
+            f"billed separately every run while writing to one directory, and "
+            f"whichever ran second would read the other's files and report "
+            f"'no_new_content'. Register one, or use handles differing by more "
+            f"than punctuation or capitalization."
+        )
+
+
 def group_slug_collisions(handles: Iterable[str]) -> dict[str, list[str]]:
     """slug -> the two-or-more distinct handles sharing it. Empty when clean.
 

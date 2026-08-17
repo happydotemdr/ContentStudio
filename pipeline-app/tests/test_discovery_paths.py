@@ -4,6 +4,8 @@ import pytest
 
 from pipeline_app.discovery_paths import (
     WINDOWS_RESERVED,
+    SlugCollisionError,
+    assert_no_slug_collision,
     find_slug_collision,
     group_slug_collisions,
     handle_dir,
@@ -98,6 +100,17 @@ def test_find_slug_collision_returns_none_when_slugs_are_distinct():
 
 def test_find_slug_collision_reports_the_first_colliding_handle():
     assert find_slug_collision("na.sa", ["esa", "NASA", "nasa"]) == "NASA"
+
+
+def test_assert_no_slug_collision_raises_with_the_full_operator_message_on_a_clash():
+    with pytest.raises(SlugCollisionError) as excinfo:
+        assert_no_slug_collision("john.doe.5", ["johndoe5"])
+    assert "johndoe5" in str(excinfo.value)
+    assert "john.doe.5" in str(excinfo.value)
+
+
+def test_assert_no_slug_collision_returns_normally_when_clean():
+    assert assert_no_slug_collision("nasa", ["spacex", "esa"]) is None
 
 
 def test_group_slug_collisions_returns_only_groups_of_two_or_more():

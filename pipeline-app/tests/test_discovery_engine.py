@@ -289,6 +289,22 @@ def test_a_run_writes_an_owner_file_and_removes_it_when_it_finishes(engine_conn,
     assert not run_owner_path(tmp_path, result["run_row_id"]).exists()
 
 
+def test_a_collision_introduced_by_the_migration_path_is_reported_durably(engine_conn, tmp_path):
+    """The migration bypasses the route entirely, so the runtime detector is the
+    compensating control -- and it printed to stderr, into the void of B-42."""
+    db.upsert_handle_from_migration(
+        engine_conn, "youtube", "john.doe.5", "A", "guru", None, "validated", True, now_iso(),
+    )
+    db.upsert_handle_from_migration(
+        engine_conn, "youtube", "johndoe5", "B", "guru", None, "validated", True, now_iso(),
+    )
+    run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({})},
+                  trigger="manual", mode="incremental")
+    row = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.slug_collision'").fetchone()
+    assert row is not None and row["severity"] == "warning"
+
+
 def test_run_discovery_completes_and_writes_record(engine_conn, tmp_path):
     handle_id = db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
     adapter = SingleFakeAdapter({"@a": [{"id": "v1", "title": "x", "published": None}]})
