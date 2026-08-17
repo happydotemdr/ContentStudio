@@ -269,3 +269,16 @@ def test_every_exit_code_is_unique_and_documented():
     assert {1, 2} & set(values) == set(), "1 and 2 belong to CPython and argparse"
     for member in cron.Exit:
         assert cron.EXIT_REASON[member], f"{member.name} has no reason string"
+
+
+def _result(status, **counts):
+    base = {"total": 0, "attempted": 0, "skipped": 0, "failed": 0, "by_status": {}}
+    return {"run_row_id": 1, "status": status, "counts": {**base, **counts}}
+
+
+def test_classify_exit_distinguishes_a_partial_failure_from_a_total_one():
+    partial = cron.classify_exit(_result("completed_with_errors", total=3, attempted=3, failed=1))
+    total = cron.classify_exit(_result("completed_with_errors", total=3, attempted=3, failed=3))
+    assert partial != total
+    assert partial == cron.Exit.HANDLES_ERRORED
+    assert total == cron.Exit.ALL_HANDLES_ERRORED

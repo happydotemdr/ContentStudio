@@ -55,6 +55,33 @@ EXIT_REASON: dict[Exit, str] = {
 }
 
 
+def classify_exit(result: dict | None, *, notify_ok: bool = True) -> Exit:
+    """Map one terminal run outcome onto the documented exit-code contract.
+
+    Pure -- no DB, no clock, no I/O -- so the contract table is testable as
+    data. When several conditions hold the code is the numeric maximum, and
+    Exit's values are ordered by severity precisely so that max() is the rule.
+    """
+    codes = [Exit.OK]
+    if result is not None:
+        status = result["status"]
+        counts = result.get("counts") or {}
+        attempted, failed = counts.get("attempted", 0), counts.get("failed", 0)
+        if status == "locked":
+            codes.append(Exit.LOCKED)
+        elif status == "failed":
+            codes.append(Exit.RUN_FAILED)
+        elif failed and attempted and failed >= attempted:
+            codes.append(Exit.ALL_HANDLES_ERRORED)
+        elif failed:
+            codes.append(Exit.HANDLES_ERRORED)
+        elif attempted == 0 and counts.get("skipped", 0):
+            codes.append(Exit.NO_WORK)
+    if not notify_ok:
+        codes.append(Exit.NOTIFY_FAILED)
+    return Exit(max(codes))
+
+
 def build_adapters():
     # LinkedIn's two modes are separate instances, not one shared object: each
     # keeps its own enumerate cache, and a person and a company can have the
