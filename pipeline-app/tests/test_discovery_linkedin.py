@@ -1,3 +1,4 @@
+from pipeline_app import brightdata_job
 from pipeline_app import discovery_linkedin as li
 
 
@@ -18,6 +19,45 @@ def test_parse_published_rejects_unusable_values():
     # MM/DD and DD/MM would produce wrong dates, which is worse than a
     # dropped row, and dropped rows are logged.
     assert li._parse_published("07/08/2026 14:00:09") is None
+
+
+def test_run_collection_job_prefers_a_pending_snapshot_over_a_new_billed_job(monkeypatch, tmp_path):
+    """Bright Data bills per record. If the previous run paid for a snapshot
+    and timed out before collecting it, this run must take that data rather
+    than pay again."""
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    brightdata_job.record_pending("linkedin-profile/somehandle", "snap-abc")
+    person = li.profile_adapter()
+    monkeypatch.setattr(person, "api_key", lambda: "test-key")
+
+    def _fail_if_called(handle, key):
+        raise AssertionError("must not trigger a new job while a snapshot is pending")
+
+    monkeypatch.setattr(person, "_trigger_job", _fail_if_called)
+    monkeypatch.setattr(person, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(person, "_fetch_job_results", lambda job_id, key: [{"id": "p1"}])
+    assert person._run_collection_job("somehandle") == [{"id": "p1"}]
+
+
+def test_profile_and_company_pending_snapshots_never_collide(monkeypatch, tmp_path):
+    """A person and a company can share a slug. One pending entry must not
+    serve the other mode -- the same reason the two adapters keep separate
+    caches."""
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    brightdata_job.record_pending("linkedin-profile/acme", "snap-person")
+    person, company = li.profile_adapter(), li.company_adapter()
+    monkeypatch.setattr(person, "api_key", lambda: "k")
+    monkeypatch.setattr(company, "api_key", lambda: "k")
+    monkeypatch.setattr(person, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(person, "_fetch_job_results", lambda job_id, key: [{"id": "c1"}])
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("company mode must not see the profile snapshot")
+
+    monkeypatch.setattr(company, "_poll_job_status", _fail_if_called)
+    monkeypatch.setattr(company, "_trigger_job", lambda handle, key: "fresh")
+    monkeypatch.setattr(company, "_fetch_job_results", lambda job_id, key: [])
+    assert person._run_collection_job("acme") == [{"id": "c1"}]
 
 
 def _raw_row(**overrides):

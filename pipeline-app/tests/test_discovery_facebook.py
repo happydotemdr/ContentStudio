@@ -1,3 +1,4 @@
+from pipeline_app import brightdata_job
 from pipeline_app import discovery_facebook as fb
 
 
@@ -57,6 +58,23 @@ def test_parse_published_rejects_unusable_values():
     # and DD/MM yields silently wrong dates, which is worse than a dropped
     # row -- and drops are counted and logged.
     assert fb._parse_published("07-06-2026") is None
+
+
+def test_run_collection_job_prefers_a_pending_snapshot_over_a_new_billed_job(monkeypatch, tmp_path):
+    """Bright Data bills per record. If the previous run paid for a snapshot
+    and timed out before collecting it, this run must take that data rather
+    than pay again."""
+    monkeypatch.setattr(brightdata_job, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    brightdata_job.record_pending("facebook/somehandle", "snap-abc")
+    monkeypatch.setattr(fb, "api_key", lambda: "test-key")
+
+    def _fail_if_called(handle, key):
+        raise AssertionError("must not trigger a new job while a snapshot is pending")
+
+    monkeypatch.setattr(fb, "_trigger_job", _fail_if_called)
+    monkeypatch.setattr(fb, "_poll_job_status", lambda job_id, key: "ready")
+    monkeypatch.setattr(fb, "_fetch_job_results", lambda job_id, key: [{"post_id": "p1"}])
+    assert fb._run_collection_job("somehandle") == [{"post_id": "p1"}]
 
 
 def test_normalize_row_maps_every_verified_field():
