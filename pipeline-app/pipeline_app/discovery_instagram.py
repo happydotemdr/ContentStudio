@@ -24,7 +24,6 @@ from pipeline_app import artifacts, brightdata_job
 from pipeline_app.discovery_paths import handle_dir
 
 BRIGHTDATA_API_BASE = brightdata_job.BRIGHTDATA_API_BASE
-REQUEST_TIMEOUT_S = brightdata_job.REQUEST_TIMEOUT_S
 
 # Re-exported so `pytest.raises(discovery_instagram.BrightDataJobFailed)` keeps
 # working and callers need not know the exceptions moved.

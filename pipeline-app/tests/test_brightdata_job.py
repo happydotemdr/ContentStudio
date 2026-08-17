@@ -399,6 +399,19 @@ def test_record_diagnostic_writes_through_to_obs_log(monkeypatch):
                          "message": "CNN captured nothing", "handle": "CNN"})]
 
 
+def test_adapters_do_not_re_export_request_timeout(monkeypatch):
+    """REQUEST_TIMEOUT_S was re-exported by instagram and x and read by
+    neither them nor any test; facebook and linkedin correctly omit it, so
+    the two that had it were the outliers. BRIGHTDATA_API_BASE re-exports ARE
+    used and must stay."""
+    from pipeline_app import (discovery_facebook, discovery_instagram,
+                              discovery_linkedin, discovery_x)
+    for module in (discovery_instagram, discovery_x,
+                   discovery_facebook, discovery_linkedin):
+        assert not hasattr(module, "REQUEST_TIMEOUT_S")
+        assert module.__name__.endswith("linkedin") or module.BRIGHTDATA_API_BASE
+
+
 def test_record_diagnostic_never_masks_the_thing_it_is_reporting(monkeypatch):
     """A broken logger must not turn a reportable degradation into a crash."""
     def _boom(*a, **k):

@@ -155,7 +155,6 @@ def _normalize_row(row: dict) -> dict | None:
 
 
 BRIGHTDATA_API_BASE = brightdata_job.BRIGHTDATA_API_BASE
-REQUEST_TIMEOUT_S = brightdata_job.REQUEST_TIMEOUT_S
 
 # Re-exported so `pytest.raises(discovery_x.BrightDataJobFailed)` works and
 # callers need not know where the exceptions live.
