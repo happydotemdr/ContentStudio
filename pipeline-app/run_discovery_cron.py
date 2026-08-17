@@ -25,7 +25,7 @@ from pipeline_app import (discovery_bluesky, discovery_facebook, discovery_insta
                           discovery_linkedin, discovery_x, discovery_youtube)
 from pipeline_app.discovery_engine import run_discovery
 from pipeline_app.discovery_notify import notify
-from pipeline_app.discovery_scheduling import is_due
+from pipeline_app.discovery_scheduling import ScheduleConfigError, is_due
 
 HERE = Path(__file__).resolve().parent
 
@@ -150,7 +150,14 @@ def main(argv: list[str] | None = None) -> int:
     result = None
     try:
         if args.mode == "scheduled":
-            if not _is_due_now(conn):
+            try:
+                due = _is_due_now(conn)
+            except ScheduleConfigError as exc:
+                obs.record_event(conn, kind="discovery.scheduler_wedged", severity="critical",
+                                 source="run_discovery_cron", message=str(exc))
+                print(f"discovery scheduler is wedged: {exc}", file=sys.stderr)
+                return Exit.SCHEDULER_WEDGED
+            if not due:
                 return classify_exit(result, notify_ok=notify_ok)
             trigger, mode = "scheduled", "incremental"
         elif args.mode == "incremental":

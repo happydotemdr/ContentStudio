@@ -104,6 +104,20 @@ def test_a_locked_run_does_not_notify_and_exits_locked(monkeypatch, repo_root):
     assert calls == []
 
 
+def test_a_stored_bad_timezone_exits_scheduler_wedged_not_a_traceback(monkeypatch, repo_root):
+    """B-47 (S1): a mistyped timezone made every 15-minute wake for the rest of
+    time die with a traceback into a console Task Scheduler destroys."""
+    conn = db.get_connection(repo_root / "pipeline-app" / "pipeline.db")
+    try:
+        db.update_settings(conn, "daily", "06:00", "America/Chicgo")
+        conn.commit()
+        assert cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)]) == cron.Exit.SCHEDULER_WEDGED
+        rows = conn.execute("SELECT severity FROM events WHERE kind = 'discovery.scheduler_wedged'").fetchall()
+        assert [r["severity"] for r in rows] == ["critical"]
+    finally:
+        conn.close()
+
+
 def test_scheduled_not_due_does_not_call_notify(monkeypatch, repo_root):
     monkeypatch.setattr(cron, "_is_due_now", lambda repo_root_arg: False)
     calls = []
