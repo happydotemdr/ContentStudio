@@ -539,6 +539,28 @@ def test_enumerate_returns_empty_without_warning_for_a_genuinely_empty_job(monke
     assert "none survived" not in capsys.readouterr().err
 
 
+def test_billed_nothing_records_an_error_diagnostic_carrying_the_vendor_codes(monkeypatch):
+    """The stderr print alone is invisible on the production Scheduled Task
+    path (no redirection). A billed-and-captured-nothing run must also be
+    escalated through the durable diagnostics sink, same as Instagram."""
+    _stub_job(monkeypatch, [_error_row(code="dead_page"), _error_row(code="not_found")])
+    brightdata_job.drain_diagnostics()
+    fb.enumerate_newest_first("NASA", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.billed_captured_nothing"][0]
+    assert record["severity"] == "error"
+    assert record["detail"]["handle"] == "NASA"
+    assert sorted(record["detail"]["error_codes"]) == ["dead_page", "not_found"]
+
+
+def test_a_genuinely_empty_batch_does_not_escalate(monkeypatch):
+    """Distinguishability: zero rows is a quiet day and must stay quiet."""
+    _stub_job(monkeypatch, [])
+    brightdata_job.drain_diagnostics()
+    assert fb.enumerate_newest_first("NASA", keyword_filter=None) == []
+    assert brightdata_job.drain_diagnostics() == []
+
+
 def test_enumerate_overwrites_rather_than_merges_the_cache(monkeypatch):
     """A fresh successful enumerate replaces whatever this handle held, so
     download_item never reads a stale id from an earlier run."""

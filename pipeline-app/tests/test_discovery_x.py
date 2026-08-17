@@ -658,6 +658,25 @@ def test_enumerate_warns_differently_when_all_rows_were_unusable(monkeypatch, ca
     assert "posts its own content" not in err
 
 
+def test_billed_nothing_records_an_error_diagnostic(monkeypatch):
+    """The stderr print alone is invisible on the production Scheduled Task
+    path (no redirection). A billed-and-captured-nothing run must also be
+    escalated through the durable diagnostics sink, same as Instagram."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id="1", user_posted="stranger"),
+        _raw_row(id="2", user_posted="another_stranger"),
+    ])
+    brightdata_job.drain_diagnostics()
+    x.enumerate_newest_first("CNN", None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.billed_captured_nothing"][0]
+    assert record["severity"] == "error"
+    assert record["source"] == "discovery_x"
+    assert record["detail"]["platform"] == x.PLATFORM
+    assert record["detail"]["handle"] == "CNN"
+    assert record["detail"]["raw_count"] == 2
+
+
 def test_enumerate_caches_rows_for_download_item(monkeypatch):
     _enumerate_with(monkeypatch, [_raw_row(id="1")])
     x.enumerate_newest_first("CNN", None)

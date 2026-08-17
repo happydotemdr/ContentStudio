@@ -53,35 +53,89 @@ def _write_store(payload: dict) -> None:
     tmp.replace(PENDING_STORE_PATH)
 
 
+PENDING_MAX_ENTRIES = 3
+
+
+def _entries_for(store: dict, key: str) -> list[dict]:
+    """Tolerate the pre-list single-dict store shape on read, so a store file
+    written by an older build of this module does not look corrupt."""
+    raw = store.get(key)
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        return [raw]
+    return []
+
+
 def record_pending(key: str, snapshot_id: str) -> None:
-    """Remember a snapshot that was paid for and not collected (B-19)."""
+    """Remember a snapshot that was paid for and not collected (B-19).
+
+    Stored as a small bounded LIST per platform/handle key, not a single
+    slot: a handle can time out twice in a row (243s measured against a 600s
+    ceiling is not exotic), and a single-slot store would silently overwrite
+    the first paid-for, uncollected snapshot id with the second, losing it
+    forever. `resume_pending` tries every entry here, oldest first.
+    """
     store = _read_store()
-    store[key] = {
+    entries = _entries_for(store, key)
+    entries = entries + [{
         "snapshot_id": snapshot_id,
         "recorded_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
-    }
+    }]
+    if len(entries) > PENDING_MAX_ENTRIES:
+        evicted = entries.pop(0)
+        record_diagnostic(
+            kind="brightdata.pending_snapshot_evicted", severity="error",
+            source="brightdata_job",
+            message=(f"{key}: more than {PENDING_MAX_ENTRIES} snapshots are pending "
+                     f"at once; evicted the oldest, snapshot {evicted['snapshot_id']!r}, "
+                     f"which is now unrecoverable"),
+            detail={"key": key, "snapshot_id": evicted["snapshot_id"],
+                    "cap": PENDING_MAX_ENTRIES},
+        )
+    store[key] = entries
     _write_store(store)
 
 
+def _valid_entries(key: str) -> list[dict]:
+    """Every pending entry for this key not older than PENDING_MAX_AGE_H,
+    oldest first (Bright Data snapshots do not live forever, and a stale
+    entry would cost one wasted poll every run)."""
+    valid = []
+    for entry in _entries_for(_read_store(), key):
+        try:
+            recorded = _dt.datetime.fromisoformat(entry["recorded_at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        age_h = (_dt.datetime.now(_dt.timezone.utc) - recorded).total_seconds() / 3600
+        if age_h <= PENDING_MAX_AGE_H:
+            valid.append(entry)
+    return valid
+
+
 def load_pending(key: str) -> dict | None:
-    """The pending entry for this platform/handle, or None if absent or older
-    than PENDING_MAX_AGE_H (Bright Data snapshots do not live forever, and a
-    stale entry would cost one wasted poll every run)."""
-    entry = _read_store().get(key)
-    if not entry:
-        return None
-    try:
-        recorded = _dt.datetime.fromisoformat(entry["recorded_at"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    age_h = (_dt.datetime.now(_dt.timezone.utc) - recorded).total_seconds() / 3600
-    return None if age_h > PENDING_MAX_AGE_H else entry
+    """The OLDEST non-expired pending entry for this platform/handle, or None
+    if there is none. A convenience for callers/tests that only care about a
+    single entry -- resume_pending itself walks every valid entry, not just
+    this one."""
+    valid = _valid_entries(key)
+    return valid[0] if valid else None
 
 
-def clear_pending(key: str) -> None:
+def clear_pending(key: str, snapshot_id: str) -> None:
+    """Remove exactly the entry for `snapshot_id`, leaving any OTHER pending
+    entry for this key (e.g. an earlier snapshot that is still running)
+    untouched."""
     store = _read_store()
-    if store.pop(key, None) is not None:
-        _write_store(store)
+    entries = _entries_for(store, key)
+    remaining = [e for e in entries if e.get("snapshot_id") != snapshot_id]
+    if len(remaining) == len(entries):
+        return
+    if remaining:
+        store[key] = remaining
+    else:
+        store.pop(key, None)
+    _write_store(store)
 
 
 def record_diagnostic(*, kind: str, severity: str, source: str, message: str,
@@ -420,40 +474,62 @@ def resume_pending(key: str, poll_fn, fetch_fn) -> list[dict] | None:
     """One free attempt to collect a snapshot a previous run paid for and
     abandoned (B-19).
 
-    Returns the rows if the snapshot is now ready, None otherwise. NEVER
+    A key can have more than one pending entry (a handle that timed out on
+    two consecutive runs), so this tries every non-expired entry, oldest
+    first, and returns the rows for the first one that is ready -- clearing
+    only that entry. Any other still-pending entry is left alone.
+
+    Returns the rows if some snapshot is now ready, None otherwise. NEVER
     triggers a new job: the whole point is that this data is already bought.
-    A poll error is swallowed into None -- deliberately, because this is a
-    best-effort recovery running before the real job, and failing here must
-    not fail a run that is otherwise fine. That is the ONE place in this
-    module where an error becomes None, and it is why it is loud in the
-    diagnostics buffer.
+
+    A poll error is swallowed into None for that entry -- deliberately,
+    because this is a best-effort recovery running before the real job, and
+    failing here must not fail a run that is otherwise fine -- but the loop
+    still moves on to try any other pending entry for this key.
+
+    A snapshot that polls 'ready' but then fails to FETCH is different: that
+    is loud and this function stops and returns None immediately, without
+    clearing the entry, so a transient fetch failure gets another chance
+    next run (and the entry still expires naturally at PENDING_MAX_AGE_H if
+    it never recovers) -- see resume_fetch_failed below.
     """
-    entry = load_pending(key)
-    if not entry:
-        return None
-    snapshot_id = entry["snapshot_id"]
-    try:
-        status = poll_fn(snapshot_id)
-    except Exception as exc:  # noqa: BLE001 - see the docstring
-        record_diagnostic(kind="brightdata.resume_poll_failed", severity="warning",
-                          source="brightdata_job",
-                          message=f"could not poll abandoned snapshot {snapshot_id}: {exc}",
-                          detail={"key": key, "snapshot_id": snapshot_id})
-        return None
-    if status == "ready":
-        rows = fetch_fn(snapshot_id)
-        clear_pending(key)
-        record_diagnostic(kind="brightdata.resumed", severity="warning",
-                          source="brightdata_job",
-                          message=(f"recovered {len(rows)} row(s) from snapshot "
-                                   f"{snapshot_id}, abandoned by an earlier run"),
-                          detail={"key": key, "snapshot_id": snapshot_id, "rows": len(rows)})
-        return rows
-    if status == "failed":
-        clear_pending(key)
-        record_diagnostic(kind="brightdata.resume_failed", severity="error",
-                          source="brightdata_job",
-                          message=(f"abandoned snapshot {snapshot_id} reported 'failed'; "
-                                   f"its records are lost"),
-                          detail={"key": key, "snapshot_id": snapshot_id})
+    for entry in _valid_entries(key):
+        snapshot_id = entry["snapshot_id"]
+        try:
+            status = poll_fn(snapshot_id)
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            record_diagnostic(kind="brightdata.resume_poll_failed", severity="warning",
+                              source="brightdata_job",
+                              message=f"could not poll abandoned snapshot {snapshot_id}: {exc}",
+                              detail={"key": key, "snapshot_id": snapshot_id})
+            continue
+        if status == "ready":
+            try:
+                rows = fetch_fn(snapshot_id)
+            except Exception as exc:  # noqa: BLE001 - see the docstring
+                record_diagnostic(
+                    kind="brightdata.resume_fetch_failed", severity="error",
+                    source="brightdata_job",
+                    message=(f"snapshot {snapshot_id} was ready but its fetch failed: "
+                             f"{exc}; leaving it pending for another attempt"),
+                    detail={"key": key, "snapshot_id": snapshot_id},
+                )
+                return None
+            clear_pending(key, snapshot_id)
+            record_diagnostic(kind="brightdata.resumed", severity="warning",
+                              source="brightdata_job",
+                              message=(f"recovered {len(rows)} row(s) from snapshot "
+                                       f"{snapshot_id}, abandoned by an earlier run"),
+                              detail={"key": key, "snapshot_id": snapshot_id, "rows": len(rows)})
+            return rows
+        if status == "failed":
+            clear_pending(key, snapshot_id)
+            record_diagnostic(kind="brightdata.resume_failed", severity="error",
+                              source="brightdata_job",
+                              message=(f"abandoned snapshot {snapshot_id} reported 'failed'; "
+                                       f"its records are lost"),
+                              detail={"key": key, "snapshot_id": snapshot_id})
+            continue
+        # status == "running" (or any other non-terminal value): leave this
+        # entry pending untouched and try the next one, if any.
     return None

@@ -313,6 +313,14 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
               f"row(s) but none survived filtering. This run was billed and "
               f"captured nothing -- check whether this handle is still valid."
               f"{detail}", file=sys.stderr)
+        brightdata_job.record_diagnostic(
+            kind="adapter.billed_captured_nothing", severity="error",
+            source="discovery_facebook",
+            message=(f"{PLATFORM}/{handle}: Bright Data returned {len(raw_rows)} "
+                     f"row(s) but none survived filtering. This run was billed "
+                     f"and captured nothing.{detail}"),
+            detail={"platform": PLATFORM, "handle": handle,
+                    "raw_count": len(raw_rows), "error_codes": sorted(set(codes))})
 
     # Sort on the full timestamp, not the date-truncated 'published': Python's
     # sort is stable, so same-day rows sorted on 'published' alone would keep

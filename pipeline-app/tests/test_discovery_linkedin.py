@@ -599,6 +599,26 @@ def test_enumerate_warns_loudly_when_rows_returned_but_none_survive(monkeypatch,
     assert "billed" in err
 
 
+def test_billed_nothing_records_an_error_diagnostic(monkeypatch):
+    """The stderr print alone is invisible on the production Scheduled Task
+    path (no redirection). A billed-and-captured-nothing run must also be
+    escalated through the durable diagnostics sink, same as Instagram."""
+    adapter = _profile()
+    _stub_job(adapter, [
+        _row("f1", "2026-07-08", author="someone-else"),
+        _row("f2", "2026-07-09", author="another-person"),
+    ], monkeypatch)
+    brightdata_job.drain_diagnostics()
+    adapter.enumerate_newest_first("bettywliu", keyword_filter=None)
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.billed_captured_nothing"][0]
+    assert record["severity"] == "error"
+    assert record["source"] == "discovery_linkedin"
+    assert record["detail"]["platform"] == adapter.platform
+    assert record["detail"]["handle"] == "bettywliu"
+    assert record["detail"]["raw_count"] == 2
+
+
 def test_enumerate_does_not_warn_when_the_job_genuinely_returned_nothing(monkeypatch, capsys):
     adapter = _company()
     _stub_job(adapter, [], monkeypatch)

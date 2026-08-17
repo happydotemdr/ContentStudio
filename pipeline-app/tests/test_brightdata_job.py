@@ -475,6 +475,79 @@ def test_resume_pending_is_a_no_op_when_nothing_is_pending(monkeypatch, tmp_path
                              fetch_fn=_fail_if_called) is None
 
 
+def test_a_second_timeout_does_not_orphan_the_first_snapshot(monkeypatch, tmp_path):
+    """A single-slot pending store would let a second consecutive timeout on
+    the same key overwrite the first snapshot id, losing a paid-for,
+    uncollected snapshot with no way to ever recover it (Important 1)."""
+    monkeypatch.setattr(bd, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    bd.record_pending("x/CNN", "snap-first")
+    bd.record_pending("x/CNN", "snap-second")
+
+    # resume_pending must still be able to find and recover the still-pending
+    # FIRST snapshot -- it must not have been silently dropped.
+    seen = []
+
+    def _poll(job_id):
+        seen.append(job_id)
+        return "running"
+
+    assert bd.resume_pending("x/CNN", poll_fn=_poll,
+                             fetch_fn=lambda job_id: [{"id": "1"}]) is None
+    assert "snap-first" in seen
+
+    # And resolving the SECOND snapshot must not clear the first.
+    def _poll_ready_for_second(job_id):
+        return "ready" if job_id == "snap-second" else "running"
+
+    rows = bd.resume_pending("x/CNN", poll_fn=_poll_ready_for_second,
+                             fetch_fn=lambda job_id: [{"id": job_id}])
+    assert rows == [{"id": "snap-second"}]
+
+    # The first snapshot must still be recoverable afterward.
+    remaining = bd.resume_pending("x/CNN", poll_fn=lambda job_id: "ready",
+                                  fetch_fn=lambda job_id: [{"id": job_id}])
+    assert remaining == [{"id": "snap-first"}]
+    assert bd.load_pending("x/CNN") is None
+
+
+def test_pending_store_evicts_the_oldest_entry_past_the_cap(monkeypatch, tmp_path):
+    monkeypatch.setattr(bd, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    for i in range(bd.PENDING_MAX_ENTRIES):
+        bd.record_pending("x/CNN", f"snap-{i}")
+    bd.drain_diagnostics()
+    bd.record_pending("x/CNN", "snap-overflow")
+    record = [d for d in bd.drain_diagnostics()
+              if d["kind"] == "brightdata.pending_snapshot_evicted"][0]
+    assert record["severity"] == "error"
+    assert record["detail"]["snapshot_id"] == "snap-0"
+    # The oldest survivor is now snap-1, not the evicted snap-0.
+    assert bd.load_pending("x/CNN")["snapshot_id"] == "snap-1"
+
+
+def test_resume_pending_fetch_failure_is_swallowed_and_leaves_the_entry_pending(monkeypatch, tmp_path):
+    """The fetch call in the ready branch must be guarded the same way the
+    poll call is guarded: a snapshot that polls ready but then fails to
+    fetch (e.g. an expired snapshot, an exhausted retry budget) must not
+    raise out of resume_pending, and must not lose the pending entry, so a
+    transient failure gets another chance next run (Important 3)."""
+    monkeypatch.setattr(bd, "PENDING_STORE_PATH", tmp_path / "pending.json")
+    bd.record_pending("x/CNN", "snap-abc")
+    bd.drain_diagnostics()
+
+    def _boom(job_id):
+        raise bd.BrightDataResponseError("snapshot/snap-abc returned garbage")
+
+    result = bd.resume_pending("x/CNN", poll_fn=lambda job_id: "ready", fetch_fn=_boom)
+
+    assert result is None
+    # Not cleared -- it gets another chance next run.
+    assert bd.load_pending("x/CNN")["snapshot_id"] == "snap-abc"
+    record = [d for d in bd.drain_diagnostics()
+              if d["kind"] == "brightdata.resume_fetch_failed"][0]
+    assert record["severity"] == "error"
+    assert record["detail"]["snapshot_id"] == "snap-abc"
+
+
 def test_config_int_prefers_an_environment_override(monkeypatch):
     monkeypatch.setenv("BRIGHTDATA_TEST_KNOB", "25")
     assert bd.config_int("BRIGHTDATA_TEST_KNOB", 10) == 25

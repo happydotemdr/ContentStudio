@@ -347,6 +347,14 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
         print(f"  !! {PLATFORM}/{handle}: Bright Data returned {len(raw_rows)} "
               f"row(s) but none survived filtering. This run was billed and "
               f"captured nothing -- {advice}.", file=sys.stderr)
+        brightdata_job.record_diagnostic(
+            kind="adapter.billed_captured_nothing", severity="error",
+            source="discovery_x",
+            message=(f"{PLATFORM}/{handle}: Bright Data returned {len(raw_rows)} "
+                     f"row(s) but none survived filtering. This run was billed "
+                     f"and captured nothing -- {advice}."),
+            detail={"platform": PLATFORM, "handle": handle,
+                    "raw_count": len(raw_rows)})
 
     # Rows arrive unsorted (verified live); the engine's early-stop dedup
     # assumes newest-first. Sort on the full timestamp, not the date-truncated

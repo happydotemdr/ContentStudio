@@ -337,6 +337,14 @@ class LinkedInAdapter:
             print(f"  !! {self.platform}/{handle}: Bright Data returned "
                   f"{len(raw_rows)} row(s) but none survived filtering. This run "
                   f"was billed and captured nothing -- {advice}.", file=sys.stderr)
+            brightdata_job.record_diagnostic(
+                kind="adapter.billed_captured_nothing", severity="error",
+                source="discovery_linkedin",
+                message=(f"{self.platform}/{handle}: Bright Data returned "
+                         f"{len(raw_rows)} row(s) but none survived filtering. "
+                         f"This run was billed and captured nothing -- {advice}."),
+                detail={"platform": self.platform, "handle": handle,
+                        "raw_count": len(raw_rows)})
 
         # Rows arrive unsorted (verified live); the engine's early-stop dedup
         # assumes newest-first. Sort on the full timestamp, not the
