@@ -624,6 +624,19 @@ makes the always-zero defect impossible to reintroduce.
 **Test** (`tests/test_run_discovery_cron.py`):
 
 ```python
+> **Plan correction, P8 session.** The table below calls `_raise(RuntimeError("resend is down"))`
+> as a `notify=` value, but `_raise` is not defined anywhere in this task's shown code, in any
+> earlier P8 task, or in the live `tests/test_run_discovery_cron.py` (grepped this session — zero
+> hits). Task 5 already wrote an equivalent literal callable inline
+> (`def raising_notify(*a, **k): raise RuntimeError(...)`) for a single test; this table needs the
+> same shape as a reusable factory. Add it alongside `_stub`:
+> ```python
+> def _raise(exc: BaseException):
+>     def _fn(*a, **k):
+>         raise exc
+>     return _fn
+> ```
+
 def _stub(monkeypatch, *, due=True, result=None, notify=None, init_db_error=None, tz=None):
     if init_db_error is not None:
         monkeypatch.setattr(cron.db, "init_db",
