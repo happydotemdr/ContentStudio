@@ -502,3 +502,73 @@ def test_process_job_handles_a_gsheet_via_mocked_drive_export(conn, tmp_path):
     ).fetchone()
     # ...but the RECORDED source_type/tool stay Drive-native, not 'xlsx'/'firecrawl-parse'.
     assert conversion == ("gsheet", "google-sheets-export", 1, row_count, "2026-08-11T00:00:00Z")
+
+
+def test_process_job_tags_a_session_outlines_file_with_its_client(conn, tmp_path):
+    from doc_ingest import clients_db, worker
+    clients_db.register_client(
+        conn, slug="sean", display_name="Sean", primary_email="sean.carl.tinsley@gmail.com",
+        session_outlines_dir="Client Session Outlines/Sean", drive_folder_id="folder1",
+    )
+    input_root = tmp_path / "input"
+    (input_root / "Client Session Outlines" / "Sean").mkdir(parents=True)
+    source = input_root / "Client Session Outlines" / "Sean" / "note.txt"
+    source.write_text("some session content", encoding="utf-8")
+
+    from doc_ingest.config import Config
+    cfg = Config(input_root=input_root, output_root=tmp_path / "output")
+
+    conn.execute(
+        "INSERT INTO source_files (rel_path, extension, classification, size_bytes, mtime, "
+        "content_hash, first_seen_at, last_seen_at) VALUES "
+        "('Client Session Outlines/Sean/note.txt', 'txt', 'convertible', 20, 'm', 'h', 'n', 'n')"
+    )
+    source_file_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "INSERT INTO conversion_jobs (source_file_id, status, created_at) VALUES (?, 'pending', 'n')",
+        (source_file_id,),
+    )
+    job_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+
+    with patch("doc_ingest.lock.apply_readonly_lock"), patch("doc_ingest.lock.verify_locked", return_value=True):
+        worker.process_job(conn, job_id, cfg, "w1", calendar_service_factory=lambda: None)
+
+    row = conn.execute("SELECT client FROM conversions WHERE source_file_id = ?", (source_file_id,)).fetchone()
+    assert row[0] == "sean"
+
+    output_files = list((cfg.converted_root / "Client Session Outlines" / "Sean").glob("*.md"))
+    assert len(output_files) == 1
+    content = output_files[0].read_text(encoding="utf-8")
+    assert "client: sean" in content
+
+
+def test_process_job_does_not_tag_a_non_client_file(conn, tmp_path):
+    from doc_ingest import worker
+    input_root = tmp_path / "input"
+    (input_root / "Offer & Coaching Framework" / "Current finalized documents").mkdir(parents=True)
+    source = input_root / "Offer & Coaching Framework" / "Current finalized documents" / "Vision.txt"
+    source.write_text("vision content", encoding="utf-8")
+
+    from doc_ingest.config import Config
+    cfg = Config(input_root=input_root, output_root=tmp_path / "output")
+
+    conn.execute(
+        "INSERT INTO source_files (rel_path, extension, classification, size_bytes, mtime, "
+        "content_hash, first_seen_at, last_seen_at) VALUES "
+        "('Offer & Coaching Framework/Current finalized documents/Vision.txt', 'txt', 'convertible', "
+        "14, 'm', 'h', 'n', 'n')"
+    )
+    source_file_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "INSERT INTO conversion_jobs (source_file_id, status, created_at) VALUES (?, 'pending', 'n')",
+        (source_file_id,),
+    )
+    job_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+
+    with patch("doc_ingest.lock.apply_readonly_lock"), patch("doc_ingest.lock.verify_locked", return_value=True):
+        worker.process_job(conn, job_id, cfg, "w1", calendar_service_factory=lambda: None)
+
+    row = conn.execute("SELECT client FROM conversions WHERE source_file_id = ?", (source_file_id,)).fetchone()
+    assert row[0] is None
