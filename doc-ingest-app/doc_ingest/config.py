@@ -34,6 +34,8 @@ class Config:
     drive_metadata_batch_size: int = 100
     drive_retry_max_attempts: int = 5
     drive_retry_base_delay_s: float = 2.0
+    firecrawl_retry_max_attempts: int = 5
+    firecrawl_retry_base_delay_s: float = 2.0
 
     @property
     def converted_root(self) -> Path:
