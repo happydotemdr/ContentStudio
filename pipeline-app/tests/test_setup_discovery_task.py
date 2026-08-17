@@ -158,6 +158,20 @@ def test_task_xml_pins_the_logon_model_and_working_directory():
     assert root.find(".//t:Repetition/t:Interval", ns).text == "PT15M"
 
 
+def test_task_xml_bounds_execution_time_well_under_the_old_four_hours():
+    """I-5: run_discovery's default run_deadline_s is 5400s (90 minutes), so a
+    4-hour ExecutionTimeLimit gave a wedged adapter thread (which
+    run_deadline_s cannot actually kill, only abandon -- see run_discovery's
+    docstring) up to 4 hours of MultipleInstancesPolicy=IgnoreNew silently
+    dropping every 15-minute wake. PT2H keeps generous headroom over 90
+    minutes while halving that worst-case wake-loss window."""
+    xml = _xml()
+    root = ElementTree.fromstring(xml)
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    assert root.find(".//t:Settings/t:ExecutionTimeLimit", ns).text == "PT2H"
+    assert "PT4H" not in xml
+
+
 def test_dry_run_prints_a_command_that_survives_a_round_trip_through_the_shell_parser():
     """B-45: ' '.join(cmd) flattened the /TR payload, so pasting the printed
     line bound /TR to the python path alone and left the script as a stray

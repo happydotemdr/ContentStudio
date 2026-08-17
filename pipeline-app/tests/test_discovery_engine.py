@@ -831,6 +831,35 @@ def test_validate_handle_with_no_matching_adapter_records_a_failed_run_not_a_cra
     assert db.get_run(engine_conn, result["run_row_id"]) is not None
 
 
+def test_validate_handle_with_a_nonexistent_handle_id_returns_failed_not_a_crash(engine_conn, tmp_path):
+    """I-1 Part A: db_mod.get_handle(conn, handle_id) is inside the try, but a
+    None handle_row does not itself raise -- the crash used to happen later,
+    while building handle_result, when the except handler tried
+    handle_row["handle"] against a None handle_row (AFTER already calling
+    set_handle_status/recording a misleading 'validate_transient_failure'
+    event for a handle that was never real). run_discovery must return a
+    dict, not raise, with an honest 'not found' error message -- not the
+    transient-failure framing, and no discovery_run_handles row (handles.id
+    is a foreign key; that insert would raise its own IntegrityError for an
+    id that was never real)."""
+    nonexistent_handle_id = 999999
+    result = run_discovery(
+        engine_conn, tmp_path, {"youtube": SingleFakeAdapter({})},
+        trigger="manual", mode="validate_handle", handle_id=nonexistent_handle_id,
+    )
+    assert isinstance(result, dict)
+    assert result["status"] == "failed"
+    run_row = db.get_run(engine_conn, result["run_row_id"])
+    assert run_row is not None
+    assert run_row["status"] == "failed"
+
+    # No misleading "transient failure" event -- the handle never existed.
+    events = engine_conn.execute(
+        "SELECT * FROM events WHERE kind = 'discovery.validate_transient_failure'").fetchall()
+    assert events == []
+    assert db.list_run_handle_results(engine_conn, result["run_row_id"]) == []
+
+
 def test_a_transient_validate_failure_leaves_a_warning_event(engine_conn, tmp_path):
     handle_id = db.create_handle(engine_conn, "youtube", "@crashy", "Crashy", "guru", None, now_iso())
     adapter = SingleFakeAdapter({}, fail_handles={"@crashy"})
@@ -1309,6 +1338,54 @@ def test_a_run_that_blows_its_overall_deadline_ends_failed_not_running(engine_co
     assert row["severity"] == "error"
 
 
+def test_a_deadline_exceeded_scheduled_run_still_advances_the_watermark_instant(engine_conn, tmp_path):
+    """I-4: a RunDeadlineExceeded-caused 'failed' run correctly skips the
+    normal success watermark write (final_status == 'failed'), but that means
+    is_due() sees no recent instant at all and fires again at the very next
+    15-minute wake, with no backoff -- a hung run just keeps re-attempting for
+    the rest of the day, burning up to run_deadline_s of billable adapter
+    calls each time. A deadline-exceeded run must still stamp the watermark's
+    instant so MIN_RUN_INTERVAL_H's instant-based check in is_due blocks a
+    same-day re-fire, giving the operator time to notice and intervene."""
+    from pipeline_app.discovery_scheduling import is_due
+
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    now = _dt.datetime(2026, 7, 30, 6, 0, 0, tzinfo=_dt.timezone.utc)
+    result = run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({"@a": []})},
+                           trigger="scheduled", mode="incremental", run_deadline_s=0.0, now=now)
+    assert result["status"] == "failed"
+
+    settings = db.get_settings(engine_conn)
+    last_date, last_instant = decode_watermark(settings["last_scheduled_run_date"])
+    assert last_instant is not None      # the instant WAS stamped despite the failure
+
+    # A same-day recheck shortly after the deadline-exceeded run must not be due
+    # again -- MIN_RUN_INTERVAL_H's backoff blocks the immediate re-fire.
+    recheck = now + _dt.timedelta(minutes=15)
+    assert is_due(recheck, settings["timezone"], settings["time_of_day"],
+                  settings["last_scheduled_run_date"]) is False
+
+
+def test_a_non_deadline_crash_does_not_advance_the_watermark(engine_conn, tmp_path, monkeypatch):
+    """I-4's carve-out: only a RunDeadlineExceeded warrants the backoff write.
+    A startup crash or any other outer exception must still leave tomorrow's
+    normal schedule untouched -- writing the watermark here would be exactly
+    the B-50 desync this branch must not reintroduce for an ordinary crash."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+
+    def _boom(*a, **k):
+        raise RuntimeError("list_handles blew up")
+
+    monkeypatch.setattr(db, "list_handles", _boom)
+    result = run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({"@a": []})},
+                           trigger="scheduled", mode="incremental")
+    assert result["status"] == "failed"
+
+    settings = db.get_settings(engine_conn)
+    last_date, last_instant = decode_watermark(settings["last_scheduled_run_date"])
+    assert last_instant is None
+
+
 def test_the_engine_module_has_no_mid_file_imports():
     """B-64(1): import sqlite3/sys/threading and the pipeline_app imports sat at
     line 117, so importing the pure walk functions dragged in the DB layer."""
@@ -1374,6 +1451,39 @@ def test_a_failed_preflight_skips_that_platform_and_reports_once(engine_conn, tm
         "SELECT * FROM events WHERE kind = 'discovery.preflight_failed'").fetchall()
     assert len(events) == 1
     assert events[0]["severity"] == "error"
+
+
+def test_three_consecutive_failing_preflights_downgrade_every_handle_on_that_platform(engine_conn, tmp_path):
+    """I-6 / P1's B-82: _apply_preflight's per-platform failure branch recorded
+    an 'error' handle_result for every handle on a platform whose preflight
+    failed, but never called record_handle_failure -- so a permanently
+    unconfigured platform (e.g. no BRIGHTDATA_API_KEY) raised an identical
+    error on every run forever without ever downgrading its handles to
+    'failing', unlike the main per-handle loop's TimeoutError/generic-
+    exception branches (Task 39). Same shape as
+    test_three_consecutive_failing_runs_downgrade_the_handle, but via the
+    preflight path instead of a per-handle adapter exception."""
+    class Unconfigured(SingleFakeAdapter):
+        def preflight(self, repo_root=None):
+            return "BRIGHTDATA_API_KEY is not set; instagram cannot run"
+
+        def enumerate_newest_first(self, handle, keyword_filter):
+            raise AssertionError("must not be reached when preflight failed")
+
+    handle_ids = []
+    for handle in ("@a", "@b", "@c"):
+        handle_id = db.create_handle(engine_conn, "instagram", handle, handle, "guru", None, now_iso())
+        db.set_handle_status(engine_conn, handle_id, "validated")
+        handle_ids.append(handle_id)
+
+    for _ in range(3):
+        run_discovery(engine_conn, tmp_path, {"instagram": Unconfigured({})},
+                      trigger="manual", mode="incremental")
+
+    for handle_id in handle_ids:
+        row = db.get_handle(engine_conn, handle_id)
+        assert row["consecutive_failures"] == 3
+        assert row["status"] == "failing"
 
 
 def test_a_failed_preflight_does_not_block_other_platforms(engine_conn, tmp_path):

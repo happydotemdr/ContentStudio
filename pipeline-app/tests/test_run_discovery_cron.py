@@ -89,7 +89,7 @@ def test_scheduled_due_run_calls_notify(monkeypatch, repo_root):
 
     exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
 
-    assert exit_code == 0
+    assert exit_code == cron.Exit.OK
     assert calls == [1]
 
 
@@ -349,6 +349,35 @@ def test_a_startup_failure_exits_startup_failed_and_is_not_confused_with_not_due
     assert cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)]) != wedged
 
 
+def test_an_uncaught_run_discovery_exception_does_not_propagate_out_of_main(monkeypatch, repo_root):
+    """I-1 Part B: main() wrapped run_discovery(...) in a try/finally with NO
+    except clause -- an exception escaping run_discovery propagated out of
+    main() entirely, producing Python's own uncontracted exit code 1 with no
+    obs.record_event call anywhere. main() must catch it, record a durable
+    trace, and return the new contracted Exit.ENGINE_CRASHED instead."""
+    monkeypatch.setattr(cron, "_is_due_now", lambda conn: True)
+
+    def _boom(*a, **k):
+        raise RuntimeError("adapter dict blew up")
+
+    monkeypatch.setattr(cron, "run_discovery", _boom)
+    exit_code = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+    assert exit_code == cron.Exit.ENGINE_CRASHED
+
+    conn = db.get_connection(repo_root / "pipeline-app" / "pipeline.db")
+    try:
+        row = conn.execute(
+            "SELECT * FROM events WHERE kind = 'discovery.run_crashed'").fetchone()
+        assert row is not None
+        assert row["severity"] == "error"
+        detail = __import__("json").loads(row["detail"])
+        assert detail["error_type"] == "RuntimeError"
+        assert "traceback" in detail
+        assert "RuntimeError" in detail["traceback"]
+    finally:
+        conn.close()
+
+
 def test_a_wake_is_logged_before_the_database_is_touched(monkeypatch, repo_root, tmp_path):
     """D-06: everything the recovery machinery does is downstream of
     insert_running_run. The attempt marker has to be written before init_db
@@ -400,7 +429,8 @@ def _raise(exc: BaseException):
     return _fn
 
 
-def _stub(monkeypatch, *, due=True, result=None, notify=None, init_db_error=None, tz=None):
+def _stub(monkeypatch, *, due=True, result=None, notify=None, init_db_error=None, tz=None,
+          engine_raises=None):
     if init_db_error is not None:
         monkeypatch.setattr(cron.db, "init_db",
                             lambda *a, **k: (_ for _ in ()).throw(init_db_error))
@@ -410,7 +440,10 @@ def _stub(monkeypatch, *, due=True, result=None, notify=None, init_db_error=None
                             lambda conn: (_ for _ in ()).throw(ScheduleConfigError(tz)))
     else:
         monkeypatch.setattr(cron, "_is_due_now", lambda conn: due)
-    monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: result)
+    if engine_raises is not None:
+        monkeypatch.setattr(cron, "run_discovery", _raise(engine_raises))
+    else:
+        monkeypatch.setattr(cron, "run_discovery", lambda *a, **k: result)
     monkeypatch.setattr(cron, "notify", notify if notify is not None else (lambda *a, **k: True))
 
 
@@ -441,6 +474,7 @@ EXIT_CONTRACT = [
                                      notify=lambda *a, **k: False),                                       cron.Exit.NOTIFY_FAILED),
     ("errored + unsent email",  dict(result=_result("completed_with_errors", total=3, attempted=3, failed=1),
                                      notify=lambda *a, **k: False),                                       cron.Exit.HANDLES_ERRORED),
+    ("run_discovery crashed",   dict(engine_raises=RuntimeError("boom")),                                 cron.Exit.ENGINE_CRASHED),
 ]
 
 
@@ -479,6 +513,29 @@ def test_a_stale_run_is_reclaimed_even_when_today_is_not_due(monkeypatch, repo_r
         conn.close()
 
 
+def test_stale_after_s_flag_reaches_the_reclaim_sweep(monkeypatch, repo_root):
+    """I-2: sweep_stale_runs(conn, repo_root) was called in main() with no
+    stale_after_s argument, silently ignoring --stale-after-s -- the CLI flag
+    documented as reachable (B-64(3)) had no actual effect on the one call
+    site that runs before the due-check. A run started 3 seconds ago is not
+    stale under the 600s default, but IS stale under a 1-second threshold
+    passed explicitly -- proving the flag is threaded through, not just
+    accepted and dropped."""
+    import datetime as _dt2
+    conn = db.get_connection(repo_root / "pipeline-app" / "pipeline.db")
+    try:
+        started_at = (_dt2.datetime.now(_dt2.timezone.utc) - _dt2.timedelta(seconds=3)).isoformat()
+        stale_id = db.insert_running_run(conn, "borderline", "manual", "incremental", started_at)
+        conn.commit()
+        monkeypatch.setattr(cron, "_is_due_now", lambda c: False)
+        exit_code = cron.main(["--mode", "scheduled", "--stale-after-s", "1",
+                               "--repo-root", str(repo_root)])
+        assert exit_code == cron.Exit.OK
+        assert db.get_run(conn, stale_id)["status"] == "abandoned"
+    finally:
+        conn.close()
+
+
 def test_the_scheduled_path_short_circuits_when_a_run_is_already_active(monkeypatch, repo_root):
     """B-49: a 90-minute Bright Data run left five locked rows and five junk
     files -- one per 15-minute scheduled wake that found the lock held. The
@@ -492,6 +549,28 @@ def test_the_scheduled_path_short_circuits_when_a_run_is_already_active(monkeypa
                             lambda *a, **k: pytest.fail("the engine must not be reached"))
         assert cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)]) == cron.Exit.LOCKED
         assert len(db.list_runs(conn)) == 1     # no junk 'locked' row was added
+    finally:
+        conn.close()
+
+
+def test_validate_handle_mode_is_not_blocked_by_the_single_flight_lock(monkeypatch, repo_root):
+    """I-3: the B-49 'already active' gate must be scoped to the modes that
+    actually take the single-flight lock (ux_discovery_single_running) --
+    the scheduled path (once due) and incremental/backfill. validate_handle
+    uses insert_terminal_run and never contends for that lock, so a running
+    incremental run must not short-circuit it to LOCKED."""
+    conn = db.get_connection(repo_root / "pipeline-app" / "pipeline.db")
+    try:
+        db.insert_running_run(conn, "in-flight", "manual", "incremental", now_iso())
+        conn.commit()
+        called = {"n": 0}
+        monkeypatch.setattr(cron, "run_discovery",
+                            lambda *a, **k: (called.__setitem__("n", called["n"] + 1),
+                                              {"run_row_id": 2, "status": "completed"})[1])
+        exit_code = cron.main(["--mode", "validate_handle", "--handle-id", "1",
+                               "--repo-root", str(repo_root)])
+        assert called["n"] == 1        # the engine WAS reached, unlike the LOCKED modes
+        assert exit_code != cron.Exit.LOCKED
     finally:
         conn.close()
 

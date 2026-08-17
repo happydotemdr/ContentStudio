@@ -52,6 +52,16 @@ def build_task_action(python_exe: Path, cron_script: Path, log_path: Path) -> st
 
 def build_task_xml(python_exe: Path, cron_script: Path, *, log_path: Path,
                    run_as: str, working_dir: Path | None = None) -> str:
+    """I-5: ExecutionTimeLimit is PT2H, not the old PT4H. run_discovery's
+    default run_deadline_s is 5400s (90 minutes); PT2H is still generous
+    headroom over that default but bounds the worst case -- a wedged adapter
+    thread that run_deadline_s itself cannot kill, only abandon (see
+    run_discovery's own docstring caveat), holding this task via
+    MultipleInstancesPolicy=IgnoreNew and silently dropping every 15-minute
+    wake in the meantime -- to 2 hours instead of 4. (Not an XML comment:
+    Task Scheduler's schema tolerates them poorly, and XML disallows "--"
+    inside a comment body, which this explanation needs.)
+    """
     working_dir = working_dir or cron_script.parent
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -71,7 +81,7 @@ def build_task_xml(python_exe: Path, cron_script: Path, *, log_path: Path,
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <StartWhenAvailable>true</StartWhenAvailable>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <ExecutionTimeLimit>PT4H</ExecutionTimeLimit>
+    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
     <Enabled>true</Enabled>
   </Settings>
   <Actions Context="Author"><Exec>

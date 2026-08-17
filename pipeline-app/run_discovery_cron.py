@@ -18,6 +18,7 @@ import argparse
 import datetime as _dt
 import enum
 import sys
+import traceback
 from pathlib import Path
 
 from pipeline_app import db, obs
@@ -40,6 +41,7 @@ class Exit(enum.IntEnum):
     RUN_FAILED          = 15
     SCHEDULER_WEDGED    = 16
     STARTUP_FAILED      = 17
+    ENGINE_CRASHED      = 18
 
 
 EXIT_REASON: dict[Exit, str] = {
@@ -52,6 +54,7 @@ EXIT_REASON: dict[Exit, str] = {
     Exit.RUN_FAILED: "the run crashed or exceeded its deadline",
     Exit.SCHEDULER_WEDGED: "the stored schedule settings cannot be evaluated",
     Exit.STARTUP_FAILED: "startup failed before any run could be recorded",
+    Exit.ENGINE_CRASHED: "run_discovery() raised an exception outside its own error handling",
 }
 
 
@@ -165,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     # scheduled path returns early below when today isn't due and never reaches
     # run_discovery at all, so a Run Now that died hard after the day's scheduled
     # run would otherwise sit "running" until the next due day (B-52).
-    reclaimed = sweep_stale_runs(conn, repo_root)
+    reclaimed = sweep_stale_runs(conn, repo_root, stale_after_s=args.stale_after_s)
     if reclaimed:
         obs.record_event(conn, kind="discovery.runs_reclaimed", severity="warning",
                          source="run_discovery_cron",
@@ -206,22 +209,42 @@ def main(argv: list[str] | None = None) -> int:
         # B-49: a long-running call must never generate a locked row (and a
         # paired junk file) for every scheduled wake that finds the
         # single-flight lock held -- refuse before the engine is even
-        # reached, for every mode that would otherwise call run_discovery.
-        if db.get_running_run(conn) is not None:
+        # reached. Scoped to the modes that actually take the single-flight
+        # lock (ux_discovery_single_running): "incremental" covers both the
+        # scheduled-due path and a manual incremental/backfill run -- but
+        # NOT "validate_handle", which uses insert_terminal_run and never
+        # contends for that lock, so it must never be blocked by it (I-3).
+        if mode in ("incremental", "backfill") and db.get_running_run(conn) is not None:
             obs.record_event(conn, kind="discovery.run_already_active", severity="info",
                              source="run_discovery_cron",
                              message="a discovery run is already active; skipping this wake "
                                      "without calling the engine")
             return Exit.LOCKED
 
-        result = run_discovery(
-            conn, repo_root, build_adapters(), trigger=trigger, mode=mode,
-            backfill_start=args.backfill_start, backfill_end=args.backfill_end,
-            handle_id=args.handle_id,
-            heartbeat_interval_s=args.heartbeat_interval_s, stale_after_s=args.stale_after_s,
-            per_handle_deadline_s=args.per_handle_deadline_s, run_deadline_s=args.run_deadline_s,
-            new_handle_lookback_days=args.new_handle_lookback_days,
-        )
+        try:
+            result = run_discovery(
+                conn, repo_root, build_adapters(), trigger=trigger, mode=mode,
+                backfill_start=args.backfill_start, backfill_end=args.backfill_end,
+                handle_id=args.handle_id,
+                heartbeat_interval_s=args.heartbeat_interval_s, stale_after_s=args.stale_after_s,
+                per_handle_deadline_s=args.per_handle_deadline_s, run_deadline_s=args.run_deadline_s,
+                new_handle_lookback_days=args.new_handle_lookback_days,
+            )
+        except Exception as exc:  # noqa: BLE001 - I-1 Part B: run_discovery is
+            # supposed to catch its own crashes and return a terminal 'failed'
+            # result, but that guarantee has already been proven incomplete
+            # once (I-1 Part A). Without this, an exception that still slips
+            # past run_discovery's own handling would propagate out of main()
+            # entirely, producing Python's own uncontracted exit code 1 with
+            # no durable trace anywhere -- the exact failure mode this whole
+            # exit-code contract exists to prevent.
+            tb = traceback.format_exc()
+            obs.record_event(conn, kind="discovery.run_crashed", severity="error",
+                             source="run_discovery_cron",
+                             message=f"run_discovery() raised {type(exc).__name__}: {exc}",
+                             detail={"error_type": type(exc).__name__, "traceback": tb})
+            print(f"discovery run crashed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return Exit.ENGINE_CRASHED
         print(f"run {result['run_row_id']}: {result['status']}")
 
         if args.mode == "scheduled" and result["status"] != "locked":

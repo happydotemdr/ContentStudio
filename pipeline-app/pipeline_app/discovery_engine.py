@@ -502,6 +502,13 @@ def _apply_preflight(conn: sqlite3.Connection, repo_root: Path, adapters: dict,
             continue
         message = failed_platforms[platform]
         db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", 0, message)
+        # I-6 / P1's B-82: a platform-wide preflight failure is a real failure
+        # for every handle on that platform, just as much as a per-handle
+        # TimeoutError/generic exception in the main loop below -- it must
+        # feed the same consecutive-failure counter, or a permanently
+        # unconfigured platform (e.g. no BRIGHTDATA_API_KEY) never downgrades
+        # its handles to 'failing' and keeps looking healthy on the roster.
+        db_mod.record_handle_failure(conn, handle_row["id"], now_iso=now_iso())
         handle_results.append({
             "handle": handle_row["handle"], "platform": platform,
             "cohort": handle_row["cohort"], "status": "error", "items_downloaded": 0,
@@ -572,8 +579,17 @@ def run_discovery(
 
     if mode == "validate_handle":
         db_mod.set_handle_status(conn, handle_id, "validating")
+        handle_row = None
         try:
             handle_row = db_mod.get_handle(conn, handle_id)
+            if handle_row is None:
+                # I-1 Part A: a handle_id that doesn't exist is not a transient
+                # adapter/network failure -- it's a caller error (a stale ID, a
+                # race with deletion). Raise here rather than let the next line
+                # crash on `None["platform"]`, so the branch below can tell this
+                # case apart from a real adapter exception and avoid recording
+                # it with the misleading "transient failure" framing.
+                raise LookupError(f"handle_id {handle_id} not found")
             adapter = adapters[handle_row["platform"]]
             outcome = process_handle_validate(adapter, repo_root, handle_row)
             finished_at = now_iso()
@@ -619,6 +635,31 @@ def run_discovery(
             # up, a transient adapter error) must leave the handle pending
             # and included, not silently and permanently excluded.
             finished_at = now_iso()
+            status = "failed"
+            if handle_row is None:
+                # I-1 Part A: handle_id doesn't exist at all -- this is not a
+                # transient adapter/network failure (the "validate_transient_
+                # failure" framing would be misleading here, and there is no
+                # real handle to downgrade to 'pending' or 'invalid', or to
+                # attach a discovery_run_handles row to -- handles.id is a
+                # foreign key, and record_handle_result would raise its own
+                # IntegrityError for an id that was never real). Still produce
+                # a terminal run row and a markdown record so the attempt is
+                # not silently lost, with a handle_result carrying placeholder
+                # values and an honest, specific error message.
+                error_message = f"handle_id {handle_id} not found"
+                handle_result = {"handle": f"(unknown handle {handle_id})", "platform": None,
+                                  "cohort": None, "status": "error",
+                                  "items_downloaded": 0, "last_seen_published_at": None,
+                                  "error_message": error_message}
+                run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
+                _finish_run_guarded(conn, run_row_id, status, finished_at,
+                                   str(write_run_record(repo_root, {
+                                       "run_id": run_id, "trigger": trigger, "mode": mode, "status": status,
+                                       "started_at": started_at, "finished_at": finished_at,
+                                       "backfill_start": None, "backfill_end": None,
+                                   }, [handle_result])))
+                return {"run_row_id": run_row_id, "status": status, "counts": _summarize([handle_result])}
             error_message = f"{type(exc).__name__}: {exc}"
             if isinstance(exc, EXCLUDING_ERRORS):
                 db_mod.set_handle_status(conn, handle_id, "invalid")
@@ -628,7 +669,6 @@ def run_discovery(
                 obs.record_event(conn, kind="discovery.validate_transient_failure", severity="warning",
                                  source="discovery_engine", message=error_message, run_id=None,
                                  detail={"error_type": type(exc).__name__})
-            status = "failed"
             handle_result = {"handle": handle_row["handle"], "platform": handle_row["platform"],
                               "cohort": handle_row["cohort"], "status": "error",
                               "items_downloaded": 0, "last_seen_published_at": None,
@@ -867,6 +907,24 @@ def run_discovery(
         # not also stamp the watermark with its stale finished_at -- that
         # would desync is_due from reality on top of erasing the reclaim
         # evidence (B-50).
+        timezone_name = db_mod.get_settings(conn)["timezone"]
+        local_date = now.astimezone(ZoneInfo(timezone_name)).date().isoformat()
+        db_mod.set_last_scheduled_run_date(conn, encode_watermark(local_date, timezone_name, now_iso(now)))
+    elif finished_cleanly and trigger == "scheduled" and isinstance(outer_crash, RunDeadlineExceeded):
+        # I-4: a deadline-exceeded run is `final_status == "failed"`, so the
+        # branch above correctly skips the watermark -- but that means
+        # is_due() sees no recent instant at all and fires again at the very
+        # next 15-minute wake, with no backoff: a hung run just keeps
+        # re-attempting for the rest of the day, burning up to run_deadline_s
+        # of billable adapter calls each time. A startup crash or any other
+        # outer exception is NOT covered here -- those should still allow
+        # tomorrow's normal schedule to run unaffected -- but a run that
+        # genuinely ran for run_deadline_s seconds warrants a real backoff.
+        # Write the watermark's INSTANT only (same encode_watermark call, same
+        # local_date/timezone_name derivation as the successful path above) so
+        # MIN_RUN_INTERVAL_H's instant-based check in is_due blocks a same-day
+        # re-fire for MIN_RUN_INTERVAL_H hours, giving the operator time to
+        # notice and intervene -- without claiming the day's run "succeeded".
         timezone_name = db_mod.get_settings(conn)["timezone"]
         local_date = now.astimezone(ZoneInfo(timezone_name)).date().isoformat()
         db_mod.set_last_scheduled_run_date(conn, encode_watermark(local_date, timezone_name, now_iso(now)))
