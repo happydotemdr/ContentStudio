@@ -3561,6 +3561,7 @@ git commit -m "feat(coach-prep-app): publish drafts to the shared Pending Review
 
 **Files:**
 - Create: `coach-prep-app/coach_prep_app/notify.py`
+- Modify: `coach-prep-app/.gitignore` (add `resend_api_key.txt` — this task's `notify.KEY_FILE` is the first thing in the plan to reference that path; neither the root `.gitignore` nor Task 11's `coach-prep-app/.gitignore` covers it, so without this the first commit after this task lands could commit a live Resend API key)
 - Test: `coach-prep-app/tests/test_notify.py`
 
 **Interfaces:**
@@ -3694,6 +3695,12 @@ def render_review_email(client_display_name: str, meeting_date: dt.date, drive_f
     return subject, text
 ```
 
+Add to `coach-prep-app/.gitignore`:
+
+```
+resend_api_key.txt
+```
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_notify.py -v`
@@ -3702,7 +3709,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add coach-prep-app/coach_prep_app/notify.py coach-prep-app/tests/test_notify.py
+git add coach-prep-app/coach_prep_app/notify.py coach-prep-app/tests/test_notify.py coach-prep-app/.gitignore
 git commit -m "feat(coach-prep-app): add Resend email notification"
 ```
 
