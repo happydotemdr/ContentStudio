@@ -1,4 +1,5 @@
 import inspect
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -299,6 +300,29 @@ def test_every_exit_code_is_unique_and_documented():
     assert {1, 2} & set(values) == set(), "1 and 2 belong to CPython and argparse"
     for member in cron.Exit:
         assert cron.EXIT_REASON[member], f"{member.name} has no reason string"
+
+
+def test_a_startup_failure_exits_startup_failed_and_is_not_confused_with_not_due(monkeypatch, repo_root):
+    monkeypatch.setattr(cron.db, "init_db", lambda *a, **k: (_ for _ in ()).throw(
+        sqlite3.OperationalError("database is locked")))
+    wedged = cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+    assert wedged == cron.Exit.STARTUP_FAILED
+
+    monkeypatch.undo()
+    monkeypatch.setattr(cron, "_is_due_now", lambda conn: False)
+    assert cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)]) != wedged
+
+
+def test_a_wake_is_logged_before_the_database_is_touched(monkeypatch, repo_root, tmp_path):
+    """D-06: everything the recovery machinery does is downstream of
+    insert_running_run. The attempt marker has to be written before init_db
+    can fail, which means the log file, not the events table."""
+    monkeypatch.setattr(cron.db, "init_db", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    cron.main(["--mode", "scheduled", "--repo-root", str(repo_root)])
+    logs = sorted((Path(cron.__file__).resolve().parent / "logs").glob("app-*.log"))
+    text = logs[-1].read_text(encoding="utf-8")
+    assert "discovery.wake" in text
+    assert "discovery.startup_failed" in text
 
 
 def _result(status, **counts):

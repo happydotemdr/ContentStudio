@@ -132,8 +132,20 @@ def main(argv: list[str] | None = None) -> int:
     # always safe.
     db_path = repo_root / "pipeline-app" / "pipeline.db"
     schema_path = HERE / "pipeline_app" / "schema.sql"
-    db.init_db(db_path, schema_path)
-    conn = db.get_connection(db_path)
+    obs.log("discovery.wake", level="info", mode=args.mode, repo_root=str(repo_root))
+    try:
+        db.init_db(db_path, schema_path)
+        conn = db.get_connection(db_path)
+    except Exception as exc:  # noqa: BLE001 - a corrupt/locked pipeline.db, a
+        # missing schema.sql or a broken venv kills the run before any row
+        # exists, which is otherwise indistinguishable from "the scheduler
+        # never fired" (D-06).
+        obs.log("discovery.startup_failed", level="error",
+                error=f"{type(exc).__name__}: {exc}", db_path=str(db_path))
+        print(f"discovery startup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return Exit.STARTUP_FAILED
+    obs.record_event(conn, kind="discovery.wake", severity="info",
+                     source="run_discovery_cron", message=f"wake: mode={args.mode}")
     notify_ok = True
     result = None
     try:
