@@ -23,7 +23,7 @@ import shutil
 import threading
 from pathlib import Path
 
-from doc_ingest import calendar_client, client_tagging, convert, db, drive_client, frontmatter, gauntlet, jobs, lock, metadata_readers, naming
+from doc_ingest import calendar_client, client_tagging, convert, db, drive_client, frontmatter, gauntlet, jobs, lock, metadata_readers, naming, program_sources
 
 _LOCAL_EXTENSIONS = {"pdf": "pdf", "docx": "docx", "xlsx": "xlsx", "txt": "txt", "md": "md", "ppt": "ppt"}
 
@@ -261,6 +261,16 @@ def process_job(conn, job_id: int, cfg, worker_id: str, drive_service_factory=No
             if not gate2_result.passed:
                 _fail_job(conn, job_id, gate2_result.failure_reason)
                 return
+
+            app_root = Path(__file__).resolve().parents[1]
+            allowlist = program_sources.load_program_sources(app_root / "program_sources.yaml")
+            drift_warning = program_sources.check_drift(dest_rel_path, allowlist)
+            if drift_warning:
+                with db.transaction(conn):
+                    conn.execute(
+                        "INSERT INTO events (ts, event_type, source_file_id, details_json) VALUES (?, ?, ?, ?)",
+                        (_now_iso(), "program_source_drift", source_file_id, json.dumps({"warning": drift_warning})),
+                    )
 
             frontmatter_extras = _frontmatter_extras(independent_metadata)
             tag_result = client_tagging.classify(

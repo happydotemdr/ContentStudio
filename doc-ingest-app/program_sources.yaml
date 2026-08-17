@@ -1,0 +1,18 @@
+# Human-maintained allowlist of exact converted-file paths Phase 2 generation
+# may use as global (non-client) program/framework/PQ grounding. Update this
+# whenever a program doc is superseded or a new one is finalized -- do not
+# rely on status:current, which duplicate/archived files have already shown
+# to be an unreliable freshness signal (see design spec).
+paths:
+  - "Offer & Coaching Framework/Current finalized documents/Executive_Coaching_Offer_Architecture_v2.pdf.md"
+  - "Offer & Coaching Framework/Current finalized documents/F2BU_12Week_Accelerator_Infographic.pdf.md"
+  - "Offer & Coaching Framework/Current finalized documents/Four Content Pillars.gdoc.md"
+  - "Offer & Coaching Framework/Current finalized documents/Freedom2BeU_Program_Structure_V3.gdoc.md"
+  - "Offer & Coaching Framework/Current finalized documents/Freedom2BeU_Question_Bank.docx.md"
+  - "Offer & Coaching Framework/Current finalized documents/Freedom2BeU_Webinar_Guide_V2.gdoc.md"
+  - "Offer & Coaching Framework/Current finalized documents/Journal what is radical agency .pdf.md"
+  - "Offer & Coaching Framework/Current finalized documents/Vision & Passion.gdoc.md"
+  # Two near-duplicate Judge files exist in the corpus; this picks the
+  # non-"(1)" filename as canonical. CONFIRM with Brian/Ryan before relying
+  # on this in production -- see Task 24.
+  - "Frameworks to consider/Sabatoures/F2BU_Module_00_The_Judge.docx.md"

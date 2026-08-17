@@ -572,3 +572,37 @@ def test_process_job_does_not_tag_a_non_client_file(conn, tmp_path):
 
     row = conn.execute("SELECT client FROM conversions WHERE source_file_id = ?", (source_file_id,)).fetchone()
     assert row[0] is None
+
+
+def test_process_job_logs_drift_for_an_unlisted_program_doc(conn, tmp_path):
+    from doc_ingest import worker
+    input_root = tmp_path / "input"
+    (input_root / "Offer & Coaching Framework" / "Current finalized documents").mkdir(parents=True)
+    source = input_root / "Offer & Coaching Framework" / "Current finalized documents" / "Brand New Doc.txt"
+    source.write_text("new doc content", encoding="utf-8")
+
+    from doc_ingest.config import Config
+    cfg = Config(input_root=input_root, output_root=tmp_path / "output")
+
+    conn.execute(
+        "INSERT INTO source_files (rel_path, extension, classification, size_bytes, mtime, "
+        "content_hash, first_seen_at, last_seen_at) VALUES "
+        "('Offer & Coaching Framework/Current finalized documents/Brand New Doc.txt', 'txt', "
+        "'convertible', 16, 'm', 'h', 'n', 'n')"
+    )
+    source_file_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "INSERT INTO conversion_jobs (source_file_id, status, created_at) VALUES (?, 'pending', 'n')",
+        (source_file_id,),
+    )
+    job_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+
+    with patch("doc_ingest.lock.apply_readonly_lock"), patch("doc_ingest.lock.verify_locked", return_value=True):
+        worker.process_job(conn, job_id, cfg, "w1", calendar_service_factory=lambda: None)
+
+    event = conn.execute(
+        "SELECT event_type FROM events WHERE source_file_id = ? AND event_type = 'program_source_drift'",
+        (source_file_id,),
+    ).fetchone()
+    assert event is not None
