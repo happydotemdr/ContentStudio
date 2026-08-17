@@ -479,8 +479,30 @@ def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(mo
     assert record["detail"]["cap"] == 10
     assert record["detail"]["handle"] == "CNN"
     assert record["detail"]["platform"] == "x"
+    assert record["detail"]["raw_count"] == 10
     assert x.MAX_ITEMS_ENV_VAR in record["message"]
     assert "no backfill" in record["message"]
+
+
+def test_saturation_fires_even_when_a_filtered_row_drops_kept_below_the_cap(monkeypatch):
+    """Plan correction (T17 task review, 2026-08-16): saturation must be
+    measured on the RAW Bright Data count, not the post-filter 'kept' count.
+    Ten raw rows at cap=10, but one is by a foreign author -- kept drops to
+    9. The cap still truncated the batch (Bright Data returned exactly 10,
+    its per-input limit), so the alarm must still fire even though
+    len(kept) < cap. X is the most exposed adapter: it filters both unusable
+    rows and foreign-author rows."""
+    _enumerate_with(monkeypatch, [
+        _raw_row(id=str(i), user_posted="CNN", date_posted=f"2026-08-{i:02d}T00:00:00.000Z")
+        for i in range(1, 10)
+    ] + [_raw_row(id="10", user_posted="someone_else", date_posted="2026-08-10T00:00:00.000Z")])
+    brightdata_job.drain_diagnostics()
+    items = x.enumerate_newest_first("CNN", None)
+    assert len(items) == 9  # kept < cap after the foreign-author row is dropped
+    record = [d for d in brightdata_job.drain_diagnostics()
+              if d["kind"] == "adapter.batch_saturated"][0]
+    assert record["detail"]["raw_count"] == 10
+    assert record["detail"]["collected"] == 9
 
 
 def test_enumerate_keeps_media_only_posts(monkeypatch):

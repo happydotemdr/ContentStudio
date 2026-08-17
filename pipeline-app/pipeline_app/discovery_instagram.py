@@ -271,7 +271,12 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
     # quiet-account day, and process_handle would otherwise report it as the
     # healthy status 'ok'.
     cap = max_items()
-    if brightdata_job.is_saturated(len(normalized), cap=cap):
+    # Measured against raw_rows, NOT normalized: normalized has already
+    # dropped unusable rows, so a batch that filled the cap but included one
+    # id-less/undated row would otherwise show len(normalized) == cap - 1 and
+    # never trip the alarm, even though the same cap-truncation data loss
+    # occurred (plan correction, T17 task review, 2026-08-16).
+    if brightdata_job.is_saturated(len(raw_rows), cap=cap):
         oldest = min((n["published_ts"] for n in normalized), default=None)
         brightdata_job.record_diagnostic(
             kind="adapter.batch_saturated", severity="error",
@@ -282,7 +287,8 @@ def enumerate_newest_first(handle: str, keyword_filter: str | None) -> list[dict
                      f"{MAX_ITEMS_ENV_VAR} (this increases Bright Data spend per run) "
                      f"or shorten the run interval."),
             detail={"platform": "instagram", "handle": handle, "cap": cap,
-                    "collected": len(normalized), "oldest_kept": oldest})
+                    "collected": len(normalized), "raw_count": len(raw_rows),
+                    "oldest_kept": oldest})
         print(f"  !! instagram/{handle}: batch filled the cap of {cap}; older posts "
               f"in this interval are unrecoverable", file=sys.stderr)
 

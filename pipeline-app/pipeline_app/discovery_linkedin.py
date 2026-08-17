@@ -314,7 +314,13 @@ class LinkedInAdapter:
         # run made, not a quiet-account day, and process_handle would
         # otherwise report it as the healthy status 'ok'.
         cap = max_items()
-        if brightdata_job.is_saturated(len(kept), cap=cap):
+        # Measured against raw_rows, NOT kept: kept has already dropped
+        # unusable and (in profile mode) foreign-author rows, so a batch that
+        # filled the cap but included one such row would otherwise show
+        # len(kept) == cap - 1 and never trip the alarm, even though the same
+        # cap-truncation data loss occurred (plan correction, T17 task
+        # review, 2026-08-16).
+        if brightdata_job.is_saturated(len(raw_rows), cap=cap):
             oldest = min((n["published_ts"] for n in kept), default=None)
             brightdata_job.record_diagnostic(
                 kind="adapter.batch_saturated", severity="error",
@@ -325,7 +331,8 @@ class LinkedInAdapter:
                          f"Raise {MAX_ITEMS_ENV_VAR} (this increases Bright Data "
                          f"spend per run) or shorten the run interval."),
                 detail={"platform": self.platform, "handle": handle, "cap": cap,
-                        "collected": len(kept), "oldest_kept": oldest})
+                        "collected": len(kept), "raw_count": len(raw_rows),
+                        "oldest_kept": oldest})
             print(f"  !! {self.platform}/{handle}: batch filled the cap of {cap}; "
                   f"older posts in this interval are unrecoverable", file=sys.stderr)
 

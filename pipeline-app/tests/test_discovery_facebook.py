@@ -409,6 +409,7 @@ def test_saturation_diagnostic_names_the_cap_the_override_and_the_lost_window(mo
     assert record["detail"]["cap"] == 10
     assert record["detail"]["handle"] == "NASA"
     assert record["detail"]["platform"] == "facebook"
+    assert record["detail"]["raw_count"] == 10
     assert fb.MAX_ITEMS_ENV_VAR in record["message"]
     assert "no backfill" in record["message"]
 
