@@ -7,7 +7,7 @@ authoritative for run-owned columns (status, validated_at,
 last_seen_published_at), which only a real discovery run writes and this
 script never touches.
 
-Usage: python scripts/migrate_handles_from_manifest.py
+Usage: python tools/migrate_handles_from_manifest.py
 """
 from __future__ import annotations
 

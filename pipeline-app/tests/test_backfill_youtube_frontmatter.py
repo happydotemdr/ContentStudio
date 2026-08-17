@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from pipeline_app import artifacts
-from scripts import backfill_youtube_frontmatter as backfill
+from tools import backfill_youtube_frontmatter as backfill
 
 OLD_FORMAT = """# AVOID These YouTube Tips At All Costs!!!
 

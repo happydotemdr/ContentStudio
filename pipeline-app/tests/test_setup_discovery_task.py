@@ -5,7 +5,8 @@ from xml.etree import ElementTree
 
 import pytest
 
-from scripts.setup_discovery_task import build_task_xml, main
+import pipeline_app
+from tools.setup_discovery_task import build_task_xml, main
 
 
 def _xml():
@@ -57,13 +58,13 @@ def _record_calls(monkeypatch):
         calls.append(cmd)
         return _FakeResult(returncode=0)
 
-    monkeypatch.setattr("scripts.setup_discovery_task.subprocess.run", _run)
+    monkeypatch.setattr("tools.setup_discovery_task.subprocess.run", _run)
     return calls
 
 
 def test_main_dry_run_does_not_execute(monkeypatch, capsys):
     called = {"n": 0}
-    monkeypatch.setattr("scripts.setup_discovery_task.subprocess.run", lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+    monkeypatch.setattr("tools.setup_discovery_task.subprocess.run", lambda *a, **k: called.__setitem__("n", called["n"] + 1))
     exit_code = main([])
     assert exit_code == 0
     assert called["n"] == 0
@@ -87,7 +88,7 @@ def test_apply_creates_when_no_existing_task(monkeypatch):
         calls.append(cmd)
         return _FakeResult(returncode=next(responses))
 
-    monkeypatch.setattr("scripts.setup_discovery_task.subprocess.run", _run)
+    monkeypatch.setattr("tools.setup_discovery_task.subprocess.run", _run)
     exit_code = main(["--apply"])
     assert exit_code == 0
     assert len(calls) == 3
@@ -100,7 +101,7 @@ def test_apply_creates_when_no_existing_task(monkeypatch):
 def test_apply_refuses_to_overwrite_an_existing_task_without_force(monkeypatch, capsys):
     """B-46: /F destroyed and recreated the task, wiping any fix applied by
     hand in the Task Scheduler GUI -- the very fixes B-44 calls for."""
-    monkeypatch.setattr("scripts.setup_discovery_task.subprocess.run",
+    monkeypatch.setattr("tools.setup_discovery_task.subprocess.run",
                         _fake_run({("schtasks", "/Query"): 0}))
     assert main(["--apply"]) != 0
     assert "--force" in capsys.readouterr().err
@@ -115,7 +116,7 @@ def test_apply_verifies_registration_with_a_query_before_reporting_success(monke
 
 @pytest.mark.allow_subprocess
 def test_apply_reports_failure_when_the_verifying_query_finds_nothing(monkeypatch, capsys):
-    monkeypatch.setattr("scripts.setup_discovery_task.subprocess.run",
+    monkeypatch.setattr("tools.setup_discovery_task.subprocess.run",
                         _fake_run({("schtasks", "/Create"): 0, ("schtasks", "/Query"): 1}))
     assert main(["--apply", "--force"]) != 0
     assert "could not be verified" in capsys.readouterr().err
@@ -171,3 +172,20 @@ def test_dry_run_prints_a_command_that_survives_a_round_trip_through_the_shell_p
 def test_dry_run_tells_the_operator_where_the_log_will_be(monkeypatch, capsys):
     main([])
     assert "discovery-task.log" in capsys.readouterr().out
+
+
+def test_the_app_no_longer_ships_a_package_named_scripts():
+    """F-64: two importable packages both named `scripts` -- the repo root's and
+    the app's -- so a bare pytest from the root shadows one with the other."""
+    assert not (Path(pipeline_app.__file__).parents[1] / "scripts").exists()
+
+
+def test_the_cron_script_path_survives_the_move():
+    """A move that changes this module's depth would make pipeline_app_root()
+    resolve one directory too deep, and the registered task would point at a
+    file that is not there -- registering cleanly and failing forever,
+    invisibly (B-40/B-42). tools/ keeps the depth; this test is what proves it
+    rather than assuming it."""
+    from tools import setup_discovery_task as sut
+    assert sut.pipeline_app_root().name == "pipeline-app"
+    assert (sut.pipeline_app_root() / "run_discovery_cron.py").exists()

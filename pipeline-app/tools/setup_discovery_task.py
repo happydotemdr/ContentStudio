@@ -6,8 +6,8 @@ This script is never invoked from the running web app -- run it by hand,
 once, after cloning/setting up the repo.
 
 Usage:
-  python scripts/setup_discovery_task.py            # dry run: prints the command
-  python scripts/setup_discovery_task.py --apply     # actually registers the task
+  python tools/setup_discovery_task.py            # dry run: prints the command
+  python tools/setup_discovery_task.py --apply     # actually registers the task
 
 The XML-based registration (build_task_xml) pins LogonType S4U -- the task runs
 whether the user is logged on or not, without Task Scheduler storing a password.
@@ -23,6 +23,18 @@ from pathlib import Path
 
 TASK_NAME = "ContentStudio-Discovery"
 LOG_NAME = "discovery-task.log"
+
+
+def pipeline_app_root() -> Path:
+    """The `pipeline-app/` directory, which holds run_discovery_cron.py.
+
+    A function rather than an inline parents[1] so the depth is stated once
+    and a test can assert it: get this wrong and setup registers a task
+    against a path that does not exist, which succeeds and then fails
+    silently forever. The F-64 move to tools/ deliberately preserved this
+    depth (pipeline_app/scripts/ would not have).
+    """
+    return Path(__file__).resolve().parents[1]
 
 
 def default_log_path(pipeline_app_root: Path) -> Path:
@@ -108,16 +120,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Removed task '{TASK_NAME}'.")
         return 0
 
-    pipeline_app_root = Path(__file__).resolve().parents[1]
+    app_root = pipeline_app_root()
     python_exe = Path(sys.executable)
-    cron_script = pipeline_app_root / "run_discovery_cron.py"
-    log_path = default_log_path(pipeline_app_root)
+    cron_script = app_root / "run_discovery_cron.py"
+    log_path = default_log_path(app_root)
 
     if not args.apply:
         print("Dry run -- this is what --apply would do:")
         print(f"Write the task XML to a temp file and run: "
               f"schtasks /Create /TN {TASK_NAME} /XML <tmpfile> /F")
-        print(f"Task log will be written to: {default_log_path(pipeline_app_root)}")
+        print(f"Task log will be written to: {default_log_path(app_root)}")
         print("\nRe-run with --apply to actually register it.")
         return 0
 
