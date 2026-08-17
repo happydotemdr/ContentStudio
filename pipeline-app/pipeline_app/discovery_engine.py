@@ -137,6 +137,24 @@ def make_run_id(now: _dt.datetime) -> str:
     return now.strftime("%Y-%m-%dT%H-%M-%S-%f%z")
 
 
+def _summarize(handle_results: list[dict]) -> dict:
+    """Counts the exit-code contract is computed from. `attempted` excludes
+    'skipped' handles: a backfill that skipped every handle made zero adapter
+    calls, which is a different outcome from a run in which everything failed."""
+    by_status: dict[str, int] = {}
+    for r in handle_results:
+        by_status[r["status"]] = by_status.get(r["status"], 0) + 1
+    skipped = by_status.get("skipped", 0)
+    failed = by_status.get("error", 0) + by_status.get("handle_not_found", 0)
+    return {
+        "total": len(handle_results),
+        "attempted": len(handle_results) - skipped,
+        "skipped": skipped,
+        "failed": failed,
+        "by_status": by_status,
+    }
+
+
 def _write_abandoned_records_for_reclaimed_runs(conn: sqlite3.Connection, repo_root: Path, reclaimed_ids: list[int], now: _dt.datetime) -> None:
     for reclaimed_id in reclaimed_ids:
         reclaimed_row = db_mod.get_run(conn, reclaimed_id)
@@ -268,7 +286,7 @@ def run_discovery(
                                    "started_at": started_at, "finished_at": finished_at,
                                    "backfill_start": None, "backfill_end": None,
                                }, [handle_result])))
-            return {"run_row_id": run_row_id, "status": status}
+            return {"run_row_id": run_row_id, "status": status, "counts": _summarize([handle_result])}
         except Exception as exc:  # noqa: BLE001 - an unguarded network/adapter
             # failure here must not leave the handle stuck forever in
             # status='validating' with no run row and no paired record --
@@ -293,7 +311,7 @@ def run_discovery(
                                    "started_at": started_at, "finished_at": finished_at,
                                    "backfill_start": None, "backfill_end": None,
                                }, [handle_result])))
-            return {"run_row_id": run_row_id, "status": status}
+            return {"run_row_id": run_row_id, "status": status, "counts": _summarize([handle_result])}
 
     # incremental / backfill: single-flight lock applies.
     with db_mod.transaction(conn):
@@ -325,7 +343,7 @@ def run_discovery(
             "backfill_start": backfill_start, "backfill_end": backfill_end,
         }, [])
         db_mod.finish_run(conn, locked_id, "locked", finished_at, str(md_path))
-        return {"run_row_id": locked_id, "status": "locked"}
+        return {"run_row_id": locked_id, "status": "locked", "counts": _summarize([])}
 
     heartbeat_conn = _open_heartbeat_connection(conn)
     stop_event = threading.Event()
@@ -416,4 +434,4 @@ def run_discovery(
         timezone_name = db_mod.get_settings(conn)["timezone"]
         local_date = now.astimezone(ZoneInfo(timezone_name)).date().isoformat()
         db_mod.set_last_scheduled_run_date(conn, local_date)
-    return {"run_row_id": run_row_id, "status": final_status}
+    return {"run_row_id": run_row_id, "status": final_status, "counts": _summarize(handle_results)}

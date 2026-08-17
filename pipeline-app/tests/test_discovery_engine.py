@@ -587,3 +587,16 @@ def test_backfill_skips_unsupported_platform_without_calling_adapter(engine_conn
     assert len(results) == 1
     assert results[0]["status"] == "skipped"
     assert results[0]["items_downloaded"] == 0
+
+
+def test_run_discovery_result_carries_per_status_counts(engine_conn, tmp_path):
+    db.create_handle(engine_conn, "youtube", "@good", "G", "guru", None, now_iso())
+    db.create_handle(engine_conn, "youtube", "@bad", "B", "guru", None, now_iso())
+    adapter = SingleFakeAdapter({"@good": [{"id": "v1", "title": "x", "published": None}]},
+                                fail_handles={"@bad"})
+    result = run_discovery(engine_conn, tmp_path, {"youtube": adapter},
+                           trigger="manual", mode="incremental")
+    assert result["counts"]["total"] == 2
+    assert result["counts"]["attempted"] == 2
+    assert result["counts"]["failed"] == 1
+    assert result["counts"]["skipped"] == 0
