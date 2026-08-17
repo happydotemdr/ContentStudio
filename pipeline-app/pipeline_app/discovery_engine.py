@@ -159,6 +159,27 @@ def _summarize(handle_results: list[dict]) -> dict:
     }
 
 
+TERMINAL_RUN_STATUSES = frozenset({"completed", "completed_with_errors", "failed",
+                                   "abandoned", "locked"})
+
+
+def _finish_run_guarded(conn, run_row_id: int, status: str, finished_at: str, md_path: str) -> bool:
+    """Status precondition db.finish_run lacks. Read-then-write, not atomic:
+    the durable fix is a `WHERE status = 'running'` inside db.finish_run, which
+    belongs to P1. This closes the realistic case (minutes apart, not
+    microseconds) and reports the refusal instead of silently overwriting."""
+    current = db_mod.get_run(conn, run_row_id)
+    if current is not None and current["status"] in TERMINAL_RUN_STATUSES and current["status"] != status:
+        obs.record_event(conn, kind="discovery.finish_run_refused", severity="error",
+                         source="discovery_engine",
+                         message=(f"run {run_row_id} is already {current['status']}; refusing to "
+                                  f"overwrite it with {status} -- it was reclaimed while still live"),
+                         run_id=run_row_id)
+        return False
+    db_mod.finish_run(conn, run_row_id, status, finished_at, md_path)
+    return True
+
+
 def _write_abandoned_records_for_reclaimed_runs(conn: sqlite3.Connection, repo_root: Path, reclaimed_ids: list[int], now: _dt.datetime) -> None:
     for reclaimed_id in reclaimed_ids:
         reclaimed_row = db_mod.get_run(conn, reclaimed_id)
@@ -168,7 +189,7 @@ def _write_abandoned_records_for_reclaimed_runs(conn: sqlite3.Connection, repo_r
             "status": "abandoned", "started_at": reclaimed_row["started_at"], "finished_at": finished_at,
             "backfill_start": reclaimed_row["backfill_start"], "backfill_end": reclaimed_row["backfill_end"],
         }, [])  # no handle_results: we don't know how far the dead process got
-        db_mod.finish_run(conn, reclaimed_id, "abandoned", finished_at, str(md_path))
+        _finish_run_guarded(conn, reclaimed_id, "abandoned", finished_at, str(md_path))
 
 
 def _read_run_owner(repo_root: Path, run_row_id: int) -> dict | None:
@@ -364,7 +385,7 @@ def run_discovery(
             run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
             db_mod.record_handle_result(conn, run_row_id, handle_id, handle_result["status"],
                                          handle_result["items_downloaded"], handle_result["error_message"])
-            db_mod.finish_run(conn, run_row_id, status, finished_at,
+            _finish_run_guarded(conn, run_row_id, status, finished_at,
                                str(write_run_record(repo_root, {
                                    "run_id": run_id, "trigger": trigger, "mode": mode, "status": status,
                                    "started_at": started_at, "finished_at": finished_at,
@@ -389,7 +410,7 @@ def run_discovery(
             run_row_id = db_mod.insert_terminal_run(conn, run_id, trigger, mode, status, started_at, finished_at)
             db_mod.record_handle_result(conn, run_row_id, handle_id, handle_result["status"],
                                          handle_result["items_downloaded"], handle_result["error_message"])
-            db_mod.finish_run(conn, run_row_id, status, finished_at,
+            _finish_run_guarded(conn, run_row_id, status, finished_at,
                                str(write_run_record(repo_root, {
                                    "run_id": run_id, "trigger": trigger, "mode": mode, "status": status,
                                    "started_at": started_at, "finished_at": finished_at,
@@ -426,7 +447,7 @@ def run_discovery(
             "started_at": started_at, "finished_at": finished_at,
             "backfill_start": backfill_start, "backfill_end": backfill_end,
         }, [])
-        db_mod.finish_run(conn, locked_id, "locked", finished_at, str(md_path))
+        _finish_run_guarded(conn, locked_id, "locked", finished_at, str(md_path))
         return {"run_row_id": locked_id, "status": "locked", "counts": _summarize([])}
 
     _claim_run_ownership(repo_root, run_row_id, started_at)
@@ -516,14 +537,18 @@ def run_discovery(
         "started_at": started_at, "finished_at": finished_at,
         "backfill_start": backfill_start, "backfill_end": backfill_end,
     }, handle_results)
-    db_mod.finish_run(conn, run_row_id, final_status, finished_at, str(md_path))
-    if trigger == "scheduled" and final_status != "failed":
+    finished_cleanly = _finish_run_guarded(conn, run_row_id, final_status, finished_at, str(md_path))
+    if finished_cleanly and trigger == "scheduled" and final_status != "failed":
         # Store the LOCAL calendar date in the configured timezone, not the
         # UTC date -- discovery_scheduling.is_due compares this value against
         # local_now.date().isoformat(), so storing a UTC date here would
         # desync from that comparison for any schedule time where the UTC and
         # local calendar dates diverge, causing the scheduled run to re-fire
-        # repeatedly.
+        # repeatedly. Skipped entirely when the guard refused the write: a
+        # run reclaimed out from under itself (row already 'abandoned') must
+        # not also stamp the watermark with its stale finished_at -- that
+        # would desync is_due from reality on top of erasing the reclaim
+        # evidence (B-50).
         timezone_name = db_mod.get_settings(conn)["timezone"]
         local_date = now.astimezone(ZoneInfo(timezone_name)).date().isoformat()
         db_mod.set_last_scheduled_run_date(conn, local_date)

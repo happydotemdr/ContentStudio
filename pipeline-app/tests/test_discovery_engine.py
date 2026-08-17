@@ -217,6 +217,7 @@ import pytest
 from pipeline_app import db
 from pipeline_app.discovery_engine import (
     _claim_run_ownership,
+    _finish_run_guarded,
     _process_is_alive,
     make_run_id,
     now_iso,
@@ -758,3 +759,75 @@ def test_a_non_integer_pid_owner_file_does_not_crash_the_sweep_and_is_reclaimed(
 
     assert result["status"] == "completed"  # the sweep did not crash the run
     assert db.get_run(engine_conn, stale_id)["status"] == "abandoned"
+
+
+def test_finish_run_cannot_resurrect_an_abandoned_run(engine_conn, tmp_path):
+    """B-50's evidence-erasing half: db.finish_run has no status precondition,
+    so the original process overwrote its own 'abandoned' row back to
+    'completed' and -- if scheduled -- wrote the watermark, erasing the only
+    evidence that two runs had been live at once."""
+    run_row_id = db.insert_running_run(engine_conn, "r", "scheduled", "incremental", now_iso())
+    engine_conn.execute("UPDATE discovery_runs SET status = 'abandoned' WHERE id = ?", (run_row_id,))
+    engine_conn.commit()
+
+    assert _finish_run_guarded(engine_conn, run_row_id, "completed", now_iso(), "x.md") is False
+    assert db.get_run(engine_conn, run_row_id)["status"] == "abandoned"
+
+
+def test_a_refused_finish_leaves_an_error_event(engine_conn, tmp_path):
+    run_row_id = db.insert_running_run(engine_conn, "r", "scheduled", "incremental", now_iso())
+    engine_conn.execute("UPDATE discovery_runs SET status = 'abandoned' WHERE id = ?", (run_row_id,))
+    engine_conn.commit()
+
+    assert _finish_run_guarded(engine_conn, run_row_id, "completed", now_iso(), "x.md") is False
+
+    events = engine_conn.execute(
+        "SELECT kind, severity, run_id FROM events WHERE kind = 'discovery.finish_run_refused'"
+    ).fetchall()
+    assert len(events) == 1
+    assert events[0]["severity"] == "error"
+    assert events[0]["run_id"] == run_row_id
+
+
+def test_finish_run_guarded_allows_a_normal_terminal_write(engine_conn, tmp_path):
+    """A run finishing normally (still 'running' when finish is called) must
+    not be refused -- the guard only blocks a *second* write to a row that
+    already reached a terminal status under a different outcome."""
+    run_row_id = db.insert_running_run(engine_conn, "r", "manual", "incremental", now_iso())
+
+    assert _finish_run_guarded(engine_conn, run_row_id, "completed", now_iso(), "x.md") is True
+    assert db.get_run(engine_conn, run_row_id)["status"] == "completed"
+
+
+def test_a_reclaimed_run_does_not_write_a_stale_watermark(engine_conn, tmp_path):
+    """The evidence-preserving half of the fix: when the main run's own
+    completion write is refused because it was reclaimed out from under it
+    (its row is already 'abandoned'), the scheduled-run watermark write must
+    be skipped too -- otherwise a dead run's stale finished_at would desync
+    discovery_scheduling.is_due from reality."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    now = _dt.datetime(2026, 7, 30, 6, 0, 0, tzinfo=_dt.timezone.utc)
+
+    class ReclaimingAdapter(SingleFakeAdapter):
+        """Simulates another process reclaiming this run mid-flight: by the
+        time run_discovery reaches its own finish_run call, the row has
+        already been marked 'abandoned' out from under it."""
+        def enumerate_newest_first(self, handle, keyword_filter):
+            rows = engine_conn.execute(
+                "SELECT id FROM discovery_runs WHERE status = 'running' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if rows is not None:
+                engine_conn.execute(
+                    "UPDATE discovery_runs SET status = 'abandoned' WHERE id = ?", (rows["id"],)
+                )
+                engine_conn.commit()
+            return super().enumerate_newest_first(handle, keyword_filter)
+
+    before = db.get_settings(engine_conn)["last_scheduled_run_date"]
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": ReclaimingAdapter({"@a": []})},
+                           trigger="scheduled", mode="incremental", now=now)
+
+    assert db.get_run(engine_conn, result["run_row_id"])["status"] == "abandoned"
+    after = db.get_settings(engine_conn)["last_scheduled_run_date"]
+    assert after == before  # watermark must not move for a reclaimed run
