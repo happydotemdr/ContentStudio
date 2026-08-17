@@ -403,6 +403,81 @@ def test_run_discovery_warns_when_two_handles_share_one_directory(engine_conn, t
     assert "johndoe5" in err  # the shared directory component
 
 
+def test_three_consecutive_failing_runs_downgrade_the_handle(engine_conn, tmp_path):
+    """P1's B-82: set_handle_status was called only from the one-shot validate
+    branch, so a handle that validated at registration and later died kept
+    status='validated', included=1 forever while raising an error row on every
+    single run. A permanently broken source was indistinguishable from a healthy
+    one on the roster."""
+    handle_id = db.create_handle(engine_conn, "youtube", "@dead", "D", "guru", None, now_iso())
+    db.set_handle_status(engine_conn, handle_id, "validated")
+    adapter = SingleFakeAdapter({}, fail_handles={"@dead"})
+    for _ in range(3):
+        run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental")
+    row = db.get_handle(engine_conn, handle_id)
+    assert row["consecutive_failures"] == 3
+    assert row["status"] == "failing"
+
+
+def test_a_handle_timeout_also_counts_as_a_failure(engine_conn, tmp_path, monkeypatch):
+    """A timeout is a real failure mode, not a shrug -- it must feed the same
+    consecutive-failure counter as the generic exception branch."""
+    handle_id = db.create_handle(engine_conn, "youtube", "@slow", "S", "guru", None, now_iso())
+    db.set_handle_status(engine_conn, handle_id, "validated")
+
+    import concurrent.futures
+
+    def _raise_timeout(self, timeout=None):
+        raise concurrent.futures.TimeoutError()
+
+    monkeypatch.setattr(concurrent.futures.Future, "result", _raise_timeout)
+    adapter = SingleFakeAdapter({"@slow": [{"id": "v1", "title": "x", "published": None}]})
+    run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental")
+    row = db.get_handle(engine_conn, handle_id)
+    assert row["consecutive_failures"] == 1
+
+
+def test_one_successful_run_clears_the_failure_counter(engine_conn, tmp_path):
+    """The counter must be CONSECUTIVE, or a handle that fails once a month for
+    a year is eventually condemned for being popular."""
+    handle_id = db.create_handle(engine_conn, "youtube", "@flaky", "F", "guru", None, now_iso())
+    db.set_handle_status(engine_conn, handle_id, "validated")
+    failing_adapter = SingleFakeAdapter({}, fail_handles={"@flaky"})
+    run_discovery(engine_conn, tmp_path, {"youtube": failing_adapter}, trigger="manual", mode="incremental")
+    assert db.get_handle(engine_conn, handle_id)["consecutive_failures"] == 1
+
+    healthy_adapter = SingleFakeAdapter({"@flaky": []})
+    run_discovery(engine_conn, tmp_path, {"youtube": healthy_adapter}, trigger="manual", mode="incremental")
+    assert db.get_handle(engine_conn, handle_id)["consecutive_failures"] == 0
+    assert db.get_handle(engine_conn, handle_id)["status"] == "validated"
+
+
+def test_a_failing_handle_is_still_included_in_the_run(engine_conn, tmp_path):
+    """'failing' is a signal, not an exclusion -- B-57's lesson. Only a
+    definitive not-found removes a handle from the roster."""
+    handle_id = db.create_handle(engine_conn, "youtube", "@dead", "D", "guru", None, now_iso())
+    db.set_handle_status(engine_conn, handle_id, "validated")
+    adapter = SingleFakeAdapter({}, fail_handles={"@dead"})
+    for _ in range(3):
+        run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="manual", mode="incremental")
+    assert db.get_handle(engine_conn, handle_id)["status"] == "failing"
+    assert db.get_handle(engine_conn, handle_id)["included"] == 1
+
+
+def test_a_skipped_handle_does_not_count_as_a_failure(engine_conn, tmp_path):
+    """A backfill skip is 'this platform has no backfill path', not 'this handle
+    is broken'. Counting it would condemn every Bright Data handle after three
+    backfills."""
+    handle_id = db.create_handle(engine_conn, "instagram", "@nasa", "N", "guru", None, now_iso())
+    db.set_handle_status(engine_conn, handle_id, "validated")
+    adapter = SingleFakeAdapter({"@nasa": []})
+    for _ in range(3):
+        run_discovery(engine_conn, tmp_path, {"instagram": adapter}, trigger="manual", mode="backfill")
+    row = db.get_handle(engine_conn, handle_id)
+    assert row["consecutive_failures"] == 0
+    assert row["status"] == "validated"
+
+
 def test_run_discovery_does_not_warn_when_every_handle_has_its_own_directory(
         engine_conn, tmp_path, capsys):
     db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())

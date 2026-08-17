@@ -744,6 +744,10 @@ def run_discovery(
                     db_mod.set_handle_last_seen(conn, handle_row["id"], max(published_dates))
                 status = "ok" if downloaded else "no_new_content"
                 db_mod.record_handle_result(conn, run_row_id, handle_row["id"], status, len(downloaded))
+                # P1's B-82: both "ok" and "no_new_content" are healthy outcomes --
+                # either one resets the consecutive-failure counter and lifts a
+                # 'failing' handle back to 'validated'.
+                db_mod.clear_handle_failures(conn, handle_row["id"])
                 handle_results.append({
                     "handle": handle_row["handle"], "platform": handle_row["platform"],
                     "cohort": handle_row["cohort"], "status": status, "items_downloaded": len(downloaded),
@@ -759,6 +763,10 @@ def run_discovery(
                 any_error = True
                 timeout_message = f"TimeoutError: handle exceeded its {per_handle_deadline_s}s deadline"
                 db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", 0, timeout_message)
+                # P1's B-82: a timeout is a real failure mode, not a shrug -- it
+                # feeds the same consecutive-failure counter as the generic
+                # exception branch below.
+                db_mod.record_handle_failure(conn, handle_row["id"], now_iso=now_iso())
                 handle_results.append({
                     "handle": handle_row["handle"], "platform": handle_row["platform"],
                     "cohort": handle_row["cohort"], "status": "error", "items_downloaded": 0,
@@ -791,6 +799,11 @@ def run_discovery(
                                  detail={"handle": handle_row["handle"], "platform": handle_row["platform"],
                                          "traceback": traceback.format_exc()})
                 db_mod.record_handle_result(conn, run_row_id, handle_row["id"], "error", len(partial), error_message)
+                # P1's B-82: count this consecutive per-handle failure and
+                # downgrade the handle to 'failing' once it crosses the
+                # threshold, so a permanently broken source stops looking
+                # healthy on the roster.
+                db_mod.record_handle_failure(conn, handle_row["id"], now_iso=now_iso())
                 handle_results.append({
                     "handle": handle_row["handle"], "platform": handle_row["platform"],
                     "cohort": handle_row["cohort"], "status": "error", "items_downloaded": len(partial),
