@@ -556,21 +556,32 @@ def run_discovery(
         # the IntegrityError was something else entirely and must not be
         # silently swallowed.
         if db_mod.get_running_run(conn) is None:
-            raise
-        # A fresh run_id for the locked row -- reusing `run_id` here would
-        # collide with the very row that just won the lock (both share the
-        # same run_id UNIQUE constraint), raising a second, unrelated
-        # IntegrityError instead of cleanly recording "locked".
-        # B-49: a lock loss is a no-op, not an event worth a paired markdown
-        # file -- a 90-minute Bright Data run left five locked rows and five
-        # junk files, one per 15-minute scheduled wake that found the lock
-        # held. Keep the DB row (the honest record that a call was refused);
-        # drop the file it would otherwise burn a write on.
-        finished_at = now_iso()
-        locked_run_id = make_run_id(_dt.datetime.now(_dt.timezone.utc))
-        locked_id = db_mod.insert_locked_run(conn, locked_run_id, trigger, mode, started_at, finished_at)
-        _finish_run_guarded(conn, locked_id, "locked", finished_at, None)
-        return {"run_row_id": locked_id, "status": "locked", "counts": _summarize([])}
+            # B-59: no running row exists, so the IntegrityError above wasn't
+            # the single-flight lock firing at all -- it's a TOCTOU race: some
+            # other run held the lock at insert time but finished (and
+            # cleared it) in the gap between that failed insert and this
+            # check. Retry the exact same insert once, as if we'd been first
+            # in line the whole time. A second collision within this narrow
+            # retry window is a real, unrelated problem (e.g. an actual
+            # run_id collision) and must not be swallowed a second time.
+            run_row_id = db_mod.insert_running_run(
+                conn, run_id, trigger, mode, started_at, backfill_start, backfill_end,
+            )
+        else:
+            # A fresh run_id for the locked row -- reusing `run_id` here would
+            # collide with the very row that just won the lock (both share the
+            # same run_id UNIQUE constraint), raising a second, unrelated
+            # IntegrityError instead of cleanly recording "locked".
+            # B-49: a lock loss is a no-op, not an event worth a paired markdown
+            # file -- a 90-minute Bright Data run left five locked rows and five
+            # junk files, one per 15-minute scheduled wake that found the lock
+            # held. Keep the DB row (the honest record that a call was refused);
+            # drop the file it would otherwise burn a write on.
+            finished_at = now_iso()
+            locked_run_id = make_run_id(_dt.datetime.now(_dt.timezone.utc))
+            locked_id = db_mod.insert_locked_run(conn, locked_run_id, trigger, mode, started_at, finished_at)
+            _finish_run_guarded(conn, locked_id, "locked", finished_at, None)
+            return {"run_row_id": locked_id, "status": "locked", "counts": _summarize([])}
 
     _claim_run_ownership(repo_root, run_row_id, started_at)
 

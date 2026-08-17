@@ -164,6 +164,19 @@ def test_run_now_spawns_incremental_mode(client: TestClient, spawns):
     assert "incremental" in spawns[0]
 
 
+def test_run_now_refuses_to_spawn_while_a_run_is_active(client, spawns):
+    """B-59: Run Now had no concurrency guard -- a second click (or a second
+    tab) while a run was already active spawned a duplicate billable cron
+    child that was doomed to lose the single-flight lock (or worse, race it)."""
+    db_mod.insert_running_run(
+        client.app.state.conn, "in-flight", "manual", "incremental",
+        discovery_engine.now_iso(),
+    )
+    response = client.post("/discovery/run-now")
+    assert response.status_code == 409
+    assert spawns == []
+
+
 def test_run_now_backfill_spawns_backfill_mode_with_dates(client: TestClient, spawns):
     response = client.post("/discovery/run-now-backfill", data={"start": "2026-06-01", "end": "2026-06-30"})
     assert response.status_code in (200, 303, 307)

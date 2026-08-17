@@ -161,7 +161,15 @@ def handle_status(request: Request, handle_id: int):
 
 
 @router.post("/discovery/run-now")
-def run_now(request: Request) -> RedirectResponse:
+def run_now(request: Request):
+    # B-59: Run Now had no concurrency guard -- a second click (or a second
+    # browser tab) while a run was already active spawned a duplicate,
+    # billable cron child that was doomed to lose the single-flight lock
+    # (best case) or race the live run for it (worst case). Refuse before
+    # spawning rather than let the loser sort itself out downstream.
+    conn = request.app.state.conn
+    if db_mod.get_running_run(conn) is not None:
+        return PlainTextResponse("a discovery run is already active", status_code=409)
     _spawn_cron(request.app.state.repo_root, ["--mode", "incremental"])
     return RedirectResponse(url="/discovery/runs", status_code=303)
 

@@ -456,6 +456,37 @@ def test_run_discovery_second_concurrent_call_is_locked(engine_conn, tmp_path):
     assert list((tmp_path / "output" / "discovery-runs").glob("*.md")) == []
 
 
+def test_a_lock_loss_retries_once_instead_of_re_raising(engine_conn, tmp_path, monkeypatch):
+    """B-59's TOCTOU: if the winner finished between the loser's IntegrityError
+    and its get_running_run() is None check, the loser RE-RAISED -- legitimate
+    lock contention surfaced as an unhandled IntegrityError, a dead subprocess,
+    and no run row at all."""
+    calls = {"n": 0}
+    real_insert = db.insert_running_run
+    def flaky(conn, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.IntegrityError("UNIQUE constraint failed")
+        return real_insert(conn, *a, **k)
+    monkeypatch.setattr(db, "insert_running_run", flaky)
+    result = run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({})},
+                           trigger="manual", mode="incremental")
+    assert result["status"] == "completed"     # not an escaped IntegrityError
+    assert calls["n"] == 2
+
+
+def test_a_second_collision_within_the_retry_window_still_re_raises(engine_conn, tmp_path, monkeypatch):
+    """The retry exists for the TOCTOU race, not to paper over a genuine
+    double collision -- if the retry ALSO raises IntegrityError, that's real
+    and must propagate, not be silently swallowed a second time."""
+    def always_raises(conn, *a, **k):
+        raise sqlite3.IntegrityError("UNIQUE constraint failed")
+    monkeypatch.setattr(db, "insert_running_run", always_raises)
+    with pytest.raises(sqlite3.IntegrityError):
+        run_discovery(engine_conn, tmp_path, {"youtube": SingleFakeAdapter({})},
+                      trigger="manual", mode="incremental")
+
+
 def test_run_discovery_reclaims_stale_run_and_writes_abandoned_record(engine_conn, tmp_path):
     stale_started = "2026-07-30T05:00:00+00:00"
     stale_id = db.insert_running_run(engine_conn, "stale-run", "manual", "incremental", stale_started)
