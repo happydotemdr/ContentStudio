@@ -125,6 +125,7 @@ from pipeline_app import db as db_mod
 from pipeline_app import obs
 from pipeline_app.discovery_paths import group_slug_collisions, run_owner_path
 from pipeline_app.discovery_records import write_run_record
+from pipeline_app.discovery_scheduling import encode_watermark
 
 
 def now_iso(now: _dt.datetime | None = None) -> str:
@@ -568,5 +569,5 @@ def run_discovery(
         # evidence (B-50).
         timezone_name = db_mod.get_settings(conn)["timezone"]
         local_date = now.astimezone(ZoneInfo(timezone_name)).date().isoformat()
-        db_mod.set_last_scheduled_run_date(conn, local_date)
+        db_mod.set_last_scheduled_run_date(conn, encode_watermark(local_date, timezone_name, now_iso(now)))
     return {"run_row_id": run_row_id, "status": final_status, "counts": _summarize(handle_results)}

@@ -224,6 +224,7 @@ from pipeline_app.discovery_engine import (
     run_discovery,
 )
 from pipeline_app.discovery_paths import run_owner_path
+from pipeline_app.discovery_scheduling import decode_watermark
 
 
 @pytest.fixture
@@ -558,7 +559,8 @@ def test_run_discovery_scheduled_trigger_updates_last_scheduled_run_date(engine_
     result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="scheduled", mode="incremental", now=now)
 
     assert result["status"] == "completed"
-    assert db.get_settings(engine_conn)["last_scheduled_run_date"] == "2026-07-30"
+    stored = db.get_settings(engine_conn)["last_scheduled_run_date"]
+    assert decode_watermark(stored)[0] == "2026-07-30"
 
 
 def test_run_discovery_scheduled_trigger_stores_local_date_not_utc_date(engine_conn, tmp_path):
@@ -573,7 +575,8 @@ def test_run_discovery_scheduled_trigger_stores_local_date_not_utc_date(engine_c
     result = run_discovery(engine_conn, tmp_path, {"youtube": adapter}, trigger="scheduled", mode="incremental", now=now)
 
     assert result["status"] == "completed"
-    assert db.get_settings(engine_conn)["last_scheduled_run_date"] == "2026-07-30"
+    stored = db.get_settings(engine_conn)["last_scheduled_run_date"]
+    assert decode_watermark(stored)[0] == "2026-07-30"
 
 
 def test_run_discovery_manual_trigger_does_not_update_last_scheduled_run_date(engine_conn, tmp_path):
