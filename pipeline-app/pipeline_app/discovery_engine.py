@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import datetime as _dt
+import inspect
 import json
 import os
 import platform
@@ -57,7 +58,8 @@ SUPPORTED_PLATFORMS: frozenset[str] = frozenset({
 
 class PlatformAdapter(Protocol):
     def on_disk_ids(self, repo_root: Path, handle: str) -> set[str]: ...
-    def enumerate_newest_first(self, handle: str, keyword_filter: str | None) -> list[dict]: ...
+    def enumerate_newest_first(self, handle: str, keyword_filter: str | None,
+                               handle_row: dict | None = None) -> list[dict]: ...
     def peek_upload_date(self, item_id: str) -> str | None: ...
     def download_item(self, repo_root: Path, handle: str, item_id: str, title: str,
                       content_type: str | None = None) -> dict: ...
@@ -72,6 +74,20 @@ class HandleFailure(Exception):
         self.cause, self.downloaded = cause, downloaded
 
 
+def _call_enumerate(adapter: PlatformAdapter, handle: str, keyword_filter: str | None,
+                    handle_row) -> list[dict]:
+    """Calls adapter.enumerate_newest_first, passing handle_row only when the
+    adapter's own signature declares it. The true per-handle Bright Data item
+    cap (operator-approved cost item C1, P7-brightdata.md Sec 6) needs the row
+    threaded through, but the adapters that would read it are P6/P7-owned
+    files P8 cannot edit -- introspection (not hasattr/try-except) keeps every
+    adapter that has not opted in working exactly as before, and never mistakes
+    a real bug inside an opted-in adapter for "hasn't opted in"."""
+    if "handle_row" in inspect.signature(adapter.enumerate_newest_first).parameters:
+        return adapter.enumerate_newest_first(handle, keyword_filter, handle_row=handle_row)
+    return adapter.enumerate_newest_first(handle, keyword_filter)
+
+
 def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _dt.datetime,
                     new_handle_lookback_days: int = NEW_HANDLE_LOOKBACK_DAYS) -> list[dict]:
     handle = handle_row["handle"]
@@ -82,7 +98,7 @@ def process_handle(adapter: PlatformAdapter, repo_root: Path, handle_row, now: _
 
     downloaded: list[dict] = []
     try:
-        enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
+        enumerated = _call_enumerate(adapter, handle, keyword_filter, handle_row)
         consecutive_on_disk = 0
         consecutive_undated = 0
 
@@ -124,7 +140,7 @@ def process_handle_backfill(adapter: PlatformAdapter, repo_root: Path, handle_ro
     downloaded: list[dict] = []
     try:
         on_disk = adapter.on_disk_ids(repo_root, handle)
-        enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
+        enumerated = _call_enumerate(adapter, handle, keyword_filter, handle_row)
 
         for item in enumerated:
             item_id = item["id"]
@@ -151,7 +167,7 @@ def process_handle_backfill(adapter: PlatformAdapter, repo_root: Path, handle_ro
 def process_handle_validate(adapter: PlatformAdapter, repo_root: Path, handle_row) -> dict:
     handle = handle_row["handle"]
     keyword_filter = handle_row["keyword_filter"]
-    enumerated = adapter.enumerate_newest_first(handle, keyword_filter)
+    enumerated = _call_enumerate(adapter, handle, keyword_filter, handle_row)
     if not enumerated:
         return {"ok": False, "item": None}
     newest = enumerated[0]

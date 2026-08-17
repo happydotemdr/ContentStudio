@@ -1407,4 +1407,73 @@ def test_an_adapter_without_preflight_is_not_an_error(engine_conn, tmp_path):
     events = engine_conn.execute(
         "SELECT * FROM events WHERE kind = 'discovery.preflight_failed'").fetchall()
     assert events == []
+
+
+def test_an_adapter_that_declares_handle_row_receives_it(engine_conn, tmp_path):
+    """C1 (operator-approved 2026-08-16, P7-brightdata.md Sec 6 / commit 55109b8):
+    the true per-handle cap needs handle_row threaded into enumerate_newest_first.
+    The adapters that would read it are P6/P7-owned files P8 cannot edit, so this
+    only proves the engine offers the row to an adapter that opts in."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    received = {}
+
+    class OptedInAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter, handle_row=None):
+            received["handle_row"] = handle_row
+            return []
+
+    run_discovery(engine_conn, tmp_path, {"youtube": OptedInAdapter({})},
+                  trigger="manual", mode="incremental")
+    assert received["handle_row"] is not None
+    assert received["handle_row"]["handle"] == "@a"
+
+
+def test_an_adapter_that_has_not_opted_in_is_called_exactly_as_before(engine_conn, tmp_path):
+    """Zero behavior change for discovery_bluesky/discovery_youtube/discovery_instagram
+    until each is updated on its own package's side to declare the parameter."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    calls = []
+
+    class LegacyAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter):
+            calls.append((handle, keyword_filter))
+            return []
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": LegacyAdapter({})},
+                           trigger="manual", mode="incremental")
+    assert result["status"] == "completed"
+    assert calls == [("@a", None)]
+
+
+def test_the_seam_is_offered_at_every_enumerate_call_site(engine_conn, tmp_path):
+    """process_handle, process_handle_backfill and process_handle_validate all
+    call enumerate_newest_first -- the seam must not be wired into only one."""
+    handle_id = db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+    seen = []
+
+    class OptedInAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter, handle_row=None):
+            seen.append(handle_row["handle"] if handle_row else None)
+            return []
+
+    run_discovery(engine_conn, tmp_path, {"youtube": OptedInAdapter({})},
+                  trigger="manual", mode="validate_handle", handle_id=handle_id)
+    assert seen == ["@a"]
+
+
+def test_a_real_typeerror_inside_an_opted_in_adapter_still_propagates(engine_conn, tmp_path):
+    """Detection is by signature introspection, not by catching TypeError --
+    a bug inside an adapter that HAS opted in must not be swallowed and
+    misread as 'this adapter doesn't take handle_row'."""
+    db.create_handle(engine_conn, "youtube", "@a", "A", "guru", None, now_iso())
+
+    class BuggyOptedInAdapter(SingleFakeAdapter):
+        def enumerate_newest_first(self, handle, keyword_filter, handle_row=None):
+            raise TypeError("unrelated bug inside the adapter")
+
+    result = run_discovery(engine_conn, tmp_path, {"youtube": BuggyOptedInAdapter({})},
+                           trigger="manual", mode="incremental")
+    row = db.list_run_handle_results(engine_conn, result["run_row_id"])[0]
+    assert row["status"] == "error"
+    assert "unrelated bug inside the adapter" in row["error_message"]
     assert db.get_run(engine_conn, result["run_row_id"])["run_id"].endswith("+0000")
