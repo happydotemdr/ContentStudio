@@ -285,3 +285,16 @@ def test_build_prompt_scrubs_a_delimiter_planted_in_the_body():
     prompt = comment_draft.build_prompt(_item(body=body))
     assert prompt.count(comment_draft.POST_DELIMITER) == 2
     assert comment_draft.DELIMITER_SCRUB in prompt
+
+
+def test_the_drafting_child_does_not_inherit_unrelated_credentials(fake_claude, monkeypatch):
+    monkeypatch.setenv("RESEND_API_KEY", "resend-secret")
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "brightdata-secret")
+    monkeypatch.setenv("PATH", "C:\\fake\\path")
+    captured = fake_claude(FakePopen(_envelope(ARRAY)))
+    comment_draft.draft_comments(_item())
+    env = captured["kwargs"]["env"]
+    assert "RESEND_API_KEY" not in env
+    assert "BRIGHTDATA_API_KEY" not in env
+    assert env["PATH"] == "C:\\fake\\path"
+    assert env["PYTHONIOENCODING"] == "utf-8"

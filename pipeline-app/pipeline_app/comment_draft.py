@@ -17,6 +17,7 @@ See docs/superpowers/specs/2026-08-08-morning-email-social-expansion-design.md.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -126,6 +127,26 @@ DRAFTER_DISALLOWED_TOOLS = (
     "Bash,PowerShell,WebFetch,WebSearch,Read,Write,Edit,NotebookEdit,"
     "Glob,Grep,Task,Skill,TodoWrite,BashOutput,KillShell"
 )
+
+# Passed through to the drafting turn; everything else in os.environ is not.
+# Popen with no env= inherits the parent wholesale, which handed this turn
+# RESEND_API_KEY, the Bright Data credential, and every CLAUDE_* variable set
+# for the app (B-103). USERPROFILE/HOME stay because `claude` needs them to
+# find its own credentials -- which also means user-global ~/.claude/CLAUDE.md
+# and settings.json still apply. The empty scratch cwd stops discovery inside
+# THIS REPO; it does not make the turn bare.
+_ENV_PASSTHROUGH = (
+    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP",
+    "USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA",
+    "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
+)
+
+
+def _child_env() -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if k in _ENV_PASSTHROUGH}
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
 
 _PROMPT_TEMPLATE = """\
 You are drafting comments a person will review and may post on a social media post.
@@ -304,6 +325,7 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
                 # the prompt and produce [] drafts silently, every day.
                 encoding="utf-8",
                 errors="replace",
+                env=_child_env(),
             )
         # ValueError as well as OSError: Popen.__init__ raises it on a
         # malformed argument combination. Not reachable with the hard-coded
