@@ -40,3 +40,35 @@ def test_leakage_scan_catches_another_clients_alias_email():
 def test_leakage_scan_catches_another_clients_first_name():
     text = "- Joanne mentioned this exact struggle too [last-meeting-email]"
     assert gates.leakage_scan(text, OTHER_CLIENTS) == ["joanne"]
+
+
+def test_citation_gate_does_not_flag_a_markdown_link():
+    text = "- See more [here](https://example.com) for context"
+    assert gates.citation_gate(text, set()) == []
+
+
+def test_citation_gate_still_flags_a_bogus_label_with_no_paren_after():
+    text = "- Reflect on X [made-up-source]"
+    assert gates.citation_gate(text, {"last-meeting-email"}) == ["made-up-source"]
+
+
+def test_leakage_scan_ignores_lowercase_common_word_matching_first_name():
+    clients = [
+        {
+            "slug": "grace", "display_name": "Grace Wilson", "primary_email": "gracewilson@example.com",
+            "alias_emails": [],
+        },
+    ]
+    text = "- Approach this with grace and patience, one step at a time"
+    assert gates.leakage_scan(text, clients) == []
+
+
+def test_leakage_scan_still_catches_capitalized_first_name():
+    clients = [
+        {
+            "slug": "grace", "display_name": "Grace Wilson", "primary_email": "gracewilson@example.com",
+            "alias_emails": [],
+        },
+    ]
+    text = "- Grace mentioned this exact struggle too [last-meeting-email]"
+    assert gates.leakage_scan(text, clients) == ["grace"]
