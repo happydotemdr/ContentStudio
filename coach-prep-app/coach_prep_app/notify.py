@@ -23,7 +23,15 @@ def api_key() -> str | None:
     if env_key:
         return env_key
     if KEY_FILE.exists():
-        file_key = KEY_FILE.read_text(encoding="utf-8").strip()
+        # .exists() does not guarantee the read succeeds -- a key file
+        # saved in a non-UTF-8 encoding (plausible if hand-edited in
+        # Notepad on Windows) or deleted between the check and the read
+        # (a TOCTOU race) must not turn into an uncaught exception here,
+        # since send_email's whole contract is "never raises".
+        try:
+            file_key = KEY_FILE.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return None
         if file_key:
             return file_key
     return None

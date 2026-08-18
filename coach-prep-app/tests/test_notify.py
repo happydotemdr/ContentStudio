@@ -25,6 +25,18 @@ def test_send_email_returns_false_with_no_key_configured(monkeypatch):
     assert notify.send_email("subject", "body") is False
 
 
+def test_api_key_returns_none_on_a_key_file_read_failure(tmp_path, monkeypatch):
+    """api_key's whole contract is never raising -- a key file that exists
+    but can't be read as UTF-8 (e.g. saved as UTF-16 by Notepad) must not
+    propagate an exception out of send_email."""
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    key_file = tmp_path / "resend_api_key.txt"
+    key_file.write_bytes("a-real-key".encode("utf-16"))
+    monkeypatch.setattr(notify, "KEY_FILE", key_file)
+    assert notify.api_key() is None
+    assert notify.send_email("subject", "body") is False
+
+
 @pytest.mark.allow_network  # this test intentionally exercises the real requests.post call path, mocked below
 def test_send_email_posts_to_resend_with_the_configured_key(monkeypatch):
     monkeypatch.setenv("RESEND_API_KEY", "test-key")
