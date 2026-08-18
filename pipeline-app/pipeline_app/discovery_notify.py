@@ -192,9 +192,32 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
             run_id=run_row_id,
         )
 
-    escalated_mismatches = [m for m in mismatches if m["escalated"]]
-    has_issues = (run_row["status"] != "completed" or bool(errored) or bool(skips)
-                  or bool(duplicates) or bool(escalated_mismatches))
+    other_statuses: dict[str, list[str]] = {}
+    coverage = {
+        "scanned": len(handle_results),
+        "with_items": sum(1 for r in handle_results if r["items_downloaded"] > 0),
+        "quiet": sum(1 for r in handle_results
+                     if r["status"] == "no_new_content" or
+                     (r["status"] == "ok" and r["items_downloaded"] == 0)),
+        "errored": len(errored),
+        "other": other_statuses,          # {status: [labels]}, populated in T12
+    }
+    # An empty roster produced zero items with nothing wrong, which is exactly
+    # what a genuinely quiet day produces. Scanning nothing is never OK (B-95).
+    has_issues = (
+        run_row["status"] != "completed"
+        or bool(errored)
+        or coverage["scanned"] == 0
+        or bool(skips)
+        or bool(duplicates)
+        or bool(other_statuses)
+        or any(m["escalated"] for m in mismatches)  # escalated mismatches only (B-100)
+    )
+    if coverage["scanned"] == 0:
+        obs.record_event(
+            conn, kind="digest.empty_roster", severity="error", source="discovery_notify",
+            message=f"run {run_row_id} scanned zero handles",
+            detail={"run_status": run_row["status"]}, run_id=run_row_id)
     return {
         "run_status": run_row["status"],
         "has_issues": has_issues,
@@ -204,6 +227,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
         "warnings": warnings,
         "duplicates": duplicates,
         "mismatches": mismatches,
+        "coverage": coverage,
     }
 
 

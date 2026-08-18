@@ -269,6 +269,30 @@ def test_build_summary_scans_a_handle_recorded_with_zero_items(notify_db):
     assert len(summary["items"]) == 1
 
 
+def test_build_summary_reports_the_denominator_it_was_quiet_against(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    for i in range(3):
+        hid = _make_handle(conn, "bluesky", f"a{i}.bsky.social", f"Author {i}")
+        db.record_handle_result(conn, run_row_id, hid, "no_new_content", 0)
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["coverage"] == {"scanned": 3, "with_items": 0, "quiet": 3,
+                                   "errored": 0, "other": {}}
+    assert summary["has_issues"] is False
+
+
+def test_an_empty_roster_is_an_issue_not_a_quiet_day(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)          # zero handle result rows at all
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["coverage"]["scanned"] == 0
+    assert summary["has_issues"] is True
+
+
 def test_build_summary_warns_on_count_mismatch_but_does_not_raise(notify_db, capsys):
     conn, repo_root = notify_db
     run_row_id = _make_run(conn)
