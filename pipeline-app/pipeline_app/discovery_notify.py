@@ -293,11 +293,13 @@ def notify(conn, repo_root: Path, run_row_id: int) -> bool:
             "spotlight": spotlight,
             "spotlight_rule": spotlight_rule,
             "drafts": drafts,
-            # Run-level, not brand-level: every section currently shows the
-            # same "other" statuses. T14 relocates this rendering out of
-            # per-section _render_text/_render_html so it prints once instead
-            # of once per brand.
-            "coverage": overall["coverage"],
+            # Deliberately NO coverage/skips/warnings/duplicates/mismatches
+            # here. Those are run-level facts; email_render renders them once,
+            # off `overall`. Copying overall["coverage"] in (T12's interim fix)
+            # made the per-section renderers print the "Handles reported as X"
+            # block once per brand -- up to three times in one email (B-95b).
+            # errored/errors DO stay: they are per-section by construction, and
+            # every section deliberately shows the run's full error list.
         }
 
     run_row = db_mod.get_run(conn, run_row_id)

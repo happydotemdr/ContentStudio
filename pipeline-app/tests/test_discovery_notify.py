@@ -35,6 +35,21 @@ import datetime as _dt
 from pipeline_app import db
 
 
+def _fake_overall(**over):
+    """A build_summary()-shaped dict, for tests that mock build_summary.
+
+    Carries every key email_render.render_brand_digest requires, so a fake can
+    never drift into a shape the real renderer would reject (T14's guard).
+    """
+    summary = {"run_status": "completed", "has_issues": False, "items": [],
+               "errored": [], "errors": [], "skips": [], "warnings": [],
+               "duplicates": [], "mismatches": [],
+               "coverage": {"scanned": 0, "with_items": 0, "quiet": 0,
+                            "errored": 0, "other": {}}}
+    summary.update(over)
+    return summary
+
+
 def _make_run(conn, started_at="2026-08-01T06:00:00+00:00", status="completed"):
     run_row_id = db.insert_terminal_run(
         conn, "2026-08-01T06-00-00-000000", "scheduled", "incremental", status,
@@ -151,9 +166,7 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
     calls = {}
     monkeypatch.setattr(discovery_notify, "build_summary",
                          lambda c, r, rid: (calls.setdefault("build_args", (c, r, rid)),
-                                             {"run_status": "completed", "has_issues": False,
-                                              "items": [], "errored": [], "errors": [],
-                                              "coverage": {"other": {}}})[1])
+                                             _fake_overall())[1])
     monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
                          lambda items: (None, None))
     monkeypatch.setattr(discovery_notify.email_render, "render_brand_digest",
@@ -168,9 +181,12 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
     assert result is True
     assert calls["build_args"] == (conn, repo_root, run_row_id)
     overall, sections, run_date = calls["render_args"]
-    assert overall == {"run_status": "completed", "has_issues": False, "items": [], "errored": [],
-                        "errors": [], "coverage": {"other": {}}}
+    assert overall == _fake_overall()
     assert set(sections) == {"freedom2beu", "raisinggoodsports", "guru"}
+    # Run-level facts stay on `overall` only -- a section that carried them
+    # would have them rendered once per brand (B-95b).
+    for section in sections.values():
+        assert not set(section) & {"coverage", "skips", "warnings", "duplicates", "mismatches"}
     assert run_date == "2026-08-01"
     assert calls["send_args"] == ("s", "t", "h")
 
@@ -449,9 +465,7 @@ def test_notify_threads_spotlight_and_drafts_into_render(monkeypatch, notify_db)
     item = {"marker": "the-item", "brands": ["guru"], "platform": "youtube", "handle": "@x", "item_id": "i1"}
     spotlight = {"marker": "the-spotlight", "platform": "youtube", "handle": "@x", "item_id": "i1"}
     monkeypatch.setattr(discovery_notify, "build_summary",
-                        lambda *a: {"run_status": "completed", "has_issues": False,
-                                    "items": [item], "errored": [], "errors": [],
-                                    "coverage": {"other": {}}})
+                        lambda *a: _fake_overall(items=[item]))
     monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
                         lambda items: (spotlight, discovery_notify.discovery_digest.SPOTLIGHT_RULE_ENGAGEMENT)
                         if items else (None, None))
@@ -530,9 +544,7 @@ def test_notify_skips_drafting_when_there_is_no_spotlight(monkeypatch, notify_db
     run_row_id = _make_run(conn)
     calls = []
     monkeypatch.setattr(discovery_notify, "build_summary",
-                        lambda *a: {"run_status": "completed", "has_issues": False,
-                                    "items": [], "errored": [], "errors": [],
-                                    "coverage": {"other": {}}})
+                        lambda *a: _fake_overall())
     monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
                         lambda items: (None, None))
     monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments",
@@ -620,6 +632,40 @@ def test_notify_end_to_end_run_level_facts_render_identically_across_sections(mo
     assert html.count("@dead-handle") == 3
     assert text.count("Run status: completed_with_errors") == 3
     assert html.count("Run status: completed_with_errors") == 3
+
+
+def test_notify_end_to_end_prints_run_level_facts_once_not_once_per_section(monkeypatch, notify_db):
+    # The other side of the coin from the test above: run-wide facts that
+    # describe the RUN rather than a handle must appear ONCE in the whole
+    # email, not once per brand section. Task 12 threaded overall["coverage"]
+    # into every sections[brand] dict as an interim measure, which made the
+    # real production email print "Handles reported as skipped" three times
+    # (B-95b). This exercises the fix through the real notify() pipeline.
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn, "instagram", "aspenprojectplay", "Aspen Project Play")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports", "freedom2beu"])
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_post(repo_root, "instagram", "aspenprojectplay", "p1.md",
+                ["url: 'https://instagram.com/p/1'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A caption.")
+    skipped_id = db.create_handle(conn, "youtube", "@quota-handle", "Quota Handle", "guru", None,
+                                  "2026-07-01T00:00:00+00:00")
+    db.record_handle_result(conn, run_row_id, skipped_id, "skipped", 0)
+
+    captured = {}
+    monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments", lambda item, **kw: [])
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text, html: (captured.setdefault("text", text),
+                                     captured.setdefault("html", html), True)[-1],
+    )
+
+    assert discovery_notify.notify(conn, repo_root, run_row_id) is True
+    for part in (captured["text"], captured["html"]):
+        assert part.count("Handles reported as skipped") == 1
+        assert part.count("Quota Handle") == 1
+        assert part.count("Scanned 2 handle(s)") == 1
 
 
 def test_notify_end_to_end_names_the_linkedin_gate_in_the_sent_email(monkeypatch, notify_db):

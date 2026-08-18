@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 from pipeline_app import email_render
 
 
@@ -14,14 +16,34 @@ def _item(platform="youtube", handle="chan", display_name="Some Channel", item_i
 
 
 def _summary(items=None, spotlight=None, spotlight_rule=None, drafts=None, errored=None,
-             errors=None, run_status="completed", has_issues=False, coverage=None):
+             errors=None, run_status="completed", has_issues=False, coverage=None,
+             skips=None, warnings=None, duplicates=None, mismatches=None):
     return {"run_status": run_status, "has_issues": has_issues,
             "items": items if items is not None else [],
             "errored": errored if errored is not None else [],
             "errors": errors if errors is not None else [],
             "spotlight": spotlight, "spotlight_rule": spotlight_rule,
             "drafts": drafts if drafts is not None else [],
-            "coverage": coverage if coverage is not None else {"other": {}}}
+            "coverage": coverage or {"scanned": 3, "with_items": 0, "quiet": 3,
+                                     "errored": 0, "other": {}},
+            "skips": skips or [], "warnings": warnings or [],
+            "duplicates": duplicates or [], "mismatches": mismatches or []}
+
+
+def _section(items=None, spotlight=None, spotlight_rule=None, drafts=None, errored=None,
+             errors=None, run_status="completed", has_issues=False):
+    """A per-brand section dict, carrying ONLY genuinely per-section keys.
+
+    Deliberately narrower than _summary(): run-level facts (coverage, skips,
+    warnings, duplicates, mismatches) live on `overall` and are rendered once
+    by render_brand_digest, never once per section.
+    """
+    return {"run_status": run_status, "has_issues": has_issues,
+            "items": items if items is not None else [],
+            "errored": errored if errored is not None else [],
+            "errors": errors if errors is not None else [],
+            "spotlight": spotlight, "spotlight_rule": spotlight_rule,
+            "drafts": drafts if drafts is not None else []}
 
 
 SCHEMA = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
@@ -43,8 +65,41 @@ def test_subject_counts_posts_not_videos():
 def test_no_new_content_body():
     result = email_render.render_email(_summary(), "2026-08-08")
     assert result["subject"] == "ContentStudio Discovery 2026-08-08: 0 new post(s)"
-    assert result["text"] == "No new content today."
+    # No longer the WHOLE body: the coverage footer now follows it (B-95b).
+    assert "No new content today." in result["text"]
     assert "No new content today." in result["html"]
+
+
+def test_a_quiet_day_states_the_denominator_it_was_quiet_against():
+    result = email_render.render_email(_summary(), "2026-08-08")
+    assert result["text"] != "No new content today."          # inverts the old assertion
+    assert "No new content today." in result["text"]
+    assert "Scanned 3 handle(s)" in result["text"]
+    assert "3 quiet" in result["text"]
+    assert "Scanned 3 handle(s)" in result["html"]
+
+
+def test_an_empty_roster_says_so_instead_of_reading_as_a_quiet_day():
+    coverage = {"scanned": 0, "with_items": 0, "quiet": 0, "errored": 0, "other": {}}
+    result = email_render.render_email(
+        _summary(coverage=coverage, has_issues=True, run_status="completed"), "2026-08-08")
+    assert result["subject"].startswith("[ISSUE] ")
+    assert "No handles were scanned" in result["text"]
+    assert "No handles were scanned" in result["html"]
+
+
+def test_render_email_refuses_a_summary_missing_a_required_key():
+    summary = _summary()
+    del summary["coverage"]
+    with pytest.raises(KeyError, match="coverage"):
+        email_render.render_email(summary, "2026-08-08")
+
+
+def test_unreadable_files_are_named_in_the_body():
+    skips = [{"handle": "Betty Liu", "reason": "bad_frontmatter", "name": "broken.md"}]
+    text = email_render.render_email(_summary(skips=skips, has_issues=True), "2026-08-08")["text"]
+    assert "1 captured file(s) could not be read" in text
+    assert "broken.md" in text
 
 
 def test_issue_prefixes_subject_and_opens_body_with_run_status():
@@ -365,6 +420,85 @@ def test_a_non_linkedin_spotlight_is_labelled_as_the_most_engaged():
                  spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT), "2026-08-08")
     assert "most engagement" in result["text"]
     assert "always picked first" not in result["text"]
+
+
+def _three_brand_sections():
+    return {
+        "freedom2beu": _section(items=[_item(item_id="f1", title="F2BU Post")]),
+        "raisinggoodsports": _section(items=[_item(item_id="r1", title="RGS Post")]),
+        "guru": _section(items=[_item(item_id="g1", title="Guru Post")]),
+    }
+
+
+def test_render_brand_digest_prints_run_level_facts_once_not_once_per_section():
+    # Task 12 threaded overall["coverage"] into every sections[brand] dict as an
+    # interim step, so a run with a non-empty other_statuses printed the
+    # "Handles reported as ..." block THREE times in one email -- once per brand
+    # section. Run-level facts belong to the run, not to any brand.
+    overall = _summary(
+        items=[_item(item_id="f1"), _item(item_id="r1"), _item(item_id="g1")],
+        has_issues=True,
+        coverage={"scanned": 4, "with_items": 3, "quiet": 0, "errored": 0,
+                  "other": {"skipped": ["Someone BS"]}},
+        skips=[{"handle": "Betty Liu", "reason": "bad_frontmatter", "name": "broken.md"}],
+        duplicates=[{"item_id": "dupe1"}],
+        mismatches=[{"label": "Aspen", "db": 3, "found": 1, "direction": "missing",
+                     "escalated": True}],
+    )
+    result = email_render.render_brand_digest(overall, _three_brand_sections(), "2026-08-15")
+
+    for part in (result["text"], result["html"]):
+        assert part.count("Scanned 4 handle(s)") == 1
+        assert part.count("Handles reported as skipped") == 1
+        assert part.count("Someone BS") == 1
+        assert part.count("1 captured file(s) could not be read") == 1
+        assert part.count("broken.md") == 1
+        assert part.count("reported twice") == 1
+        assert part.count("but only 1 are on disk") == 1
+    # ...while genuinely per-section content still renders once per section.
+    assert result["text"].count("F2BU Post") == 1
+    assert result["text"].count("RGS Post") == 1
+    assert result["text"].count("Guru Post") == 1
+
+
+def test_render_brand_digest_reports_an_unranked_platform_once_for_the_whole_run():
+    unknown = _item(platform="linkedin-newsletter", handle="n", item_id="n1",
+                    title="A Newsletter")
+    sections = {"freedom2beu": _section(items=[unknown]),
+                "raisinggoodsports": _section(items=[unknown])}
+    overall = _summary(items=[unknown])
+    result = email_render.render_brand_digest(overall, sections, "2026-08-15")
+    assert result["text"].count("no configured label or display rank") == 1
+    assert result["html"].count("no configured label or display rank") == 1
+
+
+def test_render_brand_digest_sections_need_no_run_level_keys():
+    # _section() carries no coverage/skips/warnings/duplicates/mismatches at
+    # all. The per-section renderers must not reach for them (this is what lets
+    # notify() stop copying overall["coverage"] into every section).
+    overall = _summary(items=[_item(item_id="g1")])
+    result = email_render.render_brand_digest(
+        overall, {"guru": _section(items=[_item(item_id="g1", title="Guru Post")])},
+        "2026-08-15")
+    assert "Guru Post" in result["text"]
+    assert "Scanned 3 handle(s)" in result["text"]
+
+
+def test_render_brand_digest_refuses_an_overall_missing_a_run_level_key():
+    # The guard has to live here too: production calls render_brand_digest, never
+    # render_email, so a guard only on render_email protects nothing real.
+    for key in ("coverage", "skips", "duplicates", "mismatches"):
+        overall = _summary()
+        del overall[key]
+        with pytest.raises(KeyError, match=key):
+            email_render.render_brand_digest(overall, {}, "2026-08-15")
+
+
+def test_render_brand_digest_puts_the_coverage_footer_on_the_empty_email_too():
+    result = email_render.render_brand_digest(_summary(), {}, "2026-08-15")
+    assert "No new content today." in result["text"]
+    assert "Scanned 3 handle(s)" in result["text"]
+    assert "Scanned 3 handle(s)" in result["html"]
 
 
 def test_every_accepted_platform_has_a_rank_and_a_label():
