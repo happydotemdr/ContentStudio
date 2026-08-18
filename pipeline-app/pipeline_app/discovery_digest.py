@@ -261,6 +261,20 @@ def _interactions(item: dict) -> int:
     return (item["likes"] or 0) + (item["comments"] or 0)
 
 
+def _metrics_reported(item: dict) -> int:
+    """0 when the source reported at least one engagement number, 1 when it
+    reported none.
+
+    An item with no like_count and no comment_count scores the same 0
+    interactions as an item that genuinely got none, and the old key then
+    resolved that tie on `platform` ASCENDING -- handing every all-zero day to
+    bluesky, the one platform whose engagement is never measured (B-97). This
+    is per-item, not a platform allowlist, so a future adapter that starts
+    reporting metrics is picked up with no change here.
+    """
+    return 0 if (item["likes"] is not None or item["comments"] is not None) else 1
+
+
 def _spotlight_sort_key(item: dict):
     # Ascending sort; negation carries the descending terms. (platform, handle,
     # item_id) is a filesystem path, so the key is TOTAL -- no two items can
@@ -270,6 +284,7 @@ def _spotlight_sort_key(item: dict):
         -_interactions(item),
         -(item["views"] or 0),
         published_rank(item["published"]),
+        _metrics_reported(item),
         item["platform"],
         item["handle"],
         item["item_id"],

@@ -291,3 +291,22 @@ def test_select_spotlight_excludes_empty_bodied_items():
 
 def test_select_spotlight_returns_none_when_every_item_is_empty_bodied():
     assert digest.select_spotlight([_item(body=""), _item(item_id="b", body="")]) is None
+
+
+def test_spotlight_prefers_a_reported_zero_over_an_unreported_metric():
+    # bluesky records neither like_count nor comment_count, so it scored 0 and
+    # then won the platform tie-break by ALPHABET over every platform that
+    # actually measured zero engagement (B-97).
+    silent = _item(platform="bluesky", item_id="bs", likes=None, comments=None,
+                   views=None, published="2026-08-01")
+    measured = _item(platform="youtube", item_id="yt", likes=0, comments=0,
+                     views=0, published="2026-08-01")
+    assert digest.select_spotlight([silent, measured])["item_id"] == "yt"
+
+
+def test_platform_alphabet_is_never_the_reason_one_item_beats_another():
+    a = _item(platform="bluesky", item_id="a", likes=None, comments=None, views=None)
+    b = _item(platform="zplatform", item_id="b", likes=None, comments=None, views=None)
+    # Both unmeasured, same date: the surviving tie-break is the total identity
+    # key, which is arbitrary but is not a disguised platform preference.
+    assert digest.select_spotlight([b, a])["item_id"] == "a"
