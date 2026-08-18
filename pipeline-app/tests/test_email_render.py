@@ -537,6 +537,17 @@ def test_the_disclosure_constants_are_what_the_documentation_must_describe():
         "primary text, which for a post shorter than that is the whole post.")
 
 
+def test_warnings_reach_the_email_body_not_just_the_log():
+    # build_summary() populates "warnings" from collect()'s two soft flaws
+    # (no url, no published field) -- the item still ships in `items`, but
+    # until now the flaw itself never reached the email, only obs.log().
+    warnings = [{"handle": "Betty Liu", "reason": "no_url", "name": "post.md"}]
+    text = email_render.render_email(_summary(warnings=warnings, has_issues=True), "2026-08-08")["text"]
+    html = email_render.render_email(_summary(warnings=warnings, has_issues=True), "2026-08-08")["html"]
+    assert "1" in text and "post.md" in text
+    assert "post.md" in html
+
+
 def test_every_accepted_platform_has_a_rank_and_a_label():
     platforms = _schema_platforms()
     assert platforms, "the CHECK constraint parsed to an empty vocabulary"

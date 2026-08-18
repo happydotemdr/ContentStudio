@@ -115,6 +115,10 @@ def _notices(overall: dict) -> list[str]:
     if overall["skips"]:
         names = ", ".join(sorted({s["name"] for s in overall["skips"]})[:5])
         out.append(f"{len(overall['skips'])} captured file(s) could not be read: {names}")
+    if overall["warnings"]:
+        names = ", ".join(sorted({w["name"] for w in overall["warnings"]})[:5])
+        out.append(f"{len(overall['warnings'])} item(s) shipped with a flaw "
+                   f"(missing url or publish date): {names}")
     if overall["duplicates"]:
         out.append(f"{len(overall['duplicates'])} post(s) were reported twice by "
                    f"handles whose directory slugs collide.")
