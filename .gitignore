@@ -81,6 +81,11 @@ doc-ingest-app/client_secret.json
 doc-ingest-app/token.json
 doc-ingest-app/.coverage
 
+# Calendar-only OAuth credential (Task 6) -- separate, additively-scoped
+# pair from client_secret.json/token.json above; never overwrite those.
+doc-ingest-app/calendar_client_secret.json
+doc-ingest-app/calendar_token.json
+
 # Real icacls-locked test fixtures (Task 13) -- not guaranteed deletable by
 # the same non-elevated account that created them; accumulates over time.
 doc-ingest-app/tests/.lock_test_scratch/

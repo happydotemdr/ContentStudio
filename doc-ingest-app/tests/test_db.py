@@ -10,9 +10,9 @@ def test_init_db_creates_all_tables(tmp_db_path):
             "SELECT name FROM sqlite_master WHERE type IN ('table','view')"
         ).fetchall()
     }
-    assert {"schema_version", "source_files", "conversion_jobs", "conversions", "events"} <= tables
+    assert {"schema_version", "source_files", "conversion_jobs", "conversions", "events", "clients"} <= tables
     version = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
-    assert version == 1
+    assert version == 2
     conn.close()
 
 
@@ -101,7 +101,7 @@ def test_apply_migrations_is_a_noop_on_a_fresh_db(tmp_db_path):
     conn = db.init_db(tmp_db_path)
     db.apply_migrations(conn)  # must not raise
     version = conn.execute("SELECT version FROM schema_version WHERE id = 1").fetchone()[0]
-    assert version == db.SCHEMA_VERSION
+    assert version == 2  # initial schema_version is 1, then Task 1 migration advances to 2
     conn.close()
 
 

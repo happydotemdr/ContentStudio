@@ -65,3 +65,38 @@ cd doc-ingest-app && python -c "from pathlib import Path; from doc_ingest.drive_
 ```
 
 Both must succeed before registering the cron task (`python scripts/setup_ingest_task.py --apply`).
+
+## 4. Calendar API (for meeting-note client tagging)
+
+This is a **separate, additive** credential from the Drive/Docs/Sheets one above —
+its own OAuth client and its own token file, scoped only to `calendar.readonly`.
+It exists so the classifier can look up an event's attendees to tag meeting notes
+by client. Setting this up must never touch `client_secret.json` or `token.json`;
+the running ingest cron's credential is not part of this flow.
+
+1. In the Google Cloud Console, reuse the same project used for section 2 (or
+   create a new one) under the `admin@freedom2beu.com` Workspace account.
+2. Enable the **Google Calendar API** for that project.
+3. Configure the OAuth consent screen the same way as section 2 (**User type:
+   Internal**, for the same 7-day-refresh-token reason).
+4. Create a **second** OAuth client of type **Desktop app**. Do NOT reuse the
+   existing Drive/Docs/Sheets client for this: consenting an already-granted
+   `client_id` to an additional scope typically returns a token carrying the
+   *union* of every previously-granted scope, not just the new one — that
+   would leave `calendar_token.json` silently holding Drive/Docs/Sheets
+   access too, defeating the whole point of a separate, calendar-only
+   credential. A second, distinct Desktop app client is the only way to
+   guarantee the scope is actually limited to `calendar.readonly`.
+5. Download the client secret JSON and save it as
+   `doc-ingest-app/calendar_client_secret.json` (already gitignored — never
+   commit this file, and never save it as `client_secret.json`).
+6. Run the one-time browser consent by hand:
+
+   ```bash
+   cd doc-ingest-app
+   python -c "from pathlib import Path; from doc_ingest.calendar_client import get_credentials; get_credentials(Path('calendar_token.json'), Path('calendar_client_secret.json'))"
+   ```
+
+   This opens a browser for one-time consent. The resulting token is cached at
+   `doc-ingest-app/calendar_token.json` (gitignored) and refreshed silently
+   thereafter — distinct from and never overwriting `token.json`.

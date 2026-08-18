@@ -23,7 +23,7 @@ import shutil
 import threading
 from pathlib import Path
 
-from doc_ingest import convert, db, drive_client, frontmatter, gauntlet, jobs, lock, metadata_readers, naming
+from doc_ingest import calendar_client, client_tagging, convert, db, drive_client, frontmatter, gauntlet, jobs, lock, metadata_readers, naming, program_sources
 
 _LOCAL_EXTENSIONS = {"pdf": "pdf", "docx": "docx", "xlsx": "xlsx", "txt": "txt", "md": "md", "ppt": "ppt"}
 
@@ -168,7 +168,7 @@ def _fail_job(conn, job_id: int, reason: str) -> None:
         )
 
 
-def process_job(conn, job_id: int, cfg, worker_id: str, drive_service_factory=None) -> None:
+def process_job(conn, job_id: int, cfg, worker_id: str, drive_service_factory=None, calendar_service_factory=None) -> None:
     job = conn.execute(
         "SELECT source_file_id FROM conversion_jobs WHERE id = ?", (job_id,)
     ).fetchone()
@@ -262,7 +262,35 @@ def process_job(conn, job_id: int, cfg, worker_id: str, drive_service_factory=No
                 _fail_job(conn, job_id, gate2_result.failure_reason)
                 return
 
+            try:
+                app_root = Path(__file__).resolve().parents[1]
+                allowlist = program_sources.load_program_sources(app_root / "program_sources.yaml")
+                drift_warning = program_sources.check_drift(dest_rel_path, allowlist)
+                if drift_warning:
+                    with db.transaction(conn):
+                        conn.execute(
+                            "INSERT INTO events (ts, event_type, source_file_id, details_json) VALUES (?, ?, ?, ?)",
+                            (_now_iso(), "program_source_drift", source_file_id, json.dumps({"warning": drift_warning})),
+                        )
+            except Exception:
+                # Best-effort diagnostic only -- a bad program_sources.yaml
+                # edit or a transient DB hiccup on this one INSERT must
+                # never fail a real conversion job.
+                pass
+
             frontmatter_extras = _frontmatter_extras(independent_metadata)
+            tag_result = client_tagging.classify(
+                conn, rel_path, conversion_result.markdown_body,
+                calendar_service_factory or calendar_client.build_default_service,
+            )
+            frontmatter_extras.update(tag_result.frontmatter_extra)
+            client_value = tag_result.frontmatter_extra.get("client")
+            if tag_result.event_type:
+                with db.transaction(conn):
+                    conn.execute(
+                        "INSERT INTO events (ts, event_type, source_file_id, details_json) VALUES (?, ?, ?, ?)",
+                        (_now_iso(), tag_result.event_type, source_file_id, json.dumps(tag_result.event_details)),
+                    )
             base_fm = {
                 "source_path": rel_path, "source_type": source_type, "source_hash": source_hash,
                 "source_modified_at": source_modified_at, "converted_at": _now_iso(),
@@ -304,14 +332,14 @@ def process_job(conn, job_id: int, cfg, worker_id: str, drive_service_factory=No
                 INSERT INTO conversions
                     (source_file_id, job_id, version_number, output_path, status, source_type,
                      source_hash_at_conversion, drive_modified_time_at_conversion, conversion_tool,
-                     converted_at, gauntlet_passed_at,
+                     converted_at, gauntlet_passed_at, client,
                      page_count, word_count, sheet_count, row_count_total)
-                VALUES (?, ?, ?, ?, 'current', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, 'current', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_file_id, job_id, version, dest_rel_path, source_type,
                     source_hash, drive_modified_time_at_conversion, conversion_result.tool,
-                    _now_iso(), _now_iso(),
+                    _now_iso(), _now_iso(), client_value,
                     frontmatter_extras.get("page_count"),
                     frontmatter_extras.get("word_count"),
                     frontmatter_extras.get("sheet_count"),
