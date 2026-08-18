@@ -17,6 +17,12 @@ without a link, and collect_new_items warns to stderr. `like_count`,
 from the render when absent.
 `fetched_at` must be an aware-UTC isoformat(timespec="seconds") STRING.
 
+`published` is optional. `upload_date` is accepted as its ONE alias, for
+YouTube's yt-dlp-shaped frontmatter. No third name is read: an adapter writing
+`date_published` or `posted_at` gets published=None, which renders undated and
+sorts last, so collect() reports it as a warning rather than letting it pass
+for a post that genuinely has no date.
+
 One known exception: download_brandintel.py, the manual toolkit script at repo
 root, does not honor this contract and is deliberately left unmodified.
 Nothing it writes falls inside a discovery run's watermark, so it never
@@ -43,6 +49,10 @@ TITLE_MAX_CHARS = 90
 # Seconds of slack on the mtime pre-filter, absorbing filesystem timestamp
 # granularity and clock skew between the run's recorded start and the write.
 MTIME_SLACK_S = 300
+
+# The publish-date field and its one accepted alias. Nothing else is read; a
+# name outside this tuple is reported by collect() (B-98).
+PUBLISHED_FIELDS = ("published", "upload_date")
 
 # Preference order when a body is section-structured (YouTube's is: an H1, then
 # "## description", then "## transcript" -- discovery_youtube.py:289-293).
@@ -160,6 +170,18 @@ def _as_optional_int(value) -> int | None:
         return None
 
 
+def _published(meta: dict) -> str | None:
+    """The publish date from meta, reading only the accepted field names.
+
+    Reads PUBLISHED_FIELDS in order; returns the first non-None value or None.
+    """
+    for field in PUBLISHED_FIELDS:
+        value = _as_optional_str(meta.get(field))
+        if value is not None:
+            return value
+    return None
+
+
 def _mtime_cutoff(run_started_at: str) -> float | None:
     """Epoch seconds below which a file cannot belong to this run, or None to
     disable the pre-filter.
@@ -185,8 +207,7 @@ def _build_item(handle_row, path: Path, meta: dict, body: str) -> dict:
         "item_id": path.stem,
         "title": derive_title(body, path.stem),
         "url": _as_optional_str(meta.get("url")),
-        # YouTube writes upload_date; every other adapter writes published.
-        "published": _as_optional_str(meta.get("published") or meta.get("upload_date")),
+        "published": _published(meta),
         "views": _as_optional_int(meta.get("view_count")),
         "likes": _as_optional_int(meta.get("like_count")),
         "comments": _as_optional_int(meta.get("comment_count")),

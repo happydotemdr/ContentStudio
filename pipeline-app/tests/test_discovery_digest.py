@@ -355,3 +355,20 @@ def test_select_spotlight_with_rule_names_engagement_when_no_linkedin_item_exist
 
 def test_select_spotlight_with_rule_returns_no_rule_when_there_is_no_spotlight():
     assert digest.select_spotlight_with_rule([]) == (None, None)
+
+
+def test_published_fields_are_the_declared_contract_and_appear_in_the_docstring():
+    assert digest.PUBLISHED_FIELDS == ("published", "upload_date")
+    for field in digest.PUBLISHED_FIELDS:
+        assert field in digest.__doc__
+
+
+def test_a_third_publish_date_field_name_is_reported_not_silently_dropped(tmp_path):
+    _write(tmp_path, "linkedin-profile", "bettywliu", "odd.md", [
+        "url: 'https://example.com/x'",
+        "date_published: '2026-08-05'",
+        f"fetched_at: '{RUN_START}'",
+    ], "Body text here.")
+    collected = digest.collect(tmp_path, _handle_row(), RUN_START)
+    assert collected.items[0]["published"] is None
+    assert (digest.SKIP_NO_PUBLISHED_FIELD, "odd.md") in collected.warnings
