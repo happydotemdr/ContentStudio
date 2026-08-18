@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import re
 import datetime as _dt
-import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pipeline_app import artifacts
@@ -194,9 +194,37 @@ def _build_item(handle_row, path: Path, meta: dict, body: str) -> dict:
     }
 
 
-def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[dict]:
+# Why an item was dropped. Every one of these is a FAULT: a file the adapter
+# wrote that this reader could not honour. Two other `continue` paths -- the
+# mtime pre-filter and a fetched_at older than the run -- are the watermark
+# working as designed and are deliberately NOT reported (B-99).
+SKIP_STAT_FAILED = "stat_failed"
+SKIP_UNREADABLE = "unreadable"
+SKIP_BAD_FRONTMATTER = "bad_frontmatter"
+SKIP_MISSING_FETCHED_AT = "missing_fetched_at"
+
+# Not a skip: the item is still collected, but something about it is off.
+SKIP_NO_PUBLISHED_FIELD = "no_published_field"
+SKIP_NO_URL = "no_url"
+
+
+@dataclass(frozen=True)
+class Collected:
+    """What one handle's directory yielded, INCLUDING what it failed to yield.
+
+    Returning the failures is the whole point: the previous shape was a bare
+    list, so an adapter that wrote 30 unparseable files and an adapter that
+    wrote nothing were the same value (B-99).
+    """
+    items: list[dict] = field(default_factory=list)
+    skips: list[tuple[str, str]] = field(default_factory=list)      # (reason, filename)
+    warnings: list[tuple[str, str]] = field(default_factory=list)   # item kept, but flawed
+
+
+def collect(repo_root: Path, handle_row, run_started_at: str) -> Collected:
     """Every item this handle captured during the run identified by
-    run_started_at, newest-agnostic (the caller orders).
+    run_started_at, newest-agnostic (the caller orders), plus everything the
+    read dropped or flagged along the way.
 
     Selection is a WATERMARK -- frontmatter fetched_at >= run_started_at -- not
     a top-N. It self-corrects when the DB's items_downloaded under-reports,
@@ -206,10 +234,10 @@ def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[
     """
     directory = handle_dir(repo_root, handle_row["platform"], handle_row["handle"])
     if not directory.exists():
-        return []
+        return Collected()
 
     cutoff = _mtime_cutoff(run_started_at)
-    items: list[dict] = []
+    out = Collected()
     # glob("*.md") is non-recursive and does not match the ".md.tmp"
     # write-temps. YouTube's _tmp/ scratch directory is a SIBLING of the handle
     # directories (output/brand-intel/youtube/_tmp, discovery_youtube.py:205),
@@ -218,29 +246,42 @@ def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[
         if cutoff is not None:
             try:
                 if path.stat().st_mtime < cutoff:
-                    continue
+                    continue        # outside the run: expected, not a skip
             except OSError:
+                out.skips.append((SKIP_STAT_FAILED, path.name))
                 continue
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
+            out.skips.append((SKIP_UNREADABLE, path.name))
             continue
         try:
             meta, body = artifacts.parse_frontmatter(text)
         except artifacts.MalformedArtifactError:
+            out.skips.append((SKIP_BAD_FRONTMATTER, path.name))
             continue
         fetched_at = meta.get("fetched_at")
         # Non-str includes an unquoted YAML timestamp, which parses to a
         # datetime and would raise TypeError on the comparison below.
-        if not isinstance(fetched_at, str) or fetched_at < run_started_at:
+        if not isinstance(fetched_at, str):
+            out.skips.append((SKIP_MISSING_FETCHED_AT, path.name))
             continue
+        if fetched_at < run_started_at:
+            continue                # outside the run: expected, not a skip
         item = _build_item(handle_row, path, meta, body)
         if item["url"] is None:
-            print(f"discovery_digest: no url in {path.name} "
-                  f"({handle_row['platform']}/{handle_row['handle']}), rendering without a link",
-                  file=sys.stderr)
-        items.append(item)
-    return items
+            out.warnings.append((SKIP_NO_URL, path.name))
+        if item["published"] is None and any(k in meta for k in
+                                             ("date_published", "posted_at", "created_at", "date")):
+            out.warnings.append((SKIP_NO_PUBLISHED_FIELD, path.name))
+        out.items.append(item)
+    return out
+
+
+def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[dict]:
+    """collect().items. Kept because the item list is what most callers want;
+    anything that needs to know what was DROPPED must call collect()."""
+    return collect(repo_root, handle_row, run_started_at).items
 
 
 # Both LinkedIn modes rank equally against each other and both outrank

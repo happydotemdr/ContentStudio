@@ -220,6 +220,34 @@ def test_mtime_prefilter_disabled_when_run_started_at_is_unparseable(tmp_path):
     assert len(items) == 1
 
 
+def test_collect_reports_unreadable_frontmatter_instead_of_dropping_it_silently(tmp_path):
+    out = discovery_paths.handle_dir(tmp_path, "linkedin-profile", "bettywliu")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "broken.md").write_text("---\n: : not yaml : :\n---\n\nBody.", encoding="utf-8")
+    collected = digest.collect(tmp_path, _handle_row(), RUN_START)
+    assert collected.items == []
+    assert collected.skips == [(digest.SKIP_BAD_FRONTMATTER, "broken.md")]
+
+
+def test_collect_reports_a_missing_fetched_at_distinctly_from_an_old_one(tmp_path):
+    _write(tmp_path, "linkedin-profile", "bettywliu", "nowatermark.md",
+           ["url: 'https://example.com/a'"], "Body.")
+    _write(tmp_path, "linkedin-profile", "bettywliu", "old.md",
+           ["url: 'https://example.com/b'", "fetched_at: '2026-07-31T06:00:00+00:00'"], "Body.")
+    collected = digest.collect(tmp_path, _handle_row(), RUN_START)
+    # A contract violation is a SKIP. Being outside the watermark is the
+    # watermark working and is NOT reported -- otherwise every run reports
+    # every file it has ever captured (B-99).
+    assert collected.skips == [(digest.SKIP_MISSING_FETCHED_AT, "nowatermark.md")]
+
+
+def test_collect_new_items_still_returns_a_plain_list(tmp_path):
+    _write(tmp_path, "linkedin-profile", "bettywliu", "ok.md",
+           ["url: 'https://example.com/a'", f"fetched_at: '{RUN_START}'"], "Body.")
+    assert [i["item_id"] for i in
+            digest.collect_new_items(tmp_path, _handle_row(), RUN_START)] == ["ok"]
+
+
 def _item(platform="youtube", handle="h", item_id="i", likes=0, comments=0,
           views=0, published="2026-08-01", body="Some body text.", display_name="D"):
     return {"platform": platform, "handle": handle, "display_name": display_name,
