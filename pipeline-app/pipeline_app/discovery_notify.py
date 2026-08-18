@@ -125,6 +125,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
     errored: list[str] = []
     skips: list[dict] = []
     warnings: list[dict] = []
+    mismatches: list[dict] = []
     for result in handle_results:
         handle_row = db_mod.get_handle(conn, result["handle_id"])
         label = handle_row["display_name"] or handle_row["handle"]
@@ -150,9 +151,32 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
                     handle=handle_row["handle"], file=name, reason=reason)
         found = collected.items
         if len(found) != result["items_downloaded"]:
+            missing = len(found) < result["items_downloaded"]
+            # `found > db` is ROUTINE: discovery_engine records error/0 for a
+            # handle that raised after some downloads succeeded, which is the
+            # exact case the watermark exists to self-correct. `found < db` on a
+            # handle the engine called healthy is not routine -- files the run
+            # says it wrote are not on disk (B-100).
+            escalated = missing and result["status"] not in ("error", "skipped")
+            mismatches.append({"label": label, "db": result["items_downloaded"],
+                               "found": len(found),
+                               "direction": "missing" if missing else "extra",
+                               "escalated": escalated})
             print(f"discovery_notify: item count mismatch for {label}: "
                   f"db says {result['items_downloaded']}, found {len(found)} on disk",
                   file=sys.stderr)
+            if escalated:
+                obs.record_event(
+                    conn, kind="digest.items_missing", severity="error",
+                    source="discovery_notify",
+                    message=(f"{label}: the run recorded {result['items_downloaded']} items "
+                             f"but only {len(found)} are on disk"),
+                    detail={"handle": handle_row["handle"], "status": result["status"],
+                            "db": result["items_downloaded"], "found": len(found)},
+                    run_id=run_row_id)
+            else:
+                obs.log("digest.items_extra", level="info", handle=handle_row["handle"],
+                        db=result["items_downloaded"], found=len(found))
         for item in found:
             item["brands"] = brands
         items.extend(found)
@@ -168,8 +192,9 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
             run_id=run_row_id,
         )
 
+    escalated_mismatches = [m for m in mismatches if m["escalated"]]
     has_issues = (run_row["status"] != "completed" or bool(errored) or bool(skips)
-                  or bool(duplicates))
+                  or bool(duplicates) or bool(escalated_mismatches))
     return {
         "run_status": run_row["status"],
         "has_issues": has_issues,
@@ -178,6 +203,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
         "skips": skips,
         "warnings": warnings,
         "duplicates": duplicates,
+        "mismatches": mismatches,
     }
 
 

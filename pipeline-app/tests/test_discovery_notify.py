@@ -284,6 +284,43 @@ def test_build_summary_warns_on_count_mismatch_but_does_not_raise(notify_db, cap
     assert "mismatch" in capsys.readouterr().err.lower()
 
 
+def test_an_errored_handle_with_partial_downloads_is_informational_not_an_alarm(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, status="completed_with_errors",
+                           started_at="2026-08-01T06:00:00+00:00")
+    hid = _make_handle(conn, "instagram", "someone", "Someone")
+    db.record_handle_result(conn, run_row_id, hid, "error", 0, "boom")
+    _write_post(repo_root, "instagram", "someone", "p1.md",
+                ["url: 'https://instagram.com/p/1'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A caption that did land.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+    mismatch = summary["mismatches"][0]
+
+    assert mismatch["direction"] == "extra"
+    assert mismatch["escalated"] is False
+
+
+def test_a_healthy_handle_that_lost_files_is_escalated_with_an_error_event(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    hid = _make_handle(conn, "linkedin-profile", "bettywliu", "Betty Liu")
+    db.record_handle_result(conn, run_row_id, hid, "ok", 2)      # db says 2
+    _write_post(repo_root, "linkedin-profile", "bettywliu", "one.md",
+                ["url: 'https://example.com/x'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "Only one of the two.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+    mismatch = summary["mismatches"][0]
+
+    assert mismatch["direction"] == "missing"
+    assert mismatch["escalated"] is True
+    assert summary["has_issues"] is True
+    row = conn.execute(
+        "SELECT severity FROM events WHERE kind = 'digest.items_missing'").fetchone()
+    assert row["severity"] == "error"
+
+
 def test_build_summary_uses_handle_fallback_for_errored_handle_without_display_name(notify_db):
     conn, repo_root = notify_db
     run_row_id = _make_run(conn, status="completed_with_errors")
