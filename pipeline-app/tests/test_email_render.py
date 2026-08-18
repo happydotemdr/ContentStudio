@@ -17,7 +17,7 @@ def _item(platform="youtube", handle="chan", display_name="Some Channel", item_i
 
 def _summary(items=None, spotlight=None, spotlight_rule=None, drafts=None, errored=None,
              errors=None, run_status="completed", has_issues=False, coverage=None,
-             skips=None, warnings=None, duplicates=None, mismatches=None):
+             skips=None, warnings=None, duplicates=None, mismatches=None, started_at=None):
     return {"run_status": run_status, "has_issues": has_issues,
             "items": items if items is not None else [],
             "errored": errored if errored is not None else [],
@@ -27,7 +27,8 @@ def _summary(items=None, spotlight=None, spotlight_rule=None, drafts=None, error
             "coverage": coverage or {"scanned": 3, "with_items": 0, "quiet": 3,
                                      "errored": 0, "other": {}},
             "skips": skips or [], "warnings": warnings or [],
-            "duplicates": duplicates or [], "mismatches": mismatches or []}
+            "duplicates": duplicates or [], "mismatches": mismatches or [],
+            "started_at": started_at or "2026-08-01T06:00:00+00:00"}
 
 
 def _section(items=None, spotlight=None, spotlight_rule=None, drafts=None, errored=None,

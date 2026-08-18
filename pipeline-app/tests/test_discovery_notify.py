@@ -85,7 +85,8 @@ def _fake_overall(**over):
                "errored": [], "errors": [], "skips": [], "warnings": [],
                "duplicates": [], "mismatches": [],
                "coverage": {"scanned": 0, "with_items": 0, "quiet": 0,
-                            "errored": 0, "other": {}}}
+                            "errored": 0, "other": {}},
+               "started_at": "2026-08-01T06:00:00+00:00"}
     summary.update(over)
     return summary
 
@@ -266,6 +267,22 @@ def test_notify_never_raises_when_build_summary_fails(monkeypatch, notify_db):
     # this test documents that notify() doesn't add its own extra failure mode.
     with pytest.raises(RuntimeError):
         discovery_notify.notify(conn, repo_root, run_row_id)
+
+
+def test_notify_reads_the_run_row_exactly_once(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    real_get_run = discovery_notify.db_mod.get_run
+    calls = []
+
+    def counting_get_run(c, rid):
+        calls.append(rid)
+        return real_get_run(c, rid)
+
+    monkeypatch.setattr(discovery_notify.db_mod, "get_run", counting_get_run)
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a, **k: True)
+    discovery_notify.notify(conn, repo_root, run_row_id)
+    assert calls == [run_row_id]
 
 
 def _write_post(repo_root, platform, handle, name, meta_lines, body):

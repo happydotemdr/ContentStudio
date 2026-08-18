@@ -67,7 +67,7 @@ RUN_LEVEL_SUMMARY_KEYS = ("coverage", "skips", "warnings", "duplicates", "mismat
 # What render_brand_digest needs on `overall`. Deliberately does NOT include
 # spotlight/spotlight_rule/drafts: those are per-section, chosen by notify()'s
 # per-brand loop, and build_summary()'s overall dict has never carried them.
-REQUIRED_OVERALL_KEYS = ("run_status", "has_issues", "items") + RUN_LEVEL_SUMMARY_KEYS
+REQUIRED_OVERALL_KEYS = ("run_status", "has_issues", "items", "started_at") + RUN_LEVEL_SUMMARY_KEYS
 
 # What render_email needs: one summary that is BOTH the section and the run.
 REQUIRED_SUMMARY_KEYS = (

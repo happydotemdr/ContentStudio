@@ -273,6 +273,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
         "duplicates": duplicates,
         "mismatches": mismatches,
         "coverage": coverage,
+        "started_at": started_at,
     }
 
 
@@ -321,9 +322,8 @@ def notify(conn, repo_root: Path, run_row_id: int) -> bool:
             # every section deliberately shows the run's full error list.
         }
 
-    run_row = db_mod.get_run(conn, run_row_id)
     timezone_name = db_mod.get_settings(conn)["timezone"]
-    started_at = _dt.datetime.fromisoformat(run_row["started_at"])
+    started_at = _dt.datetime.fromisoformat(overall["started_at"])
     run_date = started_at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
 
     rendered = email_render.render_brand_digest(overall, sections, run_date)
