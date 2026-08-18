@@ -14,12 +14,13 @@ def _item(platform="youtube", handle="chan", display_name="Some Channel", item_i
 
 
 def _summary(items=None, spotlight=None, spotlight_rule=None, drafts=None, errored=None,
-             run_status="completed", has_issues=False):
+             run_status="completed", has_issues=False, coverage=None):
     return {"run_status": run_status, "has_issues": has_issues,
             "items": items if items is not None else [],
             "errored": errored if errored is not None else [],
             "spotlight": spotlight, "spotlight_rule": spotlight_rule,
-            "drafts": drafts if drafts is not None else []}
+            "drafts": drafts if drafts is not None else [],
+            "coverage": coverage if coverage is not None else {"other": {}}}
 
 
 SCHEMA = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"

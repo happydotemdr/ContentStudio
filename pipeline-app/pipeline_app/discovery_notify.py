@@ -48,6 +48,8 @@ SENDER = os.environ.get("RESEND_FROM_ADDRESS", "onboarding@resend.dev")
 
 REQUEST_TIMEOUT_S = 15
 
+KNOWN_HEALTHY_STATUSES = ("ok", "no_new_content")
+
 
 def api_key() -> str | None:
     """The Resend API key, or None if not configured. Same lookup order as
@@ -126,6 +128,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
     skips: list[dict] = []
     warnings: list[dict] = []
     mismatches: list[dict] = []
+    other_statuses: dict[str, list[str]] = {}
     for result in handle_results:
         handle_row = db_mod.get_handle(conn, result["handle_id"])
         label = handle_row["display_name"] or handle_row["handle"]
@@ -133,6 +136,11 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
 
         if result["status"] == "error":
             errored.append(label)
+        elif result["status"] not in KNOWN_HEALTHY_STATUSES:
+            # NOT a special case for the single value "skipped": any status this
+            # module has never been taught about must be visible rather than
+            # silently absent from the email (B-111).
+            other_statuses.setdefault(result["status"], []).append(label)
 
         collected = discovery_digest.collect(repo_root, handle_row, started_at)
         for reason, name in collected.skips:
@@ -192,7 +200,6 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
             run_id=run_row_id,
         )
 
-    other_statuses: dict[str, list[str]] = {}
     coverage = {
         "scanned": len(handle_results),
         "with_items": sum(1 for r in handle_results if r["items_downloaded"] > 0),
@@ -200,7 +207,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
                      if r["status"] == "no_new_content" or
                      (r["status"] == "ok" and r["items_downloaded"] == 0)),
         "errored": len(errored),
-        "other": other_statuses,          # {status: [labels]}, populated in T12
+        "other": other_statuses,          # {status: [labels]}, any status not in KNOWN_HEALTHY_STATUSES/errored
     }
     # An empty roster produced zero items with nothing wrong, which is exactly
     # what a genuinely quiet day produces. Scanning nothing is never OK (B-95).
@@ -266,6 +273,11 @@ def notify(conn, repo_root: Path, run_row_id: int) -> bool:
             "spotlight": spotlight,
             "spotlight_rule": spotlight_rule,
             "drafts": drafts,
+            # Run-level, not brand-level: every section currently shows the
+            # same "other" statuses. T14 relocates this rendering out of
+            # per-section _render_text/_render_html so it prints once instead
+            # of once per brand.
+            "coverage": overall["coverage"],
         }
 
     run_row = db_mod.get_run(conn, run_row_id)

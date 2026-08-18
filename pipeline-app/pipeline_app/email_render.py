@@ -168,6 +168,11 @@ def _render_text(summary: dict) -> str:
         lines += [f"- {name}" for name in errored]
         lines.append("")
 
+    for status, names in sorted(summary["coverage"]["other"].items()):
+        lines.append(f"Handles reported as {status}:")
+        lines += [f"- {name}" for name in names]
+        lines.append("")
+
     # spotlight is in the guard, not just items/errored/has_issues: a spotlight
     # with an empty items list can't arise from select_spotlight, which draws
     # from that same items list, but this renderer must not depend on that
@@ -227,6 +232,11 @@ def _render_html(summary: dict) -> str:
     if errored:
         parts.append("<h2>Errors</h2><ul>")
         parts += [f"<li>{esc(name)}</li>" for name in errored]
+        parts.append("</ul>")
+
+    for status, names in sorted(summary["coverage"]["other"].items()):
+        parts.append(f"<h2>Handles reported as {esc(status)}</h2><ul>")
+        parts += [f"<li>{esc(name)}</li>" for name in names]
         parts.append("</ul>")
 
     if not items and not errored and not summary["has_issues"] and spotlight is None:

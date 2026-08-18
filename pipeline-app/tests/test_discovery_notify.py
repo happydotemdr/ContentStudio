@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_app import discovery_notify
+from pipeline_app import email_render
 
 
 @pytest.fixture(autouse=True)
@@ -151,7 +152,8 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
     monkeypatch.setattr(discovery_notify, "build_summary",
                          lambda c, r, rid: (calls.setdefault("build_args", (c, r, rid)),
                                              {"run_status": "completed", "has_issues": False,
-                                              "items": [], "errored": []})[1])
+                                              "items": [], "errored": [],
+                                              "coverage": {"other": {}}})[1])
     monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
                          lambda items: (None, None))
     monkeypatch.setattr(discovery_notify.email_render, "render_brand_digest",
@@ -166,7 +168,8 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
     assert result is True
     assert calls["build_args"] == (conn, repo_root, run_row_id)
     overall, sections, run_date = calls["render_args"]
-    assert overall == {"run_status": "completed", "has_issues": False, "items": [], "errored": []}
+    assert overall == {"run_status": "completed", "has_issues": False, "items": [], "errored": [],
+                        "coverage": {"other": {}}}
     assert set(sections) == {"freedom2beu", "raisinggoodsports", "guru"}
     assert run_date == "2026-08-01"
     assert calls["send_args"] == ("s", "t", "h")
@@ -281,6 +284,21 @@ def test_build_summary_reports_the_denominator_it_was_quiet_against(notify_db):
     assert summary["coverage"] == {"scanned": 3, "with_items": 0, "quiet": 3,
                                    "errored": 0, "other": {}}
     assert summary["has_issues"] is False
+
+
+def test_a_skipped_handle_is_reported_under_its_own_status(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    hid = _make_handle(conn, "bluesky", "someone.bsky.social", "Someone BS")
+    db.record_handle_result(conn, run_row_id, hid, "skipped", 0)
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["coverage"]["other"] == {"skipped": ["Someone BS"]}
+    assert summary["has_issues"] is True
+    text = email_render.render_email(summary | {"spotlight": None, "spotlight_rule": None,
+                                                "drafts": []}, "2026-08-01")["text"]
+    assert "skipped" in text and "Someone BS" in text
 
 
 def test_an_empty_roster_is_an_issue_not_a_quiet_day(notify_db):
@@ -418,7 +436,8 @@ def test_notify_threads_spotlight_and_drafts_into_render(monkeypatch, notify_db)
     spotlight = {"marker": "the-spotlight", "platform": "youtube", "handle": "@x", "item_id": "i1"}
     monkeypatch.setattr(discovery_notify, "build_summary",
                         lambda *a: {"run_status": "completed", "has_issues": False,
-                                    "items": [item], "errored": []})
+                                    "items": [item], "errored": [],
+                                    "coverage": {"other": {}}})
     monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
                         lambda items: (spotlight, discovery_notify.discovery_digest.SPOTLIGHT_RULE_ENGAGEMENT)
                         if items else (None, None))
@@ -498,7 +517,8 @@ def test_notify_skips_drafting_when_there_is_no_spotlight(monkeypatch, notify_db
     calls = []
     monkeypatch.setattr(discovery_notify, "build_summary",
                         lambda *a: {"run_status": "completed", "has_issues": False,
-                                    "items": [], "errored": []})
+                                    "items": [], "errored": [],
+                                    "coverage": {"other": {}}})
     monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
                         lambda items: (None, None))
     monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments",
