@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -210,6 +211,41 @@ def parse_envelope(stdout: str) -> list:
     return parsed if isinstance(parsed, list) else []
 
 
+def _kill_and_confirm(process) -> None:
+    """Kill the tree, then check it actually died.
+
+    taskkill /T walks descendants recursively, so the real claude/node
+    grandchild behind the cmd.exe shim IS reached -- but taskkill's exit status
+    is never checked, and a descendant whose parent already exited is
+    re-parented and unreachable by PID. A kill that did not take leaves an
+    orphaned, Anthropic-billed turn holding the scratch directory (B-105).
+    """
+    cli_runner.kill_process_tree(process)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        obs.log("comment_draft.kill_failed", level="error", pid=process.pid)
+        print(f"comment_draft: pid {process.pid} did not terminate after the kill; "
+              f"an orphaned turn may still be running", file=sys.stderr)
+
+
+def _remove_scratch(scratch: str) -> None:
+    """Best-effort removal that RECORDS the failure.
+
+    ignore_cleanup_errors=True was load-bearing and stays in effect in spirit:
+    this must not raise, because draft_comments promises never to and
+    discovery_notify does not catch. What changes is that an abandoned
+    directory -- a permanent %TEMP% leak, and the fingerprint of a surviving
+    child -- is no longer invisible (B-105).
+    """
+    try:
+        shutil.rmtree(scratch)
+    except OSError as exc:
+        obs.log("comment_draft.scratch_leaked", level="warning", path=scratch, error=str(exc))
+        print(f"comment_draft: scratch directory {scratch} could not be removed: {exc}",
+              file=sys.stderr)
+
+
 def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
     """Three sanitized comment drafts for `item`, or []. Never raises."""
     try:
@@ -235,71 +271,69 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
     # this project's CLAUDE.md and all eight pipeline skills into a turn that
     # needs none of them.
     #
-    # ignore_cleanup_errors is LOAD-BEARING, do not "clean it up".
-    # TemporaryDirectory.__exit__ calls cleanup(), which raises by default. On
-    # Windows a `claude`/node descendant that outlived the kill below still
-    # holds this directory as its cwd, and removal fails with
-    # PermissionError [WinError 32]. That exception would escape
-    # draft_comments -- which promises never to raise and which
-    # discovery_notify.py leans on to justify not catching -- escape notify,
-    # and cost the morning its ENTIRE email, not just its three drafts.
-    #
-    # The try/except below is the other half of the same guard: it covers
-    # mkdtemp itself failing (no TEMP, disk full) and any cleanup error
-    # ignore_cleanup_errors does not swallow.
+    # mkdtemp/rmtree, NOT TemporaryDirectory(ignore_cleanup_errors=True). The
+    # context-manager form silently swallowed a cleanup failure -- on Windows a
+    # `claude`/node descendant that outlived the kill below still holds this
+    # directory as its cwd, and removal fails with PermissionError [WinError
+    # 32] -- leaking a directory with no trace. _remove_scratch below keeps the
+    # same never-raises contract but RECORDS the failure instead (B-105).
     try:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
-            try:
-                # Popen, NOT subprocess.run. run() handles its own
-                # TimeoutExpired with an internal process.kill() and never
-                # exposes the pid -- and cli_runner.py:167 records empirically
-                # that kill() on Windows terminates only the cmd.exe shim and
-                # orphans the real claude/node descendant. A run()-based design
-                # and a taskkill /T guarantee are mutually exclusive.
-                process = subprocess.Popen(
-                    argv,
-                    cwd=scratch,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    # Mandatory. Python's default text encoding on Windows is
-                    # cp1252 and social post text contains emoji as a matter of
-                    # course; the default would raise UnicodeEncodeError writing
-                    # the prompt and produce [] drafts silently, every day.
-                    encoding="utf-8",
-                    errors="replace",
-                )
-            # ValueError as well as OSError: Popen.__init__ raises it on a
-            # malformed argument combination. Not reachable with the hard-coded
-            # kwargs above, but this matches communicate()'s handler below
-            # rather than leaving the pair gratuitously asymmetric.
-            except (OSError, ValueError) as exc:
-                obs.log("comment_draft.spawn_failed", level="error", error=str(exc))
-                print(f"comment_draft: could not start claude: {exc}", file=sys.stderr)
-                return []
-
-            try:
-                stdout, stderr_text = process.communicate(prompt, timeout=timeout_s)
-            except subprocess.TimeoutExpired:
-                cli_runner.kill_process_tree(process)
-                try:
-                    process.communicate(timeout=5)
-                except (subprocess.TimeoutExpired, OSError, ValueError):
-                    pass  # cleanup is best-effort; the drafts are already forfeit
-                obs.log("comment_draft.timed_out", level="error", timeout_s=timeout_s)
-                print(f"comment_draft: timed out after {timeout_s}s", file=sys.stderr)
-                return []
-            except (OSError, ValueError) as exc:
-                # Kill before returning. Without this the child is GUARANTEED
-                # still running at the `with` exit, holding scratch as its cwd.
-                cli_runner.kill_process_tree(process)
-                obs.log("comment_draft.subprocess_failed", level="error", error=str(exc))
-                print(f"comment_draft: subprocess failed: {exc}", file=sys.stderr)
-                return []
+        scratch = tempfile.mkdtemp(prefix="cs-comment-draft-")
     except OSError as exc:
+        obs.log("comment_draft.scratch_failed", level="error", error=str(exc))
         print(f"comment_draft: scratch directory failed: {exc}", file=sys.stderr)
         return []
+    try:
+        try:
+            # Popen, NOT subprocess.run. run() handles its own
+            # TimeoutExpired with an internal process.kill() and never
+            # exposes the pid -- and cli_runner.py:167 records empirically
+            # that kill() on Windows terminates only the cmd.exe shim and
+            # orphans the real claude/node descendant. A run()-based design
+            # and a taskkill /T guarantee are mutually exclusive.
+            process = subprocess.Popen(
+                argv,
+                cwd=scratch,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                # Mandatory. Python's default text encoding on Windows is
+                # cp1252 and social post text contains emoji as a matter of
+                # course; the default would raise UnicodeEncodeError writing
+                # the prompt and produce [] drafts silently, every day.
+                encoding="utf-8",
+                errors="replace",
+            )
+        # ValueError as well as OSError: Popen.__init__ raises it on a
+        # malformed argument combination. Not reachable with the hard-coded
+        # kwargs above, but this matches communicate()'s handler below
+        # rather than leaving the pair gratuitously asymmetric.
+        except (OSError, ValueError) as exc:
+            obs.log("comment_draft.spawn_failed", level="error", error=str(exc))
+            print(f"comment_draft: could not start claude: {exc}", file=sys.stderr)
+            return []
+
+        try:
+            stdout, stderr_text = process.communicate(prompt, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            _kill_and_confirm(process)
+            try:
+                process.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                pass  # cleanup is best-effort; the drafts are already forfeit
+            obs.log("comment_draft.timed_out", level="error", timeout_s=timeout_s)
+            print(f"comment_draft: timed out after {timeout_s}s", file=sys.stderr)
+            return []
+        except (OSError, ValueError) as exc:
+            # Kill before returning. Without this the child is GUARANTEED
+            # still running at the `with` exit, holding scratch as its cwd.
+            _kill_and_confirm(process)
+            obs.log("comment_draft.subprocess_failed", level="error", error=str(exc))
+            print(f"comment_draft: subprocess failed: {exc}", file=sys.stderr)
+            return []
+    finally:
+        _remove_scratch(scratch)
 
     if process.returncode != 0:
         tail = (stderr_text or "").strip()[-STDERR_TAIL_CHARS:] or "no stderr output"

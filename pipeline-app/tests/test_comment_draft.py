@@ -185,34 +185,34 @@ def test_draft_comments_kills_the_process_tree_on_timeout(fake_claude):
     assert fake.killed is True
 
 
-class ExplodingScratchDir:
-    """A TemporaryDirectory stand-in whose cleanup fails.
+class SurvivingPopen(FakePopen):
+    """A child that ignores the kill -- taskkill's exit status is never checked,
+    and a descendant re-parented after cmd.exe exited is unreachable by PID."""
 
-    Simulates the real Windows failure: a `claude`/node descendant that
-    outlived the kill still holds the scratch directory as its cwd, and
-    removal raises PermissionError [WinError 32]. Simulated rather than
-    provoked so the test does not depend on OS file-locking behavior.
-    """
+    def wait(self, timeout=None):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
 
-    def __init__(self, *args, **kwargs):
-        self.kwargs = kwargs
 
-    def __enter__(self):
-        # Never created on disk: Popen is faked, so nothing opens this path.
-        return "/nonexistent-scratch"
+def test_a_kill_that_did_not_take_is_recorded(fake_claude, capsys):
+    fake_claude(SurvivingPopen(_envelope(ARRAY), timeout=True))
+    assert comment_draft.draft_comments(_item(), timeout_s=1) == []
+    assert "did not terminate" in capsys.readouterr().err
 
-    def __exit__(self, *exc_info):
+
+def test_a_scratch_directory_that_could_not_be_removed_is_recorded(fake_claude, monkeypatch,
+                                                                   capsys):
+    fake_claude(FakePopen(_envelope(ARRAY)))
+
+    def refusing_rmtree(path, **kwargs):
         raise PermissionError(
             32, "The process cannot access the file because it is being used by another process")
 
-
-def test_draft_comments_returns_empty_when_the_scratch_cleanup_fails(fake_claude, monkeypatch):
-    # The contract the whole design leans on: draft_comments NEVER raises.
-    # discovery_notify.notify does not catch, so an escaping PermissionError
-    # here costs the morning its entire email, not just its three drafts.
-    fake_claude(FakePopen(_envelope(ARRAY)))
-    monkeypatch.setattr(comment_draft.tempfile, "TemporaryDirectory", ExplodingScratchDir)
-    assert comment_draft.draft_comments(_item()) == []
+    monkeypatch.setattr(comment_draft.shutil, "rmtree", refusing_rmtree)
+    # Still never raises -- the contract discovery_notify leans on.
+    assert len(comment_draft.draft_comments(_item())) == 3
+    err = capsys.readouterr().err
+    assert "scratch directory" in err
+    assert "WinError" in err or "being used by another process" in err
 
 
 def test_draft_comments_returns_empty_when_the_binary_is_missing(monkeypatch):
