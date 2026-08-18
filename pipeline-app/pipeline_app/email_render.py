@@ -163,9 +163,11 @@ def _render_text(summary: dict) -> str:
                 lines.append(f"  {url}")
         lines.append("")
 
-    if errored:
-        lines.append("Errors:")
-        lines += [f"- {name}" for name in errored]
+    if summary["errors"]:
+        causes = {e["reason"] for e in summary["errors"]}
+        lines.append(f"Errors ({len(summary['errors'])} handle(s), "
+                     f"{len(causes)} distinct cause(s)):")
+        lines += [f"- {e['label']}: {e['reason']}" for e in summary["errors"]]
         lines.append("")
 
     for status, names in sorted(summary["coverage"]["other"].items()):
@@ -229,9 +231,11 @@ def _render_html(summary: dict) -> str:
             parts.append("<li>" + SEPARATOR.join(bits) + "</li>")
         parts.append("</ul>")
 
-    if errored:
-        parts.append("<h2>Errors</h2><ul>")
-        parts += [f"<li>{esc(name)}</li>" for name in errored]
+    if summary["errors"]:
+        causes = {e["reason"] for e in summary["errors"]}
+        parts.append(f"<h2>Errors ({len(summary['errors'])} handle(s), "
+                     f"{len(causes)} distinct cause(s))</h2><ul>")
+        parts += [f"<li>{esc(e['label'])}: {esc(e['reason'])}</li>" for e in summary["errors"]]
         parts.append("</ul>")
 
     for status, names in sorted(summary["coverage"]["other"].items()):

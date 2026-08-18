@@ -50,6 +50,21 @@ REQUEST_TIMEOUT_S = 15
 
 KNOWN_HEALTHY_STATUSES = ("ok", "no_new_content")
 
+ERROR_REASON_MAX_CHARS = 160
+
+
+def _truncate(text: str, maxlen: int) -> str:
+    return text if len(text) <= maxlen else text[:maxlen].rstrip()
+
+
+def _first_line(message) -> str:
+    """The first line of an error message, truncated -- what actually broke,
+    not the full traceback-shaped string discovery_engine records (B-112)."""
+    if not isinstance(message, str):
+        return "no reason recorded"
+    line = message.strip().splitlines()[0] if message.strip() else ""
+    return _truncate(line, ERROR_REASON_MAX_CHARS) or "no reason recorded"
+
 
 def api_key() -> str | None:
     """The Resend API key, or None if not configured. Same lookup order as
@@ -125,6 +140,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
 
     items: list[dict] = []
     errored: list[str] = []
+    errors: list[dict] = []
     skips: list[dict] = []
     warnings: list[dict] = []
     mismatches: list[dict] = []
@@ -135,6 +151,8 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
         brands = db_mod.get_handle_brands(conn, handle_row["id"])
 
         if result["status"] == "error":
+            reason = _first_line(result["error_message"])
+            errors.append({"label": label, "reason": reason})
             errored.append(label)
         elif result["status"] not in KNOWN_HEALTHY_STATUSES:
             # NOT a special case for the single value "skipped": any status this
@@ -230,6 +248,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
         "has_issues": has_issues,
         "items": items,
         "errored": errored,
+        "errors": errors,
         "skips": skips,
         "warnings": warnings,
         "duplicates": duplicates,
@@ -270,6 +289,7 @@ def notify(conn, repo_root: Path, run_row_id: int) -> bool:
             "has_issues": overall["has_issues"],
             "items": brand_items,
             "errored": overall["errored"],
+            "errors": overall["errors"],
             "spotlight": spotlight,
             "spotlight_rule": spotlight_rule,
             "drafts": drafts,

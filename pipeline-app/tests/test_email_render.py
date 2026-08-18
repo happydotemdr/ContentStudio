@@ -14,10 +14,11 @@ def _item(platform="youtube", handle="chan", display_name="Some Channel", item_i
 
 
 def _summary(items=None, spotlight=None, spotlight_rule=None, drafts=None, errored=None,
-             run_status="completed", has_issues=False, coverage=None):
+             errors=None, run_status="completed", has_issues=False, coverage=None):
     return {"run_status": run_status, "has_issues": has_issues,
             "items": items if items is not None else [],
             "errored": errored if errored is not None else [],
+            "errors": errors if errors is not None else [],
             "spotlight": spotlight, "spotlight_rule": spotlight_rule,
             "drafts": drafts if drafts is not None else [],
             "coverage": coverage if coverage is not None else {"other": {}}}
@@ -55,10 +56,29 @@ def test_issue_prefixes_subject_and_opens_body_with_run_status():
 
 
 def test_errors_section_lists_handle_names():
-    summary = _summary(errored=["@dead-handle"], has_issues=True)
+    summary = _summary(errored=["@dead-handle"],
+                        errors=[{"label": "@dead-handle", "reason": "boom"}],
+                        has_issues=True)
     result = email_render.render_email(summary, "2026-08-08")
     assert "@dead-handle" in result["text"]
     assert "@dead-handle" in result["html"]
+
+
+def test_one_systemic_cause_is_visually_separable_from_many_independent_ones():
+    same = [{"label": f"Handle {i}", "reason": "BrightDataError: 401 unauthorized"}
+            for i in range(6)]
+    summary = _summary(errored=[e["label"] for e in same], errors=same, has_issues=True)
+    text = email_render.render_email(summary, "2026-08-08")["text"]
+    assert "401 unauthorized" in text
+    assert "1 distinct cause" in text
+
+
+def test_an_error_reason_is_html_escaped():
+    errors = [{"label": "Someone", "reason": '<img src=x onerror="alert(1)">'}]
+    html = email_render.render_email(
+        _summary(errored=["Someone"], errors=errors, has_issues=True), "2026-08-08")["html"]
+    assert "<img" not in html
+    assert "&lt;img" in html
 
 
 def test_click_here_to_view_is_the_anchor_text_in_html_and_a_raw_url_in_text():

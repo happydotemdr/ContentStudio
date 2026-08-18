@@ -152,7 +152,7 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
     monkeypatch.setattr(discovery_notify, "build_summary",
                          lambda c, r, rid: (calls.setdefault("build_args", (c, r, rid)),
                                              {"run_status": "completed", "has_issues": False,
-                                              "items": [], "errored": [],
+                                              "items": [], "errored": [], "errors": [],
                                               "coverage": {"other": {}}})[1])
     monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
                          lambda items: (None, None))
@@ -169,7 +169,7 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
     assert calls["build_args"] == (conn, repo_root, run_row_id)
     overall, sections, run_date = calls["render_args"]
     assert overall == {"run_status": "completed", "has_issues": False, "items": [], "errored": [],
-                        "coverage": {"other": {}}}
+                        "errors": [], "coverage": {"other": {}}}
     assert set(sections) == {"freedom2beu", "raisinggoodsports", "guru"}
     assert run_date == "2026-08-01"
     assert calls["send_args"] == ("s", "t", "h")
@@ -257,6 +257,20 @@ def test_build_summary_scans_an_errored_handle_that_downloaded_partially(notify_
     assert len(summary["items"]) == 1
     assert summary["errored"] == ["Someone"]
     assert summary["has_issues"] is True
+
+
+def test_the_errors_list_carries_the_reason_each_handle_failed(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, status="completed_with_errors")
+    hid = _make_handle(conn, "instagram", "someone", "Someone")
+    db.record_handle_result(conn, run_row_id, hid, "error", 0,
+                            "BrightDataError: 401 unauthorized\nat brightdata_job.py:88")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["errors"] == [{"label": "Someone",
+                                  "reason": "BrightDataError: 401 unauthorized"}]
+    assert summary["errored"] == ["Someone"]          # unchanged, still the name list
 
 
 def test_build_summary_scans_a_handle_recorded_with_zero_items(notify_db):
@@ -436,7 +450,7 @@ def test_notify_threads_spotlight_and_drafts_into_render(monkeypatch, notify_db)
     spotlight = {"marker": "the-spotlight", "platform": "youtube", "handle": "@x", "item_id": "i1"}
     monkeypatch.setattr(discovery_notify, "build_summary",
                         lambda *a: {"run_status": "completed", "has_issues": False,
-                                    "items": [item], "errored": [],
+                                    "items": [item], "errored": [], "errors": [],
                                     "coverage": {"other": {}}})
     monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
                         lambda items: (spotlight, discovery_notify.discovery_digest.SPOTLIGHT_RULE_ENGAGEMENT)
@@ -517,7 +531,7 @@ def test_notify_skips_drafting_when_there_is_no_spotlight(monkeypatch, notify_db
     calls = []
     monkeypatch.setattr(discovery_notify, "build_summary",
                         lambda *a: {"run_status": "completed", "has_issues": False,
-                                    "items": [], "errored": [],
+                                    "items": [], "errored": [], "errors": [],
                                     "coverage": {"other": {}}})
     monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
                         lambda items: (None, None))
