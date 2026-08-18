@@ -831,6 +831,48 @@ def test_only_the_broken_run_leaves_an_error_event(notify_db, tmp_path):
                         ).fetchone()["c"] == 3
 
 
+def test_a_failed_send_leaves_an_error_event_because_no_email_can_report_itself(
+        monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a, **k: False)
+
+    assert discovery_notify.notify(conn, repo_root, run_row_id) is False
+
+    row = conn.execute(
+        "SELECT severity, message, detail FROM events WHERE kind = 'email.send_failed'"
+    ).fetchone()
+    assert row is not None
+    assert row["severity"] == "error"
+    assert str(run_row_id) in row["message"]
+
+
+def test_a_successful_send_leaves_the_heartbeat_row(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a, **k: True)
+
+    assert discovery_notify.notify(conn, repo_root, run_row_id) is True
+
+    row = conn.execute("SELECT severity FROM events WHERE kind = 'email.sent'").fetchone()
+    assert row["severity"] == "info"
+
+
+def test_a_delivered_and_an_undelivered_run_are_distinguishable_afterwards(
+        monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    ok_run = _make_run(conn)
+    bad_run = _make_run(conn, run_id="2026-08-01T06-00-00-000001")
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a, **k: True)
+    discovery_notify.notify(conn, repo_root, ok_run)
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a, **k: False)
+    discovery_notify.notify(conn, repo_root, bad_run)
+
+    kinds = {r["run_id"]: r["kind"] for r in
+             conn.execute("SELECT run_id, kind FROM events WHERE kind LIKE 'email.%'")}
+    assert kinds[ok_run] != kinds[bad_run]
+
+
 def test_build_summary_untagged_handle_produces_items_with_no_brands(notify_db):
     conn, repo_root = notify_db
     run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")

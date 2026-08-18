@@ -308,4 +308,22 @@ def notify(conn, repo_root: Path, run_row_id: int) -> bool:
     run_date = started_at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
 
     rendered = email_render.render_brand_digest(overall, sections, run_date)
-    return send_email(rendered["subject"], rendered["text"], rendered["html"])
+    sent = send_email(rendered["subject"], rendered["text"], rendered["html"])
+    if sent:
+        obs.record_event(
+            conn, kind="email.sent", severity="info", source="discovery_notify",
+            message=rendered["subject"],
+            detail={"items": len(overall["items"]), "coverage": overall["coverage"]},
+            run_id=run_row_id)
+    else:
+        # The email is the only diagnostic surface this pipeline has, so a send
+        # that failed cannot announce itself in the usual place. An absent
+        # inbox message is otherwise identical to a cron that never fired, a
+        # sleeping machine, or a locked run (B-94).
+        obs.record_event(
+            conn, kind="email.send_failed", severity="error", source="discovery_notify",
+            message=f"the digest for run {run_row_id} was not delivered",
+            detail={"subject": rendered["subject"], "recipient": RECIPIENT,
+                    "sender": SENDER, "items": len(overall["items"])},
+            run_id=run_row_id)
+    return sent
