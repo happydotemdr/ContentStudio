@@ -62,6 +62,10 @@ def apply_report(conn, report: list[dict]) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument(
+        "--dry-run", action="store_true",
+        help="explicit no-op -- dry run is already the default when --apply is omitted",
+    )
     args = ap.parse_args(argv)
 
     cfg = config.load_config()

@@ -83,3 +83,23 @@ def test_apply_report_updates_only_changed_rows(conn, tmp_path):
     # Re-running with nothing changed applies zero updates.
     report2 = backfill_client_tags.build_report(conn, cfg, lambda: None)
     assert backfill_client_tags.apply_report(conn, report2) == 0
+
+
+def test_main_accepts_the_documented_dry_run_flag(tmp_path, monkeypatch, capsys):
+    """The module docstring documents `--dry-run` as the way to invoke this
+    script, but argparse only defined --apply -- running the documented
+    command exited with 'unrecognized arguments: --dry-run'. --dry-run is
+    an explicit no-op (dry run is already the default when --apply is
+    omitted), so main() just needs to accept it without raising.
+
+    HERE is monkeypatched to an isolated scripts dir so main()'s hardcoded
+    `db.init_db(HERE.parent / "doc_ingest.db")` creates a throwaway DB here
+    rather than touching the real doc-ingest-app/doc_ingest.db."""
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    monkeypatch.setattr(backfill_client_tags, "HERE", scripts_dir)
+
+    rc = backfill_client_tags.main(["--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "dry run" in out
