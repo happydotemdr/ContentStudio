@@ -7,7 +7,9 @@ This module does NOT catch. tests/test_discovery_notify.py documents that
 contract: the cron call site (run_discovery_cron.py:100) is the single catch
 point, and notify() adding its own would be a second, redundant failure
 boundary. The collaborators carry the burden instead -- comment_draft never
-raises, and per-item parse failures are contained inside collect_new_items.
+raises, and per-item parse failures are contained inside discovery_digest.collect
+(never raised) -- build_summary now also surfaces them, as "skips"/"warnings" in
+the returned summary and as events/log lines, rather than only counting them.
 
 notify() now fans out per brand internally (one select_spotlight call per
 entry in email_render.BRAND_SECTION_ORDER, and one draft_comments call per
