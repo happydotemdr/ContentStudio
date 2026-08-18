@@ -298,3 +298,21 @@ def test_the_drafting_child_does_not_inherit_unrelated_credentials(fake_claude, 
     assert "BRIGHTDATA_API_KEY" not in env
     assert env["PATH"] == "C:\\fake\\path"
     assert env["PYTHONIOENCODING"] == "utf-8"
+
+
+def _bare_tool_names(spec: str) -> set[str]:
+    return {part.split("(")[0].strip() for part in spec.split(",") if part.strip()}
+
+
+def test_the_drafter_denies_every_tool_the_pipeline_turn_denies():
+    """The drafter's list is enumerated because --disallowedTools has no
+    all-tools wildcard, so it silently falls behind the moment a tool is added
+    anywhere else (B-102)."""
+    pipeline = _bare_tool_names(comment_draft.cli_runner.PIPELINE_DISALLOWED_TOOLS)
+    drafter = _bare_tool_names(comment_draft.DRAFTER_DISALLOWED_TOOLS)
+    assert pipeline - drafter == set()
+
+
+def test_the_drafter_denies_the_interactive_tools_too():
+    drafter = _bare_tool_names(comment_draft.DRAFTER_DISALLOWED_TOOLS)
+    assert {"SlashCommand", "ExitPlanMode", "AskUserQuestion"} <= drafter

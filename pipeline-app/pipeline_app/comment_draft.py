@@ -118,14 +118,16 @@ def scrub_delimiter(text: str) -> str:
     return _DELIMITER_RE.sub(DELIMITER_SCRUB, text)
 
 # There is NO all-tools wildcard for --disallowedTools, so this is enumerated
-# and a tool added by a future CLI release would not be covered until this list
-# is updated. That is defense in depth, not the only defense: omitting
-# --allowedTools entirely means nothing is pre-approved, and a headless -p run
-# has nobody to approve anything. This turn reads a string and returns a
-# string; it needs no tool at all.
+# and a tool added by a future CLI release is not covered until this list is
+# updated. This is defense in depth, NOT "every tool denied": omitting
+# --allowedTools means nothing is pre-approved, --strict-mcp-config with no
+# --mcp-config loads zero MCP servers, and a headless -p turn has nobody to
+# grant an approval. tests/test_comment_draft.py fails if cli_runner's list
+# ever names a tool this one does not (B-102).
 DRAFTER_DISALLOWED_TOOLS = (
     "Bash,PowerShell,WebFetch,WebSearch,Read,Write,Edit,NotebookEdit,"
-    "Glob,Grep,Task,Skill,TodoWrite,BashOutput,KillShell"
+    "Glob,Grep,Task,Skill,TodoWrite,BashOutput,KillShell,"
+    "SlashCommand,ExitPlanMode,AskUserQuestion"
 )
 
 # Passed through to the drafting turn; everything else in os.environ is not.
