@@ -46,6 +46,40 @@ def test_main_calls_run_once_and_returns_zero(tmp_path, monkeypatch):
     assert calls == [1]
 
 
+def test_main_uses_a_default_config_yaml_when_no_config_flag_given(tmp_path, monkeypatch):
+    """Windows Task Scheduler never passes --config -- without a fallback,
+    load_config(None) silently ignores the operator's real config (in
+    particular pending_review_drive_folder_id, which defaults to "" and
+    is required by Task 19/23) the moment this runs unattended."""
+    calls = []
+
+    def fake_run_once(conn, doc_ingest_conn, calendar_service, gmail_service, drive_service, cfg, now_utc):
+        calls.append(cfg.pending_review_drive_folder_id)
+        return ["published"]
+
+    from coach_prep_app import orchestrator, google_clients
+    monkeypatch.setattr(orchestrator, "run_once", fake_run_once)
+    monkeypatch.setattr(google_clients, "build_calendar_service", lambda cfg: None)
+    monkeypatch.setattr(google_clients, "build_gmail_service", lambda cfg: None)
+    monkeypatch.setattr(google_clients, "build_drive_service", lambda cfg: None)
+    monkeypatch.setattr(run_coachprep_cron, "HERE", tmp_path / "scripts")
+
+    doc_ingest_db_path = tmp_path / "doc_ingest_test.db"
+    (tmp_path / "config.yaml").write_text(
+        f"doc_ingest_db_path: {doc_ingest_db_path}\n"
+        f"doc_ingest_app_root: {tmp_path}\n"
+        f"pending_review_drive_folder_id: real-folder-id\n",
+        encoding="utf-8",
+    )
+    import doc_ingest  # ensure a real doc_ingest package is importable for open_readonly's target dir check
+    from doc_ingest import db as doc_ingest_db
+    doc_ingest_db.init_db(doc_ingest_db_path).close()
+
+    rc = run_coachprep_cron.main([])  # no --config, exactly like Task Scheduler's invocation
+    assert rc == 0
+    assert calls == ["real-folder-id"]
+
+
 def test_main_returns_nonzero_when_any_client_errored(tmp_path, monkeypatch):
     # Task 21's orchestrator.run_once isolates per-client failures and reports
     # them as "error: <slug>" entries in its result list rather than raising --
