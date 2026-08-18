@@ -5,7 +5,15 @@ import datetime as dt
 
 import pytest
 
-from coach_prep_app import orchestrator
+from coach_prep_app import config, orchestrator
+
+# Self-sufficient cross-app import setup, mirroring test_doc_ingest_reader.py
+# -- without this, `_classify_event`'s deferred `from doc_ingest import
+# client_matching` only resolves when this file happens to be collected
+# after test_doc_ingest_reader.py (alphabetical collection order), so this
+# file fails with ModuleNotFoundError when run in isolation or under
+# pytest-xdist's parallel collection.
+config.ensure_doc_ingest_importable(config.Config().doc_ingest_app_root)
 
 CLIENT = {
     "slug": "sean", "display_name": "Sean", "primary_email": "sean@example.com",
@@ -114,6 +122,71 @@ def test_process_candidate_gate_failure_never_publishes_and_never_retries(conn, 
     assert len(alerts) == 1  # unchanged -- no second ALERT
 
 
+def test_process_candidate_records_when_the_gate_failure_alert_itself_fails_to_send(conn, cfg, monkeypatch):
+    """A gates_failed run is the exact event this isolation system exists
+    to catch -- if the ALERT email about it also fails to send, that must
+    not make the whole event invisible. Recorded in failure_reason so the
+    weekly audit or a human inspecting the DB can still find it."""
+    bundle_mod, generate, publish = _patch_pipeline_ok(monkeypatch)
+    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180: "mentions Josh directly [last-meeting-email]")
+
+    from coach_prep_app import notify
+    monkeypatch.setattr(notify, "send_email", lambda subject, text, recipient=notify.RECIPIENT: False)
+
+    import coach_prep_app.doc_ingest_reader as reader
+    monkeypatch.setattr(reader, "get_active_clients", lambda conn: [CLIENT, OTHER_CLIENT])
+
+    event = {"instance_id": "evt1", "start_utc": dt.datetime(2026, 8, 20, 15, 0, tzinfo=dt.timezone.utc)}
+    now = dt.datetime(2026, 8, 19, 13, 0, tzinfo=dt.timezone.utc)
+
+    class _FakeDocIngestConn:
+        pass
+
+    result = orchestrator.process_candidate(conn, _FakeDocIngestConn(), None, None, None, cfg, CLIENT, event, now)
+    assert result == "gate_failed"
+
+    failure_reason = conn.execute("SELECT failure_reason FROM generation_runs").fetchone()[0]
+    assert "ALERT EMAIL FAILED" in failure_reason
+
+
+def test_process_candidate_generation_failure_is_retried_not_terminal(conn, cfg, monkeypatch):
+    """The other half of the terminal/retry asymmetry that must never be
+    swapped with gate failure's: a transient generation failure leaves the
+    watermark unset (retried next wake), writes status='failed' (never
+    'gates_failed'), and sends no alert at all."""
+    bundle_mod, generate, publish = _patch_pipeline_ok(monkeypatch)
+    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180: None)
+    publish_calls = []
+    monkeypatch.setattr(publish, "publish_draft", lambda *a, **k: publish_calls.append(1) or "should-not-happen")
+
+    from coach_prep_app import notify
+    alerts = []
+    monkeypatch.setattr(notify, "send_email", lambda subject, text, recipient=notify.RECIPIENT: alerts.append(subject) or True)
+
+    import coach_prep_app.doc_ingest_reader as reader
+    monkeypatch.setattr(reader, "get_active_clients", lambda conn: [CLIENT, OTHER_CLIENT])
+
+    event = {"instance_id": "evt1", "start_utc": dt.datetime(2026, 8, 20, 15, 0, tzinfo=dt.timezone.utc)}
+    now = dt.datetime(2026, 8, 19, 13, 0, tzinfo=dt.timezone.utc)
+
+    class _FakeDocIngestConn:
+        pass
+
+    result = orchestrator.process_candidate(conn, _FakeDocIngestConn(), None, None, None, cfg, CLIENT, event, now)
+    assert result == "generation_failed"
+    assert publish_calls == []
+    assert alerts == []  # no alert on a transient failure -- only a gate failure alerts
+
+    run = conn.execute("SELECT status FROM generation_runs").fetchone()
+    assert run[0] == "failed"
+
+    # A later wake for the SAME event must retry (watermark deliberately
+    # left unset) -- the opposite of gate failure's terminal watermark set.
+    later = now + dt.timedelta(hours=4)
+    result2 = orchestrator.process_candidate(conn, _FakeDocIngestConn(), None, None, None, cfg, CLIENT, event, later)
+    assert result2 == "generation_failed"
+
+
 def test_process_candidate_retries_notify_only_after_a_publish_that_failed_to_notify(conn, cfg, monkeypatch):
     """A publish that succeeds but whose notification email fails must NOT
     cause the next wake to regenerate and re-publish a second, orphaned
@@ -175,3 +248,42 @@ def test_run_once_classifies_events_and_skips_unmatched(conn, cfg, monkeypatch):
     monkeypatch.setattr(orchestrator, "_list_upcoming_events", fake_list_events)
     results = orchestrator.run_once(conn, None, None, None, None, cfg, now)
     assert results == ["not_due"]  # evt1 (Sean, far future) is not yet due; evt2 (unmatched) skipped entirely
+
+
+def test_run_once_isolates_a_per_client_failure_and_continues(conn, cfg, monkeypatch):
+    """Spec: 'API failure mid-run -> log, skip that client this wake.' One
+    client's process_candidate raising (e.g. a Calendar/Gmail/Drive
+    HttpError) must not abort the whole wake -- every other client's
+    candidate must still be attempted."""
+    import coach_prep_app.doc_ingest_reader as reader
+    monkeypatch.setattr(reader, "get_active_clients", lambda conn: [CLIENT, OTHER_CLIENT])
+
+    far_future_meeting = dt.datetime(2030, 1, 1, 15, 0, tzinfo=dt.timezone.utc)
+    now = dt.datetime(2020, 1, 1, tzinfo=dt.timezone.utc)
+
+    def fake_list_events(calendar_service, cfg, now_utc):
+        return [
+            {"instance_id": "evt-sean", "start_utc": far_future_meeting, "attendees": ["sean@example.com"]},
+            {"instance_id": "evt-josh", "start_utc": far_future_meeting, "attendees": ["josh@example.com"]},
+        ]
+
+    monkeypatch.setattr(orchestrator, "_list_upcoming_events", fake_list_events)
+
+    calls = []
+
+    def flaky_process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, drive_service,
+                                 cfg, client, event, now_utc):
+        calls.append(client["slug"])
+        if client["slug"] == "sean":
+            raise RuntimeError("simulated Calendar API failure for sean")
+        return "not_due"
+
+    monkeypatch.setattr(orchestrator, "process_candidate", flaky_process_candidate)
+
+    results = orchestrator.run_once(conn, None, None, None, None, cfg, now)
+
+    # Both clients were attempted -- josh's candidate wasn't starved by
+    # sean's failure -- and the failure surfaces in the results rather
+    # than propagating out of run_once.
+    assert calls == ["sean", "josh"]
+    assert results == ["error: sean", "not_due"]

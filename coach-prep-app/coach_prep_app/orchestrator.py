@@ -6,6 +6,7 @@ the next wake retries."""
 from __future__ import annotations
 
 import datetime as dt
+import sys
 
 from coach_prep_app import bundle as bundle_mod
 from coach_prep_app import db, doc_ingest_reader, gates, generate, notify, publish, trigger
@@ -67,13 +68,20 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
         # failure is a content-safety stop, not a transient error worth
         # re-attempting (and re-alerting on) every 4 hours until the meeting.
         trigger.mark_done(conn, client["slug"], event["instance_id"], _now_iso())
-        notify.send_email(
+        alert_sent = notify.send_email(
             f"ALERT: coach-prep isolation gate failed for {client['display_name']}",
             f"Run {run_id} failed its mechanical gates. bad_citations={bad_citations} leaked={leaked}\n"
             f"No draft was published or sent. This will NOT be retried automatically -- "
             f"investigate and re-run by hand if appropriate.",
             recipient=cfg.notify_recipient,
         )
+        if not alert_sent:
+            # gates_failed is the exact event this whole isolation system
+            # exists to catch -- if the ALERT about it also fails to send,
+            # that must not make the event invisible. Record it in
+            # failure_reason so the weekly audit or a human inspecting the
+            # DB can still find it.
+            _append_failure_reason(conn, run_id, "ALERT EMAIL FAILED")
         return "gate_failed"
 
     file_id = publish.publish_draft(
@@ -118,6 +126,14 @@ def _fail_run(conn, run_id, reason, status="failed") -> None:
         conn.execute(
             "UPDATE generation_runs SET status = ?, failure_reason = ?, updated_at = ? WHERE id = ?",
             (status, reason, _now_iso(), run_id),
+        )
+
+
+def _append_failure_reason(conn, run_id, note) -> None:
+    with db.transaction(conn):
+        conn.execute(
+            "UPDATE generation_runs SET failure_reason = failure_reason || ' | ' || ?, updated_at = ? WHERE id = ?",
+            (note, _now_iso(), run_id),
         )
 
 
@@ -171,7 +187,16 @@ def run_once(conn, doc_ingest_conn, calendar_service, gmail_service, drive_servi
         if client_slug is None:
             continue
         client = next(c for c in clients if c["slug"] == client_slug)
-        results.append(process_candidate(
-            conn, doc_ingest_conn, calendar_service, gmail_service, drive_service, cfg, client, event, now_utc
-        ))
+        try:
+            results.append(process_candidate(
+                conn, doc_ingest_conn, calendar_service, gmail_service, drive_service, cfg, client, event, now_utc
+            ))
+        except Exception as exc:
+            # Spec: "API failure mid-run -> log, skip that client this
+            # wake." A single client's Calendar/Gmail/Drive HttpError must
+            # never abort the whole wake and starve every client ordered
+            # after it. Nothing is marked done for this client, so it is
+            # retried in full on the next wake.
+            print(f"orchestrator: process_candidate failed for {client['slug']}: {exc}", file=sys.stderr)
+            results.append(f"error: {client['slug']}")
     return results
