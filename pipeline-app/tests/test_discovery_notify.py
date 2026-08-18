@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 import pytest
@@ -940,3 +941,49 @@ def test_build_summary_untagged_handle_produces_items_with_no_brands(notify_db):
     summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
 
     assert summary["items"][0]["brands"] == []
+
+
+MODULES = ("discovery_digest", "email_render", "discovery_notify", "comment_draft")
+
+
+def _stderr_prints(tree):
+    """{function name: [lineno]} for every print(..., file=sys.stderr)."""
+    found = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for call in ast.walk(node):
+            if (isinstance(call, ast.Call) and getattr(call.func, "id", None) == "print"
+                    and any(kw.arg == "file" for kw in call.keywords)):
+                found.setdefault(node.name, []).append(call.lineno)
+    return found
+
+
+def _obs_functions(tree):
+    """Names of functions containing an obs.log or obs.record_event call."""
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for call in ast.walk(node):
+            func = getattr(call, "func", None)
+            if (isinstance(func, ast.Attribute)
+                    and getattr(func.value, "id", None) == "obs"
+                    and func.attr in ("log", "record_event")):
+                names.add(node.name)
+    return names
+
+
+@pytest.mark.parametrize("module", MODULES)
+def test_no_failure_is_reported_to_stderr_alone(module):
+    """Task Scheduler destroys this process's stderr (scripts/setup_discovery_task.py
+    registers /TR with no redirection), so a print() that is the ONLY signal is
+    a message nobody has ever read (B-93)."""
+    source = (Path(__file__).resolve().parents[1] / "pipeline_app" / f"{module}.py"
+              ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    logged = _obs_functions(tree)
+    orphans = {name: lines for name, lines in _stderr_prints(tree).items()
+               if name not in logged}
+    assert orphans == {}, (
+        f"{module}.py: these functions signal failure only to a discarded stderr: {orphans}")
