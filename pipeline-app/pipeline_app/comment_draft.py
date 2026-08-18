@@ -93,10 +93,10 @@ def sanitize_drafts(raw: list) -> list[str]:
 STDERR_TAIL_CHARS = 600
 
 DEFAULT_TIMEOUT_S = 90
-# Bounds latency and cost on a 40-minute video's transcript without pretending
-# the whole thing was read -- the marker below says so explicitly.
+# Bounds latency and cost on any platform (not just video transcripts) without
+# pretending the whole thing was read -- the marker below says so explicitly.
 BODY_MAX_CHARS = 12000
-TRUNCATION_MARKER = "\n\n[transcript truncated]"
+TRUNCATION_MARKER = "\n\n[content truncated]"
 
 POST_DELIMITER = "<<<POST CONTENT>>>"
 # What a copy of the delimiter inside untrusted text is replaced with.

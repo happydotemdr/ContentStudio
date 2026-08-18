@@ -252,9 +252,14 @@ def test_draft_comments_denies_tools_and_loads_no_mcp_servers(fake_claude):
     assert "Bash" in argv[argv.index("--disallowedTools") + 1]
 
 
-def test_build_prompt_truncates_a_long_body_with_a_marker():
-    prompt = comment_draft.build_prompt(_item(body="x" * 40000))
-    assert "[transcript truncated]" in prompt
+def test_a_truncated_body_is_not_mislabelled_as_a_transcript():
+    # The cap applies on EVERY platform, so a long LinkedIn post was truncated
+    # and then described to the model as a transcript (B-110).
+    item = _item(body="x" * 40000)
+    item["platform"] = "linkedin-profile"
+    prompt = comment_draft.build_prompt(item)
+    assert "[content truncated]" in prompt
+    assert "transcript" not in prompt.lower()
     assert len(prompt) < 40000
 
 
