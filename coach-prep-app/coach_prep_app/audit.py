@@ -138,8 +138,13 @@ def build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso: str) -> d
 
 
 def render_report_email(report: dict) -> tuple[str, str]:
+    unexpected_placements = [
+        p for p in report["placement"]
+        if p["status"] in ("moved_to_unexpected_location", "placement_check_failed")
+    ]
     clean = (
-        not report["mechanical_problems"] and not report["content_problems"] and not report["failed_runs"]
+        not report["mechanical_problems"] and not report["content_problems"]
+        and not report["failed_runs"] and not unexpected_placements
     )
     subject = "Coach-prep weekly audit: clean" if clean else "Coach-prep weekly audit: ISSUES FOUND"
     lines = [f"Unmatched meeting notes: {report['unmatched_count']}", ""]
@@ -156,10 +161,6 @@ def render_report_email(report: dict) -> tuple[str, str]:
             + (f"leaked {p['leaked']}" if p.get("leaked") else f"scan failed: {p.get('error')}")
             for p in report["content_problems"]
         ]
-    unexpected_placements = [
-        p for p in report["placement"]
-        if p["status"] in ("moved_to_unexpected_location", "placement_check_failed")
-    ]
     if unexpected_placements:
         lines.append("Drafts moved to an unexpected location:")
         lines += [

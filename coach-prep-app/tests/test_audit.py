@@ -240,6 +240,20 @@ def test_render_report_email_flags_issues_in_the_subject():
     assert "run 1" in text
 
 
+def test_render_report_email_flags_a_placement_problem_in_the_subject():
+    """A placement-only problem (nothing else in the report is dirty) must
+    still flip the subject to ISSUES FOUND -- otherwise the email
+    self-contradicts: "clean" in the subject, "moved to an unexpected
+    location" right below it in the body."""
+    report = {
+        "mechanical_problems": [], "content_problems": [], "unmatched_count": 0, "failed_runs": [],
+        "placement": [{"run_id": 9, "client_slug": "sean", "status": "moved_to_unexpected_location", "error": None}],
+    }
+    subject, text = audit.render_report_email(report)
+    assert "ISSUES" in subject
+    assert "run 9" in text
+
+
 def test_render_report_email_reports_failed_runs_as_an_issue():
     report = {
         "mechanical_problems": [], "content_problems": [], "placement": [], "unmatched_count": 0,
