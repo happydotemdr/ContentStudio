@@ -4727,7 +4727,7 @@ git commit -m "feat(coach-prep-app): add 4-hourly cron entry point and task regi
 
 **Interfaces:**
 - Consumes: `gates.leakage_scan` (Task 18), `doc_ingest_reader.get_active_clients` (Task 13)
-- Produces: `mechanical_scan(conn, doc_ingest_conn, since_iso: str) -> list[dict]`, `content_scan(conn, doc_ingest_conn, drive_service, since_iso: str) -> list[dict]`, `placement_check(conn, doc_ingest_conn, drive_service, pending_review_folder_id, since_iso: str) -> list[dict]`, `unmatched_count(doc_ingest_conn) -> int`, `build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso: str) -> dict`, `render_report_email(report: dict) -> tuple[str, str]`. `since_iso` bounds every `generation_runs` scan to `created_at >= since_iso` so the weekly audit re-scans only that week's runs, not every published draft ever; `unmatched_count` is a current-state snapshot and is deliberately not time-bounded. Task 24's weekly cron script is the sole caller of `build_report`/`render_report_email` and is the one that computes `since_iso` (`now - 7 days`).
+- Produces: `mechanical_scan(conn, doc_ingest_conn, since_iso: str) -> list[dict]`, `content_scan(conn, doc_ingest_conn, drive_service, since_iso: str) -> list[dict]`, `placement_check(conn, doc_ingest_conn, drive_service, pending_review_folder_id, since_iso: str) -> list[dict]`, `unmatched_count(doc_ingest_conn) -> int`, `failed_runs_summary(conn, since_iso: str) -> list[dict]`, `build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso: str) -> dict`, `render_report_email(report: dict) -> tuple[str, str]`. `since_iso` bounds every `generation_runs` scan to `created_at >= since_iso` so the weekly audit re-scans only that week's runs, not every published draft ever; `unmatched_count` is a current-state snapshot and is deliberately not time-bounded. `failed_runs_summary` surfaces `gates_failed`/`failed`/stuck-`assembling` runs, which the other three scans never see (all scoped to `status IN ('published', 'notified')`) — this is what makes a `gates_failed` run visible to the audit even when its own ALERT email failed to send (Task 21's `_append_failure_reason` fallback). `content_scan` and `placement_check` isolate a single run's Drive-API failure into its own problem/status entry rather than raising, mirroring `orchestrator.run_once`'s per-client isolation (Task 21) — one bad draft must not kill the whole weekly scan. Task 24's weekly cron script is the sole caller of `build_report`/`render_report_email` and is the one that computes `since_iso` (`now - 7 days`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4880,8 +4880,85 @@ def test_unmatched_count_reads_from_doc_ingest_conn(conn):
     assert audit.unmatched_count(doc_ingest_conn) == 2
 
 
+def test_content_scan_isolates_a_single_runs_fetch_failure(conn, monkeypatch):
+    """One deleted/inaccessible draft must not raise out of content_scan
+    and kill the whole weekly audit scan -- same per-item isolation
+    lesson orchestrator.run_once already applies (Task 21). The failure
+    is recorded as its own problem entry; the next run is still scanned."""
+    failing_run_id = _seed_run(conn, "sean", draft_id="file-missing")
+    leaking_run_id = _seed_run(conn, "sean", draft_id="file-leaks")
+    monkeypatch.setattr(audit.doc_ingest_reader, "get_active_clients", lambda doc_ingest_conn: CLIENTS)
+
+    class _FakeDriveFilesMixed:
+        def export(self, fileId, mimeType):
+            if fileId == "file-missing":
+                class _Boom:
+                    def execute(self):
+                        raise RuntimeError("simulated Drive HttpError: file not found")
+                return _Boom()
+            return _FakeDriveExec(b"Like we discussed with Josh [last-meeting-email]")
+
+    class _FakeDriveServiceMixed:
+        def files(self):
+            return _FakeDriveFilesMixed()
+
+    problems = audit.content_scan(conn, doc_ingest_conn=None, drive_service=_FakeDriveServiceMixed(), since_iso=SINCE)
+    by_run = {p["run_id"]: p for p in problems}
+    assert by_run[failing_run_id]["error"] is not None
+    assert by_run[leaking_run_id]["leaked"] == ["josh"]
+
+
+def test_placement_check_isolates_a_single_runs_lookup_failure(conn, monkeypatch):
+    monkeypatch.setattr(audit.doc_ingest_reader, "get_active_clients", lambda doc_ingest_conn: CLIENTS)
+    failing_run_id = _seed_run(conn, "sean", status="notified", draft_id="file-missing")
+    ok_run_id = _seed_run(conn, "sean", status="notified", draft_id="file-ok")
+
+    class _FakeDriveFilesMixed:
+        def get(self, fileId, fields):
+            if fileId == "file-missing":
+                class _Boom:
+                    def execute(self):
+                        raise RuntimeError("simulated Drive HttpError: file not found")
+                return _Boom()
+
+            class _Ok:
+                def execute(self):
+                    return {"parents": ["pending-folder"]}
+            return _Ok()
+
+    class _FakeDriveServiceMixed:
+        def files(self):
+            return _FakeDriveFilesMixed()
+
+    results = audit.placement_check(
+        conn, doc_ingest_conn=None, drive_service=_FakeDriveServiceMixed(),
+        pending_review_folder_id="pending-folder", since_iso=SINCE,
+    )
+    by_run = {r["run_id"]: r for r in results}
+    assert by_run[failing_run_id]["status"] == "placement_check_failed"
+    assert by_run[ok_run_id]["status"] == "still_pending_review"
+
+
+def test_failed_runs_summary_includes_gates_failed_and_failed_and_stale_assembling(conn):
+    _seed_run(conn, "sean", status="gates_failed", draft_id=None)
+    _seed_run(conn, "sean", status="failed", draft_id=None)
+    _seed_run(conn, "sean", status="assembling", draft_id=None)
+    _seed_run(conn, "sean", status="notified")  # not a failure -- must be excluded
+    rows = audit.failed_runs_summary(conn, SINCE)
+    statuses = {r["status"] for r in rows}
+    assert statuses == {"gates_failed", "failed", "assembling"}
+
+
+def test_failed_runs_summary_excludes_runs_created_before_since_iso(conn):
+    _seed_run(conn, "sean", status="failed", draft_id=None, created_at="2026-08-01T00:00:00+00:00")
+    assert audit.failed_runs_summary(conn, SINCE) == []
+
+
 def test_render_report_email_reports_clean_when_no_problems():
-    report = {"mechanical_problems": [], "content_problems": [], "placement": [], "unmatched_count": 0}
+    report = {
+        "mechanical_problems": [], "content_problems": [], "placement": [],
+        "unmatched_count": 0, "failed_runs": [],
+    }
     subject, text = audit.render_report_email(report)
     assert "clean" in subject.lower()
     assert "No problems" in text
@@ -4890,11 +4967,25 @@ def test_render_report_email_reports_clean_when_no_problems():
 def test_render_report_email_flags_issues_in_the_subject():
     report = {
         "mechanical_problems": [{"run_id": 1, "expected": "sean", "found": "josh", "reference": "x.md"}],
-        "content_problems": [], "placement": [], "unmatched_count": 0,
+        "content_problems": [], "placement": [], "unmatched_count": 0, "failed_runs": [],
     }
     subject, text = audit.render_report_email(report)
     assert "ISSUES" in subject
     assert "run 1" in text
+
+
+def test_render_report_email_reports_failed_runs_as_an_issue():
+    report = {
+        "mechanical_problems": [], "content_problems": [], "placement": [], "unmatched_count": 0,
+        "failed_runs": [{
+            "run_id": 5, "client_slug": "sean", "status": "gates_failed",
+            "failure_reason": "gate_failed: leaked=['josh'] | ALERT EMAIL FAILED", "created_at": "n",
+        }],
+    }
+    subject, text = audit.render_report_email(report)
+    assert "ISSUES" in subject
+    assert "run 5" in text
+    assert "gates_failed" in text
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -4944,7 +5035,11 @@ def content_scan(conn, doc_ingest_conn, drive_service, since_iso: str) -> list[d
     """Re-fetches each published draft's text from Drive and re-runs the
     leakage scan against every OTHER registered client. Same tripwire
     caveat as gates.leakage_scan -- not a guarantee. Bounded to runs
-    created at or after since_iso -- see mechanical_scan."""
+    created at or after since_iso -- see mechanical_scan. One run's Drive
+    fetch failing (a deleted/inaccessible draft) is recorded as its own
+    problem entry rather than raising -- the same per-item isolation
+    lesson orchestrator.run_once already applies (Task 21): one bad draft
+    must not kill the whole weekly scan and its email."""
     problems = []
     runs = conn.execute(
         "SELECT id, client_slug, draft_drive_file_id FROM generation_runs "
@@ -4953,20 +5048,26 @@ def content_scan(conn, doc_ingest_conn, drive_service, since_iso: str) -> list[d
     ).fetchall()
     clients = doc_ingest_reader.get_active_clients(doc_ingest_conn)
     for run_id, client_slug, file_id in runs:
-        text = drive_service.files().export(fileId=file_id, mimeType="text/plain").execute().decode("utf-8")
+        try:
+            text = drive_service.files().export(fileId=file_id, mimeType="text/plain").execute().decode("utf-8")
+        except Exception as exc:
+            problems.append({"run_id": run_id, "client_slug": client_slug, "leaked": None, "error": str(exc)})
+            continue
         other_clients = [c for c in clients if c["slug"] != client_slug]
         leaked = gates.leakage_scan(text, other_clients)
         if leaked:
-            problems.append({"run_id": run_id, "client_slug": client_slug, "leaked": leaked})
+            problems.append({"run_id": run_id, "client_slug": client_slug, "leaked": leaked, "error": None})
     return problems
 
 
 def placement_check(conn, doc_ingest_conn, drive_service, pending_review_folder_id: str, since_iso: str) -> list[dict]:
     """For each notified draft, whether it's still sitting in Pending
     Review, moved to the correct client folder, or moved somewhere
-    unexpected. Informational for the first two states; only the third is
-    surfaced as a problem by render_report_email. Bounded to runs created
-    at or after since_iso -- see mechanical_scan."""
+    unexpected. Informational for the first two states; only the third
+    (and a lookup failure) is surfaced as a problem by render_report_email.
+    Bounded to runs created at or after since_iso -- see mechanical_scan.
+    One run's Drive lookup failing is recorded as its own status rather
+    than raising -- see content_scan's identical rationale."""
     clients_by_slug = {c["slug"]: c for c in doc_ingest_reader.get_active_clients(doc_ingest_conn)}
     results = []
     runs = conn.execute(
@@ -4975,7 +5076,14 @@ def placement_check(conn, doc_ingest_conn, drive_service, pending_review_folder_
         (since_iso,),
     ).fetchall()
     for run_id, client_slug, file_id in runs:
-        meta = drive_service.files().get(fileId=file_id, fields="parents").execute()
+        try:
+            meta = drive_service.files().get(fileId=file_id, fields="parents").execute()
+        except Exception as exc:
+            results.append({
+                "run_id": run_id, "client_slug": client_slug,
+                "status": "placement_check_failed", "error": str(exc),
+            })
+            continue
         parents = meta.get("parents", [])
         expected_folder = clients_by_slug.get(client_slug, {}).get("drive_folder_id")
         if expected_folder and expected_folder in parents:
@@ -4984,7 +5092,7 @@ def placement_check(conn, doc_ingest_conn, drive_service, pending_review_folder_
             status = "still_pending_review"
         else:
             status = "moved_to_unexpected_location"
-        results.append({"run_id": run_id, "client_slug": client_slug, "status": status})
+        results.append({"run_id": run_id, "client_slug": client_slug, "status": status, "error": None})
     return results
 
 
@@ -4995,6 +5103,26 @@ def unmatched_count(doc_ingest_conn) -> int:
     return row[0]
 
 
+def failed_runs_summary(conn, since_iso: str) -> list[dict]:
+    """Surfaces runs mechanical_scan/content_scan/placement_check never see
+    -- all three are scoped to status IN ('published', 'notified'). A
+    gates_failed run is exactly the event orchestrator.py's
+    _append_failure_reason fallback was built to keep visible when its own
+    ALERT email fails to send; a failed or stuck-'assembling' run is
+    otherwise invisible to anyone who isn't reading the DB by hand.
+    Bounded to runs created at or after since_iso -- see mechanical_scan."""
+    rows = conn.execute(
+        "SELECT id, client_slug, status, failure_reason, created_at FROM generation_runs "
+        "WHERE created_at >= ? AND status IN ('failed', 'gates_failed', 'assembling') "
+        "ORDER BY created_at",
+        (since_iso,),
+    ).fetchall()
+    return [
+        {"run_id": r[0], "client_slug": r[1], "status": r[2], "failure_reason": r[3], "created_at": r[4]}
+        for r in rows
+    ]
+
+
 def build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso: str) -> dict:
     return {
         "mechanical_problems": mechanical_scan(conn, doc_ingest_conn, since_iso),
@@ -5003,11 +5131,14 @@ def build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso: str) -> d
             conn, doc_ingest_conn, drive_service, cfg.pending_review_drive_folder_id, since_iso
         ),
         "unmatched_count": unmatched_count(doc_ingest_conn),
+        "failed_runs": failed_runs_summary(conn, since_iso),
     }
 
 
 def render_report_email(report: dict) -> tuple[str, str]:
-    clean = not report["mechanical_problems"] and not report["content_problems"]
+    clean = (
+        not report["mechanical_problems"] and not report["content_problems"] and not report["failed_runs"]
+    )
     subject = "Coach-prep weekly audit: clean" if clean else "Coach-prep weekly audit: ISSUES FOUND"
     lines = [f"Unmatched meeting notes: {report['unmatched_count']}", ""]
     if report["mechanical_problems"]:
@@ -5018,11 +5149,29 @@ def render_report_email(report: dict) -> tuple[str, str]:
         ]
     if report["content_problems"]:
         lines.append("Content leakage problems:")
-        lines += [f"  run {p['run_id']} ({p['client_slug']}): leaked {p['leaked']}" for p in report["content_problems"]]
-    unexpected_placements = [p for p in report["placement"] if p["status"] == "moved_to_unexpected_location"]
+        lines += [
+            f"  run {p['run_id']} ({p['client_slug']}): "
+            + (f"leaked {p['leaked']}" if p.get("leaked") else f"scan failed: {p.get('error')}")
+            for p in report["content_problems"]
+        ]
+    unexpected_placements = [
+        p for p in report["placement"]
+        if p["status"] in ("moved_to_unexpected_location", "placement_check_failed")
+    ]
     if unexpected_placements:
         lines.append("Drafts moved to an unexpected location:")
-        lines += [f"  run {p['run_id']} ({p['client_slug']})" for p in unexpected_placements]
+        lines += [
+            f"  run {p['run_id']} ({p['client_slug']})"
+            + (f": {p['error']}" if p["status"] == "placement_check_failed" else "")
+            for p in unexpected_placements
+        ]
+    if report["failed_runs"]:
+        lines.append("Failed / stuck runs:")
+        lines += [
+            f"  run {r['run_id']} ({r['client_slug']}): {r['status']}"
+            + (f" -- {r['failure_reason']}" if r["failure_reason"] else "")
+            for r in report["failed_runs"]
+        ]
     if clean:
         lines.append("No problems found this week.")
     return subject, "\n".join(lines)
@@ -5088,7 +5237,8 @@ def test_main_builds_report_and_sends_email(tmp_path, monkeypatch):
     from coach_prep_app import audit, google_clients, notify
 
     monkeypatch.setattr(audit, "build_report", lambda *a, **k: {
-        "mechanical_problems": [], "content_problems": [], "placement": [], "unmatched_count": 0,
+        "mechanical_problems": [], "content_problems": [], "placement": [],
+        "unmatched_count": 0, "failed_runs": [],
     })
     sent = []
     monkeypatch.setattr(notify, "send_email", lambda subject, text, recipient=notify.RECIPIENT: sent.append(subject) or True)
@@ -5106,6 +5256,44 @@ def test_main_builds_report_and_sends_email(tmp_path, monkeypatch):
     rc = run_client_audit.main(["--config", str(yaml_path)])
     assert rc == 0
     assert sent == ["Coach-prep weekly audit: clean"]
+
+
+def test_main_uses_a_default_config_yaml_when_no_config_flag_given(tmp_path, monkeypatch):
+    """Windows Task Scheduler never passes --config -- same gap Task 22's
+    run_coachprep_cron.py already had and fixed: without a fallback,
+    load_config(None) silently ignores the operator's real config (in
+    particular pending_review_drive_folder_id, required by
+    placement_check) the moment this runs unattended, and every notified
+    draft would be misreported as moved to an unexpected location."""
+    from coach_prep_app import audit, google_clients, notify
+
+    captured_folder_ids = []
+    monkeypatch.setattr(
+        audit, "build_report",
+        lambda conn, doc_ingest_conn, drive_service, cfg, since_iso: (
+            captured_folder_ids.append(cfg.pending_review_drive_folder_id) or {
+                "mechanical_problems": [], "content_problems": [], "placement": [],
+                "unmatched_count": 0, "failed_runs": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(notify, "send_email", lambda subject, text, recipient=notify.RECIPIENT: True)
+    monkeypatch.setattr(google_clients, "build_drive_service", lambda cfg: None)
+    monkeypatch.setattr(run_client_audit, "HERE", tmp_path / "scripts")
+
+    doc_ingest_db_path = tmp_path / "doc_ingest_test.db"
+    (tmp_path / "config.yaml").write_text(
+        f"doc_ingest_db_path: {doc_ingest_db_path}\n"
+        f"doc_ingest_app_root: {tmp_path}\n"
+        f"pending_review_drive_folder_id: real-folder-id\n",
+        encoding="utf-8",
+    )
+    from doc_ingest import db as doc_ingest_db
+    doc_ingest_db.init_db(doc_ingest_db_path).close()
+
+    rc = run_client_audit.main([])  # no --config, exactly like Task Scheduler's invocation
+    assert rc == 0
+    assert captured_folder_ids == ["real-folder-id"]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -5135,12 +5323,23 @@ sys.path.insert(0, str(HERE.parent))
 from coach_prep_app import audit, config, db, doc_ingest_reader, google_clients, notify
 
 
+def _default_config_path() -> Path | None:
+    # Windows Task Scheduler never passes --config -- without this
+    # fallback, load_config(None) silently ignores the operator's real
+    # config (in particular pending_review_drive_folder_id, required by
+    # placement_check) the moment this runs unattended. Same fix as
+    # run_coachprep_cron.py's (Task 22).
+    default = HERE.parent / "config.yaml"
+    return default if default.exists() else None
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=None)
     args = ap.parse_args(argv)
 
-    cfg = config.load_config(Path(args.config) if args.config else None)
+    config_path = Path(args.config) if args.config else _default_config_path()
+    cfg = config.load_config(config_path)
     config.ensure_doc_ingest_importable(cfg.doc_ingest_app_root)
 
     conn = db.init_db(HERE.parent / "coach_prep.db")
