@@ -294,6 +294,41 @@ def test_build_summary_uses_handle_fallback_for_errored_handle_without_display_n
     assert summary["errored"] == ["@dead-handle"]
 
 
+def test_build_summary_carries_unreadable_files_into_the_summary(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn, "linkedin-profile", "bettywliu", "Betty Liu")
+    db.record_handle_result(conn, run_row_id, handle_id, "no_new_content", 0)
+    out = repo_root  # written directly so the frontmatter is genuinely corrupt
+    _write_post(out, "linkedin-profile", "bettywliu", "broken.md",
+                [": : not yaml : :"], "Body.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["items"] == []
+    assert summary["skips"] == [
+        {"handle": "Betty Liu", "reason": "bad_frontmatter", "name": "broken.md"}]
+    assert summary["has_issues"] is True
+
+
+def test_build_summary_records_an_event_for_every_unreadable_file(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn, "linkedin-profile", "bettywliu", "Betty Liu")
+    db.record_handle_result(conn, run_row_id, handle_id, "no_new_content", 0)
+    _write_post(repo_root, "linkedin-profile", "bettywliu", "broken.md",
+                [": : not yaml : :"], "Body.")
+
+    discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    rows = conn.execute(
+        "SELECT kind, severity, message FROM events WHERE kind = 'digest.item_unreadable'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "broken.md" in rows[0]["message"]
+
+
 def test_send_email_includes_an_html_part(monkeypatch):
     monkeypatch.setenv(discovery_notify.KEY_ENV_VAR, "test-key")
     captured = {}

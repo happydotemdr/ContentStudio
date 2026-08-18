@@ -32,6 +32,7 @@ from pipeline_app import comment_draft
 from pipeline_app import db as db_mod
 from pipeline_app import discovery_digest
 from pipeline_app import email_render
+from pipeline_app import obs
 
 RESEND_API_URL = "https://api.resend.com/emails"
 KEY_ENV_VAR = "RESEND_API_KEY"
@@ -105,8 +106,14 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
 
     Each item also carries a `brands` list -- the tags of the handle that
     produced it (db.get_handle_brands), attached here rather than in
-    discovery_digest.collect_new_items because that module is deliberately
+    discovery_digest.collect because that module is deliberately
     DB-free. notify() reads this key to partition items by brand.
+
+    Every item collect() drops or flags is surfaced too, never just silently
+    counted: a hard drop (`skips`) also gets an `events` row (kind
+    "digest.item_unreadable", severity "error") so it is queryable after the
+    email is gone, and a soft flaw (`warnings`) gets an obs.log() line (kind
+    "digest.item_flawed") -- the item itself still ships in `items`.
     """
     run_row = db_mod.get_run(conn, run_row_id)
     handle_results = db_mod.list_run_handle_results(conn, run_row_id)
@@ -114,6 +121,8 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
 
     items: list[dict] = []
     errored: list[str] = []
+    skips: list[dict] = []
+    warnings: list[dict] = []
     for result in handle_results:
         handle_row = db_mod.get_handle(conn, result["handle_id"])
         label = handle_row["display_name"] or handle_row["handle"]
@@ -122,7 +131,22 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
         if result["status"] == "error":
             errored.append(label)
 
-        found = discovery_digest.collect_new_items(repo_root, handle_row, started_at)
+        collected = discovery_digest.collect(repo_root, handle_row, started_at)
+        for reason, name in collected.skips:
+            skips.append({"handle": label, "reason": reason, "name": name})
+            obs.record_event(
+                conn, kind="digest.item_unreadable", severity="error",
+                source="discovery_notify",
+                message=f"{label}: {name} was dropped ({reason})",
+                detail={"handle": handle_row["handle"], "platform": handle_row["platform"],
+                        "file": name, "reason": reason},
+                run_id=run_row_id,
+            )
+        for reason, name in collected.warnings:
+            warnings.append({"handle": label, "reason": reason, "name": name})
+            obs.log("digest.item_flawed", level="warning",
+                    handle=handle_row["handle"], file=name, reason=reason)
+        found = collected.items
         if len(found) != result["items_downloaded"]:
             print(f"discovery_notify: item count mismatch for {label}: "
                   f"db says {result['items_downloaded']}, found {len(found)} on disk",
@@ -131,12 +155,14 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
             item["brands"] = brands
         items.extend(found)
 
-    has_issues = run_row["status"] != "completed" or bool(errored)
+    has_issues = run_row["status"] != "completed" or bool(errored) or bool(skips)
     return {
         "run_status": run_row["status"],
         "has_issues": has_issues,
         "items": items,
         "errored": errored,
+        "skips": skips,
+        "warnings": warnings,
     }
 
 
