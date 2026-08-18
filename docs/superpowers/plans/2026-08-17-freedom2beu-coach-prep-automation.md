@@ -4974,6 +4974,20 @@ def test_render_report_email_flags_issues_in_the_subject():
     assert "run 1" in text
 
 
+def test_render_report_email_flags_a_placement_problem_in_the_subject():
+    """A placement-only problem (nothing else in the report is dirty) must
+    still flip the subject to ISSUES FOUND -- otherwise the email
+    self-contradicts: "clean" in the subject, "moved to an unexpected
+    location" right below it in the body."""
+    report = {
+        "mechanical_problems": [], "content_problems": [], "unmatched_count": 0, "failed_runs": [],
+        "placement": [{"run_id": 9, "client_slug": "sean", "status": "moved_to_unexpected_location", "error": None}],
+    }
+    subject, text = audit.render_report_email(report)
+    assert "ISSUES" in subject
+    assert "run 9" in text
+
+
 def test_render_report_email_reports_failed_runs_as_an_issue():
     report = {
         "mechanical_problems": [], "content_problems": [], "placement": [], "unmatched_count": 0,
@@ -5136,8 +5150,13 @@ def build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso: str) -> d
 
 
 def render_report_email(report: dict) -> tuple[str, str]:
+    unexpected_placements = [
+        p for p in report["placement"]
+        if p["status"] in ("moved_to_unexpected_location", "placement_check_failed")
+    ]
     clean = (
-        not report["mechanical_problems"] and not report["content_problems"] and not report["failed_runs"]
+        not report["mechanical_problems"] and not report["content_problems"]
+        and not report["failed_runs"] and not unexpected_placements
     )
     subject = "Coach-prep weekly audit: clean" if clean else "Coach-prep weekly audit: ISSUES FOUND"
     lines = [f"Unmatched meeting notes: {report['unmatched_count']}", ""]
@@ -5154,10 +5173,6 @@ def render_report_email(report: dict) -> tuple[str, str]:
             + (f"leaked {p['leaked']}" if p.get("leaked") else f"scan failed: {p.get('error')}")
             for p in report["content_problems"]
         ]
-    unexpected_placements = [
-        p for p in report["placement"]
-        if p["status"] in ("moved_to_unexpected_location", "placement_check_failed")
-    ]
     if unexpected_placements:
         lines.append("Drafts moved to an unexpected location:")
         lines += [
