@@ -93,8 +93,9 @@ def _item(body="A real post body with enough text to comment on."):
 
 
 class FakePopen:
-    def __init__(self, stdout, returncode=0, timeout=False):
+    def __init__(self, stdout, returncode=0, timeout=False, stderr=""):
         self._stdout, self.returncode, self._timeout = stdout, returncode, timeout
+        self._stderr = stderr
         self.pid = 4242
         self.killed = False
         self.communicated = []
@@ -103,10 +104,13 @@ class FakePopen:
         self.communicated.append(input)
         if self._timeout and len(self.communicated) == 1:
             raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
-        return self._stdout, ""
+        return self._stdout, self._stderr
 
     def kill(self):
         self.killed = True
+
+    def wait(self, timeout=None):
+        return self.returncode
 
 
 @pytest.fixture
@@ -157,6 +161,21 @@ def test_draft_comments_returns_empty_on_bad_output(fake_claude, stdout):
 def test_draft_comments_returns_empty_on_nonzero_exit(fake_claude):
     fake_claude(FakePopen(_envelope(ARRAY), returncode=1))
     assert comment_draft.draft_comments(_item()) == []
+
+
+def test_a_nonzero_exit_carries_the_clis_own_explanation(fake_claude, capsys):
+    fake_claude(FakePopen(_envelope(ARRAY), returncode=1,
+                          stderr="Invalid API key; please run /login"))
+    assert comment_draft.draft_comments(_item()) == []
+    err = capsys.readouterr().err
+    assert "exited 1" in err
+    assert "Invalid API key" in err
+
+
+def test_a_nonzero_exit_with_no_stderr_says_so_rather_than_looking_truncated(fake_claude, capsys):
+    fake_claude(FakePopen(_envelope(ARRAY), returncode=2, stderr=""))
+    comment_draft.draft_comments(_item())
+    assert "no stderr output" in capsys.readouterr().err
 
 
 def test_draft_comments_kills_the_process_tree_on_timeout(fake_claude):

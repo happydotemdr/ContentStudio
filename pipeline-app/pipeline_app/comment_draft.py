@@ -22,7 +22,7 @@ import subprocess
 import sys
 import tempfile
 
-from pipeline_app import cli_runner
+from pipeline_app import cli_runner, obs
 
 DRAFT_COUNT = 3
 MAX_DRAFT_CHARS = 300
@@ -84,6 +84,11 @@ def sanitize_drafts(raw: list) -> list[str]:
         cleaned.append(capped)
     return cleaned
 
+
+# How much of the child's stderr is kept. An expired credential, a rate limit,
+# a bad flag after a CLI upgrade and a corrupt config all reduce to the same
+# exit code; the CLI's own message is the only thing that separates them (B-104).
+STDERR_TAIL_CHARS = 600
 
 DEFAULT_TIMEOUT_S = 90
 # Bounds latency and cost on a 40-minute video's transcript without pretending
@@ -210,6 +215,7 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
     try:
         binary = cli_runner.resolve_claude_binary()
     except FileNotFoundError as exc:
+        obs.log("comment_draft.binary_missing", level="error", error=str(exc))
         print(f"comment_draft: {exc}", file=sys.stderr)
         return []
 
@@ -255,7 +261,7 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
                     cwd=scratch,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                     text=True,
                     # Mandatory. Python's default text encoding on Windows is
                     # cp1252 and social post text contains emoji as a matter of
@@ -269,23 +275,26 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
             # kwargs above, but this matches communicate()'s handler below
             # rather than leaving the pair gratuitously asymmetric.
             except (OSError, ValueError) as exc:
+                obs.log("comment_draft.spawn_failed", level="error", error=str(exc))
                 print(f"comment_draft: could not start claude: {exc}", file=sys.stderr)
                 return []
 
             try:
-                stdout, _ = process.communicate(prompt, timeout=timeout_s)
+                stdout, stderr_text = process.communicate(prompt, timeout=timeout_s)
             except subprocess.TimeoutExpired:
                 cli_runner.kill_process_tree(process)
                 try:
                     process.communicate(timeout=5)
                 except (subprocess.TimeoutExpired, OSError, ValueError):
                     pass  # cleanup is best-effort; the drafts are already forfeit
+                obs.log("comment_draft.timed_out", level="error", timeout_s=timeout_s)
                 print(f"comment_draft: timed out after {timeout_s}s", file=sys.stderr)
                 return []
             except (OSError, ValueError) as exc:
                 # Kill before returning. Without this the child is GUARANTEED
                 # still running at the `with` exit, holding scratch as its cwd.
                 cli_runner.kill_process_tree(process)
+                obs.log("comment_draft.subprocess_failed", level="error", error=str(exc))
                 print(f"comment_draft: subprocess failed: {exc}", file=sys.stderr)
                 return []
     except OSError as exc:
@@ -293,10 +302,14 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
         return []
 
     if process.returncode != 0:
-        print(f"comment_draft: claude exited {process.returncode}", file=sys.stderr)
+        tail = (stderr_text or "").strip()[-STDERR_TAIL_CHARS:] or "no stderr output"
+        obs.log("comment_draft.claude_failed", level="error",
+                returncode=process.returncode, stderr=tail)
+        print(f"comment_draft: claude exited {process.returncode}: {tail}", file=sys.stderr)
         return []
 
     drafts = sanitize_drafts(parse_envelope(stdout))
     if not drafts:
+        obs.log("comment_draft.no_usable_drafts", level="warning")
         print("comment_draft: no usable drafts in the model's output", file=sys.stderr)
     return drafts
