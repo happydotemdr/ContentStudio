@@ -558,6 +558,23 @@ def test_notify_end_to_end_names_the_linkedin_gate_in_the_sent_email(monkeypatch
     assert "LinkedIn posts are always picked first" in captured["html"]
 
 
+def test_a_slug_collision_does_not_double_the_subject_count(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    for handle in ("john.doe.5", "johndoe5"):
+        hid = _make_handle(conn, "linkedin-profile", handle, handle)
+        db.record_handle_result(conn, run_row_id, hid, "ok", 1)
+    _write_post(repo_root, "linkedin-profile", "john.doe.5", "post1.md",
+                ["url: 'https://example.com/p1'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "One post, two registered handles.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert len(summary["items"]) == 1
+    assert len(summary["duplicates"]) == 1
+    assert summary["has_issues"] is True
+
+
 def test_build_summary_untagged_handle_produces_items_with_no_brands(notify_db):
     conn, repo_root = notify_db
     run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")

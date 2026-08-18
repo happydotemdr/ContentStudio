@@ -278,6 +278,19 @@ def test_select_spotlight_ranks_by_likes_plus_comments():
     assert digest.select_spotlight([a, b])["item_id"] == "b"
 
 
+def test_dedupe_items_collapses_a_slug_collision_and_names_the_duplicate():
+    a = _item(handle="john.doe.5", item_id="post1")
+    b = _item(handle="johndoe5", item_id="post1")   # same slug -> same directory
+    kept, duplicates = digest.dedupe_items([a, b])
+    assert len(kept) == 1
+    assert [d["handle"] for d in duplicates] == ["johndoe5"]
+
+
+def test_dedupe_items_keeps_two_genuinely_different_posts():
+    kept, duplicates = digest.dedupe_items([_item(item_id="p1"), _item(item_id="p2")])
+    assert len(kept) == 2 and duplicates == []
+
+
 def test_select_spotlight_breaks_interaction_tie_on_views():
     a = _item(item_id="a", likes=10, views=5)
     b = _item(item_id="b", likes=10, views=500)

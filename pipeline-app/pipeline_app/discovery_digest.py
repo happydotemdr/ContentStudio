@@ -378,3 +378,25 @@ def select_spotlight_with_rule(items: list[dict]) -> tuple[dict | None, str | No
 def select_spotlight(items: list[dict]) -> dict | None:
     """The one item the email features, or None."""
     return select_spotlight_with_rule(items)[0]
+
+
+def dedupe_items(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(kept, duplicates), keyed on (platform, item_id, url).
+
+    handle_dir is slug-based and deliberately lossy, so `john.doe.5` and
+    `johndoe5` glob the SAME directory and each returns the other's files. The
+    duplicate previously read as two accounts posting the same thing, doubled
+    the subject count, and gave the spotlight ranking one post twice (B-101).
+    Not keyed on `handle`: the handles are exactly what differ.
+    """
+    seen: set[tuple] = set()
+    kept: list[dict] = []
+    duplicates: list[dict] = []
+    for item in items:
+        key = (item["platform"], item["item_id"], item["url"])
+        if key in seen:
+            duplicates.append(item)
+            continue
+        seen.add(key)
+        kept.append(item)
+    return kept, duplicates

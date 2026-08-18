@@ -157,7 +157,19 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
             item["brands"] = brands
         items.extend(found)
 
-    has_issues = run_row["status"] != "completed" or bool(errored) or bool(skips)
+    items, duplicates = discovery_digest.dedupe_items(items)
+    for dupe in duplicates:
+        obs.record_event(
+            conn, kind="digest.handle_slug_collision", severity="warning",
+            source="discovery_notify",
+            message=f"{dupe['display_name']} re-reported {dupe['item_id']} from a colliding slug",
+            detail={"platform": dupe["platform"], "handle": dupe["handle"],
+                    "item_id": dupe["item_id"]},
+            run_id=run_row_id,
+        )
+
+    has_issues = (run_row["status"] != "completed" or bool(errored) or bool(skips)
+                  or bool(duplicates))
     return {
         "run_status": run_row["status"],
         "has_issues": has_issues,
@@ -165,6 +177,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
         "errored": errored,
         "skips": skips,
         "warnings": warnings,
+        "duplicates": duplicates,
     }
 
 
