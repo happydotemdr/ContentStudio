@@ -39,18 +39,15 @@ def _summary(items=None, spotlight=None, spotlight_rule=None, drafts=None, error
             }}
 
 
-def _section(items=None, spotlight=None, spotlight_rule=None, drafts=None, errored=None,
-             errors=None, run_status="completed", has_issues=False):
+def _section(items=None, spotlight=None, spotlight_rule=None, drafts=None):
     """A per-brand section dict, carrying ONLY genuinely per-section keys.
 
     Deliberately narrower than _summary(): run-level facts (coverage, skips,
-    warnings, duplicates, mismatches) live on `overall` and are rendered once
-    by render_brand_digest, never once per section.
+    warnings, duplicates, mismatches, the handle `errors` list, and
+    run_status/has_issues behind the "Run status:" banner) live on `overall`
+    and are rendered once by render_brand_digest, never once per section.
     """
-    return {"run_status": run_status, "has_issues": has_issues,
-            "items": items if items is not None else [],
-            "errored": errored if errored is not None else [],
-            "errors": errors if errors is not None else [],
+    return {"items": items if items is not None else [],
             "spotlight": spotlight, "spotlight_rule": spotlight_rule,
             "drafts": drafts if drafts is not None else []}
 
@@ -97,10 +94,13 @@ def test_an_empty_roster_says_so_instead_of_reading_as_a_quiet_day():
     assert "No handles were scanned" in result["html"]
 
 
-def test_render_email_refuses_a_summary_missing_a_required_key():
+@pytest.mark.parametrize("key", email_render.REQUIRED_SUMMARY_KEYS)
+def test_render_email_refuses_a_summary_missing_any_required_key(key):
+    # Parametrized off the real tuple for the same reason as the
+    # render_brand_digest guard below: a hand-kept list falls behind.
     summary = _summary()
-    del summary["coverage"]
-    with pytest.raises(KeyError, match="coverage"):
+    del summary[key]
+    with pytest.raises(KeyError, match=key):
         email_render.render_email(summary, "2026-08-08")
 
 
@@ -444,10 +444,20 @@ def test_render_brand_digest_prints_run_level_facts_once_not_once_per_section():
     # interim step, so a run with a non-empty other_statuses printed the
     # "Handles reported as ..." block THREE times in one email -- once per brand
     # section. Run-level facts belong to the run, not to any brand.
+    #
+    # `errors` and the "Run status:" banner were the last two facts still doing
+    # that, found in the final whole-branch review: two failed handles printed
+    # the whole Errors block under all three brand headings, including brands
+    # neither failing handle is tagged with.
+    errors = [{"label": "@dead-handle", "reason": "BrightDataError: 401 unauthorized"},
+              {"label": "Betty Liu", "reason": "HTTPError: 500 upstream"}]
     overall = _summary(
         items=[_item(item_id="f1"), _item(item_id="r1"), _item(item_id="g1")],
         has_issues=True,
-        coverage={"scanned": 4, "with_items": 3, "quiet": 0, "errored": 0,
+        run_status="completed_with_errors",
+        errored=[e["label"] for e in errors],
+        errors=errors,
+        coverage={"scanned": 4, "with_items": 3, "quiet": 0, "errored": 2,
                   "other": {"skipped": ["Someone BS"]}},
         skips=[{"handle": "Betty Liu", "reason": "bad_frontmatter", "name": "broken.md"}],
         duplicates=[{"item_id": "dupe1"}],
@@ -464,6 +474,12 @@ def test_render_brand_digest_prints_run_level_facts_once_not_once_per_section():
         assert part.count("broken.md") == 1
         assert part.count("reported twice") == 1
         assert part.count("but only 1 are on disk") == 1
+        # The two findings this test grew to cover: three brand sections, one
+        # Errors block, one Run status banner.
+        assert part.count("Errors (2 handle(s), 2 distinct cause(s))") == 1
+        assert part.count("@dead-handle") == 1
+        assert part.count("401 unauthorized") == 1
+        assert part.count("Run status: completed_with_errors") == 1
     # ...while genuinely per-section content still renders once per section.
     assert result["text"].count("F2BU Post") == 1
     assert result["text"].count("RGS Post") == 1
@@ -482,9 +498,12 @@ def test_render_brand_digest_reports_an_unranked_platform_once_for_the_whole_run
 
 
 def test_render_brand_digest_sections_need_no_run_level_keys():
-    # _section() carries no coverage/skips/warnings/duplicates/mismatches at
-    # all. The per-section renderers must not reach for them (this is what lets
-    # notify() stop copying overall["coverage"] into every section).
+    # _section() carries no run-level key at all -- not the ones in
+    # RUN_LEVEL_SUMMARY_KEYS, not run_status/has_issues. The per-section
+    # renderers must not reach for any of them (this is what lets notify() stop
+    # copying them into every section).
+    assert not set(_section()) & set(email_render.RUN_LEVEL_SUMMARY_KEYS)
+    assert not set(_section()) & {"run_status", "has_issues"}
     overall = _summary(items=[_item(item_id="g1")])
     result = email_render.render_brand_digest(
         overall, {"guru": _section(items=[_item(item_id="g1", title="Guru Post")])},
@@ -493,14 +512,17 @@ def test_render_brand_digest_sections_need_no_run_level_keys():
     assert "Scanned 3 handle(s)" in result["text"]
 
 
-def test_render_brand_digest_refuses_an_overall_missing_a_run_level_key():
+@pytest.mark.parametrize("key", email_render.REQUIRED_OVERALL_KEYS)
+def test_render_brand_digest_refuses_an_overall_missing_any_required_key(key):
     # The guard has to live here too: production calls render_brand_digest, never
     # render_email, so a guard only on render_email protects nothing real.
-    for key in ("coverage", "skips", "duplicates", "mismatches"):
-        overall = _summary()
-        del overall[key]
-        with pytest.raises(KeyError, match=key):
-            email_render.render_brand_digest(overall, {}, "2026-08-15")
+    #
+    # Parametrized off the real tuple, not a hand-kept list: the hand-kept
+    # version had already fallen four keys behind by the end of this package.
+    overall = _summary()
+    del overall[key]
+    with pytest.raises(KeyError, match=key):
+        email_render.render_brand_digest(overall, {}, "2026-08-15")
 
 
 def test_render_brand_digest_puts_the_coverage_footer_on_the_empty_email_too():

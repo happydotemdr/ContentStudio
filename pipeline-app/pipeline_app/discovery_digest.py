@@ -12,7 +12,10 @@ title, and spotlight eligibility -- with no change to any email-side module.
 `fetched_at` is the one MANDATORY field: it is the watermark, and an item
 without it is excluded from the run entirely. `url` is strongly expected but
 not required -- an item missing it is still collected and still rendered, just
-without a link, and collect_new_items warns to stderr. `like_count`,
+without a link, and collect() reports it on Collected.warnings. Nothing in this
+module writes to stderr: a caller (discovery_notify.build_summary) turns those
+warnings into obs.log lines and into the daily email's run-level notices, so
+the flaw is visible without anyone tailing a cron log. `like_count`,
 `comment_count`, `view_count`, and `published` are optional; each is omitted
 from the render when absent.
 `fetched_at` must be an aware-UTC isoformat(timespec="seconds") STRING.

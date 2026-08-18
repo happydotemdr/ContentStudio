@@ -327,21 +327,19 @@ def notify(conn, repo_root: Path, run_row_id: int) -> bool:
                         f"quiet from untagged",
                 detail={"brand": brand}, run_id=run_row_id)
         sections[brand] = {
-            "run_status": overall["run_status"],
-            "has_issues": overall["has_issues"],
             "items": brand_items,
-            "errored": overall["errored"],
-            "errors": overall["errors"],
             "spotlight": spotlight,
             "spotlight_rule": spotlight_rule,
             "drafts": drafts,
-            # Deliberately NO coverage/skips/warnings/duplicates/mismatches
-            # here. Those are run-level facts; email_render renders them once,
-            # off `overall`. Copying overall["coverage"] in (T12's interim fix)
-            # made the per-section renderers print the "Handles reported as X"
-            # block once per brand -- up to three times in one email (B-95b).
-            # errored/errors DO stay: they are per-section by construction, and
-            # every section deliberately shows the run's full error list.
+            # Deliberately NOTHING run-level here -- not coverage/skips/
+            # warnings/duplicates/mismatches, not the `errors` list, and not
+            # run_status/has_issues. email_render renders every one of those
+            # once, off `overall`. Copying overall["coverage"] in (T12's
+            # interim fix) made the per-section renderers print the "Handles
+            # reported as X" block once per brand -- up to three times in one
+            # email (B-95b); `errors` and the "Run status:" banner were the
+            # last two facts still doing exactly that, the errors block landing
+            # under brands the failing handles carry no tag for.
         }
 
     timezone_name = db_mod.get_settings(conn)["timezone"]

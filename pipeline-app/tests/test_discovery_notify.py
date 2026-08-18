@@ -233,7 +233,8 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
     # Run-level facts stay on `overall` only -- a section that carried them
     # would have them rendered once per brand (B-95b).
     for section in sections.values():
-        assert not set(section) & {"coverage", "skips", "warnings", "duplicates", "mismatches"}
+        assert not set(section) & set(email_render.RUN_LEVEL_SUMMARY_KEYS)
+        assert not set(section) & {"run_status", "has_issues", "errored"}
     assert run_date == "2026-08-01"
     assert calls["send_args"] == ("s", "t", "h")
 
@@ -660,13 +661,16 @@ def test_notify_end_to_end_warns_on_orphaned_untagged_item(monkeypatch, notify_d
     assert "no brand tag" in captured["html"].lower()
 
 
-def test_notify_end_to_end_run_level_facts_render_identically_across_sections(monkeypatch, notify_db):
-    # run_status/has_issues/errored are run-wide facts copied verbatim into
-    # every brand section (discovery_notify.notify()), not filtered per
-    # brand like items are. Exercises that through the real notify()
-    # pipeline: one handle tagged with all three brands (so its section
-    # membership doesn't hide the shared facts) plus one errored, untagged
-    # handle whose error must still show up in all three sections.
+def test_notify_end_to_end_prints_the_error_list_and_run_status_once(monkeypatch, notify_db):
+    # run_status/has_issues and the handle `errors` list are run-wide facts,
+    # so they belong to the EMAIL, not to a brand section. They used to be
+    # copied verbatim into every sections[brand] dict, which printed the
+    # failing handle and the "Run status:" banner once under each of the three
+    # brand headings -- including brands the failing handle carries no tag for
+    # (@dead-handle here is tagged `guru` only). Exercises the fix through the
+    # real notify() pipeline: one handle tagged with all three brands (so its
+    # section membership doesn't hide the run-level facts) plus one errored
+    # handle whose failure must appear exactly once, in the run-level footer.
     conn, repo_root = notify_db
     run_row_id = _make_run(conn, status="completed_with_errors")
     handle_id = _make_handle(conn, "instagram", "aspenprojectplay", "Aspen Project Play")
@@ -690,11 +694,18 @@ def test_notify_end_to_end_run_level_facts_render_identically_across_sections(mo
 
     assert result is True
     text, html = captured["text"], captured["html"]
-    # Once per brand section (guru, raisinggoodsports, freedom2beu).
-    assert text.count("@dead-handle") == 3
-    assert html.count("@dead-handle") == 3
-    assert text.count("Run status: completed_with_errors") == 3
-    assert html.count("Run status: completed_with_errors") == 3
+    # Once for the whole email, NOT once per brand section.
+    assert text.count("@dead-handle") == 1
+    assert html.count("@dead-handle") == 1
+    assert text.count("Errors (1 handle(s), 1 distinct cause(s))") == 1
+    assert html.count("Errors (1 handle(s), 1 distinct cause(s))") == 1
+    assert text.count("Run status: completed_with_errors") == 1
+    assert html.count("Run status: completed_with_errors") == 1
+    # ...while the three brand headings really are all present, so the counts
+    # above are "once in a three-section email", not "the sections vanished".
+    for label in ("Freedom2BeU", "RaisingGoodSports", "Gurus"):
+        assert label.upper() in text
+        assert label in html
 
 
 def test_notify_end_to_end_prints_run_level_facts_once_not_once_per_section(monkeypatch, notify_db):
