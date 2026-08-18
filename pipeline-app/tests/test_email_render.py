@@ -18,7 +18,8 @@ def _item(platform="youtube", handle="chan", display_name="Some Channel", item_i
 
 def _summary(items=None, spotlight=None, spotlight_rule=None, drafts=None, errored=None,
              errors=None, run_status="completed", has_issues=False, coverage=None,
-             skips=None, warnings=None, duplicates=None, mismatches=None, started_at=None):
+             skips=None, warnings=None, duplicates=None, mismatches=None, started_at=None,
+             brand_coverage=None):
     return {"run_status": run_status, "has_issues": has_issues,
             "items": items if items is not None else [],
             "errored": errored if errored is not None else [],
@@ -29,7 +30,13 @@ def _summary(items=None, spotlight=None, spotlight_rule=None, drafts=None, error
                                      "errored": 0, "other": {}},
             "skips": skips or [], "warnings": warnings or [],
             "duplicates": duplicates or [], "mismatches": mismatches or [],
-            "started_at": started_at or "2026-08-01T06:00:00+00:00"}
+            "started_at": started_at or "2026-08-01T06:00:00+00:00",
+            # Default: every brand "scanned" so existing quiet-section tests
+            # don't trip the new untagged-brand line (B-113) unless they ask.
+            "brand_coverage": brand_coverage or {
+                brand: {"scanned": 1, "with_items": 0}
+                for brand in email_render.BRAND_SECTION_ORDER
+            }}
 
 
 def _section(items=None, spotlight=None, spotlight_rule=None, drafts=None, errored=None,

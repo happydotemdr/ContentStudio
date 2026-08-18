@@ -147,6 +147,14 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
     discovery_digest.collect because that module is deliberately
     DB-free. notify() reads this key to partition items by brand.
 
+    `brand_coverage` folds into this same per-handle loop (not a second pass):
+    {brand: {"scanned": N, "with_items": N}} for every brand in
+    email_render.BRAND_SECTION_ORDER. It exists so a brand section with zero
+    items can be told apart from "this brand's handles were genuinely quiet"
+    (scanned > 0, with_items == 0) versus "no handle carries this brand's tag
+    at all" (scanned == 0) -- the same defect class as the whole-roster
+    `coverage` dict above, reproduced at brand scope (B-113).
+
     Every item collect() drops or flags is surfaced too, never just silently
     counted: a hard drop (`skips`) also gets an `events` row (kind
     "digest.item_unreadable", severity "error") so it is queryable after the
@@ -164,6 +172,8 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
     warnings: list[dict] = []
     mismatches: list[dict] = []
     other_statuses: dict[str, list[str]] = {}
+    brand_coverage = {brand: {"scanned": 0, "with_items": 0}
+                      for brand in email_render.BRAND_SECTION_ORDER}
     for result in handle_results:
         handle_row = db_mod.get_handle(conn, result["handle_id"])
         label = handle_row["display_name"] or handle_row["handle"]
@@ -225,6 +235,11 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
         for item in found:
             item["brands"] = brands
         items.extend(found)
+        for brand in brands:
+            if brand in brand_coverage:
+                brand_coverage[brand]["scanned"] += 1
+                if found:
+                    brand_coverage[brand]["with_items"] += 1
 
     items, duplicates = discovery_digest.dedupe_items(items)
     for dupe in duplicates:
@@ -273,6 +288,7 @@ def build_summary(conn, repo_root: Path, run_row_id: int) -> dict:
         "duplicates": duplicates,
         "mismatches": mismatches,
         "coverage": coverage,
+        "brand_coverage": brand_coverage,
         "started_at": started_at,
     }
 
@@ -304,6 +320,12 @@ def notify(conn, repo_root: Path, run_row_id: int) -> bool:
         # drafting problem costs three drafts for this post, never the
         # section's inventory or the other two sections.
         drafts = _drafts_for(spotlight)
+        if overall["brand_coverage"][brand]["scanned"] == 0:
+            obs.record_event(
+                conn, kind="digest.brand_untagged", severity="warning", source="discovery_notify",
+                message=f"no handle is tagged '{brand}'; the section below cannot distinguish "
+                        f"quiet from untagged",
+                detail={"brand": brand}, run_id=run_row_id)
         sections[brand] = {
             "run_status": overall["run_status"],
             "has_issues": overall["has_issues"],

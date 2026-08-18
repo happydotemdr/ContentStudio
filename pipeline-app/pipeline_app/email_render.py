@@ -81,7 +81,9 @@ RUN_LEVEL_SUMMARY_KEYS = ("coverage", "skips", "warnings", "duplicates", "mismat
 # What render_brand_digest needs on `overall`. Deliberately does NOT include
 # spotlight/spotlight_rule/drafts: those are per-section, chosen by notify()'s
 # per-brand loop, and build_summary()'s overall dict has never carried them.
-REQUIRED_OVERALL_KEYS = ("run_status", "has_issues", "items", "started_at") + RUN_LEVEL_SUMMARY_KEYS
+REQUIRED_OVERALL_KEYS = (
+    "run_status", "has_issues", "items", "started_at", "brand_coverage"
+) + RUN_LEVEL_SUMMARY_KEYS
 
 # What render_email needs: one summary that is BOTH the section and the run.
 REQUIRED_SUMMARY_KEYS = (
@@ -399,6 +401,14 @@ def render_brand_digest(overall: dict, sections: dict, run_date: str) -> dict:
     the pre-execution review. A warning banner makes that discoverable
     instead of silent.
 
+    A brand section with zero items is ALSO ambiguous on its own terms: it
+    reads identically whether that brand's handles were genuinely quiet, or
+    no handle carries that brand's tag at all. `overall["brand_coverage"]`
+    (from build_summary) resolves that per brand; a brand whose `scanned`
+    count is zero gets a distinct "No handles are tagged '<brand>'." line in
+    place of the bare quiet-day text, so the untagged case is named rather
+    than merely looking quiet (B-113).
+
     Run-level facts (coverage, skips, duplicates, escalated mismatches, unranked
     platforms) are read off `overall` ONLY and rendered once, as a footer under
     all the sections. They used to be threaded into every `sections[brand]` dict
@@ -435,8 +445,19 @@ def render_brand_digest(overall: dict, sections: dict, run_date: str) -> dict:
         if summary is None:
             continue
         label = BRAND_LABELS.get(brand, brand.title())
-        text_parts.append(f"===== {label.upper()} =====\n\n{_render_text(summary)}")
-        html_parts.append(f"<h1>{_html.escape(label)}</h1>\n{_render_html(summary)}")
+        section_text = _render_text(summary)
+        section_html = _render_html(summary)
+        untagged = (
+            not summary["items"] and summary["spotlight"] is None
+            and overall["brand_coverage"].get(brand, {}).get("scanned", 0) == 0
+        )
+        if untagged:
+            untagged_text = f"No handles are tagged '{label}'. {NO_CONTENT_TEXT}"
+            section_text = section_text.replace(NO_CONTENT_TEXT, untagged_text)
+            section_html = section_html.replace(
+                f"<p>{NO_CONTENT_TEXT}</p>", f"<p>{_html.escape(untagged_text)}</p>")
+        text_parts.append(f"===== {label.upper()} =====\n\n{section_text}")
+        html_parts.append(f"<h1>{_html.escape(label)}</h1>\n{section_html}")
 
     text = warning_text + (
         "\n\n".join(text_parts).rstrip() + "\n" if text_parts else NO_CONTENT_TEXT + "\n"

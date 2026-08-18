@@ -87,6 +87,8 @@ def _fake_overall(**over):
                "duplicates": [], "mismatches": [],
                "coverage": {"scanned": 0, "with_items": 0, "quiet": 0,
                             "errored": 0, "other": {}},
+               "brand_coverage": {brand: {"scanned": 1, "with_items": 0}
+                                  for brand in email_render.BRAND_SECTION_ORDER},
                "started_at": "2026-08-01T06:00:00+00:00"}
     summary.update(over)
     return summary
@@ -941,6 +943,42 @@ def test_build_summary_untagged_handle_produces_items_with_no_brands(notify_db):
     summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
 
     assert summary["items"][0]["brands"] == []
+
+
+def test_build_summary_reports_per_brand_coverage(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    hid = _make_handle(conn, "linkedin-profile", "author0", "Author 0")
+    db.record_handle_result(conn, run_row_id, hid, "no_new_content", 0)
+    db.set_handle_brands(conn, hid, ["freedom2beu"])
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["brand_coverage"]["freedom2beu"] == {"scanned": 1, "with_items": 0}
+    assert summary["brand_coverage"]["raisinggoodsports"] == {"scanned": 0, "with_items": 0}
+    assert summary["brand_coverage"]["guru"] == {"scanned": 0, "with_items": 0}
+
+
+def test_a_brand_with_no_tagged_handles_is_distinguished_from_a_quiet_brand(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    hid = _make_handle(conn, "linkedin-profile", "author0", "Author 0")
+    db.record_handle_result(conn, run_row_id, hid, "no_new_content", 0)
+    db.set_handle_brands(conn, hid, ["freedom2beu"])
+    # raisinggoodsports and guru have ZERO tagged handles this run -- not quiet, untagged.
+
+    captured = {}
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text, html=None: captured.update(subject=subject, text=text) or True)
+    discovery_notify.notify(conn, repo_root, run_row_id)
+
+    text = captured["text"]
+    assert "no handles are tagged" in text.lower()
+    rows = conn.execute(
+        "SELECT kind, severity FROM events WHERE kind = 'digest.brand_untagged'").fetchall()
+    assert len(rows) == 2                            # raisinggoodsports and guru, each once
+    assert {r["severity"] for r in rows} == {"warning"}
 
 
 MODULES = ("discovery_digest", "email_render", "discovery_notify", "comment_draft")
