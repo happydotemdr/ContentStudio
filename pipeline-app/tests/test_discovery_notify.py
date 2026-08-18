@@ -50,9 +50,12 @@ def _fake_overall(**over):
     return summary
 
 
-def _make_run(conn, started_at="2026-08-01T06:00:00+00:00", status="completed"):
+def _make_run(conn, started_at="2026-08-01T06:00:00+00:00", status="completed",
+              run_id="2026-08-01T06-00-00-000000"):
+    # run_id is a parameter because discovery_runs.run_id is UNIQUE and a test
+    # that inserts two runs into one DB (the T15 pair test) needs two ids.
     run_row_id = db.insert_terminal_run(
-        conn, "2026-08-01T06-00-00-000000", "scheduled", "incremental", status,
+        conn, run_id, "scheduled", "incremental", status,
         started_at, "2026-08-01T06:05:00+00:00",
     )
     return run_row_id
@@ -714,6 +717,118 @@ def test_a_slug_collision_does_not_double_the_subject_count(notify_db):
     assert len(summary["items"]) == 1
     assert len(summary["duplicates"]) == 1
     assert summary["has_issues"] is True
+
+
+def _three_handles(conn, run_row_id, prefix):
+    """Three linkedin-profile handles, all scanned, all reporting zero items.
+
+    `prefix` exists because handles has UNIQUE(platform, handle): the two runs
+    in the pair test below each need their own three rows.
+    """
+    handles = []
+    for i in range(3):
+        hid = _make_handle(conn, "linkedin-profile", f"{prefix}author{i}", f"Author {i}")
+        db.record_handle_result(conn, run_row_id, hid, "no_new_content", 0)
+        handles.append(f"{prefix}author{i}")
+    return handles
+
+
+def _sent(monkeypatch, conn, repo_root, run_row_id):
+    """What an operator's inbox actually receives for this run.
+
+    Deliberately drives the REAL production path -- discovery_notify.notify()
+    -> build_summary() -> render_brand_digest() -> send_email() -- and captures
+    send_email's own (subject, text, html) arguments. Asserting on
+    email_render.render_email() instead would prove nothing: production never
+    calls it (render_brand_digest is the entrypoint notify() reaches).
+    """
+    captured = {}
+
+    def fake_send(subject, text, html=None):
+        captured.update(subject=subject, text=text, html=html)
+        return True
+
+    monkeypatch.setattr(discovery_notify, "send_email", fake_send)
+    assert discovery_notify.notify(conn, repo_root, run_row_id) is True
+    return captured
+
+
+def test_a_quiet_day_and_a_broken_collection_are_not_the_same_email(monkeypatch, notify_db, tmp_path):
+    """The single defect this package exists to close.
+
+    Two runs, ZERO items each. One is genuinely quiet: three handles scanned,
+    every captured file legitimately older than the run's watermark. One is
+    broken: three handles scanned, every captured file inside the watermark and
+    unparseable. Before this package both rendered the byte-identical body
+    `No new content today.` with no [ISSUE] prefix.
+    """
+    conn, quiet_root = notify_db
+    started = "2026-08-01T06:00:00+00:00"
+
+    quiet_run = _make_run(conn, started_at=started)
+    for handle in _three_handles(conn, quiet_run, "quiet-"):
+        _write_post(quiet_root, "linkedin-profile", handle, "yesterday.md",
+                    ["url: 'https://example.com/old'",
+                     "fetched_at: '2026-07-31T06:00:00+00:00'"], "Yesterday's post.")
+
+    broken_root = tmp_path / "broken"
+    broken_run = _make_run(conn, started_at=started, run_id="2026-08-01T06-00-00-000001")
+    for handle in _three_handles(conn, broken_run, "broken-"):
+        _write_post(broken_root, "linkedin-profile", handle, "corrupt.md",
+                    [": : not yaml : :"], "Today's post, unreadable.")
+
+    # The premise, checked against build_summary directly -- notify() returns a
+    # bool, not the summary, so this assertion cannot ride on the send capture.
+    quiet_summary = discovery_notify.build_summary(conn, quiet_root, quiet_run)
+    broken_summary = discovery_notify.build_summary(conn, broken_root, broken_run)
+    assert len(quiet_summary["items"]) == len(broken_summary["items"]) == 0
+
+    # ...and different emails, as actually sent.
+    quiet = _sent(monkeypatch, conn, quiet_root, quiet_run)
+    broken = _sent(monkeypatch, conn, broken_root, broken_run)
+
+    assert quiet["subject"] != broken["subject"]
+    assert quiet["text"] != broken["text"]
+    assert quiet["html"] != broken["html"]
+
+    assert not quiet["subject"].startswith("[ISSUE] ")
+    assert broken["subject"].startswith("[ISSUE] ")
+    assert "Scanned 3 handle(s)" in quiet["text"]
+    assert "could not be read" not in quiet["text"]
+    assert "3 captured file(s) could not be read" in broken["text"]
+    assert "corrupt.md" in broken["text"]
+    # Same facts in the HTML part -- a text-only assertion would let the two
+    # emails stay indistinguishable for every client that renders HTML.
+    assert "could not be read" not in quiet["html"]
+    assert "3 captured file(s) could not be read" in broken["html"]
+    # The run-level notices are rendered ONCE, under all three brand sections,
+    # not once per section (B-95b).
+    for part in (quiet["text"], quiet["html"], broken["text"], broken["html"]):
+        assert part.count("Scanned 3 handle(s)") == 1
+    for part in (broken["text"], broken["html"]):
+        assert part.count("captured file(s) could not be read") == 1
+
+
+def test_only_the_broken_run_leaves_an_error_event(notify_db, tmp_path):
+    conn, quiet_root = notify_db
+    started = "2026-08-01T06:00:00+00:00"
+    quiet_run = _make_run(conn, started_at=started)
+    for handle in _three_handles(conn, quiet_run, "quiet-"):
+        _write_post(quiet_root, "linkedin-profile", handle, "yesterday.md",
+                    ["url: 'https://example.com/old'",
+                     "fetched_at: '2026-07-31T06:00:00+00:00'"], "Yesterday's post.")
+    discovery_notify.build_summary(conn, quiet_root, quiet_run)
+    assert conn.execute("SELECT COUNT(*) c FROM events WHERE severity = 'error'"
+                        ).fetchone()["c"] == 0
+
+    broken_root = tmp_path / "broken"
+    broken_run = _make_run(conn, started_at=started, run_id="2026-08-01T06-00-00-000001")
+    for handle in _three_handles(conn, broken_run, "broken-"):
+        _write_post(broken_root, "linkedin-profile", handle, "corrupt.md",
+                    [": : not yaml : :"], "Today's post, unreadable.")
+    discovery_notify.build_summary(conn, broken_root, broken_run)
+    assert conn.execute("SELECT COUNT(*) c FROM events WHERE severity = 'error'"
+                        ).fetchone()["c"] == 3
 
 
 def test_build_summary_untagged_handle_produces_items_with_no_brands(notify_db):
