@@ -13,12 +13,13 @@ def _item(platform="youtube", handle="chan", display_name="Some Channel", item_i
             "views": views, "likes": likes, "comments": comments, "body": body}
 
 
-def _summary(items=None, spotlight=None, drafts=None, errored=None,
+def _summary(items=None, spotlight=None, spotlight_rule=None, drafts=None, errored=None,
              run_status="completed", has_issues=False):
     return {"run_status": run_status, "has_issues": has_issues,
             "items": items if items is not None else [],
             "errored": errored if errored is not None else [],
-            "spotlight": spotlight, "drafts": drafts if drafts is not None else []}
+            "spotlight": spotlight, "spotlight_rule": spotlight_rule,
+            "drafts": drafts if drafts is not None else []}
 
 
 SCHEMA = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
@@ -71,8 +72,10 @@ def test_spotlight_renders_excerpt_metrics_and_drafts():
                  title="Moving fast", url="https://example.com/li", views=None,
                  likes=214, comments=37, body="We keep telling founders to move fast.")
     drafts = ["Draft one is here.", "Draft two is here.", "Draft three is here."]
-    result = email_render.render_email(_summary(items=[spot], spotlight=spot, drafts=drafts),
-                                       "2026-08-08")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_LINKEDIN, drafts=drafts),
+        "2026-08-08")
     assert "Betty Liu" in result["html"]
     assert "We keep telling founders" in result["html"]
     assert "214 likes" in result["html"]
@@ -84,8 +87,10 @@ def test_spotlight_renders_excerpt_metrics_and_drafts():
 
 def test_spotlight_notes_when_drafting_was_unavailable():
     spot = _item()
-    result = email_render.render_email(_summary(items=[spot], spotlight=spot, drafts=[]),
-                                       "2026-08-08")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT, drafts=[]),
+        "2026-08-08")
     assert "unavailable" in result["text"].lower()
     assert "How To Actually Finish A Video" in result["html"]
 
@@ -93,7 +98,9 @@ def test_spotlight_notes_when_drafting_was_unavailable():
 def test_spotlight_item_still_appears_in_the_inventory_with_a_marker():
     spot = _item()
     result = email_render.render_email(
-        _summary(items=[spot], spotlight=spot, drafts=[]), "2026-08-08")
+        _summary(items=[spot], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT, drafts=[]),
+        "2026-08-08")
     assert result["text"].count("How To Actually Finish A Video") >= 2
     assert "featured above" in result["text"]
 
@@ -145,7 +152,9 @@ def test_href_escapes_quotes_and_cannot_break_out_of_the_attribute():
 def test_html_escapes_untrusted_title_and_excerpt():
     spot = _item(title='A <script>alert("x")</script> & more',
                  body='Body with <b>tags</b> & "quotes".')
-    result = email_render.render_email(_summary(items=[spot], spotlight=spot), "2026-08-08")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT), "2026-08-08")
     assert "<script>" not in result["html"]
     assert "&lt;script&gt;" in result["html"]
     assert "&amp;" in result["html"]
@@ -172,7 +181,9 @@ def test_spotlight_survives_an_empty_inventory():
     spot = _item()
     drafts = ["Draft one is here."]
     result = email_render.render_email(
-        _summary(items=[], spotlight=spot, drafts=drafts), "2026-08-08")
+        _summary(items=[], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT, drafts=drafts),
+        "2026-08-08")
     assert result["text"] != "No new content today."
     assert "How To Actually Finish A Video" in result["text"]
     assert "Draft one is here." in result["text"]
@@ -193,7 +204,9 @@ def test_spotlight_header_uses_the_same_field_order_in_both_parts():
     spot = _item(platform="linkedin-profile", display_name="Betty Liu", item_id="7358",
                  title="Moving fast", views=None, likes=214, comments=37,
                  published="2026-08-07")
-    result = email_render.render_email(_summary(items=[spot], spotlight=spot), "2026-08-08")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_LINKEDIN), "2026-08-08")
     text, html = result["text"], result["html"]
     order = ("Moving fast", "Betty Liu", "214 likes", "37 comments", "2026-08-07")
     for part in (text, html):
@@ -265,8 +278,10 @@ def test_render_brand_digest_each_section_keeps_its_own_spotlight_and_drafts():
     rgs_spot = _item(item_id="r1", title="RGS Spotlight")
     sections = {
         "freedom2beu": _summary(items=[f2bu_spot], spotlight=f2bu_spot,
+                                spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT,
                                 drafts=["F2BU draft one.", "F2BU draft two.", "F2BU draft three."]),
         "raisinggoodsports": _summary(items=[rgs_spot], spotlight=rgs_spot,
+                                      spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT,
                                       drafts=["RGS draft one.", "RGS draft two.", "RGS draft three."]),
     }
     overall = _summary(items=[f2bu_spot, rgs_spot])
@@ -311,6 +326,24 @@ def test_render_brand_digest_includes_unknown_platforms_in_return_dict():
     overall = _summary(items=[unknown])
     result = email_render.render_brand_digest(overall, sections, "2026-08-15")
     assert result["unknown_platforms"] == ["linkedin-newsletter"]
+
+
+def test_the_email_states_that_linkedin_always_wins_the_spotlight():
+    spot = _item(platform="linkedin-profile", item_id="li")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                 spotlight_rule=email_render.SPOTLIGHT_RULE_LINKEDIN), "2026-08-08")
+    for part in (result["text"], result["html"]):
+        assert "LinkedIn posts are always picked first" in part
+
+
+def test_a_non_linkedin_spotlight_is_labelled_as_the_most_engaged():
+    spot = _item(platform="youtube", item_id="yt")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                 spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT), "2026-08-08")
+    assert "most engagement" in result["text"]
+    assert "always picked first" not in result["text"]
 
 
 def test_every_accepted_platform_has_a_rank_and_a_label():

@@ -162,7 +162,7 @@ def notify(conn, repo_root: Path, run_row_id: int) -> bool:
     sections = {}
     for brand in email_render.BRAND_SECTION_ORDER:
         brand_items = [i for i in overall["items"] if brand in i["brands"]]
-        spotlight = discovery_digest.select_spotlight(brand_items)
+        spotlight, spotlight_rule = discovery_digest.select_spotlight_with_rule(brand_items)
         # draft_comments never raises and returns [] on every failure path, so a
         # drafting problem costs three drafts for this post, never the
         # section's inventory or the other two sections.
@@ -173,6 +173,7 @@ def notify(conn, repo_root: Path, run_row_id: int) -> bool:
             "items": brand_items,
             "errored": overall["errored"],
             "spotlight": spotlight,
+            "spotlight_rule": spotlight_rule,
             "drafts": drafts,
         }
 

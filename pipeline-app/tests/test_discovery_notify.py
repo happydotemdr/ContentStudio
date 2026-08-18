@@ -152,7 +152,8 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
                          lambda c, r, rid: (calls.setdefault("build_args", (c, r, rid)),
                                              {"run_status": "completed", "has_issues": False,
                                               "items": [], "errored": []})[1])
-    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight", lambda items: None)
+    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
+                         lambda items: (None, None))
     monkeypatch.setattr(discovery_notify.email_render, "render_brand_digest",
                          lambda overall, sections, run_date:
                              (calls.setdefault("render_args", (overall, sections, run_date)),
@@ -322,8 +323,9 @@ def test_notify_threads_spotlight_and_drafts_into_render(monkeypatch, notify_db)
     monkeypatch.setattr(discovery_notify, "build_summary",
                         lambda *a: {"run_status": "completed", "has_issues": False,
                                     "items": [item], "errored": []})
-    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight",
-                        lambda items: spotlight if items else None)
+    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
+                        lambda items: (spotlight, discovery_notify.discovery_digest.SPOTLIGHT_RULE_ENGAGEMENT)
+                        if items else (None, None))
     monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments",
                         lambda item, **kw: ["d1", "d2", "d3"])
 
@@ -401,7 +403,8 @@ def test_notify_skips_drafting_when_there_is_no_spotlight(monkeypatch, notify_db
     monkeypatch.setattr(discovery_notify, "build_summary",
                         lambda *a: {"run_status": "completed", "has_issues": False,
                                     "items": [], "errored": []})
-    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight", lambda items: None)
+    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
+                        lambda items: (None, None))
     monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments",
                         lambda item, **kw: calls.append(item) or [])
     monkeypatch.setattr(discovery_notify, "send_email", lambda *a: True)
@@ -487,6 +490,37 @@ def test_notify_end_to_end_run_level_facts_render_identically_across_sections(mo
     assert html.count("@dead-handle") == 3
     assert text.count("Run status: completed_with_errors") == 3
     assert html.count("Run status: completed_with_errors") == 3
+
+
+def test_notify_end_to_end_names_the_linkedin_gate_in_the_sent_email(monkeypatch, notify_db):
+    # Task 5 (B-96): the spotlight rule must reach the actual sent email, not
+    # just the unit-level select_spotlight_with_rule/render_email tests. This
+    # exercises the real build_summary -> notify -> render_brand_digest path
+    # with a LinkedIn item present, mocking only send_email and draft_comments.
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = db.create_handle(conn, "linkedin-profile", "bettywliu", "Betty Liu",
+                                 "guru", None, "2026-07-01T00:00:00+00:00")
+    db.set_handle_brands(conn, handle_id, ["guru"])
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_post(repo_root, "linkedin-profile", "bettywliu", "7358.md",
+                ["url: 'https://example.com/li'", "like_count: 12",
+                 "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A LinkedIn post body with enough text to spotlight.")
+
+    captured = {}
+    monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments", lambda item, **kw: [])
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text, html: (captured.setdefault("text", text),
+                                     captured.setdefault("html", html), True)[-1],
+    )
+
+    result = discovery_notify.notify(conn, repo_root, run_row_id)
+
+    assert result is True
+    assert "LinkedIn posts are always picked first" in captured["text"]
+    assert "LinkedIn posts are always picked first" in captured["html"]
 
 
 def test_build_summary_untagged_handle_produces_items_with_no_brands(notify_db):

@@ -13,7 +13,14 @@ from __future__ import annotations
 import html as _html
 import re
 
-from pipeline_app.discovery_digest import published_rank
+from pipeline_app.discovery_digest import (
+    published_rank, SPOTLIGHT_RULE_LINKEDIN, SPOTLIGHT_RULE_ENGAGEMENT,
+)
+
+SPOTLIGHT_RULE_TEXT = {
+    SPOTLIGHT_RULE_LINKEDIN: "LinkedIn posts are always picked first, whatever else the day held.",
+    SPOTLIGHT_RULE_ENGAGEMENT: "Picked for the most engagement (likes plus comments).",
+}
 
 # Fixed display order. Every platform id the handles CHECK constraint accepts
 # MUST appear here and in PLATFORM_LABELS -- tests/test_email_render.py reads
@@ -123,6 +130,7 @@ def _render_text(summary: dict) -> str:
 
     if spotlight is not None:
         lines.append(f"TODAY'S PICK: {_label(spotlight['platform'])}")
+        lines.append(SPOTLIGHT_RULE_TEXT[summary["spotlight_rule"]])
         header = [spotlight["display_name"], *_metric_bits(spotlight)]
         if spotlight["published"]:
             header.append(spotlight["published"])
@@ -183,6 +191,7 @@ def _render_html(summary: dict) -> str:
         # is enforced on drafts, but a template that types one undercuts the
         # point for a reader scanning on a phone.
         parts.append(f"<h2>Today's pick: {esc(_label(spotlight['platform']))}</h2>")
+        parts.append(f"<p><em>{esc(SPOTLIGHT_RULE_TEXT[summary['spotlight_rule']])}</em></p>")
         header = [spotlight["display_name"], *_metric_bits(spotlight)]
         if spotlight["published"]:
             header.append(spotlight["published"])

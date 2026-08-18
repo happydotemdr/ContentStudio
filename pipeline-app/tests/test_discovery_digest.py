@@ -310,3 +310,20 @@ def test_platform_alphabet_is_never_the_reason_one_item_beats_another():
     # Both unmeasured, same date: the surviving tie-break is the total identity
     # key, which is arbitrary but is not a disguised platform preference.
     assert digest.select_spotlight([b, a])["item_id"] == "a"
+
+
+def test_select_spotlight_with_rule_names_the_linkedin_gate():
+    linkedin = _item(platform="linkedin-profile", item_id="li", likes=3)
+    youtube = _item(platform="youtube", item_id="yt", likes=40000)
+    item, rule = digest.select_spotlight_with_rule([youtube, linkedin])
+    assert item["item_id"] == "li"
+    assert rule == digest.SPOTLIGHT_RULE_LINKEDIN
+
+
+def test_select_spotlight_with_rule_names_engagement_when_no_linkedin_item_exists():
+    item, rule = digest.select_spotlight_with_rule([_item(item_id="yt", likes=5)])
+    assert rule == digest.SPOTLIGHT_RULE_ENGAGEMENT
+
+
+def test_select_spotlight_with_rule_returns_no_rule_when_there_is_no_spotlight():
+    assert digest.select_spotlight_with_rule([]) == (None, None)

@@ -291,14 +291,28 @@ def _spotlight_sort_key(item: dict):
     )
 
 
-def select_spotlight(items: list[dict]) -> dict | None:
-    """The one item the email features, or None."""
+SPOTLIGHT_RULE_LINKEDIN = "linkedin-priority"
+SPOTLIGHT_RULE_ENGAGEMENT = "top-engagement"
+
+
+def select_spotlight_with_rule(items: list[dict]) -> tuple[dict | None, str | None]:
+    """The one item the email features, and the rule that chose it.
+
+    The rule is returned rather than re-derived downstream so the email can
+    state the LinkedIn gate instead of leaving a reader to assume the pick is
+    the day's most-engaged post (B-96).
+    """
     # An item with no primary text gives the drafter nothing to read, so a
     # comment drafted from it would be drafted from the title alone.
     candidates = [i for i in items if i["body"]]
     if not candidates:
-        return None
+        return None, None
     linkedin = [i for i in candidates if i["platform"] in LINKEDIN_PLATFORMS]
     if linkedin:
-        candidates = linkedin
-    return min(candidates, key=_spotlight_sort_key)
+        return min(linkedin, key=_spotlight_sort_key), SPOTLIGHT_RULE_LINKEDIN
+    return min(candidates, key=_spotlight_sort_key), SPOTLIGHT_RULE_ENGAGEMENT
+
+
+def select_spotlight(items: list[dict]) -> dict | None:
+    """The one item the email features, or None."""
+    return select_spotlight_with_rule(items)[0]
