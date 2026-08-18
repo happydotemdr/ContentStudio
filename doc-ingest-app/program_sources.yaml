@@ -13,6 +13,7 @@ paths:
   - "Offer & Coaching Framework/Current finalized documents/Journal what is radical agency .pdf.md"
   - "Offer & Coaching Framework/Current finalized documents/Vision & Passion.gdoc.md"
   # Two near-duplicate Judge files exist in the corpus; this picks the
-  # non-"(1)" filename as canonical. CONFIRM with Brian/Ryan before relying
-  # on this in production -- see Task 24.
+  # non-"(1)" filename as canonical. Confirmed by Brian on 2026-08-18
+  # (Task 25 Step 3) -- all 8 files above are current, none are stale
+  # drafts, and this is the correct Judge file to serve.
   - "Frameworks to consider/Sabatoures/F2BU_Module_00_The_Judge.docx.md"
