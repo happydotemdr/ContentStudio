@@ -950,6 +950,13 @@ and add `"mismatches": mismatches` to the returned dict.
 
 ---
 
+> **Correction (found during T11's implementation, 2026-08-18):** the shown "Implement" snippet
+> references `errors` and `other_statuses`, neither of which exists yet at this point in the task
+> sequence — `errors` (a `{label, reason}` list) is T13's addition, `other_statuses` is T12's. T11
+> substitutes: `"errored": len(errored)` / `bool(errored)` using the existing plain-label list, and
+> declares `other_statuses: dict[str, list[str]] = {}` locally, inert until T12 populates it. No
+> plan text below needs to change beyond this note — T12 and T13 still populate the same names.
+
 ### T11 — B-95 (a): the summary counts what it scanned
 
 - [ ] **Test first.** In `tests/test_discovery_notify.py`:
