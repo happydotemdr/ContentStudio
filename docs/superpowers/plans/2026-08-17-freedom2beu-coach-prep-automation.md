@@ -5498,6 +5498,14 @@ If this turns up a real address, register him the same way as the other three be
 
 - [ ] **Step 2: Register each confirmed client**
 
+**Verify every value below before pressing Enter.** `register_client.py add` is
+not correctable after the fact: a typo'd `--drive-folder-id`,
+`--display-name`, or `--session-outlines-dir` cannot be fixed by
+deactivating and re-adding the same slug (`ClientAlreadyExists` on the
+slug), nor by re-adding under a different slug (`ClientAlreadyExists` on
+the `primary_email` unique constraint). The only recovery is a direct SQL
+`UPDATE clients SET <field> = ? WHERE slug = ?` against `doc_ingest.db`.
+
 ```bash
 cd doc-ingest-app
 python scripts/register_client.py add --slug sean --display-name "Sean" \
@@ -5519,6 +5527,19 @@ python scripts/register_client.py list
 ```
 
 Verify the `list` output shows exactly the clients just registered, each with the email confirmed in Step 1.
+
+**Distinct first names are load-bearing, not cosmetic.** `gates.leakage_scan`'s
+cross-client check matches on each client's first name (`display_name`'s
+first token) as one of its tripwire signals, and a gate failure is
+terminal (Task 21's `orchestrator.py` sets the watermark on a gate
+failure specifically so it's never silently retried). If two registered
+clients happen to share a first name (e.g. two "Sean"s), any legitimate
+mention of one client's first name in the OTHER client's draft would
+permanently block that client's coach-prep doc for that meeting, with no
+automatic recovery — see Task 26 Step 7 for the manual watermark-clearing
+SQL if this happens. If a real first-name collision comes up, use a
+distinguishing `display_name` (e.g. "Sean T." vs "Sean K.") instead of
+registering both under the bare first name.
 
 - [ ] **Step 3: Confirm `program_sources.yaml` with Brian/Ryan**
 
@@ -5578,7 +5599,37 @@ python scripts/backfill_client_tags.py --apply
 
 Re-run `--dry-run` once more afterward and confirm every previously-`None` `current_client` now matches its `classified_client` with zero diffs remaining.
 
-- [ ] **Step 4: Register both coach-prep-app scheduled tasks**
+- [ ] **Step 4: Create `coach-prep-app/config.yaml` and `resend_api_key.txt`**
+
+Per `coach-prep-app/SETUP.md`'s §2 and §3 (added alongside this task). Both
+scheduled entry points now refuse to run (fail loud, exit 1) if
+`pending_review_drive_folder_id` is unconfigured, and Task Scheduler never
+passes `--config`, so `config.yaml` must exist before Step 5 registers the
+tasks — otherwise every wake exits immediately with a clear error instead
+of doing anything:
+
+```bash
+cd coach-prep-app
+```
+
+Create `config.yaml` with at minimum:
+
+```yaml
+pending_review_drive_folder_id: "<the Pending Review folder ID from Step 6 of SETUP.md's §1>"
+```
+
+And create `resend_api_key.txt` containing the raw Resend API key (no
+quotes) — see SETUP.md §3 for why the file, not an environment variable, is
+the reliable path under Task Scheduler.
+
+Verify both are picked up before continuing:
+
+```bash
+python -c "from pathlib import Path; from coach_prep_app import config; c = config.load_config(Path('config.yaml')); print('folder:', c.pending_review_drive_folder_id)"
+python -c "from coach_prep_app import notify; print('key configured:', bool(notify.api_key()))"
+```
+
+- [ ] **Step 5: Register both coach-prep-app scheduled tasks**
 
 ```bash
 cd coach-prep-app
@@ -5590,13 +5641,19 @@ python scripts/setup_audit_task.py --apply
 
 Confirm both tasks appear in Windows Task Scheduler (`schtasks /Query /TN ContentStudio-CoachPrep` and `schtasks /Query /TN ContentStudio-CoachPrepAudit`).
 
-- [ ] **Step 5: Confirm the notification recipient**
+- [ ] **Step 6: Confirm the notification recipient**
 
-`coach_prep_app/notify.py`'s default `RECIPIENT` is `brian@happydotemdr.com`, matching every other automated email in this codebase (`pipeline_app/discovery_notify.py`'s same constant). Confirm with Brian whether Ryan should receive these review emails directly instead — if so, override via `notify_recipient` in coach-prep-app's config YAML (Task 11's `Config.notify_recipient` field) rather than editing the code.
+`coach_prep_app/notify.py`'s default `RECIPIENT` is `brian@happydotemdr.com`, matching every other automated email in this codebase (`pipeline_app/discovery_notify.py`'s same constant). Confirm with Brian whether Ryan should receive these review emails directly instead — if so, override via `notify_recipient` in `coach-prep-app/config.yaml` (Step 4 above; `Config.notify_recipient` field) rather than editing the code.
 
-- [ ] **Step 6: End-to-end smoke test against one real, near-term meeting**
+- [ ] **Step 7: End-to-end smoke test against one real, near-term meeting**
 
 If any registered client has a real meeting in the next 48 hours, let the 4-hourly cron fire naturally and confirm: a `DRAFT — Coach Prep — ...` Google Doc appears in the Pending Review folder, an email arrives at the confirmed recipient with a working link, and the doc's "Activities from last session" section correctly reflects that specific client's most recent follow-up email (not a stale or wrong one). If no meeting falls in that window, run `python scripts/run_coachprep_cron.py` by hand against a manually-created test calendar event to exercise the same path without waiting.
+
+**If the smoke test hits a `gate_failed` result** (the mechanical citation/leakage gate tripped — check the `generation_runs.failure_reason` column, or the weekly audit's "Failed / stuck runs" section), remember this is intentionally terminal: the watermark is set on gate failure specifically so it is never silently retried. Diagnose the cause (an invented citation, or another client's name/email/alias/first-name appearing in the draft — the latter is more likely if two registered clients share a first name) before manually clearing the watermark to allow a retry:
+
+```sql
+DELETE FROM watermarks WHERE client_slug = ? AND calendar_event_instance_id = ?;
+```
 
 No commit for this task — it is entirely operational verification of already-committed code.
 

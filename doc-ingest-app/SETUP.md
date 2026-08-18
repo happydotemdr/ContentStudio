@@ -79,9 +79,14 @@ the running ingest cron's credential is not part of this flow.
 2. Enable the **Google Calendar API** for that project.
 3. Configure the OAuth consent screen the same way as section 2 (**User type:
    Internal**, for the same 7-day-refresh-token reason).
-4. Create a **second** OAuth client of type **Desktop app** (or reuse the existing
-   client and request the new scope in a separate consent) — either way, the
-   scope granted must be limited to `calendar.readonly`.
+4. Create a **second** OAuth client of type **Desktop app**. Do NOT reuse the
+   existing Drive/Docs/Sheets client for this: consenting an already-granted
+   `client_id` to an additional scope typically returns a token carrying the
+   *union* of every previously-granted scope, not just the new one — that
+   would leave `calendar_token.json` silently holding Drive/Docs/Sheets
+   access too, defeating the whole point of a separate, calendar-only
+   credential. A second, distinct Desktop app client is the only way to
+   guarantee the scope is actually limited to `calendar.readonly`.
 5. Download the client secret JSON and save it as
    `doc-ingest-app/calendar_client_secret.json` (already gitignored — never
    commit this file, and never save it as `client_secret.json`).
