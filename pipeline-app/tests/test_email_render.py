@@ -189,6 +189,18 @@ def test_text_and_html_list_the_same_titles():
         assert title in result["html"]
 
 
+def test_spotlight_header_uses_the_same_field_order_in_both_parts():
+    spot = _item(platform="linkedin-profile", display_name="Betty Liu", item_id="7358",
+                 title="Moving fast", views=None, likes=214, comments=37,
+                 published="2026-08-07")
+    result = email_render.render_email(_summary(items=[spot], spotlight=spot), "2026-08-08")
+    text, html = result["text"], result["html"]
+    order = ("Moving fast", "Betty Liu", "214 likes", "37 comments", "2026-08-07")
+    for part in (text, html):
+        positions = [part.index(field) for field in order]
+        assert positions == sorted(positions), f"field order broke in:\n{part}"
+
+
 def test_render_brand_digest_orders_sections_freedom2beu_then_rgs_then_guru():
     sections = {
         "guru": _summary(items=[_item(item_id="g1", title="Guru Post")]),

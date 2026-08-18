@@ -126,7 +126,11 @@ def _render_text(summary: dict) -> str:
         header = [spotlight["display_name"], *_metric_bits(spotlight)]
         if spotlight["published"]:
             header.append(spotlight["published"])
-        lines += [" | ".join(header), spotlight["title"], "", _excerpt(spotlight["body"]), ""]
+        # Title FIRST in both parts. The two branches previously disagreed on
+        # field order, so a text-fallback client read a different message from
+        # the same email (B-108).
+        lines += [spotlight["title"], " | ".join(header), "",
+                  _excerpt(spotlight["body"]), ""]
         url = _safe_url(spotlight["url"])
         if url:
             lines += [url, ""]
