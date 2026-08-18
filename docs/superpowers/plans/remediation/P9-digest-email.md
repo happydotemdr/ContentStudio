@@ -81,8 +81,13 @@ the `events` row that makes the second impossible.
 > - **T7, T8, T9, T10, T11 (coverage/skips/warnings/duplicates/mismatches), T13 (errors with
 >   reasons), T18 (started_at)**: unaffected — all of it lands on `build_summary`'s returned
 >   "overall" dict exactly as each task already shows. No task text changes.
-> - **T12** (`coverage["other"]` statuses rendered): the rendering half is a run-level fact — see
->   the new helper below, not threaded per-section.
+> - **T12** (`coverage["other"]` statuses rendered) — **correction (found during T12's
+>   implementation, 2026-08-18):** implement T12 exactly as its own shown code has it — the
+>   rendering loop goes directly into `_render_text`/`_render_html`, and `render_email`'s own test
+>   in T12's brief depends on that rendering existing immediately, so it cannot be deferred. Because
+>   `coverage["other"]` is a run-level fact, T14 (below) RELOCATES this same rendering block, along
+>   with the rest of `_coverage_line`/`_notices`, out of `_render_text`/`_render_html` and into the
+>   new run-level helpers — that relocation is T14's job, not T12's.
 > - **T14** (coverage footer + `REQUIRED_SUMMARY_KEYS` guard): this is the task requiring the most
 >   real change. Two amendments, both non-negotiable (not a style choice — the first is required for
 >   the guard to protect production at all; the second is required for the footer to render true
@@ -108,7 +113,11 @@ the `events` row that makes the second impossible.
 >      `coverage`/`skips`/`warnings`/`duplicates`/`mismatches` at all — `_render_text`/`_render_html`
 >      keep rendering only what is genuinely per-section (`items`, `errored`, `spotlight`,
 >      `spotlight_rule`, `drafts`). T14's own tests, which call `email_render.render_email(...)`
->      directly, are unaffected by this split and need no rewrite.
+>      directly, are unaffected by this split and need no rewrite. **Also fold in T12's
+>      `coverage["other"]` loop** (added directly to `_render_text`/`_render_html` by T12, per the
+>      correction above) — move it into the same two new run-level helpers alongside
+>      `_coverage_line`/`_notices`, so a brand's section doesn't triple-print every "reported as
+>      skipped" line the way it would if left in the shared per-section renderer.
 > - **T15 (the headline pair test) — must be re-pointed at the production path.** As written, T15's
 >   `_render()` helper calls `email_render.render_email(summary, ...)` directly, which is no longer
 >   what `notify()` calls. A pair test that only proves `render_email` distinguishes the two cases
