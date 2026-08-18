@@ -35,6 +35,14 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load_config(config_path)
     config.ensure_doc_ingest_importable(cfg.doc_ingest_app_root)
 
+    if not cfg.pending_review_drive_folder_id:
+        print(
+            "run_coachprep_cron: pending_review_drive_folder_id is not configured -- "
+            "set it in coach-prep-app/config.yaml before this can run for real",
+            file=sys.stderr,
+        )
+        return 1
+
     conn = db.init_db(HERE.parent / "coach_prep.db")
     doc_ingest_conn = doc_ingest_reader.open_readonly(cfg.doc_ingest_db_path)
     try:

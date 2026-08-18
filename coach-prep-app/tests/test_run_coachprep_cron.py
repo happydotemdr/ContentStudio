@@ -34,7 +34,8 @@ def test_main_calls_run_once_and_returns_zero(tmp_path, monkeypatch):
     yaml_path = tmp_path / "cfg.yaml"
     yaml_path.write_text(
         f"doc_ingest_db_path: {tmp_path / 'doc_ingest_test.db'}\n"
-        f"doc_ingest_app_root: {tmp_path}\n",
+        f"doc_ingest_app_root: {tmp_path}\n"
+        f"pending_review_drive_folder_id: real-folder-id\n",
         encoding="utf-8",
     )
     import doc_ingest  # ensure a real doc_ingest package is importable for open_readonly's target dir check
@@ -98,6 +99,31 @@ def test_main_returns_nonzero_when_any_client_errored(tmp_path, monkeypatch):
     yaml_path = tmp_path / "cfg.yaml"
     yaml_path.write_text(
         f"doc_ingest_db_path: {tmp_path / 'doc_ingest_test.db'}\n"
+        f"doc_ingest_app_root: {tmp_path}\n"
+        f"pending_review_drive_folder_id: real-folder-id\n",
+        encoding="utf-8",
+    )
+    import doc_ingest
+    from doc_ingest import db as doc_ingest_db
+    doc_ingest_db.init_db(tmp_path / "doc_ingest_test.db").close()
+
+    rc = run_coachprep_cron.main(["--config", str(yaml_path)])
+    assert rc == 1
+
+
+def test_main_returns_nonzero_and_never_runs_once_when_folder_id_unconfigured(tmp_path, monkeypatch):
+    """An unconfigured pending_review_drive_folder_id must fail loud, before
+    any DB/service work -- a real deployment that never creates config.yaml
+    (or omits this key) would otherwise silently fail every draft publish
+    (Drive rejects parents: [""]) with no clear error."""
+    from coach_prep_app import orchestrator
+
+    calls = []
+    monkeypatch.setattr(orchestrator, "run_once", lambda *a, **k: calls.append(1))
+
+    yaml_path = tmp_path / "cfg.yaml"
+    yaml_path.write_text(
+        f"doc_ingest_db_path: {tmp_path / 'doc_ingest_test.db'}\n"
         f"doc_ingest_app_root: {tmp_path}\n",
         encoding="utf-8",
     )
@@ -107,6 +133,7 @@ def test_main_returns_nonzero_when_any_client_errored(tmp_path, monkeypatch):
 
     rc = run_coachprep_cron.main(["--config", str(yaml_path)])
     assert rc == 1
+    assert calls == []
 
 
 def test_default_config_path_returns_none_when_config_yaml_missing(tmp_path, monkeypatch):
