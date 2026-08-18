@@ -15,17 +15,22 @@ import re
 
 from pipeline_app.discovery_digest import published_rank
 
-# Fixed display order. A platform not listed here is appended alphabetically,
-# so an adapter added later renders correctly with no change to this file -- it
-# just sorts to the bottom until someone gives it a rank.
+# Fixed display order. Every platform id the handles CHECK constraint accepts
+# MUST appear here and in PLATFORM_LABELS -- tests/test_email_render.py reads
+# the constraint and fails if one does not. An id that somehow arrives unranked
+# sorts last and renders VERBATIM: inventing "Linkedin Newsletter" for
+# linkedin-newsletter reads as a real label and hides the omission (B-92).
 PLATFORM_ORDER = (
-    "linkedin-profile", "linkedin-company", "youtube", "instagram", "bluesky",
+    "linkedin-profile", "linkedin-company", "youtube", "instagram",
+    "facebook", "x", "bluesky",
 )
 PLATFORM_LABELS = {
     "linkedin-profile": "LinkedIn",
     "linkedin-company": "LinkedIn (Company)",
     "youtube": "YouTube",
     "instagram": "Instagram",
+    "facebook": "Facebook",
+    "x": "X",
     "bluesky": "Bluesky",
 }
 
@@ -47,7 +52,12 @@ DRAFTS_UNAVAILABLE = "Comment drafting was unavailable for this run."
 
 
 def _label(platform: str) -> str:
-    return PLATFORM_LABELS.get(platform) or platform.replace("-", " ").title()
+    return PLATFORM_LABELS.get(platform, platform)
+
+
+def unknown_platforms(items: list[dict]) -> list[str]:
+    """Every platform id in `items` with no rank and no label, sorted."""
+    return sorted({i["platform"] for i in items} - set(PLATFORM_LABELS))
 
 
 def _safe_url(url) -> str | None:
@@ -217,7 +227,9 @@ def render_email(summary: dict, run_date: str) -> dict:
     subject = f"ContentStudio Discovery {run_date}: {total} new post(s)"
     if summary["has_issues"]:
         subject = f"[ISSUE] {subject}"
-    return {"subject": subject, "text": _render_text(summary), "html": _render_html(summary)}
+    return {"subject": subject, "text": _render_text(summary),
+            "html": _render_html(summary),
+            "unknown_platforms": unknown_platforms(summary["items"])}
 
 
 def render_brand_digest(overall: dict, sections: dict, run_date: str) -> dict:

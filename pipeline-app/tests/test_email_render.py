@@ -84,13 +84,24 @@ def test_spotlight_item_still_appears_in_the_inventory_with_a_marker():
     assert "featured above" in result["text"]
 
 
-def test_unknown_platform_sorts_last_with_a_titlecased_label():
-    known = _item(platform="youtube")
-    unknown = _item(platform="threads", handle="t", display_name="T", item_id="th1",
-                    title="A Threads Post", url="https://example.com/t")
-    result = email_render.render_email(_summary(items=[unknown, known]), "2026-08-08")
-    assert "Threads" in result["text"]
-    assert result["text"].index("YouTube") < result["text"].index("Threads")
+def test_facebook_and_x_rank_above_no_platform_and_carry_real_labels():
+    items = [_item(platform="bluesky", handle="b", item_id="b1", title="Bluesky Post"),
+             _item(platform="facebook", handle="f", item_id="f1", title="Facebook Post"),
+             _item(platform="x", handle="x", item_id="x1", title="X Post")]
+    text = email_render.render_email(_summary(items=items), "2026-08-08")["text"]
+    assert "Facebook" in text and "\nX\n" in text
+    assert text.index("Facebook") < text.index("Bluesky")
+    assert text.index("X\n") < text.index("Bluesky")
+
+
+def test_an_unranked_platform_is_reported_rather_than_silently_titlecased():
+    # Replaces test_unknown_platform_sorts_last_with_a_titlecased_label, which
+    # ratified the fallback instead of catching the two real omissions (B-92).
+    unknown = _item(platform="linkedin-newsletter", handle="n", item_id="n1", title="A Newsletter")
+    result = email_render.render_email(_summary(items=[unknown]), "2026-08-08")
+    assert "Linkedin Newsletter" not in result["text"]      # never invent a label
+    assert "linkedin-newsletter" in result["text"]          # show the id verbatim
+    assert result["unknown_platforms"] == ["linkedin-newsletter"]
 
 
 def test_missing_url_renders_the_entry_without_a_link():
