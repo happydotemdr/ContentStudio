@@ -3763,6 +3763,18 @@ def test_send_email_returns_false_with_no_key_configured(monkeypatch):
     assert notify.send_email("subject", "body") is False
 
 
+def test_api_key_returns_none_on_a_key_file_read_failure(tmp_path, monkeypatch):
+    """api_key's whole contract is never raising -- a key file that exists
+    but can't be read as UTF-8 (e.g. saved as UTF-16 by Notepad) must not
+    propagate an exception out of send_email."""
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    key_file = tmp_path / "resend_api_key.txt"
+    key_file.write_bytes("a-real-key".encode("utf-16"))
+    monkeypatch.setattr(notify, "KEY_FILE", key_file)
+    assert notify.api_key() is None
+    assert notify.send_email("subject", "body") is False
+
+
 @pytest.mark.allow_network  # this test intentionally exercises the real requests.post call path, mocked below
 def test_send_email_posts_to_resend_with_the_configured_key(monkeypatch):
     monkeypatch.setenv("RESEND_API_KEY", "test-key")
@@ -3827,7 +3839,15 @@ def api_key() -> str | None:
     if env_key:
         return env_key
     if KEY_FILE.exists():
-        file_key = KEY_FILE.read_text(encoding="utf-8").strip()
+        # .exists() does not guarantee the read succeeds -- a key file
+        # saved in a non-UTF-8 encoding (plausible if hand-edited in
+        # Notepad on Windows) or deleted between the check and the read
+        # (a TOCTOU race) must not turn into an uncaught exception here,
+        # since send_email's whole contract is "never raises".
+        try:
+            file_key = KEY_FILE.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return None
         if file_key:
             return file_key
     return None
