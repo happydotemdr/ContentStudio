@@ -82,6 +82,50 @@ def test_process_candidate_happy_path_publishes_and_notifies(conn, cfg, monkeypa
     assert run == ("notified", "drive-file-1")
 
 
+def test_process_candidate_uses_client_local_meeting_date_not_utc_date(conn, cfg, monkeypatch):
+    """event['start_utc'] is the raw UTC calendar date. For
+    cfg.timezone_name='America/Chicago' (the default), 2026-08-21 02:00 UTC
+    is 2026-08-20 21:00 Central (CDT is UTC-5 in August) -- the evening
+    BEFORE, a different calendar date. The draft title (publish.publish_draft)
+    and the review email (notify.render_review_email) must both use the
+    client-local date, not the UTC date, or a late-evening session gets
+    dated one day late."""
+    bundle_mod, generate, publish = _patch_pipeline_ok(monkeypatch)
+    publish_dates = []
+    monkeypatch.setattr(
+        publish, "publish_draft",
+        lambda drive_service, folder_id, display_name, meeting_date, body: (
+            publish_dates.append(meeting_date) or "drive-file-1"
+        ),
+    )
+
+    from coach_prep_app import notify
+    original_render = notify.render_review_email
+    review_dates = []
+
+    def capture_render(display_name, meeting_date, file_id):
+        review_dates.append(meeting_date)
+        return original_render(display_name, meeting_date, file_id)
+
+    monkeypatch.setattr(notify, "render_review_email", capture_render)
+    monkeypatch.setattr(notify, "send_email", lambda subject, text, recipient=notify.RECIPIENT: True)
+
+    import coach_prep_app.doc_ingest_reader as reader
+    monkeypatch.setattr(reader, "get_active_clients", lambda conn: [CLIENT, OTHER_CLIENT])
+
+    event = {"instance_id": "evt1", "start_utc": dt.datetime(2026, 8, 21, 2, 0, tzinfo=dt.timezone.utc)}
+    now = dt.datetime(2026, 8, 20, 20, 0, tzinfo=dt.timezone.utc)  # after ready time, before the meeting
+
+    class _FakeDocIngestConn:
+        pass
+
+    result = orchestrator.process_candidate(conn, _FakeDocIngestConn(), None, None, None, cfg, CLIENT, event, now)
+    assert result == "published"
+
+    assert publish_dates == [dt.date(2026, 8, 20)]
+    assert review_dates == [dt.date(2026, 8, 20)]
+
+
 def test_process_candidate_gate_failure_never_publishes_and_never_retries(conn, cfg, monkeypatch):
     """Spec: a gate failure is 'a hard stop, never auto-retried silently' --
     not just 'don't publish this once', but 'don't keep re-generating and

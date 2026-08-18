@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import sys
+from zoneinfo import ZoneInfo
 
 from coach_prep_app import bundle as bundle_mod
 from coach_prep_app import db, doc_ingest_reader, gates, generate, notify, publish, trigger
@@ -14,6 +15,10 @@ from coach_prep_app import db, doc_ingest_reader, gates, generate, notify, publi
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def _meeting_date_local(meeting_start_utc: dt.datetime, timezone_name: str) -> dt.date:
+    return meeting_start_utc.astimezone(ZoneInfo(timezone_name)).date()
 
 
 def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, drive_service, cfg,
@@ -30,7 +35,9 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
     existing = _find_published_unnotified_run(conn, client["slug"], event["instance_id"])
     if existing is not None:
         run_id, file_id = existing
-        subject, text = notify.render_review_email(client["display_name"], event["start_utc"].date(), file_id)
+        subject, text = notify.render_review_email(
+            client["display_name"], _meeting_date_local(event["start_utc"], cfg.timezone_name), file_id
+        )
         sent = notify.send_email(subject, text, recipient=cfg.notify_recipient)
         if not sent:
             return "publish_ok_notify_failed"
@@ -86,11 +93,13 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
 
     file_id = publish.publish_draft(
         drive_service, cfg.pending_review_drive_folder_id, client["display_name"],
-        event["start_utc"].date(), generated,
+        _meeting_date_local(event["start_utc"], cfg.timezone_name), generated,
     )
     _mark_published(conn, run_id, file_id)
 
-    subject, text = notify.render_review_email(client["display_name"], event["start_utc"].date(), file_id)
+    subject, text = notify.render_review_email(
+        client["display_name"], _meeting_date_local(event["start_utc"], cfg.timezone_name), file_id
+    )
     sent = notify.send_email(subject, text, recipient=cfg.notify_recipient)
     if not sent:
         return "publish_ok_notify_failed"  # watermark deliberately NOT set -- next wake retries notify only (see the existing-run check above)
