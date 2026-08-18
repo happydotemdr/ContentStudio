@@ -27,6 +27,16 @@ def test_register_client_with_aliases(conn):
     assert active[0]["alias_emails"] == ["joanne.bryant@schwab.com"]
 
 
+def test_register_client_normalizes_alias_email_whitespace_and_case(conn):
+    clients_db.register_client(
+        conn, slug="joanne", display_name="Joanne", primary_email="jnnbryant77@gmail.com",
+        session_outlines_dir="Client Session Outlines/Joanne", drive_folder_id="folder456",
+        alias_emails=["  Joanne.Bryant@Schwab.com  "],
+    )
+    active = clients_db.get_active_clients(conn)
+    assert active[0]["alias_emails"] == ["joanne.bryant@schwab.com"]
+
+
 def test_register_duplicate_slug_raises(conn):
     clients_db.register_client(
         conn, slug="sean", display_name="Sean", primary_email="sean@example.com",

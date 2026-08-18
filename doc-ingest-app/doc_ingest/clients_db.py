@@ -32,6 +32,7 @@ def register_client(
         raise ClientAlreadyExists(f"client {slug!r} is already registered")
 
     normalized_email = primary_email.strip().lower()
+    normalized_aliases = [a.strip().lower() for a in (alias_emails or [])]
     try:
         with db.transaction(conn):
             conn.execute(
@@ -43,7 +44,7 @@ def register_client(
                 """,
                 (
                     slug, display_name, normalized_email,
-                    json.dumps(alias_emails or []), session_outlines_dir,
+                    json.dumps(normalized_aliases), session_outlines_dir,
                     drive_folder_id, _now_iso(),
                 ),
             )
