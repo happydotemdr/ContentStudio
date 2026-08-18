@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 from pipeline_app import email_render
 
 
@@ -16,6 +19,17 @@ def _summary(items=None, spotlight=None, drafts=None, errored=None,
             "items": items if items is not None else [],
             "errored": errored if errored is not None else [],
             "spotlight": spotlight, "drafts": drafts if drafts is not None else []}
+
+
+SCHEMA = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+
+
+def _schema_platforms() -> set[str]:
+    check = re.search(r"platform\s+IN\s*\(([^)]*)\)", SCHEMA.read_text(encoding="utf-8"))
+    if check is None:
+        raise AssertionError(
+            "handles has no platform CHECK constraint; this guard needs package P1's schema change")
+    return set(re.findall(r"'([^']+)'", check.group(1)))
 
 
 def test_subject_counts_posts_not_videos():
@@ -285,3 +299,11 @@ def test_render_brand_digest_includes_unknown_platforms_in_return_dict():
     overall = _summary(items=[unknown])
     result = email_render.render_brand_digest(overall, sections, "2026-08-15")
     assert result["unknown_platforms"] == ["linkedin-newsletter"]
+
+
+def test_every_accepted_platform_has_a_rank_and_a_label():
+    platforms = _schema_platforms()
+    assert platforms, "the CHECK constraint parsed to an empty vocabulary"
+    assert platforms - set(email_render.PLATFORM_ORDER) == set()
+    assert platforms - set(email_render.PLATFORM_LABELS) == set()
+    assert set(email_render.PLATFORM_ORDER) == set(email_render.PLATFORM_LABELS)
