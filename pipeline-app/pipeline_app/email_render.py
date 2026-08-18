@@ -289,4 +289,5 @@ def render_brand_digest(overall: dict, sections: dict, run_date: str) -> dict:
     html = warning_html + (
         "\n<hr>\n".join(html_parts) if html_parts else f"<p>{NO_CONTENT_TEXT}</p>"
     )
-    return {"subject": subject, "text": text, "html": html}
+    return {"subject": subject, "text": text, "html": html,
+            "unknown_platforms": unknown_platforms(overall["items"])}

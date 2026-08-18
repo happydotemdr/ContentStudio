@@ -276,3 +276,12 @@ def test_render_brand_digest_no_warning_when_every_item_is_covered():
     result = email_render.render_brand_digest(overall, sections, "2026-08-15")
     assert "no brand tag" not in result["text"].lower()
     assert "no brand tag" not in result["html"].lower()
+
+
+def test_render_brand_digest_includes_unknown_platforms_in_return_dict():
+    # Parity with render_email: unknown platforms are surfaced for monitoring.
+    unknown = _item(platform="linkedin-newsletter", handle="n", item_id="n1", title="A Newsletter")
+    sections = {"guru": _summary(items=[unknown])}
+    overall = _summary(items=[unknown])
+    result = email_render.render_brand_digest(overall, sections, "2026-08-15")
+    assert result["unknown_platforms"] == ["linkedin-newsletter"]
