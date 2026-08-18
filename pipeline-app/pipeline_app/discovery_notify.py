@@ -40,11 +40,12 @@ RESEND_API_URL = "https://api.resend.com/emails"
 KEY_ENV_VAR = "RESEND_API_KEY"
 KEY_FILE = Path(__file__).resolve().parent.parent / "resend_api_key.txt"
 
-RECIPIENT = "brian@happydotemdr.com"
-# Resend's shared sandbox sender -- works with no domain verification. Once a
-# real sending domain is verified in the Resend dashboard, set
-# RESEND_FROM_ADDRESS in the environment to switch senders with no code change.
-SENDER = os.environ.get("RESEND_FROM_ADDRESS", "onboarding@resend.dev")
+TO_ENV_VAR = "RESEND_TO_ADDRESS"
+FROM_ENV_VAR = "RESEND_FROM_ADDRESS"
+DEFAULT_RECIPIENT = "brian@happydotemdr.com"
+# Resend's shared sandbox sender. It delivers ONLY to the address that owns the
+# Resend account, so it silently 4xx's the moment the recipient diverges.
+SANDBOX_SENDER = "onboarding@resend.dev"
 
 REQUEST_TIMEOUT_S = 15
 
@@ -79,6 +80,17 @@ def api_key() -> str | None:
     return None
 
 
+def recipient() -> str:
+    """Where the digest goes. Read per call, exactly like sender() and
+    api_key(): the destination had no override at all while the sender did,
+    which made pointing the digest at a test inbox a code edit (B-106)."""
+    return os.environ.get(TO_ENV_VAR, "").strip() or DEFAULT_RECIPIENT
+
+
+def sender() -> str:
+    return os.environ.get(FROM_ENV_VAR, "").strip() or SANDBOX_SENDER
+
+
 def send_email(subject: str, text: str, html: str | None = None) -> bool:
     """POST one email via Resend's HTTP API. Never raises -- returns False on
     any failure (no key configured, network error, non-2xx response) so a
@@ -88,7 +100,14 @@ def send_email(subject: str, text: str, html: str | None = None) -> bool:
     if not key:
         print("discovery_notify: no RESEND_API_KEY configured, skipping send", file=sys.stderr)
         return False
-    payload = {"from": SENDER, "to": [RECIPIENT], "subject": subject, "text": text}
+    from_address = sender()
+    if from_address == SANDBOX_SENDER:
+        obs.log("email.sandbox_sender", level="warning", sender=SANDBOX_SENDER,
+                recipient=recipient())
+        print(f"discovery_notify: sending from the shared sandbox address "
+              f"{SANDBOX_SENDER}; set {FROM_ENV_VAR} once a domain is verified",
+              file=sys.stderr)
+    payload = {"from": from_address, "to": [recipient()], "subject": subject, "text": text}
     if html:
         payload["html"] = html
     try:
@@ -323,7 +342,7 @@ def notify(conn, repo_root: Path, run_row_id: int) -> bool:
         obs.record_event(
             conn, kind="email.send_failed", severity="error", source="discovery_notify",
             message=f"the digest for run {run_row_id} was not delivered",
-            detail={"subject": rendered["subject"], "recipient": RECIPIENT,
-                    "sender": SENDER, "items": len(overall["items"])},
+            detail={"subject": rendered["subject"], "recipient": recipient(),
+                    "sender": sender(), "items": len(overall["items"])},
             run_id=run_row_id)
     return sent

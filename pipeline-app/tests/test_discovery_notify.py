@@ -30,6 +30,46 @@ def test_api_key_returns_none_when_unconfigured(monkeypatch, tmp_path):
     assert discovery_notify.api_key() is None
 
 
+def test_recipient_reads_the_environment_and_defaults_to_the_owner(monkeypatch):
+    monkeypatch.delenv(discovery_notify.TO_ENV_VAR, raising=False)
+    assert discovery_notify.recipient() == discovery_notify.DEFAULT_RECIPIENT
+    monkeypatch.setenv(discovery_notify.TO_ENV_VAR, "someone@example.com")
+    assert discovery_notify.recipient() == "someone@example.com"
+
+
+def test_sender_is_resolved_per_call_not_at_import(monkeypatch):
+    monkeypatch.setenv(discovery_notify.FROM_ENV_VAR, "digest@verified.example")
+    assert discovery_notify.sender() == "digest@verified.example"
+    monkeypatch.delenv(discovery_notify.FROM_ENV_VAR)
+    assert discovery_notify.sender() == discovery_notify.SANDBOX_SENDER
+
+
+def test_sending_from_the_sandbox_address_warns_every_time(monkeypatch, capsys):
+    monkeypatch.setenv(discovery_notify.KEY_ENV_VAR, "test-key")
+    monkeypatch.delenv(discovery_notify.FROM_ENV_VAR, raising=False)
+
+    class FakeResponse:
+        status_code = 200
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(discovery_notify.requests, "post", lambda *a, **k: FakeResponse())
+    assert discovery_notify.send_email("s", "t") is True
+    assert "onboarding@resend.dev" in capsys.readouterr().err
+
+
+def test_a_verified_sender_does_not_warn(monkeypatch, capsys):
+    monkeypatch.setenv(discovery_notify.KEY_ENV_VAR, "test-key")
+    monkeypatch.setenv(discovery_notify.FROM_ENV_VAR, "digest@verified.example")
+
+    class FakeResponse:
+        status_code = 200
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(discovery_notify.requests, "post", lambda *a, **k: FakeResponse())
+    discovery_notify.send_email("s", "t")
+    assert "onboarding@resend.dev" not in capsys.readouterr().err
+
+
 import datetime as _dt
 
 from pipeline_app import db
@@ -123,8 +163,8 @@ def test_send_email_posts_expected_payload(monkeypatch):
     assert result is True
     assert captured["url"] == discovery_notify.RESEND_API_URL
     assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert captured["json"]["to"] == [discovery_notify.RECIPIENT]
-    assert captured["json"]["from"] == discovery_notify.SENDER
+    assert captured["json"]["to"] == [discovery_notify.recipient()]
+    assert captured["json"]["from"] == discovery_notify.sender()
     assert captured["json"]["subject"] == "Test Subject"
     assert captured["json"]["text"] == "Test body text"
     assert captured["timeout"] == 15
