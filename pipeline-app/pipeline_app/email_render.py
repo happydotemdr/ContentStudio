@@ -14,7 +14,7 @@ import html as _html
 import re
 
 from pipeline_app.discovery_digest import (
-    published_rank, SPOTLIGHT_RULE_LINKEDIN, SPOTLIGHT_RULE_ENGAGEMENT,
+    published_rank, TITLE_MAX_CHARS, SPOTLIGHT_RULE_LINKEDIN, SPOTLIGHT_RULE_ENGAGEMENT,
 )
 
 SPOTLIGHT_RULE_TEXT = {
@@ -49,6 +49,20 @@ BRAND_LABELS = {
 }
 
 EXCERPT_MAX_CHARS = 400
+
+# The email's exact disclosure surface, in one string, so CLAUDE.md's privacy
+# paragraph has a single source to mirror and a test to fail against. The
+# excerpt cap is a CEILING, not a promise of partiality: a post shorter than it
+# ships whole (B-90), and a derived title on a platform with no title field is
+# the post's own opening (B-91).
+DISCLOSURE = (
+    "Each item contributes a derived title of at most "
+    f"{TITLE_MAX_CHARS} characters, which for a platform with no title "
+    "field is the opening of the post text. The spotlight additionally "
+    f"contributes up to {EXCERPT_MAX_CHARS} characters of its "
+    "primary text, which for a post shorter than that is the whole post."
+)
+
 LINK_TEXT = "Click here to view"
 # Middle dot, as an HTML entity. Joined into already-escaped pieces, never
 # passed through html.escape itself.

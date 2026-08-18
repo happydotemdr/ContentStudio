@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from pipeline_app import discovery_digest as digest
 from pipeline_app import email_render
 
 
@@ -500,6 +501,40 @@ def test_render_brand_digest_puts_the_coverage_footer_on_the_empty_email_too():
     assert "No new content today." in result["text"]
     assert "Scanned 3 handle(s)" in result["text"]
     assert "Scanned 3 handle(s)" in result["html"]
+
+
+def test_a_short_spotlight_is_emailed_in_full_which_is_what_the_cap_means():
+    # EXCERPT_MAX_CHARS is a ceiling, not a guarantee of partiality. Every X
+    # post is under it, so every X spotlight ships whole (B-90). Pinned here so
+    # CLAUDE.md's privacy paragraph has something to be accurate ABOUT.
+    body = "The whole post, all of it, under four hundred characters and therefore entire."
+    spot = _item(body=body)
+    text = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                 spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT), "2026-08-08")["text"]
+    assert body in text
+    assert "..." not in text.split(body)[1][:5]
+
+
+def test_a_long_spotlight_is_cut_at_the_ceiling_with_an_ellipsis():
+    spot = _item(body="word " * 400)
+    text = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                 spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT), "2026-08-08")["text"]
+    excerpt = email_render._excerpt(spot["body"])
+    assert excerpt.endswith("...")
+    assert len(excerpt) <= email_render.EXCERPT_MAX_CHARS + 3
+    assert excerpt in text
+
+
+def test_the_disclosure_constants_are_what_the_documentation_must_describe():
+    assert email_render.EXCERPT_MAX_CHARS == 400
+    assert email_render.DISCLOSURE == (
+        "Each item contributes a derived title of at most "
+        f"{digest.TITLE_MAX_CHARS} characters, which for a platform with no title "
+        "field is the opening of the post text. The spotlight additionally "
+        f"contributes up to {email_render.EXCERPT_MAX_CHARS} characters of its "
+        "primary text, which for a post shorter than that is the whole post.")
 
 
 def test_every_accepted_platform_has_a_rank_and_a_label():

@@ -28,6 +28,11 @@ def test_derive_title_falls_back_on_empty_body():
     assert digest.derive_title("   \n\n  ", "vid1__some-slug") == "vid1__some-slug"
 
 
+def test_a_short_post_becomes_its_own_title_in_full():
+    body = "Ship the thing."
+    assert digest.derive_title(body, "fallback") == body
+
+
 def test_extract_primary_text_prefers_transcript_over_description():
     text = digest.extract_primary_text(YOUTUBE_BODY)
     assert text.startswith("So the first thing")
