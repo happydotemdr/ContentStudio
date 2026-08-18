@@ -220,6 +220,34 @@ def test_failed_runs_summary_excludes_runs_created_before_since_iso(conn):
     assert audit.failed_runs_summary(conn, SINCE) == []
 
 
+STALE_PUBLISHED_BEFORE = "2026-08-15T00:00:00+00:00"
+
+
+def test_failed_runs_summary_includes_stale_published_run_when_cutoff_given(conn):
+    stale_run_id = _seed_run(
+        conn, "sean", status="published", draft_id="file1", created_at="2026-08-13T00:00:00+00:00",
+    )
+    fresh_run_id = _seed_run(
+        conn, "sean", status="published", draft_id="file2", created_at="2026-08-16T00:00:00+00:00",
+    )
+    rows = audit.failed_runs_summary(conn, SINCE, stale_published_before_iso=STALE_PUBLISHED_BEFORE)
+    run_ids = {r["run_id"] for r in rows}
+    assert stale_run_id in run_ids
+    assert fresh_run_id not in run_ids
+    stale_row = next(r for r in rows if r["run_id"] == stale_run_id)
+    assert stale_row["status"] == "published"
+
+
+def test_failed_runs_summary_omits_published_runs_when_no_cutoff_given(conn):
+    # created_at is well within the [SINCE, now) window and far older than a
+    # realistic stale_published_before_iso would be -- if omitting the
+    # cutoff param regressed to "always include published", this run would
+    # leak through.
+    _seed_run(conn, "sean", status="published", draft_id="file1", created_at="2026-08-13T00:00:00+00:00")
+    assert audit.failed_runs_summary(conn, SINCE) == []
+    assert audit.failed_runs_summary(conn, SINCE, stale_published_before_iso=None) == []
+
+
 def test_render_report_email_reports_clean_when_no_problems():
     report = {
         "mechanical_problems": [], "content_problems": [], "placement": [],

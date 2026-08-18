@@ -105,27 +105,52 @@ def unmatched_count(doc_ingest_conn) -> int:
     return row[0]
 
 
-def failed_runs_summary(conn, since_iso: str) -> list[dict]:
+def failed_runs_summary(
+    conn, since_iso: str, stale_published_before_iso: str | None = None,
+) -> list[dict]:
     """Surfaces runs mechanical_scan/content_scan/placement_check never see
     -- all three are scoped to status IN ('published', 'notified'). A
     gates_failed run is exactly the event orchestrator.py's
     _append_failure_reason fallback was built to keep visible when its own
     ALERT email fails to send; a failed or stuck-'assembling' run is
     otherwise invisible to anyone who isn't reading the DB by hand.
-    Bounded to runs created at or after since_iso -- see mechanical_scan."""
-    rows = conn.execute(
-        "SELECT id, client_slug, status, failure_reason, created_at FROM generation_runs "
-        "WHERE created_at >= ? AND status IN ('failed', 'gates_failed', 'assembling') "
-        "ORDER BY created_at",
-        (since_iso,),
-    ).fetchall()
+    Bounded to runs created at or after since_iso -- see mechanical_scan.
+
+    stale_published_before_iso, when given, ALSO surfaces runs still stuck
+    at status = 'published' with created_at before that cutoff (still bound
+    below by since_iso). A run that's still 'published' means its notify
+    email never went out -- every wake retries notify for an existing
+    published-unnotified run via orchestrator._find_published_unnotified_run,
+    so persistence past this cutoff means notify has failed across at least
+    one full retry cycle: a real, actionable failure, not a normal in-flight
+    state. When omitted (None), behavior is identical to before this
+    parameter existed -- a 'published' run is never included here."""
+    if stale_published_before_iso is not None:
+        rows = conn.execute(
+            "SELECT id, client_slug, status, failure_reason, created_at FROM generation_runs "
+            "WHERE created_at >= ? AND ("
+            "status IN ('failed', 'gates_failed', 'assembling') "
+            "OR (status = 'published' AND created_at < ?)"
+            ") ORDER BY created_at",
+            (since_iso, stale_published_before_iso),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, client_slug, status, failure_reason, created_at FROM generation_runs "
+            "WHERE created_at >= ? AND status IN ('failed', 'gates_failed', 'assembling') "
+            "ORDER BY created_at",
+            (since_iso,),
+        ).fetchall()
     return [
         {"run_id": r[0], "client_slug": r[1], "status": r[2], "failure_reason": r[3], "created_at": r[4]}
         for r in rows
     ]
 
 
-def build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso: str) -> dict:
+def build_report(
+    conn, doc_ingest_conn, drive_service, cfg, since_iso: str,
+    stale_published_before_iso: str | None = None,
+) -> dict:
     return {
         "mechanical_problems": mechanical_scan(conn, doc_ingest_conn, since_iso),
         "content_problems": content_scan(conn, doc_ingest_conn, drive_service, since_iso),
@@ -133,7 +158,7 @@ def build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso: str) -> d
             conn, doc_ingest_conn, drive_service, cfg.pending_review_drive_folder_id, since_iso
         ),
         "unmatched_count": unmatched_count(doc_ingest_conn),
-        "failed_runs": failed_runs_summary(conn, since_iso),
+        "failed_runs": failed_runs_summary(conn, since_iso, stale_published_before_iso),
     }
 
 

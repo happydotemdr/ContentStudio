@@ -57,7 +57,7 @@ def test_main_uses_a_default_config_yaml_when_no_config_flag_given(tmp_path, mon
     captured_folder_ids = []
     monkeypatch.setattr(
         audit, "build_report",
-        lambda conn, doc_ingest_conn, drive_service, cfg, since_iso: (
+        lambda conn, doc_ingest_conn, drive_service, cfg, since_iso, stale_published_before_iso=None: (
             captured_folder_ids.append(cfg.pending_review_drive_folder_id) or {
                 "mechanical_problems": [], "content_problems": [], "placement": [],
                 "unmatched_count": 0, "failed_runs": [],
@@ -108,6 +108,51 @@ def test_main_returns_nonzero_and_warns_when_audit_email_fails_to_send(tmp_path,
 
     rc = run_client_audit.main(["--config", str(yaml_path)])
     assert rc == 1
+
+
+def test_main_passes_a_stale_published_before_cutoff_about_8_hours_back(tmp_path, monkeypatch):
+    """A run still stuck at 'published' means notify failed and was never
+    retried into visibility -- build_report needs an ~8h cutoff (two missed
+    4-hourly cron cycles) to surface it as a real, actionable failure rather
+    than a normal in-flight state."""
+    import datetime as real_dt
+
+    from coach_prep_app import audit, google_clients, notify
+
+    captured = []
+    monkeypatch.setattr(
+        audit, "build_report",
+        lambda conn, doc_ingest_conn, drive_service, cfg, since_iso, stale_published_before_iso=None: (
+            captured.append(stale_published_before_iso) or {
+                "mechanical_problems": [], "content_problems": [], "placement": [],
+                "unmatched_count": 0, "failed_runs": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(notify, "send_email", lambda subject, text, recipient=notify.RECIPIENT: True)
+    monkeypatch.setattr(google_clients, "build_drive_service", lambda cfg: None)
+
+    yaml_path = tmp_path / "cfg.yaml"
+    yaml_path.write_text(
+        f"doc_ingest_db_path: {tmp_path / 'doc_ingest_test.db'}\n"
+        f"doc_ingest_app_root: {tmp_path}\n"
+        f"pending_review_drive_folder_id: real-folder-id\n",
+        encoding="utf-8",
+    )
+    from doc_ingest import db as doc_ingest_db
+    doc_ingest_db.init_db(tmp_path / "doc_ingest_test.db").close()
+
+    before_call = real_dt.datetime.now(real_dt.timezone.utc)
+    rc = run_client_audit.main(["--config", str(yaml_path)])
+    after_call = real_dt.datetime.now(real_dt.timezone.utc)
+
+    assert rc == 0
+    assert len(captured) == 1
+    assert captured[0] is not None
+    stale_cutoff = real_dt.datetime.fromisoformat(captured[0])
+    expected_min = before_call - real_dt.timedelta(hours=8, minutes=1)
+    expected_max = after_call - real_dt.timedelta(hours=8) + real_dt.timedelta(minutes=1)
+    assert expected_min <= stale_cutoff <= expected_max
 
 
 def test_main_returns_nonzero_and_never_builds_report_when_folder_id_unconfigured(tmp_path, monkeypatch):

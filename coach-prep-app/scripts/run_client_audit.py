@@ -48,8 +48,19 @@ def main(argv: list[str] | None = None) -> int:
     sent = False
     try:
         drive_service = google_clients.build_drive_service(cfg)
-        since_iso = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)).isoformat()
-        report = audit.build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso)
+        now = dt.datetime.now(dt.timezone.utc)
+        since_iso = (now - dt.timedelta(days=7)).isoformat()
+        # Two missed 4-hourly cron cycles -- a "this has really failed, not
+        # just in-flight" threshold. Every wake retries notify for an
+        # existing published-unnotified run (orchestrator.
+        # _find_published_unnotified_run), so a run still stuck at
+        # 'published' past this cutoff means notify has failed across at
+        # least one full retry cycle.
+        stale_published_before_iso = (now - dt.timedelta(hours=8)).isoformat()
+        report = audit.build_report(
+            conn, doc_ingest_conn, drive_service, cfg, since_iso,
+            stale_published_before_iso=stale_published_before_iso,
+        )
         subject, text = audit.render_report_email(report)
         sent = notify.send_email(subject, text, recipient=cfg.notify_recipient)
         print(text)

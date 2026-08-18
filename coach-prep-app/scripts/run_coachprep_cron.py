@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         error_count = 0
         for r in results:
             print(r)
-            if r.startswith("error: "):
+            if r.startswith("error: ") or r == "publish_ok_notify_failed":
                 error_count += 1
     finally:
         conn.close()
