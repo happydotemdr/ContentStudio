@@ -35,19 +35,31 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config.load_config(config_path)
     config.ensure_doc_ingest_importable(cfg.doc_ingest_app_root)
 
+    if not cfg.pending_review_drive_folder_id:
+        print(
+            "run_client_audit: pending_review_drive_folder_id is not configured -- "
+            "set it in coach-prep-app/config.yaml before this can run for real",
+            file=sys.stderr,
+        )
+        return 1
+
     conn = db.init_db(HERE.parent / "coach_prep.db")
     doc_ingest_conn = doc_ingest_reader.open_readonly(cfg.doc_ingest_db_path)
+    sent = False
     try:
         drive_service = google_clients.build_drive_service(cfg)
         since_iso = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)).isoformat()
         report = audit.build_report(conn, doc_ingest_conn, drive_service, cfg, since_iso)
         subject, text = audit.render_report_email(report)
-        notify.send_email(subject, text, recipient=cfg.notify_recipient)
+        sent = notify.send_email(subject, text, recipient=cfg.notify_recipient)
         print(text)
     finally:
         conn.close()
         doc_ingest_conn.close()
-    return 0
+
+    if not sent:
+        print("run_client_audit: failed to send the weekly audit email", file=sys.stderr)
+    return 0 if sent else 1
 
 
 if __name__ == "__main__":
