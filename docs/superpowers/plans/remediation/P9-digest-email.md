@@ -581,6 +581,12 @@ and in `_build_item`: `"published": _published(meta),`.
 
 ---
 
+> **Correction (found during T7's implementation, 2026-08-18):** the shown code's bad-frontmatter
+> `except yaml.YAMLError:` clause is wrong. `artifacts.parse_frontmatter` does not let a raw
+> `yaml.YAMLError` propagate — it wraps malformed YAML in its own `artifacts.MalformedArtifactError`
+> (confirmed by reading `artifacts.py`, and matching pre-existing `collect_new_items` behaviour
+> before this task). Use `except artifacts.MalformedArtifactError:` instead.
+
 ### T7 — B-99 (a): `collect()` classifies every drop instead of swallowing five of six
 
 - [ ] **Test first.** In `tests/test_discovery_digest.py`:
