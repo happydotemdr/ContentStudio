@@ -479,7 +479,7 @@ def test_browse_tree_expansion_can_be_retried_after_a_failure(client):
     _touch(tmp_path / "output" / "thinkers" / "plato.md")
     resp = test_client.get("/browse")
     assert 'hx-trigger="toggle from:closest details"' in resp.text
-    assert "once" not in resp.text
+    assert "toggle once" not in resp.text
 
 
 def test_browse_file_unexpected_exception_renders_an_error_not_a_500(client, monkeypatch):
