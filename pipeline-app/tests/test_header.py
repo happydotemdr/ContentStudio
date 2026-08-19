@@ -412,3 +412,49 @@ def test_the_sse_result_branch_reveals_the_affordance(client_with_stage):
     page = test_client.get(f"/projects/{project_id}/stages/ideation").text
     assert 'document.getElementById("turn-complete")' in page
     assert "turnComplete.hidden = false" in page
+
+
+def _seed_run(app, status, error_message=None):
+    conn = app.state.conn
+    conn.execute(
+        "INSERT INTO discovery_runs (run_id, trigger, mode, status, started_at) "
+        "VALUES (?, 'manual', 'incremental', ?, '2026-08-08T06:00:00+00:00')",
+        (f"run-{status}", status),
+    )
+    run_row_id = conn.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
+    conn.execute(
+        "INSERT INTO handles (platform, handle, cohort, added_at) "
+        "VALUES ('youtube', ?, 'creator-ed', '2026-08-01T00:00:00+00:00')",
+        (f"@thinkmedia-{status}",),
+    )
+    handle_id = conn.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
+    conn.execute(
+        "INSERT INTO discovery_run_handles (run_id, handle_id, status, items_downloaded, error_message) "
+        "VALUES (?, ?, ?, 0, ?)",
+        (run_row_id, handle_id, "error" if error_message else "ok", error_message),
+    )
+    conn.commit()
+    return run_row_id
+
+
+def test_terminal_run_states_are_visually_distinguishable(client: TestClient):
+    app = client.app
+    _seed_run(app, "completed")
+    _seed_run(app, "completed_with_errors", error_message="HTTP 403 from the API")
+    page = client.get("/discovery/runs").text
+    assert "status-completed_with_errors" in page
+    assert "status-completed" in page
+
+    css = (Path(__import__("pipeline_app.main", fromlist=["x"]).PACKAGE_DIR)
+           / "static" / "style.css").read_text(encoding="utf-8")
+    for modifier in (".status-completed_with_errors",
+                     ".status-completed",
+                     ".status-failed",
+                     ".status-queued"):
+        assert modifier in css, f"{modifier} pill has no styling -- it renders as a bare pill"
+
+
+def test_a_run_with_errors_carries_an_error_count_on_its_line(client: TestClient):
+    _seed_run(client.app, "completed_with_errors", error_message="HTTP 403 from the API")
+    page = client.get("/discovery/runs").text
+    assert "1 handle error" in page

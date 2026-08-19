@@ -9,6 +9,10 @@
     — <span class="status status-{{ entry.run.status }}">{{ entry.run.status }}</span>
     — trigger: {{ entry.run.trigger }}, mode: {{ entry.run.mode }}
     — started: {{ entry.run.started_at }}, finished: {{ entry.run.finished_at or "—" }}
+    {% set errored = entry.handle_results | selectattr('status', 'equalto', 'error') | list %}
+    {% if errored %}
+    <span class="status status-failed">{{ errored | length }} handle error{{ "s" if errored | length != 1 }}</span>
+    {% endif %}
     <ul>
       {% for hr in entry.handle_results %}
       <li>handle #{{ hr.handle_id }}: {{ hr.status }} ({{ hr.items_downloaded }} items){% if hr.error_message %} — {{ hr.error_message }}{% endif %}</li>

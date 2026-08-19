@@ -89,6 +89,15 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .status-stale { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
 .status-no_artifact { background: transparent; color: var(--text-dim); border: 1px dashed var(--text-dim); }
 
+/* Discovery run + handle states. Before this every one of them fell through to
+   the unstyled base .status pill, so "did last night's run go cleanly?" -- the
+   entire purpose of the runs page -- was unanswerable at a glance (E-09). */
+.status-queued { background: color-mix(in srgb, var(--text-dim) 20%, transparent); color: var(--text-dim); border-color: var(--border); }
+.status-completed { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
+.status-completed_with_errors { background: color-mix(in srgb, var(--accent-amber) 25%, transparent); color: var(--accent-amber); border-color: var(--accent-amber); }
+.status-failed { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
+.status-ok { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
+
 .pipeline-nav { list-style: none; margin: 0; padding: 0; }
 .pipeline-step {
   margin-left: 0.4rem;
