@@ -581,11 +581,26 @@ def test_list_children_lists_a_broken_pointer_instead_of_skipping_it(root, tmp_p
         ('<a href="javascript:alert(1)">x</a>', "javascript:"),
         ('<iframe src="http://evil"></iframe>', "<iframe"),
         ('<div onclick="alert(1)">x</div>', "onclick"),
+        # A leading C0 control character (not whitespace, so `.strip()`
+        # alone leaves it in place) used to survive a denylist's
+        # `.startswith("javascript:")` check, since the string no longer
+        # started with the literal banned prefix. The allowlist rewrite
+        # extracts everything up to the first ':' as the "scheme" and
+        # checks THAT against http/https/mailto, so a control-character
+        # prefix just makes the extracted scheme fail to match -- same
+        # outcome as any other disallowed scheme.
+        ('<a href="\x01javascript:alert(1)">x</a>', "javascript:"),
     ],
 )
 def test_sanitize_html_strips_script_vectors(dangerous, must_not_contain):
     out = browse_service.sanitize_html(dangerous)
     assert must_not_contain not in out
+
+
+def test_sanitize_html_control_char_prefixed_javascript_href_is_stripped():
+    out = browse_service.sanitize_html('<a href="\x01javascript:alert(1)">x</a>')
+    assert "href" not in out
+    assert "javascript:" not in out
 
 
 def test_sanitize_html_keeps_ordinary_markdown_output():

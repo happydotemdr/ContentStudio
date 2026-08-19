@@ -38,7 +38,7 @@ _ALLOWED_ATTRS = {
     "th": {"align"}, "td": {"align"},
 }
 _VOID_TAGS = {"br", "hr", "img"}
-_DANGEROUS_SCHEMES = ("javascript:", "data:", "vbscript:")
+_URL_SAFE_SCHEMES = frozenset({"http", "https", "mailto"})
 # All HTML5 void elements -- these never emit a matching end tag, whether or
 # not this sanitizer allows them. Used only to decide whether a *disallowed*
 # start tag should push onto _skip_stack: doing that for a void-like tag
@@ -52,16 +52,30 @@ _HTML_VOID_ELEMENTS = {
 
 
 def _safe_url(value: str | None) -> str | None:
-    """Drop a URL whose scheme can execute. Whitespace inside the scheme is
-    stripped first -- `java\\tscript:alert(1)` is a real browser-accepted form
-    and a naive startswith() misses it."""
+    """Keep a relative/scheme-relative URL, or one using an allowlisted
+    scheme; drop everything else.
+
+    This mirrors routes/stages.py's `_is_safe_url` (same allowlist, same
+    approach), which replaced an earlier denylist of `javascript:`/`data:`/
+    `vbscript:` here. A denylist checked via `.strip().startswith(...)` only
+    strips whitespace -- a leading C0 control character like `\\x01` is not
+    whitespace, so `\\x01javascript:alert(1)` survived the strip and the
+    startswith() check unfiltered. Extracting the scheme up to the first `:`
+    (before any `/`) and checking it against an allowlist closes that gap:
+    the control character becomes part of the extracted "scheme" string,
+    which then simply fails to match any allowlisted entry, whatever
+    unexpected characters it's prefixed with."""
     if value is None:
         return None
-    candidate = value.strip()
-    lowered = "".join(candidate.lower().split())
-    if lowered.startswith(_DANGEROUS_SCHEMES):
-        return None
-    return candidate
+    stripped = "".join(ch for ch in value if ch not in "\t\n\r").strip()
+    colon = stripped.find(":")
+    slash = stripped.find("/")
+    if colon == -1 or (slash != -1 and slash < colon):
+        return stripped  # no scheme before the first '/' -> relative/scheme-relative
+    scheme = stripped[:colon].lower()
+    if scheme in _URL_SAFE_SCHEMES:
+        return stripped
+    return None
 
 
 class _Sanitizer(HTMLParser):
