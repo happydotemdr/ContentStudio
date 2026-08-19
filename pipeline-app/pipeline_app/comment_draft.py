@@ -286,12 +286,35 @@ def _remove_scratch(scratch: str) -> None:
               file=sys.stderr)
 
 
-def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
-    """Three sanitized comment drafts for `item`, or []. Never raises."""
+def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S, *,
+                   conn=None, run_id: int | None = None) -> list[str]:
+    """Three sanitized comment drafts for `item`, or []. Never raises.
+
+    `conn`/`run_id` are optional. When given, every failure branch below also
+    writes an `events` row (obs.record_event), a second sink independent of
+    obs.log()'s file write. obs.log()'s write is deliberately best-effort (a
+    read-only disk must not kill the caller), and the scheduled Task
+    Scheduler invocation discards stderr entirely (discovery_scheduling.py) --
+    so without this, a drafting failure's reason can vanish with NO trace at
+    all. That happened for real on 2026-08-18: two spotlighted posts both
+    failed to draft, and every log line obs.log() should have written was
+    lost. conn is optional so every existing call site/test keeps working
+    unchanged; only discovery_notify.py, which always has a run's conn and
+    row id on hand, passes it through. The obs.log()/obs.record_event() pair
+    stays inline at each failure site (not factored into a shared helper) so
+    test_no_failure_is_reported_to_stderr_alone's AST check -- which looks for
+    obs.log/record_event lexically inside the SAME function as the stderr
+    print it backs up -- keeps verifying this function directly.
+    """
+    item_ref = f"{item['platform']}/{item['handle']}/{item['item_id']}"
     try:
         binary = cli_runner.resolve_claude_binary()
     except FileNotFoundError as exc:
         obs.log("comment_draft.binary_missing", level="error", error=str(exc))
+        if conn is not None:
+            obs.record_event(conn, kind="comment_draft.binary_missing", severity="error",
+                             source="comment_draft", message=str(exc),
+                             detail={"item": item_ref, "error": str(exc)}, run_id=run_id)
         print(f"comment_draft: {exc}", file=sys.stderr)
         return []
 
@@ -321,6 +344,10 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
         scratch = tempfile.mkdtemp(prefix="cs-comment-draft-")
     except OSError as exc:
         obs.log("comment_draft.scratch_failed", level="error", error=str(exc))
+        if conn is not None:
+            obs.record_event(conn, kind="comment_draft.scratch_failed", severity="error",
+                             source="comment_draft", message=f"scratch directory failed: {exc}",
+                             detail={"item": item_ref, "error": str(exc)}, run_id=run_id)
         print(f"comment_draft: scratch directory failed: {exc}", file=sys.stderr)
         return []
     try:
@@ -352,6 +379,10 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
         # rather than leaving the pair gratuitously asymmetric.
         except (OSError, ValueError) as exc:
             obs.log("comment_draft.spawn_failed", level="error", error=str(exc))
+            if conn is not None:
+                obs.record_event(conn, kind="comment_draft.spawn_failed", severity="error",
+                                 source="comment_draft", message=f"could not start claude: {exc}",
+                                 detail={"item": item_ref, "error": str(exc)}, run_id=run_id)
             print(f"comment_draft: could not start claude: {exc}", file=sys.stderr)
             return []
 
@@ -364,6 +395,10 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
             except (subprocess.TimeoutExpired, OSError, ValueError):
                 pass  # cleanup is best-effort; the drafts are already forfeit
             obs.log("comment_draft.timed_out", level="error", timeout_s=timeout_s)
+            if conn is not None:
+                obs.record_event(conn, kind="comment_draft.timed_out", severity="error",
+                                 source="comment_draft", message=f"timed out after {timeout_s}s",
+                                 detail={"item": item_ref, "timeout_s": timeout_s}, run_id=run_id)
             print(f"comment_draft: timed out after {timeout_s}s", file=sys.stderr)
             return []
         except (OSError, ValueError) as exc:
@@ -371,6 +406,10 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
             # still running at the `with` exit, holding scratch as its cwd.
             _kill_and_confirm(process)
             obs.log("comment_draft.subprocess_failed", level="error", error=str(exc))
+            if conn is not None:
+                obs.record_event(conn, kind="comment_draft.subprocess_failed", severity="error",
+                                 source="comment_draft", message=f"subprocess failed: {exc}",
+                                 detail={"item": item_ref, "error": str(exc)}, run_id=run_id)
             print(f"comment_draft: subprocess failed: {exc}", file=sys.stderr)
             return []
     finally:
@@ -380,11 +419,22 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
         tail = (stderr_text or "").strip()[-STDERR_TAIL_CHARS:] or "no stderr output"
         obs.log("comment_draft.claude_failed", level="error",
                 returncode=process.returncode, stderr=tail)
+        if conn is not None:
+            obs.record_event(conn, kind="comment_draft.claude_failed", severity="error",
+                             source="comment_draft",
+                             message=f"claude exited {process.returncode}: {tail}",
+                             detail={"item": item_ref, "returncode": process.returncode,
+                                     "stderr": tail}, run_id=run_id)
         print(f"comment_draft: claude exited {process.returncode}: {tail}", file=sys.stderr)
         return []
 
     drafts = sanitize_drafts(parse_envelope(stdout))
     if not drafts:
         obs.log("comment_draft.no_usable_drafts", level="warning")
+        if conn is not None:
+            obs.record_event(conn, kind="comment_draft.no_usable_drafts", severity="warning",
+                             source="comment_draft",
+                             message="no usable drafts in the model's output",
+                             detail={"item": item_ref}, run_id=run_id)
         print("comment_draft: no usable drafts in the model's output", file=sys.stderr)
     return drafts

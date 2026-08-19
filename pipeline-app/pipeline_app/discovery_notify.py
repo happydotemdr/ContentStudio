@@ -309,7 +309,7 @@ def notify(conn, repo_root: Path, run_row_id: int) -> bool:
             return []
         key = (spotlight["platform"], spotlight["handle"], spotlight["item_id"])
         if key not in draft_cache:
-            draft_cache[key] = comment_draft.draft_comments(spotlight)
+            draft_cache[key] = comment_draft.draft_comments(spotlight, conn=conn, run_id=run_row_id)
         return draft_cache[key]
 
     sections = {}

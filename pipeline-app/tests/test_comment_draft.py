@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pipeline_app import comment_draft
 
 
@@ -327,6 +329,64 @@ def test_the_drafting_child_does_not_inherit_unrelated_credentials(fake_claude, 
     assert "BRIGHTDATA_API_KEY" not in env
     assert env["PATH"] == "C:\\fake\\path"
     assert env["PYTHONIOENCODING"] == "utf-8"
+
+
+@pytest.fixture
+def events_conn(tmp_path):
+    """A real DB connection, so record_event's SQL and commit path are
+    genuinely exercised rather than mocked past."""
+    from pipeline_app import db
+
+    db_path = tmp_path / "pipeline.db"
+    schema_path = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+    db.init_db(db_path, schema_path)
+    conn = db.get_connection(db_path)
+    yield conn
+    conn.close()
+
+
+def _events(conn):
+    cur = conn.execute("SELECT kind, severity, source, run_id, message, detail FROM events")
+    return cur.fetchall()
+
+
+def test_a_drafting_failure_is_recorded_to_the_db_when_a_conn_is_given(fake_claude, events_conn):
+    # 2026-08-18: two spotlighted posts both failed to draft and obs.log()'s
+    # file write -- the ONLY sink the scheduled Task Scheduler run has, since
+    # it discards stderr -- silently lost the reason for both. record_event
+    # is the second, DB-backed sink that survives that.
+    fake_claude(FakePopen(_envelope(ARRAY), returncode=1, stderr="Invalid API key"))
+    assert comment_draft.draft_comments(_item(), conn=events_conn, run_id=7) == []
+    rows = _events(events_conn)
+    assert len(rows) == 1
+    kind, severity, source, run_id, message, detail = rows[0]
+    assert kind == "comment_draft.claude_failed"
+    assert severity == "error"
+    assert source == "comment_draft"
+    assert run_id == 7
+    assert "Invalid API key" in message
+    assert "linkedin-profile/bettywliu/7358" in detail
+
+
+def test_no_conn_means_no_db_row_and_no_crash(fake_claude, events_conn):
+    fake_claude(FakePopen(_envelope(ARRAY), returncode=1, stderr="boom"))
+    assert comment_draft.draft_comments(_item()) == []  # conn omitted entirely
+    assert _events(events_conn) == []
+
+
+def test_a_successful_draft_records_nothing(fake_claude, events_conn):
+    fake_claude(FakePopen(_envelope(ARRAY)))
+    assert len(comment_draft.draft_comments(_item(), conn=events_conn, run_id=7)) == 3
+    assert _events(events_conn) == []
+
+
+def test_no_usable_drafts_is_recorded_as_a_warning(fake_claude, events_conn):
+    fake_claude(FakePopen(_envelope(json.dumps(["only", "two"]))))
+    assert comment_draft.draft_comments(_item(), conn=events_conn, run_id=9) == []
+    rows = _events(events_conn)
+    assert len(rows) == 1
+    assert rows[0][0] == "comment_draft.no_usable_drafts"
+    assert rows[0][1] == "warning"
 
 
 def _bare_tool_names(spec: str) -> set[str]:
