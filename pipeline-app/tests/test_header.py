@@ -495,3 +495,32 @@ def test_errored_handle_results_are_listed_before_healthy_ones(client: TestClien
     app.state.conn.commit()
     page = client.get("/discovery/runs").text
     assert page.index("@thinkmedia") < page.index("ok.bsky.social")
+
+
+def test_handle_states_have_distinct_pill_styling(client: TestClient):
+    from pipeline_app.main import PACKAGE_DIR
+    css = (PACKAGE_DIR / "static" / "style.css").read_text(encoding="utf-8")
+    for modifier in (".status-pending", ".status-validating", ".status-validated", ".status-invalid"):
+        assert modifier in css
+
+
+def test_an_invalid_handle_states_a_reason_or_says_none_was_recorded(client: TestClient):
+    conn = client.app.state.conn
+    conn.execute(
+        "INSERT INTO handles (platform, handle, cohort, status, added_at) "
+        "VALUES ('youtube', '@gone', 'creator-ed', 'invalid', '2026-08-01T00:00:00+00:00')"
+    )
+    conn.commit()
+    page = client.get("/discovery/handles").text
+    assert "status status-invalid" in page
+    # No error column exists on `handles` yet, so the honest render is to say
+    # so -- never to show a bare word with no recourse.
+    assert "no reason recorded" in page
+
+
+def test_the_status_poller_stops_and_reports_when_a_fetch_fails(client: TestClient):
+    page = client.get("/discovery/handles").text
+    assert "res.ok" in page
+    assert "catch" in page
+    assert "status unknown — reload" in page
+    assert "clearInterval(poll)" in page
