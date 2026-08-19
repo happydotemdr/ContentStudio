@@ -1852,6 +1852,36 @@ Add to `static/style.css`:
 
 - [ ] Run: passes. Update the four remaining `_has_md_below` callers in
       `tests/test_browse_service.py` per §5.
+
+> **Amendment (2026-08-18, found during T16 execution):** two departures from this task's literal
+> text.
+>
+> 1. **Forward reference to T17.** The `_md_below_state` sample above calls
+> `resolve_grounding_pointer_state(folder, repo_root)` — a function T17 (next) introduces; it does
+> not exist yet at T16. Implemented instead: the `pointer.yaml` branch calls the already-existing
+> `grounding_service.read_pointer(folder)` directly (catching `InvalidPointerError`), and treats
+> any syntactically-valid, non-empty `rgs_brief_path` as `"content"` regardless of whether the
+> target file currently exists on disk — reproducing exactly the tri-state distinctions this
+> task's own tests require without introducing T17's not-yet-specified error-detail plumbing.
+> **When dispatching T17: `_md_below_state`'s `pointer.yaml` branch (in `browse_service.py`) may
+> be worth revisiting to call the new `resolve_grounding_pointer_state` for consistency once it
+> exists** (not required — the current logic is already correct for `_md_below_state`'s own
+> tri-state contract, which only needs "is there content", not the reason for a break — but T17's
+> implementer should be aware of this branch's existence before assuming `_md_below_state` is
+> untouched by T17).
+> 2. **Five `_has_md_below` callers found, not four, plus the OSError one already covered by this
+> task's own new tests (six total).** Handled: the OSError-scenario test
+> (`test_has_md_below_scandir_oserror_returns_false`) was **deleted**, not renamed — it asserted
+> the old (now-wrong) behavior `list_children(...) == []` for a permission-denied folder, fully
+> superseded by this task's own new tests. Four other callers were renamed with `is True`/`is
+> False` → `== "content"`/`== "empty"` as the count/status implied; one was **inverted** per §5
+> (`test_has_md_below_false_when_pointer_target_missing` → `test_md_below_state_counts_a_broken_
+> pointer_as_content`, `== "content"`); a sixth, un-named caller inside
+> `test_resolve_grounding_pointer_returns_none_when_pointer_not_a_mapping` was also updated
+> (renamed call, `== "empty"`, not inverted — malformed YAML stays empty, only a valid pointer
+> with a missing target counts as broken content).
+>
+> Both landed in commit `452e433`.
 - [ ] Commit: `fix(browse): show an unreadable folder as unreadable instead of omitting it`
 
 ---
