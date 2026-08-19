@@ -39,6 +39,16 @@ _ALLOWED_ATTRS = {
 }
 _VOID_TAGS = {"br", "hr", "img"}
 _DANGEROUS_SCHEMES = ("javascript:", "data:", "vbscript:")
+# All HTML5 void elements -- these never emit a matching end tag, whether or
+# not this sanitizer allows them. Used only to decide whether a *disallowed*
+# start tag should push _skip_depth: doing that for a void-like tag (e.g. a
+# disallowed <meta>) would wait forever for a </meta> that will never arrive,
+# leaving _skip_depth stuck above zero and silently dropping every character
+# of the document after that point.
+_HTML_VOID_ELEMENTS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+}
 
 
 def _safe_url(value: str | None) -> str | None:
@@ -66,7 +76,7 @@ class _Sanitizer(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         if tag not in _ALLOWED_TAGS:
-            if tag not in _VOID_TAGS:
+            if tag not in _HTML_VOID_ELEMENTS:
                 self._skip_depth += 1
             return
         if self._skip_depth:

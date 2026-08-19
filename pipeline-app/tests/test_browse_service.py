@@ -597,6 +597,18 @@ def test_sanitize_html_keeps_ordinary_markdown_output():
         assert keep in out
 
 
+def test_sanitize_html_a_disallowed_void_tag_does_not_swallow_later_content():
+    """A disallowed HTML5 void element (e.g. <meta>) never emits a matching
+    end tag, so incrementing _skip_depth for it (as if it were a container
+    like <script>) leaves _skip_depth stuck above zero forever -- silently
+    dropping every character of the document after that point."""
+    out = browse_service.sanitize_html(
+        "<p>before</p><meta http-equiv=refresh content=0><p>after</p>"
+    )
+    assert "before" in out
+    assert "after" in out
+
+
 def test_render_md_file_body_html_is_sanitized(tmp_path):
     path = tmp_path / "post.md"
     path.write_text(
