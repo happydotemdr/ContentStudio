@@ -580,6 +580,19 @@ def test_a_project_page_does_ship_the_stage_rail_aside(client_with_stage):
 ```
 
 - [ ] Run: the first fails — `base.html:112` renders `<aside>` unconditionally.
+
+> **Amendment (2026-08-18, found during T5 execution):** the shown `<div>` markup below
+> conflicts with its own paired test. `class="app-shell{% if not nav %} app-shell-full{% endif %}"`
+> renders `class="app-shell app-shell-full"` on any page where `nav` is falsy (e.g. `/`) — which
+> does **not** contain the literal substring `class="app-shell"` that
+> `test_pages_without_a_stage_rail_ship_no_aside_at_all` asserts (the assertion requires the
+> attribute value to be the bare string, closing quote immediately after). Implemented instead:
+> keep `<div class="app-shell">` unconditional (so the literal test passes), move the
+> full-width modifier onto `<body{% if not nav %} class="app-shell-full"{% endif %}>`, and change
+> the CSS hook to `.app-shell-full .app-shell { padding-left: 2rem; }` (replacing the old
+> `.app-sidebar:not(:has(*)) { flex: 0 0 0; }` collapse hack, same as the plan intended). Same
+> observable behavior — no aside when `nav` is falsy, full-width padding applied — different
+> mechanism. Landed in commit `f17534e`.
 - [ ] **Implement.** `templates/base.html`:
 
 ```html
