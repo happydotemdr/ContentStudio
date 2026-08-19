@@ -190,3 +190,18 @@ def test_htmx_is_served_from_the_local_static_mount(client: TestClient):
     served = client.get("/static/htmx-2.0.0.min.js")
     assert served.status_code == 200
     assert "javascript" in served.headers["content-type"]
+
+
+@pytest.mark.parametrize(
+    "url,heading",
+    [
+        ("/browse", "Files"),
+        ("/doctor", "System"),
+        ("/inspector", "Open by path"),
+        ("/discovery/handles", "Sources"),
+        ("/discovery/runs", "Runs"),
+    ],
+)
+def test_page_heading_matches_its_own_tab_label(client: TestClient, url, heading):
+    resp = client.get(url)
+    assert f"<h1>{heading}</h1>" in resp.text

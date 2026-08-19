@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>MD Inspector</h1>
+<h1>Open by path</h1>
 <form method="post" action="/inspector">
   <input name="path" size="80" placeholder="Absolute or repo-relative path to a .md file" value="{{ path or '' }}">
   <button type="submit">Inspect</button>
