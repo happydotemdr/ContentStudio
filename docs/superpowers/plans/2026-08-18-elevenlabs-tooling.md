@@ -4,7 +4,7 @@
 
 **Goal:** Build `elevenlabs-tooling/`, a standalone Python package that validates and sends an ElevenLabs API payload (TTS or music), matching the design in `docs/superpowers/specs/2026-08-18-elevenlabs-tooling-design.md` exactly.
 
-**Architecture:** A `validate.py` module runs a fixed checklist (`Finding(check, message)`, "E#" blocking / "W#" warning) against a payload dict and a URL, with zero network access. A `client.py` module does the one HTTP POST, catching `requests.exceptions.RequestException` and returning a `SendResult` rather than raising, so callers get uniform control flow. A `log.py` module writes structured, dual-sink (stderr + dated file) log lines that never raise. `cli.py` wires these three together behind `python -m elevenlabs_tooling send|validate`, owning the exit-code contract and the order of operations (read → parse → validate → check API key → check output collision → log → send → write/quarantine).
+**Architecture:** A `validate.py` module runs a fixed checklist (`Finding(check, message)`, "E#" blocking / "W#" warning) against a payload dict and a URL, with zero network access and no assumption about field types beyond what it checks. A `client.py` module does the one HTTP POST, catching `requests.exceptions.RequestException` and returning a `SendResult` rather than raising, so callers get uniform control flow. A `log.py` module writes structured, dual-sink (stderr + dated file) log lines that never raise. `cli.py` wires these three together behind `python -m elevenlabs_tooling send|validate`, owning the exit-code contract and the order of operations (read → parse → validate → check API key → check output collision → log → send → write/quarantine).
 
 **Tech Stack:** Python 3, `requests` (HTTP), `pytest` (tests, HTTP mocked via `unittest.mock`). No other third-party dependencies.
 
@@ -12,11 +12,12 @@
 
 - Package lives at `elevenlabs-tooling/elevenlabs_tooling/` (repo-root sibling to `stitcher/`), imports nothing from `pipeline_app`, reads no skill file at runtime.
 - `client.send()` never re-serializes the payload — it POSTs the exact bytes read from `--payload`.
-- `log()` never raises, under any circumstance, including a read-only log directory.
+- `log()` never raises, under any circumstance, including a read-only log directory or a field whose `__repr__` itself raises.
 - `client.send()` never raises `requests.exceptions.RequestException` to its caller — it catches that specific exception type and returns a `SendResult`.
+- Every validation check that reads a payload field guards its type before comparing/measuring it — a malformed payload must produce a `Finding`, never an uncaught `TypeError`.
 - Exit codes are fixed and must not be renumbered: `EXIT_PASS=0`, `EXIT_FINDINGS=1`, `EXIT_USAGE=2`, `EXIT_UNREADABLE_INPUT=3`, `EXIT_UNPARSEABLE=4`, `EXIT_SEND_FAILED=5`, `EXIT_NO_API_KEY=6`.
-- No test in this package makes a real network call. Every HTTP interaction in the test suite goes through `unittest.mock.patch`.
-- Every module uses `from __future__ import annotations` (matches `stitcher`'s style throughout).
+- No test in this package makes a real network call. Every HTTP interaction in the test suite goes through `unittest.mock.patch`, and every test's log output is isolated to a `tmp_path`, never the real `elevenlabs-tooling/logs/` directory.
+- Every module uses `from __future__ import annotations` (matches `stitcher`'s style throughout), including `__main__.py`.
 
 ---
 
@@ -28,6 +29,7 @@
 - Create: `elevenlabs-tooling/elevenlabs_tooling/__init__.py`
 - Create: `elevenlabs-tooling/elevenlabs_tooling/validate.py`
 - Test: `elevenlabs-tooling/tests/test_validate.py`
+- Modify: `.gitignore` (repo root)
 
 **Interfaces:**
 - Consumes: nothing (first task)
@@ -52,7 +54,13 @@ testpaths = tests
 
 Create `elevenlabs-tooling/elevenlabs_tooling/__init__.py` (empty file — marks the package).
 
-Create empty `elevenlabs-tooling/tests/__init__.py` is NOT needed (pytest doesn't require it with `pythonpath = .`); skip it.
+Append to the repo root's `.gitignore`:
+
+```
+# elevenlabs-tooling's structured request logs (elevenlabs_tooling/log.py):
+# one tooling-YYYY-MM-DD.log per day, local diagnostics only.
+elevenlabs-tooling/logs/
+```
 
 - [ ] **Step 2: Write the failing tests for E1–E3**
 
@@ -80,7 +88,15 @@ def test_e1_rejects_wrong_host():
     assert _checks(findings, "E1")
 
 
-def test_e1_passes_correct_host():
+def test_e1_rejects_http_scheme():
+    findings = validate(
+        {"text": "hi", "model_id": "eleven_flash_v2_5"},
+        "http://api.elevenlabs.io/v1/text-to-speech/x",
+    )
+    assert _checks(findings, "E1")
+
+
+def test_e1_passes_correct_host_and_scheme():
     findings = validate({"text": "hi", "model_id": "eleven_flash_v2_5"}, TTS_URL)
     assert not _checks(findings, "E1")
 
@@ -141,6 +157,11 @@ def test_e3_passes_music_composition_plan_shape():
         {"composition_plan": {"chunks": []}, "model_id": "music_v2"}, MUSIC_URL
     )
     assert not _checks(findings, "E3")
+
+
+def test_e3_treats_null_composition_plan_as_absent():
+    payload = {"prompt": "a calm bed", "composition_plan": None, "model_id": "music_v1"}
+    assert not _checks(validate(payload, MUSIC_URL), "E3")
 ```
 
 - [ ] **Step 3: Run tests to verify they fail**
@@ -159,6 +180,10 @@ Structure mirrors scripts/lint_prompt_sheet.py (Gate C) in the parent repo: a
 flat list of Finding(check, message) accumulated by running every check to
 completion, never stopping at the first problem. "E#" findings block a send;
 "W#" findings are informational only.
+
+Every check that reads a payload field guards its type before comparing or
+measuring it: a malformed payload must produce a Finding, never an uncaught
+TypeError from a tool whose entire job is to fail safely on bad input.
 """
 
 from __future__ import annotations
@@ -168,6 +193,7 @@ from urllib.parse import parse_qs, urlsplit
 
 PINNED_NARRATOR_VOICE_ID = "eDwT8Vhp2yxJzAMmuuPA"
 ALLOWED_HOST = "api.elevenlabs.io"
+ALLOWED_SCHEME = "https"
 OUT_OF_SCOPE_PATH_MARKERS = (
     "/stream",
     "/compose_stream",
@@ -198,10 +224,11 @@ def validate(payload: dict, url: str) -> list[Finding]:
 def _check_url(url: str) -> list[Finding]:
     findings: list[Finding] = []
     parts = urlsplit(url)
-    if parts.hostname != ALLOWED_HOST:
+    if parts.scheme != ALLOWED_SCHEME or parts.hostname != ALLOWED_HOST:
         findings.append(Finding(
             "E1",
-            f"URL host must be exactly {ALLOWED_HOST!r}, got {parts.hostname!r}",
+            f"URL must be {ALLOWED_SCHEME}://{ALLOWED_HOST}/... , got "
+            f"{parts.scheme!r}://{parts.hostname!r}",
         ))
     lowered_path = parts.path.lower()
     for marker in OUT_OF_SCOPE_PATH_MARKERS:
@@ -218,8 +245,8 @@ def _check_url(url: str) -> list[Finding]:
 
 def _check_shape(payload: dict) -> list[Finding]:
     has_text = bool(payload.get("text"))
-    has_prompt = "prompt" in payload
-    has_plan = "composition_plan" in payload
+    has_prompt = payload.get("prompt") is not None
+    has_plan = payload.get("composition_plan") is not None
     music_field_count = sum([has_prompt, has_plan])
 
     if has_text and music_field_count == 0:
@@ -248,16 +275,16 @@ def _check_shape(payload: dict) -> list[Finding]:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `cd elevenlabs-tooling && python -m pytest tests/test_validate.py -v`
-Expected: PASS (13 tests).
+Expected: PASS (14 tests).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add elevenlabs-tooling/requirements.txt elevenlabs-tooling/pytest.ini \
+git add .gitignore elevenlabs-tooling/requirements.txt elevenlabs-tooling/pytest.ini \
         elevenlabs-tooling/elevenlabs_tooling/__init__.py \
         elevenlabs-tooling/elevenlabs_tooling/validate.py \
         elevenlabs-tooling/tests/test_validate.py
-git commit -m "feat(elevenlabs-tooling): scaffold package, validate E1-E3 (URL host/scope, payload shape)"
+git commit -m "feat(elevenlabs-tooling): scaffold package, validate E1-E3 (URL host/scheme/scope, payload shape)"
 ```
 
 ---
@@ -324,6 +351,12 @@ def test_e5_rejects_speed_above_range():
     assert _checks(validate(payload, TTS_URL), "E5")
 
 
+def test_e5_rejects_non_numeric_speed():
+    payload = _valid_tts_payload()
+    payload["voice_settings"]["speed"] = "fast"
+    assert _checks(validate(payload, TTS_URL), "E5")
+
+
 def test_e5_passes_speed_in_range():
     assert not _checks(validate(_valid_tts_payload(), TTS_URL), "E5")
 
@@ -377,9 +410,26 @@ def test_e7_does_not_fire_off_v3_models():
     assert not _checks(validate(payload, url), "E7")
 
 
+def test_e7_finds_voice_id_even_with_a_trailing_path_segment():
+    # /v1/text-to-speech/{voice_id}/with-timestamps is a real, in-scope
+    # variant -- the voice_id is NOT the last path segment here.
+    url = (
+        "https://api.elevenlabs.io/v1/text-to-speech/eDwT8Vhp2yxJzAMmuuPA/with-timestamps"
+        "?output_format=mp3_44100_192"
+    )
+    payload = {"text": "hi", "model_id": "eleven_v3"}
+    assert _checks(validate(payload, url), "E7")
+
+
 def test_e8_rejects_too_many_dictionary_locators():
     payload = _valid_tts_payload()
     payload["pronunciation_dictionary_locators"] = [{"pronunciation_dictionary_id": str(i)} for i in range(4)]
+    assert _checks(validate(payload, TTS_URL), "E8")
+
+
+def test_e8_rejects_non_list_dictionary_locators():
+    payload = _valid_tts_payload()
+    payload["pronunciation_dictionary_locators"] = "not-a-list"
     assert _checks(validate(payload, TTS_URL), "E8")
 
 
@@ -398,6 +448,12 @@ def test_e9_rejects_too_many_previous_request_ids():
 def test_e9_rejects_too_many_next_request_ids():
     payload = _valid_tts_payload()
     payload["next_request_ids"] = ["a", "b", "c", "d"]
+    assert _checks(validate(payload, TTS_URL), "E9")
+
+
+def test_e9_rejects_non_list_request_ids():
+    payload = _valid_tts_payload()
+    payload["previous_request_ids"] = "not-a-list"
     assert _checks(validate(payload, TTS_URL), "E9")
 
 
@@ -478,6 +534,11 @@ def test_e14_ignores_plan_without_chunks():
     assert not _checks(validate(payload, MUSIC_URL), "E14")
 
 
+def test_e14_ignores_null_composition_plan():
+    payload = {"prompt": "a calm bed", "composition_plan": None, "model_id": "music_v1"}
+    assert not _checks(validate(payload, MUSIC_URL), "E14")
+
+
 def test_w1_warns_when_output_format_missing():
     url = "https://api.elevenlabs.io/v1/text-to-speech/x"
     findings = validate(_valid_tts_payload(), url)
@@ -501,6 +562,14 @@ def test_w2_silent_at_or_below_threshold():
     payload = _valid_tts_payload()
     payload["voice_settings"]["similarity_boost"] = 0.9
     assert not _checks(validate(payload, TTS_URL), "W2")
+
+
+def test_w2_warns_on_non_numeric_similarity_boost():
+    payload = _valid_tts_payload()
+    payload["voice_settings"]["similarity_boost"] = "high"
+    findings = validate(payload, TTS_URL)
+    assert _checks(findings, "W2")
+    assert not any(is_blocking(f) for f in _checks(findings, "W2"))
 
 
 def test_fully_valid_tts_payload_has_no_blocking_findings():
@@ -562,7 +631,11 @@ def _check_model_id(payload: dict) -> list[Finding]:
 def _check_speed(payload: dict) -> list[Finding]:
     settings = payload.get("voice_settings") or {}
     speed = settings.get("speed")
-    if speed is not None and not (SPEED_MIN <= speed <= SPEED_MAX):
+    if speed is None:
+        return []
+    if not isinstance(speed, (int, float)) or isinstance(speed, bool):
+        return [Finding("E5", f"voice_settings.speed {speed!r} must be a number")]
+    if not (SPEED_MIN <= speed <= SPEED_MAX):
         return [Finding(
             "E5",
             f"voice_settings.speed {speed!r} is outside the valid range "
@@ -584,10 +657,24 @@ def _check_stitching_conflict(payload: dict, url: str) -> list[Finding]:
     return []
 
 
+def _voice_id_from_tts_path(parts) -> str | None:
+    """The path segment right after 'text-to-speech', or None.
+
+    Not simply the last segment: /v1/text-to-speech/{voice_id}/with-timestamps
+    is a real, in-scope path shape where the voice_id is NOT last.
+    """
+    segments = [segment for segment in parts.path.split("/") if segment]
+    if "text-to-speech" not in segments:
+        return None
+    index = segments.index("text-to-speech")
+    if index + 1 >= len(segments):
+        return None
+    return segments[index + 1]
+
+
 def _check_pvc_v3(payload: dict, url: str) -> list[Finding]:
     parts = urlsplit(url)
-    path_segments = [segment for segment in parts.path.split("/") if segment]
-    voice_id = path_segments[-1] if path_segments else None
+    voice_id = _voice_id_from_tts_path(parts)
     model_id = str(payload.get("model_id") or "")
     if voice_id != PINNED_NARRATOR_VOICE_ID or "v3" not in model_id:
         return []
@@ -605,7 +692,11 @@ def _check_pvc_v3(payload: dict, url: str) -> list[Finding]:
 
 def _check_dictionary_locators(payload: dict) -> list[Finding]:
     locators = payload.get("pronunciation_dictionary_locators")
-    if locators is not None and len(locators) > MAX_DICTIONARY_LOCATORS:
+    if locators is None:
+        return []
+    if not isinstance(locators, list):
+        return [Finding("E8", "pronunciation_dictionary_locators must be a list")]
+    if len(locators) > MAX_DICTIONARY_LOCATORS:
         return [Finding(
             "E8",
             f"pronunciation_dictionary_locators has {len(locators)} entries, "
@@ -618,7 +709,12 @@ def _check_request_ids(payload: dict) -> list[Finding]:
     findings: list[Finding] = []
     for field in ("previous_request_ids", "next_request_ids"):
         ids = payload.get(field)
-        if ids is not None and len(ids) > MAX_REQUEST_IDS:
+        if ids is None:
+            continue
+        if not isinstance(ids, list):
+            findings.append(Finding("E9", f"{field} must be a list"))
+            continue
+        if len(ids) > MAX_REQUEST_IDS:
             findings.append(Finding(
                 "E9",
                 f"{field} has {len(ids)} entries, the maximum is {MAX_REQUEST_IDS}",
@@ -639,20 +735,20 @@ def _check_seed_range(payload: dict) -> list[Finding]:
 
 def _check_music_conflicts(payload: dict) -> list[Finding]:
     findings: list[Finding] = []
-    has_prompt = "prompt" in payload
+    has_prompt = payload.get("prompt") is not None
     plan = payload.get("composition_plan")
     has_plan = plan is not None
 
-    if "seed" in payload and has_prompt:
+    if payload.get("seed") is not None and has_prompt:
         findings.append(Finding(
             "E11", "seed is plan-only and cannot be used together with prompt"
         ))
-    if "force_instrumental" in payload and has_plan:
+    if payload.get("force_instrumental") is not None and has_plan:
         findings.append(Finding(
             "E12",
             "force_instrumental is prompt-only and does not apply to composition_plan",
         ))
-    if "music_length_ms" in payload and has_plan:
+    if payload.get("music_length_ms") is not None and has_plan:
         findings.append(Finding(
             "E13",
             "music_length_ms is prompt-only; a composition_plan's length "
@@ -682,7 +778,13 @@ def _check_output_format(url: str) -> list[Finding]:
 def _check_similarity_boost(payload: dict) -> list[Finding]:
     settings = payload.get("voice_settings") or {}
     similarity = settings.get("similarity_boost")
-    if similarity is not None and similarity > SIMILARITY_WARN_ABOVE:
+    if similarity is None:
+        return []
+    if not isinstance(similarity, (int, float)) or isinstance(similarity, bool):
+        return [Finding(
+            "W2", f"voice_settings.similarity_boost {similarity!r} must be a number"
+        )]
+    if similarity > SIMILARITY_WARN_ABOVE:
         return [Finding(
             "W2",
             f"voice_settings.similarity_boost {similarity!r} is above "
@@ -693,33 +795,50 @@ def _check_similarity_boost(payload: dict) -> list[Finding]:
     return []
 ```
 
-Add the new module-level constants (`SPEED_MIN`, etc., shown above) directly below the existing `OUT_OF_SCOPE_PATH_MARKERS` constant.
+Add the new module-level constants (`SPEED_MIN`, etc., shown above) directly below the existing `OUT_OF_SCOPE_PATH_MARKERS` constant. Add `_voice_id_from_tts_path` and `_check_pvc_v3` as new top-level functions (there is no earlier version of `_check_pvc_v3` to replace).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd elevenlabs-tooling && python -m pytest tests/test_validate.py -v`
-Expected: PASS (all tests, Task 1's and Task 2's).
+Expected: PASS (all tests, Task 1's and Task 2's — 58 total).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add elevenlabs-tooling/elevenlabs_tooling/validate.py elevenlabs-tooling/tests/test_validate.py
-git commit -m "feat(elevenlabs-tooling): validate E4-E14, W1-W2 (full checklist complete)"
+git commit -m "feat(elevenlabs-tooling): validate E4-E14, W1-W2 -- full checklist, type-safe"
 ```
 
 ---
 
-### Task 3: `log.py` — structured, never-raises logging
+### Task 3: `log.py` — structured, never-raises logging + test isolation
 
 **Files:**
 - Create: `elevenlabs-tooling/elevenlabs_tooling/log.py`
+- Create: `elevenlabs-tooling/tests/conftest.py`
 - Test: `elevenlabs-tooling/tests/test_log.py`
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `log(event: str, *, level: str = "info", **fields) -> None`, `LOG_DIR: Path` (= `elevenlabs-tooling/logs/`)
+- Produces: `log(event: str, *, level: str = "info", **fields) -> None`, `LOG_DIR: Path` (= `elevenlabs-tooling/logs/`); `conftest.py`'s autouse `_isolate_log_dir` fixture, which every later test (Tasks 5–6 included) inherits automatically — no test file after this task needs to patch `LOG_DIR` itself
 
 - [ ] **Step 1: Write the failing tests**
+
+Create `elevenlabs-tooling/tests/conftest.py`:
+
+```python
+import pytest
+
+import elevenlabs_tooling.log as log_module
+
+
+@pytest.fixture(autouse=True)
+def _isolate_log_dir(tmp_path, monkeypatch):
+    """Every test in this suite writes logs into its own throwaway tmp_path,
+    never the real elevenlabs-tooling/logs/ directory. Autouse -- no test
+    file needs to request this explicitly."""
+    monkeypatch.setattr(log_module, "LOG_DIR", tmp_path / "logs")
+```
 
 Create `elevenlabs-tooling/tests/test_log.py`:
 
@@ -730,8 +849,7 @@ import elevenlabs_tooling.log as log_module
 from elevenlabs_tooling.log import log
 
 
-def test_log_writes_json_line_to_stderr(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(log_module, "LOG_DIR", tmp_path / "logs")
+def test_log_writes_json_line_to_stderr(capsys):
     log("send.attempt", url="https://api.elevenlabs.io/v1/music", foo="bar")
     captured = capsys.readouterr()
     line = json.loads(captured.err.strip())
@@ -742,11 +860,9 @@ def test_log_writes_json_line_to_stderr(monkeypatch, tmp_path, capsys):
     assert "ts" in line
 
 
-def test_log_appends_to_dated_file(monkeypatch, tmp_path):
-    log_dir = tmp_path / "logs"
-    monkeypatch.setattr(log_module, "LOG_DIR", log_dir)
+def test_log_appends_to_dated_file():
     log("send.success", output_path="out.mp3")
-    files = list(log_dir.glob("tooling-*.log"))
+    files = list(log_module.LOG_DIR.glob("tooling-*.log"))
     assert len(files) == 1
     contents = files[0].read_text(encoding="utf-8")
     line = json.loads(contents.strip())
@@ -754,12 +870,10 @@ def test_log_appends_to_dated_file(monkeypatch, tmp_path):
     assert line["output_path"] == "out.mp3"
 
 
-def test_log_appends_multiple_calls_as_separate_lines(monkeypatch, tmp_path):
-    log_dir = tmp_path / "logs"
-    monkeypatch.setattr(log_module, "LOG_DIR", log_dir)
+def test_log_appends_multiple_calls_as_separate_lines():
     log("validate.passed")
     log("validate.rejected", level="warning")
-    files = list(log_dir.glob("tooling-*.log"))
+    files = list(log_module.LOG_DIR.glob("tooling-*.log"))
     lines = files[0].read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["event"] == "validate.passed"
@@ -767,10 +881,7 @@ def test_log_appends_multiple_calls_as_separate_lines(monkeypatch, tmp_path):
     assert json.loads(lines[1])["level"] == "warning"
 
 
-def test_log_never_raises_when_log_dir_is_unwritable(monkeypatch, tmp_path):
-    unwritable = tmp_path / "not_a_real_parent" / "logs"
-    monkeypatch.setattr(log_module, "LOG_DIR", unwritable)
-
+def test_log_never_raises_when_log_dir_is_unwritable(monkeypatch):
     def _boom(*args, **kwargs):
         raise OSError("simulated permission error")
 
@@ -779,16 +890,20 @@ def test_log_never_raises_when_log_dir_is_unwritable(monkeypatch, tmp_path):
     log("send.failed", level="error", error="disk full")
 
 
-def test_log_never_raises_on_unserializable_field(monkeypatch, tmp_path):
-    monkeypatch.setattr(log_module, "LOG_DIR", tmp_path / "logs")
-
-    class Unserializable:
+def test_log_never_raises_when_repr_itself_raises(capsys):
+    class ExplodesOnRepr:
         def __repr__(self):
-            return "<Unserializable>"
+            raise RuntimeError("boom")
 
-    # Must not raise even though json.dumps would choke on a raw object
-    # without default=repr.
-    log("send.attempt", weird=object())
+    # json.dumps(..., default=repr) calls repr() on this and that call
+    # raises -- log() must still not raise, and must fall back to the
+    # "<unserializable>" record.
+    log("send.attempt", weird=ExplodesOnRepr())
+
+    captured = capsys.readouterr()
+    line = json.loads(captured.err.strip())
+    assert line["fields"] == "<unserializable>"
+    assert line["event"] == "send.attempt"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -859,13 +974,14 @@ def log(event: str, *, level: str = "info", **fields) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd elevenlabs-tooling && python -m pytest tests/test_log.py -v`
-Expected: PASS (5 tests).
+Expected: PASS (5 tests). Also re-run `tests/test_validate.py` to confirm `conftest.py` didn't break anything unrelated: PASS (58 tests, unaffected).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add elevenlabs-tooling/elevenlabs_tooling/log.py elevenlabs-tooling/tests/test_log.py
-git commit -m "feat(elevenlabs-tooling): add never-raises dual-sink log()"
+git add elevenlabs-tooling/elevenlabs_tooling/log.py elevenlabs-tooling/tests/conftest.py \
+        elevenlabs-tooling/tests/test_log.py
+git commit -m "feat(elevenlabs-tooling): add never-raises dual-sink log() + test log isolation"
 ```
 
 ---
@@ -1079,7 +1195,7 @@ git commit -m "feat(elevenlabs-tooling): add client.send() -- POST, never raises
 - Test: `elevenlabs-tooling/tests/test_cli_validate.py`
 
 **Interfaces:**
-- Consumes: `Finding`, `is_blocking`, `validate` (Task 1/2); `log` (Task 3)
+- Consumes: `Finding`, `is_blocking`, `validate` (Task 1/2); `log` (Task 3, plus the autouse `_isolate_log_dir` fixture from `conftest.py` — no manual `LOG_DIR` patching needed in this task's tests)
 - Produces: all 7 exit code constants (`EXIT_PASS=0`, `EXIT_FINDINGS=1`, `EXIT_USAGE=2`, `EXIT_UNREADABLE_INPUT=3`, `EXIT_UNPARSEABLE=4`, `EXIT_SEND_FAILED=5`, `EXIT_NO_API_KEY=6`) — the last two are defined here but unused until Task 6's `cmd_send`; `_load_payload(payload_path: Path) -> tuple[bytes | None, dict | None, int | None]`; `cmd_validate(args) -> int`; `build_parser() -> argparse.ArgumentParser`; `main(argv: list[str] | None = None) -> int` (send-related pieces added in Task 6)
 
 - [ ] **Step 1: Write the failing tests**
@@ -1089,6 +1205,7 @@ Create `elevenlabs-tooling/tests/test_cli_validate.py`:
 ```python
 import json
 
+import elevenlabs_tooling.log as log_module
 from elevenlabs_tooling.cli import EXIT_FINDINGS, EXIT_PASS, EXIT_UNPARSEABLE, EXIT_UNREADABLE_INPUT, main
 
 TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/someVoiceId?output_format=mp3_44100_192"
@@ -1100,18 +1217,39 @@ def _write_payload(tmp_path, data):
     return path
 
 
-def test_validate_passes_clean_payload(tmp_path, capsys):
+def _logged_events():
+    files = list(log_module.LOG_DIR.glob("tooling-*.log"))
+    assert files, "expected at least one log file to be written"
+    return [
+        json.loads(line)["event"]
+        for line in files[0].read_text(encoding="utf-8").strip().splitlines()
+    ]
+
+
+def test_validate_passes_clean_payload(tmp_path):
     payload_path = _write_payload(tmp_path, {"text": "hi", "model_id": "eleven_flash_v2_5"})
     code = main(["validate", "--payload", str(payload_path), "--url", TTS_URL])
     assert code == EXIT_PASS
 
 
-def test_validate_reports_blocking_findings(tmp_path, capsys):
+def test_validate_passed_writes_log_entry(tmp_path):
+    payload_path = _write_payload(tmp_path, {"text": "hi", "model_id": "eleven_flash_v2_5"})
+    main(["validate", "--payload", str(payload_path), "--url", TTS_URL])
+    assert "validate.passed" in _logged_events()
+
+
+def test_validate_reports_blocking_findings_with_the_check_code_and_message(tmp_path, capsys):
     payload_path = _write_payload(tmp_path, {"text": "hi"})  # missing model_id -> E4
     code = main(["validate", "--payload", str(payload_path), "--url", TTS_URL])
     assert code == EXIT_FINDINGS
     captured = capsys.readouterr()
-    assert "E4" in captured.err
+    assert "E4: model_id must be present and non-empty" in captured.err
+
+
+def test_validate_rejected_writes_log_entry(tmp_path):
+    payload_path = _write_payload(tmp_path, {"text": "hi"})  # missing model_id -> E4
+    main(["validate", "--payload", str(payload_path), "--url", TTS_URL])
+    assert "validate.rejected" in _logged_events()
 
 
 def test_validate_missing_payload_file(tmp_path):
@@ -1132,6 +1270,24 @@ def test_validate_json_that_is_not_an_object(tmp_path):
     payload_path.write_text("[1, 2, 3]", encoding="utf-8")
     code = main(["validate", "--payload", str(payload_path), "--url", TTS_URL])
     assert code == EXIT_UNPARSEABLE
+
+
+def test_validate_invalid_utf8_payload_is_unparseable_not_a_crash(tmp_path):
+    payload_path = tmp_path / "badbytes.json"
+    payload_path.write_bytes(b"\xff\xfe\x00\x01not utf-8")
+    code = main(["validate", "--payload", str(payload_path), "--url", TTS_URL])
+    assert code == EXIT_UNPARSEABLE
+
+
+def test_validate_unreadable_payload_file_is_unreadable_input_not_a_crash(tmp_path, monkeypatch):
+    payload_path = _write_payload(tmp_path, {"text": "hi", "model_id": "eleven_flash_v2_5"})
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("simulated permission error")
+
+    monkeypatch.setattr("pathlib.Path.read_bytes", _boom)
+    code = main(["validate", "--payload", str(payload_path), "--url", TTS_URL])
+    assert code == EXIT_UNREADABLE_INPUT
 
 
 def test_validate_prints_warnings_without_blocking(tmp_path, capsys):
@@ -1184,16 +1340,23 @@ def _load_payload(payload_path: Path) -> tuple[bytes | None, dict | None, int | 
 
     On success, error_exit_code is None and the other two are set. On
     failure, raw_bytes and parsed_dict are None and error_exit_code names
-    the exit code to return.
+    the exit code to return. Every failure mode -- missing file, unreadable
+    file, invalid JSON, invalid UTF-8, valid JSON that isn't an object --
+    is caught here rather than left to crash the process.
     """
     if not payload_path.is_file():
         print(f"elevenlabs_tooling: payload file not found: {payload_path}", file=sys.stderr)
         return None, None, EXIT_UNREADABLE_INPUT
 
-    raw_bytes = payload_path.read_bytes()
+    try:
+        raw_bytes = payload_path.read_bytes()
+    except OSError as exc:
+        print(f"elevenlabs_tooling: cannot read payload file {payload_path}: {exc}", file=sys.stderr)
+        return None, None, EXIT_UNREADABLE_INPUT
+
     try:
         parsed = json.loads(raw_bytes)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         print(f"elevenlabs_tooling: payload is not valid JSON: {exc}", file=sys.stderr)
         return None, None, EXIT_UNPARSEABLE
 
@@ -1253,7 +1416,7 @@ def main(argv: list[str] | None = None) -> int:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd elevenlabs-tooling && python -m pytest tests/test_cli_validate.py -v`
-Expected: PASS (6 tests).
+Expected: PASS (10 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -1283,6 +1446,7 @@ Create `elevenlabs-tooling/tests/test_cli_send.py`:
 import json
 from unittest.mock import patch
 
+import elevenlabs_tooling.log as log_module
 from elevenlabs_tooling.cli import (
     EXIT_FINDINGS,
     EXIT_NO_API_KEY,
@@ -1306,6 +1470,15 @@ def _valid_payload_path(tmp_path):
     return _write_payload(tmp_path, {"prompt": "a calm ambient bed", "model_id": "music_v1"})
 
 
+def _logged_events():
+    files = list(log_module.LOG_DIR.glob("tooling-*.log"))
+    assert files, "expected at least one log file to be written"
+    return [
+        json.loads(line)["event"]
+        for line in files[0].read_text(encoding="utf-8").strip().splitlines()
+    ]
+
+
 @patch("elevenlabs_tooling.cli.client_send")
 def test_send_success_writes_output_and_returns_pass(mock_send, tmp_path, monkeypatch):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
@@ -1325,6 +1498,22 @@ def test_send_success_writes_output_and_returns_pass(mock_send, tmp_path, monkey
 
 
 @patch("elevenlabs_tooling.cli.client_send")
+def test_send_success_writes_attempt_and_success_log_entries(mock_send, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
+    mock_send.return_value = SendResult(
+        ok=True, status_code=200, content_type="audio/mpeg", body=b"FAKE_AUDIO", error_message=None
+    )
+    payload_path = _valid_payload_path(tmp_path)
+    output_path = tmp_path / "out.mp3"
+
+    main(["send", "--payload", str(payload_path), "--url", MUSIC_URL, "--output", str(output_path)])
+
+    events = _logged_events()
+    assert "send.attempt" in events
+    assert "send.success" in events
+
+
+@patch("elevenlabs_tooling.cli.client_send")
 def test_send_blocked_by_validation_never_calls_client(mock_send, tmp_path, monkeypatch):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
     payload_path = _write_payload(tmp_path, {"prompt": "x"})  # missing model_id -> E4
@@ -1339,7 +1528,8 @@ def test_send_blocked_by_validation_never_calls_client(mock_send, tmp_path, monk
     assert not output_path.exists()
 
 
-def test_send_missing_api_key_returns_no_api_key(tmp_path, monkeypatch):
+@patch("elevenlabs_tooling.cli.client_send")
+def test_send_missing_api_key_returns_no_api_key(mock_send, tmp_path, monkeypatch):
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     payload_path = _valid_payload_path(tmp_path)
     output_path = tmp_path / "out.mp3"
@@ -1350,11 +1540,14 @@ def test_send_missing_api_key_returns_no_api_key(tmp_path, monkeypatch):
 
     assert code == EXIT_NO_API_KEY
     assert not output_path.exists()
+    mock_send.assert_not_called()
 
 
-def test_send_missing_api_key_reported_after_validation_findings(tmp_path, monkeypatch, capsys):
+@patch("elevenlabs_tooling.cli.client_send")
+def test_send_missing_api_key_reported_after_validation_findings(mock_send, tmp_path, monkeypatch, capsys):
     # A payload with BOTH a validation problem and no API key must report
-    # the validation problem (EXIT_FINDINGS), not hide it behind the key check.
+    # the validation problem (EXIT_FINDINGS), not hide it behind the key
+    # check -- and must not touch the network either way.
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     payload_path = _write_payload(tmp_path, {"prompt": "x"})  # missing model_id -> E4
     output_path = tmp_path / "out.mp3"
@@ -1364,11 +1557,13 @@ def test_send_missing_api_key_reported_after_validation_findings(tmp_path, monke
     ])
 
     assert code == EXIT_FINDINGS
+    mock_send.assert_not_called()
     captured = capsys.readouterr()
-    assert "E4" in captured.err
+    assert "E4: model_id must be present and non-empty" in captured.err
 
 
-def test_send_refuses_to_overwrite_existing_output_without_force(tmp_path, monkeypatch):
+@patch("elevenlabs_tooling.cli.client_send")
+def test_send_refuses_to_overwrite_existing_output_without_force(mock_send, tmp_path, monkeypatch):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
     payload_path = _valid_payload_path(tmp_path)
     output_path = tmp_path / "out.mp3"
@@ -1380,6 +1575,7 @@ def test_send_refuses_to_overwrite_existing_output_without_force(tmp_path, monke
 
     assert code == EXIT_USAGE
     assert output_path.read_bytes() == b"EXISTING"
+    mock_send.assert_not_called()
 
 
 @patch("elevenlabs_tooling.cli.client_send")
@@ -1401,7 +1597,8 @@ def test_send_overwrites_existing_output_with_force(mock_send, tmp_path, monkeyp
     assert output_path.read_bytes() == b"NEW_AUDIO"
 
 
-def test_send_output_parent_directory_missing(tmp_path, monkeypatch):
+@patch("elevenlabs_tooling.cli.client_send")
+def test_send_output_parent_directory_missing(mock_send, tmp_path, monkeypatch):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
     payload_path = _valid_payload_path(tmp_path)
     output_path = tmp_path / "does_not_exist" / "out.mp3"
@@ -1411,6 +1608,24 @@ def test_send_output_parent_directory_missing(tmp_path, monkeypatch):
     ])
 
     assert code == EXIT_USAGE
+    mock_send.assert_not_called()
+
+
+@patch("elevenlabs_tooling.cli.client_send")
+def test_send_bare_filename_output_with_no_directory_component_works(mock_send, tmp_path, monkeypatch):
+    # --output out.mp3 (no directory) must resolve its parent to the cwd,
+    # not crash on an empty parent.
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
+    monkeypatch.chdir(tmp_path)
+    mock_send.return_value = SendResult(
+        ok=True, status_code=200, content_type="audio/mpeg", body=b"X", error_message=None
+    )
+    payload_path = _valid_payload_path(tmp_path)
+
+    code = main(["send", "--payload", str(payload_path), "--url", MUSIC_URL, "--output", "out.mp3"])
+
+    assert code == EXIT_PASS
+    assert (tmp_path / "out.mp3").read_bytes() == b"X"
 
 
 @patch("elevenlabs_tooling.cli.client_send")
@@ -1428,6 +1643,20 @@ def test_send_non_2xx_failure_writes_nothing(mock_send, tmp_path, monkeypatch):
 
     assert code == EXIT_SEND_FAILED
     assert not output_path.exists()
+
+
+@patch("elevenlabs_tooling.cli.client_send")
+def test_send_failure_writes_send_failed_log_entry(mock_send, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
+    mock_send.return_value = SendResult(
+        ok=False, status_code=422, content_type=None, body=None, error_message="invalid voice_id"
+    )
+    payload_path = _valid_payload_path(tmp_path)
+    output_path = tmp_path / "out.mp3"
+
+    main(["send", "--payload", str(payload_path), "--url", MUSIC_URL, "--output", str(output_path)])
+
+    assert "send.failed" in _logged_events()
 
 
 @patch("elevenlabs_tooling.cli.client_send")
@@ -1503,6 +1732,45 @@ def test_send_falls_back_to_default_on_invalid_env_timeout(mock_send, tmp_path, 
     assert kwargs["timeout"] == 300.0
     captured = capsys.readouterr()
     assert "ELEVENLABS_TOOLING_TIMEOUT_S" in captured.err
+
+
+@patch("elevenlabs_tooling.cli.client_send")
+def test_send_falls_back_to_default_on_non_positive_cli_timeout(mock_send, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
+    mock_send.return_value = SendResult(
+        ok=True, status_code=200, content_type="audio/mpeg", body=b"X", error_message=None
+    )
+    payload_path = _valid_payload_path(tmp_path)
+    output_path = tmp_path / "out.mp3"
+
+    main([
+        "send", "--payload", str(payload_path), "--url", MUSIC_URL, "--output", str(output_path),
+        "--timeout", "-5",
+    ])
+
+    _, kwargs = mock_send.call_args
+    assert kwargs["timeout"] == 300.0
+    captured = capsys.readouterr()
+    assert "--timeout" in captured.err
+
+
+@patch("elevenlabs_tooling.cli.client_send")
+def test_send_cli_timeout_overrides_env_timeout(mock_send, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
+    monkeypatch.setenv("ELEVENLABS_TOOLING_TIMEOUT_S", "77")
+    mock_send.return_value = SendResult(
+        ok=True, status_code=200, content_type="audio/mpeg", body=b"X", error_message=None
+    )
+    payload_path = _valid_payload_path(tmp_path)
+    output_path = tmp_path / "out.mp3"
+
+    main([
+        "send", "--payload", str(payload_path), "--url", MUSIC_URL, "--output", str(output_path),
+        "--timeout", "12.5",
+    ])
+
+    _, kwargs = mock_send.call_args
+    assert kwargs["timeout"] == 12.5
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1533,8 +1801,19 @@ Add `_resolve_timeout` and `cmd_send` (place them after `cmd_validate`):
 
 ```python
 def _resolve_timeout(cli_value: float | None) -> float:
+    """--timeout wins over ELEVENLABS_TOOLING_TIMEOUT_S wins over the
+    300s default. An invalid value at EITHER level (non-numeric, zero, or
+    negative) warns and falls through to the next level rather than being
+    used or crashing."""
     if cli_value is not None:
-        return cli_value
+        if cli_value > 0:
+            return cli_value
+        print(
+            f"elevenlabs_tooling: --timeout {cli_value!g} is not a positive "
+            "number of seconds; falling back to the environment/default",
+            file=sys.stderr,
+        )
+
     raw = os.environ.get(TIMEOUT_ENV_VAR)
     if raw is None or raw.strip() == "":
         return DEFAULT_TIMEOUT_S
@@ -1584,6 +1863,8 @@ def cmd_send(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
+    # Path(".").is_dir() is True, so a bare filename like "out.mp3" (parent
+    # == the cwd) passes this check correctly rather than being rejected.
     if not output_path.parent.is_dir():
         print(
             f"elevenlabs_tooling: output directory does not exist: {output_path.parent}",
@@ -1605,7 +1886,24 @@ def cmd_send(args: argparse.Namespace) -> int:
     result = client_send(args.url, raw_bytes, api_key, timeout=timeout)
 
     if result.ok:
-        output_path.write_bytes(result.body)
+        try:
+            output_path.write_bytes(result.body)
+        except OSError as exc:
+            # Credits are already spent and the audio came back fine -- the
+            # failure is purely local disk I/O. Still logged as a failure
+            # since nothing usable landed at --output.
+            print(
+                f"elevenlabs_tooling: send succeeded but writing {output_path} failed: {exc}",
+                file=sys.stderr,
+            )
+            log(
+                "send.failed",
+                level="error",
+                url=args.url,
+                status_code=result.status_code,
+                error=f"write failed after a successful API call: {exc}",
+            )
+            return EXIT_SEND_FAILED
         log(
             "send.success",
             url=args.url,
@@ -1618,10 +1916,13 @@ def cmd_send(args: argparse.Namespace) -> int:
 
     if result.body is not None:
         quarantine_path = output_path.with_name(output_path.name + ".unexpected")
-        quarantine_path.write_bytes(result.body)
+        try:
+            quarantine_path.write_bytes(result.body)
+            quarantine_note = f" (response body saved to {quarantine_path})"
+        except OSError as exc:
+            quarantine_note = f" (also failed to save the response body: {exc})"
         print(
-            f"elevenlabs_tooling: send failed: {result.error_message} "
-            f"(response body saved to {quarantine_path})",
+            f"elevenlabs_tooling: send failed: {result.error_message}{quarantine_note}",
             file=sys.stderr,
         )
         log(
@@ -1631,7 +1932,6 @@ def cmd_send(args: argparse.Namespace) -> int:
             status_code=result.status_code,
             content_type=result.content_type,
             error=result.error_message,
-            quarantine_path=str(quarantine_path),
         )
         return EXIT_SEND_FAILED
 
@@ -1674,6 +1974,8 @@ def build_parser() -> argparse.ArgumentParser:
 Create `elevenlabs-tooling/elevenlabs_tooling/__main__.py`:
 
 ```python
+from __future__ import annotations
+
 import sys
 
 from elevenlabs_tooling.cli import main
@@ -1685,12 +1987,12 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd elevenlabs-tooling && python -m pytest tests/test_cli_send.py -v`
-Expected: PASS (12 tests).
+Expected: PASS (17 tests).
 
 Then run the full suite to confirm nothing regressed:
 
 Run: `cd elevenlabs-tooling && python -m pytest tests/ -v`
-Expected: PASS (all tests across all four test files).
+Expected: PASS (all tests across all five test files).
 
 - [ ] **Step 5: Commit**
 
@@ -1713,9 +2015,9 @@ git commit -m "feat(elevenlabs-tooling): add cli.py send subcommand and __main__
 
 - [ ] **Step 1: Write the README**
 
-Create `elevenlabs-tooling/README.md`:
+Create `elevenlabs-tooling/README.md`. Note the outer fence below uses four backticks specifically so the inner three-backtick fences inside the README's own bash examples are preserved literally rather than being interpreted as closing the outer block — copy everything between the two ```` lines exactly as-is, backticks included:
 
-```markdown
+````markdown
 # elevenlabs-tooling
 
 Validates and sends a caller-authored ElevenLabs API payload. Standalone: it
@@ -1727,11 +2029,13 @@ tool then executes.
 
 Design: `docs/superpowers/specs/2026-08-18-elevenlabs-tooling-design.md`.
 
+All commands below assume `cd elevenlabs-tooling` first.
+
 ## Install
 
-\`\`\`bash
-pip install -r elevenlabs-tooling/requirements.txt
-\`\`\`
+```bash
+pip install -r requirements.txt
+```
 
 Requires `ELEVENLABS_API_KEY` set in the environment before `send` (not
 `validate`, which never touches the network).
@@ -1740,20 +2044,20 @@ Requires `ELEVENLABS_API_KEY` set in the environment before `send` (not
 
 Validate a payload without spending anything:
 
-\`\`\`bash
+```bash
 python -m elevenlabs_tooling validate \
   --payload payload.json \
   --url "https://api.elevenlabs.io/v1/text-to-speech/VOICE_ID?output_format=mp3_44100_192"
-\`\`\`
+```
 
 Validate and send:
 
-\`\`\`bash
+```bash
 python -m elevenlabs_tooling send \
   --payload payload.json \
   --url "https://api.elevenlabs.io/v1/text-to-speech/VOICE_ID?output_format=mp3_44100_192" \
   --output out.mp3
-\`\`\`
+```
 
 `--url` is always the complete URL (base path + query string) exactly as the
 skill's curl template gives it -- this tool never constructs one.
@@ -1763,7 +2067,7 @@ allow it. Its parent directory must already exist.
 
 ## Exit codes
 
-\`\`\`
+```
 0  EXIT_PASS               validation clean / send succeeded
 1  EXIT_FINDINGS           blocking (E#) errors found -- the payload is the problem
 2  EXIT_USAGE              argparse only, or a CLI-level problem (e.g. --output exists without --force)
@@ -1771,7 +2075,7 @@ allow it. Its parent directory must already exist.
 4  EXIT_UNPARSEABLE        payload file is not valid JSON, or is valid JSON that isn't an object
 5  EXIT_SEND_FAILED        validation passed but the live API call failed, or returned an unexpected content-type
 6  EXIT_NO_API_KEY         ELEVENLABS_API_KEY not set (checked only after validation passes)
-\`\`\`
+```
 
 ## Validation checklist
 
@@ -1789,7 +2093,8 @@ written *before* the network call fires. Logging never raises.
 
 Default 300 seconds. Override with `--timeout SECONDS` or the
 `ELEVENLABS_TOOLING_TIMEOUT_S` environment variable (`--timeout` wins if
-both are set). An invalid override warns and falls back rather than crashing.
+both are set). An invalid override at either level warns and falls back
+rather than crashing.
 
 ## Out of scope (v1)
 
@@ -1799,12 +2104,14 @@ See the design spec for the reasoning behind each boundary.
 
 ## Tests
 
-\`\`\`bash
-cd elevenlabs-tooling && python -m pytest tests/ -v
-\`\`\`
-
-No test makes a real network call -- the HTTP layer is mocked throughout.
+```bash
+python -m pytest tests/ -v
 ```
+
+No test makes a real network call -- the HTTP layer is mocked throughout --
+and every test's logging is isolated to a throwaway directory via an autouse
+fixture in `tests/conftest.py`, never the real `logs/` directory.
+````
 
 - [ ] **Step 2: Run the full test suite one more time**
 
