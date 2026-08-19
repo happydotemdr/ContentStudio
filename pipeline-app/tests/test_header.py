@@ -134,6 +134,21 @@ def test_stage_page_shows_breadcrumb_with_run_id_and_stage_id(client_with_stage)
     assert '<span class="breadcrumb-current">ideation</span>' in stage_resp.text
 
 
+def test_stage_breadcrumb_links_back_to_the_project(client_with_stage):
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert f'<a href="/projects/{project_id}">{project["run_id"]}</a>' in page.text
+    assert "ideation" in page.text
+
+
 def test_no_template_references_an_external_host():
     """CLAUDE.md says local-only. A CDN <script> is an undocumented outbound
     dependency with no SRI (D-41) and a silent offline failure (D-42)."""
