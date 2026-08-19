@@ -325,6 +325,29 @@ def test_an_unrecognised_gate_status_reads_as_unverified_not_as_a_pass(client_wi
     assert "status-passed" not in page
 
 
+def test_a_malformed_gates_frontmatter_gets_its_own_explainer(client_with_stage):
+    """P3 synthesizes a `malformed` gate entry (routes/stages.py) when the
+    artifact's `gates:` value itself isn't a list -- there is no per-gate
+    result to interpret, which is a different problem from `unknown` (one
+    gate's status string didn't parse). gate_strip.html must not let this
+    fall through with no label and no explainer."""
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    # `gates:` here is a scalar string, not a list -- the malformed shape.
+    _stage_with_artifact(app, project["run_id"], "gates: not-a-list\n")
+    page = test_client.get(f"/projects/{project_id}/stages/ideation").text
+    assert "status-malformed" in page
+    assert "malformed" in page
+    assert "gates:</code> frontmatter" in page or "gates:" in page
+    assert "not a list" in page
+
+
 def test_never_ran_gate_page_offers_a_usable_next_action(client_with_stage):
     """THE mandated E-03 test. A gate that never ran must (a) say so and
     (b) leave a way to complete the approval from inside the UI."""
