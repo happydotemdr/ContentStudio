@@ -2,10 +2,49 @@
 {% block content %}
 <h1>System</h1>
 <ul>
-  <li>Repo root: {{ repo_root }}</li>
-  <li>DB path: {{ db_path }}</li>
-  <li>Claude CLI: {% if cli.available %}found at {{ cli.path }}{% else %}NOT FOUND — {{ cli.error }}{% endif %}</li>
-  <li>Skills discovered: {{ skill_names | join(", ") }}</li>
-  <li>Orphaned turns reconciled at startup: {{ orphaned_count }}</li>
+  <li>Repo root: <code>{{ repo_root }}</code></li>
+  <li>DB path: <code>{{ db_path }}</code></li>
+  <li>Claude CLI: {% if cli.available %}found at <code>{{ cli.path }}</code>{% else %}NOT FOUND — {{ cli.error }}{% endif %}</li>
+  {# P1 types this `int | None`, and None (the sweep did not run) must NOT
+     render as 0 (the sweep ran and found nothing) -- that is precisely the
+     empty-vs-broken confusion this programme exists to remove. Bare
+     `{{ orphaned_count }}` would print the string "None". #}
+  <li>Orphaned turns reconciled at startup:
+    {% if orphaned_count is none %}
+    <span class="status status-unknown">not checked — the startup sweep did not run</span>
+    {% else %}
+    {{ orphaned_count }}
+    {% endif %}
+  </li>
+  <li><a href="/skills">Skills</a> — the list lives on its own page; duplicating it here told
+      the operator nothing they could not already see.</li>
 </ul>
+
+<h2>Recent errors</h2>
+{# Until this existed there was nowhere in the whole product to look when
+   something broke overnight: 35 stderr diagnostics on the scheduled path go to
+   a console Task Scheduler destroys (E-16, D-02). These are the unacknowledged
+   error/critical events of the last 7 days, newest first, from P1's `events`
+   table. #}
+{% if recent_events %}
+<table>
+  <thead>
+    <tr><th>When</th><th>Severity</th><th>Source</th><th>Kind</th><th>Message</th><th>Run</th></tr>
+  </thead>
+  <tbody>
+    {% for e in recent_events %}
+    <tr>
+      <td><code>{{ e.occurred_at }}</code></td>
+      <td><span class="status status-{{ e.severity }}">{{ e.severity }}</span></td>
+      <td>{{ e.source }}</td>
+      <td><code>{{ e.kind }}</code></td>
+      <td>{{ e.message }}{% if e.detail %}<div class="event-detail">{{ e.detail }}</div>{% endif %}</td>
+      <td>{{ e.run_id if e.run_id is not none else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No unacknowledged errors in the last 7 days.</p>
+{% endif %}
 {% endblock %}

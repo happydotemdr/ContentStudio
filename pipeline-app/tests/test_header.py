@@ -578,3 +578,55 @@ def test_a_mapped_skill_still_shows_the_kickoff_editor(client_with_skills):
     page = client_with_skills.get("/skills/shorts-ideation").text
     assert 'value="kickoff_template"' in page
     assert 'name="content"' in page
+
+
+def test_doctor_renders_unacknowledged_error_events(client: TestClient):
+    conn = client.app.state.conn
+    # The brief's literal fixture hardcoded occurred_at to a fixed calendar
+    # date; Doctor's route only shows events within RECENT_EVENT_WINDOW_DAYS
+    # (7) of "now", so a fixed date silently ages out of that window as real
+    # time passes and the test starts failing for a reason that has nothing
+    # to do with Doctor. Timestamped relative to "now" instead, matching the
+    # rest of this suite's events (e.g. test_obs.py's use of
+    # obs.record_event, which stamps occurred_at itself).
+    from datetime import datetime, timezone
+    occurred_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO events (occurred_at, kind, severity, source, message, detail, run_id, acknowledged) "
+        "VALUES (?, 'adapter.fetch_failed', 'error', "
+        "'discovery_youtube', 'yt-dlp exited 1 for @thinkmedia', '{\"handle\": \"@thinkmedia\"}', 4, 0)",
+        (occurred_at,),
+    )
+    conn.commit()
+    page = client.get("/doctor").text
+    assert "adapter.fetch_failed" in page
+    assert "yt-dlp exited 1 for @thinkmedia" in page
+    assert "discovery_youtube" in page
+    assert "status-error" in page
+
+
+def test_doctor_says_so_when_there_is_nothing_to_report(client: TestClient):
+    page = client.get("/doctor").text
+    assert "No unacknowledged errors in the last 7 days." in page
+
+
+def test_doctor_no_longer_duplicates_the_skill_list(client: TestClient):
+    page = client.get("/doctor").text
+    assert "Skills discovered:" not in page
+    assert 'href="/skills"' in page
+
+
+def test_a_skipped_orphan_sweep_renders_differently_from_a_clean_one(client: TestClient):
+    """P1 types orphaned_count as `int | None`. None means the sweep never ran;
+    0 means it ran and found nothing. Rendering both the same -- or printing
+    the literal string "None" -- is the same empty-vs-broken confusion this
+    programme exists to remove."""
+    client.app.state.orphaned_count = 0
+    clean = client.get("/doctor").text
+    client.app.state.orphaned_count = None
+    skipped = client.get("/doctor").text
+
+    assert clean != skipped
+    assert "not checked" in skipped
+    assert "not checked" not in clean
+    assert "None" not in skipped
