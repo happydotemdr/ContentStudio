@@ -2282,6 +2282,22 @@ render paths and are out of this package's file list.
 >
 > Both landed in commits `22df293` (T19 itself, includes bug 1's fix) and `cd586f8` (the
 > controller-dispatched fix for bug 2, found post-landing before this task's review was dispatched).
+>
+> **A third bug — Critical, found by the task reviewer's adversarial security pass on the code
+> above (this is the finding class this programme's per-task review gate exists to catch, working
+> exactly as designed).** Self-closing syntax on a disallowed non-void tag (`<script/>...
+> </script>`) triggers `HTMLParser`'s SEPARATE `handle_startendtag` hook, whose default
+> implementation calls `handle_starttag` immediately followed by `handle_endtag` — a synthetic
+> open+close pair that pushed `_skip_depth` to 1 and immediately back to 0, so everything after
+> the fake self-close — including the attacker's actual payload text — rendered as ordinary output.
+> Reproduced with the exact `/discovery/run-now` payload the task's own regression test guards
+> against, just with `<script/>` instead of `<script>`. This is a genuine sanitizer bypass, not a
+> theoretical one. Fixed by overriding `handle_startendtag` so a disallowed non-void tag only ever
+> fires `handle_starttag` (matching real HTML5 parsing, which ignores a trailing `/` on
+> `script`/`style`/`iframe` rather than self-closing them) — an allowed tag or a genuine
+> `_HTML_VOID_ELEMENTS` member keeps the default open+close behavior, so `<br/>`/`<img .../>`
+> still render correctly. Landed in commit `1b54e8b`, with its own regression test and independent
+> controller verification (`<script/>…`, `<style/>…`, `<iframe/>…` payloads all now fail closed).
 
 ---
 
