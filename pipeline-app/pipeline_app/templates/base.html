@@ -9,7 +9,7 @@
        whose POST routes rewrite skill files, commit to git, spend Anthropic
        credit and start billed Bright Data jobs (D-41) -- and when the CDN is
        unreachable the Browse tree dies with no UI signal at all (D-42).
-       Serving it from /static removes both at once and needs no SRI. -->
+       Serving it from /static removes both problems and needs no SRI. -->
   <script src="/static/htmx-2.0.0.min.js"></script>
   <script>
     function attachSSEChat(formEl) {
@@ -109,11 +109,49 @@
     // raw `data: {...}` SSE stream as page text.
     document.addEventListener("DOMContentLoaded", () => {
       document.querySelectorAll("form[data-sse-chat]").forEach(attachSSEChat);
+
+      // htmx does not swap on a non-2xx response and does nothing at all on a
+      // network error, so before this every failed hx-get left the previously
+      // viewed document on screen -- a click that looks like it did nothing
+      // while showing content belonging to a different file (E-13). Offline,
+      // the whole tree was inert with no signal (D-42).
+      const banner = document.getElementById("htmx-error-banner");
+      const showHtmxError = (text, target) => {
+        if (banner) {
+          banner.textContent = text;
+          banner.hidden = false;
+        }
+        if (target && target.id !== "htmx-error-banner") {
+          const p = document.createElement("p");
+          p.className = "browse-error";
+          p.textContent = text;
+          target.replaceChildren(p);
+        }
+      };
+      document.body.addEventListener("htmx:responseError", (e) => {
+        const status = e.detail.xhr ? e.detail.xhr.status : "?";
+        showHtmxError(
+          `Request to ${e.detail.requestConfig.path} failed (HTTP ${status}). ` +
+          "Nothing on this page was updated.",
+          e.detail.target,
+        );
+      });
+      document.body.addEventListener("htmx:sendError", (e) => {
+        showHtmxError(
+          `Could not reach the app at ${e.detail.requestConfig.path}. ` +
+          "The server may have stopped. Nothing on this page was updated.",
+          e.detail.target,
+        );
+      });
+      document.body.addEventListener("htmx:beforeRequest", () => {
+        if (banner) { banner.hidden = true; }
+      });
     });
   </script>
 </head>
 <body>
   {% include "partials/header.html" %}
+  <div id="htmx-error-banner" class="htmx-error-banner" role="alert" hidden></div>
   <div class="app-shell">
     <aside class="app-sidebar">{% block sidebar %}{% include "partials/sidebar.html" %}{% endblock %}</aside>
     <main class="app-main">{% block content %}{% endblock %}</main>

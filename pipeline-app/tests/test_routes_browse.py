@@ -54,7 +54,7 @@ def test_browse_tree_items_carry_htmx_attributes_not_ids(client):
     resp = test_client.get("/browse")
     assert resp.status_code == 200
     assert 'hx-get="/browse/tree?path=thinkers&root=output"' in resp.text
-    assert 'hx-trigger="toggle once from:closest details"' in resp.text
+    assert 'hx-trigger="toggle from:closest details"' in resp.text
     assert 'hx-target="this"' in resp.text
 
     tree_resp = test_client.get("/browse/tree", params={"path": "thinkers", "root": "output"})
@@ -461,3 +461,21 @@ def test_browse_tree_unknown_root_returns_invalid_path(client):
     resp = test_client.get("/browse/tree", params={"root": "bogus", "path": ""})
     assert resp.status_code == 200
     assert "Invalid path." in resp.text
+
+
+def test_browse_page_carries_a_global_htmx_error_banner(client):
+    test_client, _ = client
+    resp = test_client.get("/browse")
+    assert 'id="htmx-error-banner"' in resp.text
+    assert 'role="alert"' in resp.text
+    assert "htmx:responseError" in resp.text
+    assert "htmx:sendError" in resp.text
+
+
+def test_browse_tree_expansion_can_be_retried_after_a_failure(client):
+    """`once` meant a subtree whose first fetch failed stayed empty forever."""
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "thinkers" / "plato.md")
+    resp = test_client.get("/browse")
+    assert 'hx-trigger="toggle from:closest details"' in resp.text
+    assert "once" not in resp.text

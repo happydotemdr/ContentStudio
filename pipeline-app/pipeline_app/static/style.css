@@ -174,3 +174,14 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .browse-placeholder { color: #777; font-style: italic; }
 .htmx-indicator { opacity: 0; }
 .htmx-request.htmx-indicator, .htmx-request .htmx-indicator { opacity: 1; }
+
+.htmx-error-banner {
+  margin: 0 2rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ff5f5f;
+  border-radius: 0.25rem;
+  background: color-mix(in srgb, #ff5f5f 15%, transparent);
+  color: #ff5f5f;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}

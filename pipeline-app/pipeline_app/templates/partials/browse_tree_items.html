@@ -15,7 +15,7 @@
       <summary>{{ entry.name }}</summary>
       <div class="children"
            hx-get="/browse/tree?path={{ entry.rel_path | urlencode }}&root={{ root }}"
-           hx-trigger="toggle once from:closest details"
+           hx-trigger="toggle from:closest details"
            hx-target="this"
            hx-swap="innerHTML"></div>
     </details>
