@@ -2422,3 +2422,91 @@ Separately, `cli_runner.PIPELINE_DISALLOWED_TOOLS` is now read by
 constant, P9's test fails until `DRAFTER_DISALLOWED_TOOLS` names it too. That coupling is
 deliberate — it is the drift guard B-102 asks for — but P4 should expect the red and add the name
 in `comment_draft.py` in the same change, or hand it to P9.
+
+---
+
+## 8. Outcome (recorded 2026-08-19, PR #51 merged as `62e91d0`)
+
+All 27 tasks (the original 26 plus Task 27, a mid-programme finding folded in — see below) landed
+as written, plus 3 plan corrections caught during task-level review and 3 findings from the
+mandatory final whole-branch review, all fixed and re-reviewed clean.
+
+**Architecture drift, found and reconciled before Task 1 was dispatched.** An unrelated feature
+branch (PR #36, `claude/brand-scoped-discovery-email`, not part of this remediation programme)
+merged into two of P9's four owned files after this plan was written, adding a per-brand
+multi-section email. Reconciled in §0 (committed separately, before any task dispatch): run-level
+facts render exactly once per email via new shared helpers, never once per brand section — the
+same defect class this whole package exists to close, reproduced at brand-section scope by the
+drift itself. Two human decisions confirmed before proceeding: render-once-not-per-section, and
+folding the newly-discovered B-113 into this package rather than deferring it.
+
+**New finding folded in mid-package:** B-113 (S2) — a brand section with zero items couldn't
+distinguish "this brand's handles were genuinely quiet" from "no handle carries this brand's tag
+at all," the package's headline defect class reproduced at brand scope. Closed by Task 27,
+confirmed with the human partner. Programme finding count for P9 is therefore **25, not the
+originally-scoped 24** (B-90 through B-112, D-54, plus B-113).
+
+**Plan corrections, for the record (all committed as their own docs-only commits before the
+corrected task was dispatched, per programme discipline):**
+
+1. **Task 7's shown code caught the wrong exception type.** `except yaml.YAMLError:` for the
+   bad-frontmatter case — `artifacts.parse_frontmatter` actually raises its own
+   `artifacts.MalformedArtifactError`, wrapping the YAML error internally. Found and
+   self-corrected by the implementer during Task 7; documented in the plan before Task 8 ran.
+2. **Task 11's shown code referenced `errors`/`other_statuses`, both introduced by later tasks
+   (T13, T12) that hadn't landed yet.** Substituted the existing `errored` list and declared
+   `other_statuses` as a new, inert empty dict for T12 to populate — both names converge on
+   what the later tasks actually add, no rework needed.
+3. **The plan's own §0 amendment initially misdirected Task 12**, saying its `coverage["other"]`
+   rendering should defer to Task 14's run-level extraction — but Task 12's own test calls
+   `render_email` directly and requires the rendering to exist immediately. Corrected before
+   Task 12 was dispatched: T12 renders inline exactly as its own shown code has it; T14 was told
+   explicitly to absorb that block into its run-level extraction alongside `_coverage_line`/
+   `_notices`, which it did.
+
+**Mandatory final whole-branch review** (opus, range `1cc179d..201c8f2`, 34 commits) found 0
+Critical, 3 Important-shaped findings, several Minor — the pattern every package in this
+programme has hit without exception. Two of the three Important findings were cross-task
+interaction bugs invisible to any single task's own review, reproducing this package's own
+headline defect one layer down:
+
+1. **`errors` (Task 13) rendered once per brand section instead of once per run** — Task 13
+   correctly threaded `errors` into `notify()`'s per-brand section dicts (parallel to the
+   pre-existing `errored`), but `_render_text`/`_render_html` then rendered it inside each
+   section, so a run with 2 failed handles printed the "Errors" block 3 times, once per brand,
+   including under brands none of the failures were tagged with. §0's amendment had listed
+   `errored` as legitimately per-section before Task 13 changed what that key meant — the plan
+   had no mechanism to notice a later task in the same package invalidating an earlier
+   amendment's premise. Fixed: moved into the shared run-level helpers Task 14 built.
+2. **The "Run status: …" banner (pre-existing, Task 14 didn't relocate it) also printed once
+   per brand section** for the identical reason. Fixed: rendered once in `render_brand_digest`,
+   removed from the per-section renderers; both renderers' docstrings corrected to match.
+3. **Task 27's `digest.brand_untagged` event fires every run, forever, for any permanently-unused
+   brand** — a genuine product question (recurring never-actionable warnings are how operators
+   learn to ignore the events table), not a code defect. Presented to the human partner; decision:
+   leave as-is, since all three brands are active or expected to be. No code change.
+
+Findings 1 and 2 fixed in one consolidated dispatch (commit `64c4299`), re-reviewed (opus) and
+confirmed ADDRESSED with zero new Critical/Important breakage — verified directly against the
+diff, not the fix report's claims, including tracing that `_render_text`/`_render_html` no longer
+read `errors`/`errored`/`has_issues`/`run_status` at all. Two Minor findings were also folded into
+the same fix wave rather than deferred: a stale `discovery_digest.py` docstring still claiming a
+removed stderr warning path, and two hand-maintained required-keys tests that had already fallen
+behind the real `REQUIRED_OVERALL_KEYS`/`REQUIRED_SUMMARY_KEYS` tuples (rewritten to parametrize
+over the tuples directly, so they cannot silently fall behind again). Several further Minor
+findings were parked as documented tech debt (see the plan's own task-review ledger during
+execution): `SKIP_NO_URL`/`SKIP_NO_PUBLISHED_FIELD` named `SKIP_` despite being warnings;
+`_ENV_PASSTHROUGH` omits proxy environment variables; a few test-coverage gaps (a multi-brand
+`brand_coverage` fan-out test, an HTML-side filename assertion). None block anything.
+
+**Headline regression, verified twice independently:** `test_a_quiet_day_and_a_broken_collection_are_not_the_same_email`
+(Task 15) was re-pointed at the actual production path (`notify()` → `build_summary()` →
+`render_brand_digest()` → `send_email()`, captured via monkeypatch) rather than the plan's
+originally-shown `render_email()` call, per §0's binding amendment — the single highest-value
+correction in the whole package, since `render_email` has zero production callers. The final
+reviewer independently reproduced the "verify it bites" check with its own pytest plugin rather
+than trusting the task's report.
+
+**CI:** all three jobs (`app-suite`, `root-suite`, `no-live-credentials`) green on the PR's final
+commit and the merge commit `62e91d0`. Both suites re-verified green after the final-review fix:
+app 1874 passed/4 skipped, root 445 passed/1 skipped.
