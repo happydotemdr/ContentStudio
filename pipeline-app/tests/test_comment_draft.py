@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 from pipeline_app import comment_draft
@@ -368,10 +369,18 @@ def test_a_drafting_failure_is_recorded_to_the_db_when_a_conn_is_given(fake_clau
     assert "linkedin-profile/bettywliu/7358" in detail
 
 
-def test_no_conn_means_no_db_row_and_no_crash(fake_claude, events_conn):
+def test_no_conn_means_no_db_row_and_the_conn_omitted_call_still_behaves_identically(
+        fake_claude, events_conn):
+    # Two calls, same failure, one with conn and one genuinely without it (not
+    # just conn=None passed explicitly) -- both must return the same result,
+    # proving the conn=None path is unchanged rather than merely "doesn't crash".
     fake_claude(FakePopen(_envelope(ARRAY), returncode=1, stderr="boom"))
-    assert comment_draft.draft_comments(_item()) == []  # conn omitted entirely
-    assert _events(events_conn) == []
+    without_conn = comment_draft.draft_comments(_item())  # conn omitted entirely
+    fake_claude(FakePopen(_envelope(ARRAY), returncode=1, stderr="boom"))
+    with_conn = comment_draft.draft_comments(_item(), conn=events_conn, run_id=1)
+    assert without_conn == with_conn == []
+    # Only the conn-bearing call left a row.
+    assert len(_events(events_conn)) == 1
 
 
 def test_a_successful_draft_records_nothing(fake_claude, events_conn):
@@ -380,13 +389,71 @@ def test_a_successful_draft_records_nothing(fake_claude, events_conn):
     assert _events(events_conn) == []
 
 
-def test_no_usable_drafts_is_recorded_as_a_warning(fake_claude, events_conn):
+def test_no_usable_drafts_is_recorded_as_an_error_not_a_warning(fake_claude, events_conn):
+    # "error", not "warning": db.py's /doctor query only surfaces severity IN
+    # ('error', 'critical'), and a spotlighted post that got zero comments is
+    # exactly the outcome this whole fix exists to make visible.
     fake_claude(FakePopen(_envelope(json.dumps(["only", "two"]))))
     assert comment_draft.draft_comments(_item(), conn=events_conn, run_id=9) == []
     rows = _events(events_conn)
     assert len(rows) == 1
     assert rows[0][0] == "comment_draft.no_usable_drafts"
-    assert rows[0][1] == "warning"
+    assert rows[0][1] == "error"
+
+
+def test_binary_missing_is_recorded(events_conn, monkeypatch):
+    def raise_missing():
+        raise FileNotFoundError("claude CLI not found on PATH.")
+    monkeypatch.setattr(comment_draft.cli_runner, "resolve_claude_binary", raise_missing)
+    assert comment_draft.draft_comments(_item(), conn=events_conn, run_id=3) == []
+    rows = _events(events_conn)
+    assert len(rows) == 1
+    assert rows[0][0] == "comment_draft.binary_missing"
+
+
+def test_a_timeout_is_recorded(fake_claude, events_conn):
+    fake = FakePopen(_envelope(ARRAY), timeout=True)
+    fake_claude(fake)
+    assert comment_draft.draft_comments(_item(), timeout_s=1, conn=events_conn, run_id=4) == []
+    kinds = {row[0] for row in _events(events_conn)}
+    assert "comment_draft.timed_out" in kinds
+
+
+def test_a_spawn_failure_is_recorded(events_conn, monkeypatch):
+    monkeypatch.setattr(comment_draft.cli_runner, "resolve_claude_binary", lambda: "/usr/bin/claude")
+
+    def raising_popen(*a, **k):
+        raise OSError("no such file or directory")
+    monkeypatch.setattr(comment_draft.subprocess, "Popen", raising_popen)
+    assert comment_draft.draft_comments(_item(), conn=events_conn, run_id=5) == []
+    rows = _events(events_conn)
+    assert len(rows) == 1
+    assert rows[0][0] == "comment_draft.spawn_failed"
+
+
+def test_a_scratch_directory_failure_is_recorded(events_conn, monkeypatch):
+    monkeypatch.setattr(comment_draft.cli_runner, "resolve_claude_binary", lambda: "/usr/bin/claude")
+
+    def raising_mkdtemp(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(comment_draft.tempfile, "mkdtemp", raising_mkdtemp)
+    assert comment_draft.draft_comments(_item(), conn=events_conn, run_id=6) == []
+    rows = _events(events_conn)
+    assert len(rows) == 1
+    assert rows[0][0] == "comment_draft.scratch_failed"
+
+
+def test_an_item_missing_handle_or_item_id_never_raises_even_on_the_first_branch(monkeypatch):
+    # item_ref is built with .get(), never [], and computed before ANY
+    # validation of `item`'s shape -- a malformed item must not turn
+    # draft_comments' own "never raises" contract into a KeyError on the very
+    # first failure branch (binary missing), which discovery_notify.py's
+    # module docstring explicitly leans on.
+    def raise_missing():
+        raise FileNotFoundError("claude CLI not found on PATH.")
+    monkeypatch.setattr(comment_draft.cli_runner, "resolve_claude_binary", raise_missing)
+    sparse_item = {"platform": "youtube", "title": "x", "display_name": "Y", "body": "z"}
+    assert comment_draft.draft_comments(sparse_item) == []
 
 
 def _bare_tool_names(spec: str) -> set[str]:
@@ -405,3 +472,50 @@ def test_the_drafter_denies_every_tool_the_pipeline_turn_denies():
 def test_the_drafter_denies_the_interactive_tools_too():
     drafter = _bare_tool_names(comment_draft.DRAFTER_DISALLOWED_TOOLS)
     assert {"SlashCommand", "ExitPlanMode", "AskUserQuestion"} <= drafter
+
+
+def _log_only_comment_draft_failure_kinds() -> dict[str, list[str]]:
+    """{function name: [comment_draft.* kind literals]} for every obs.log()
+    call whose kind is NOT also reachable via an obs.record_event() call in
+    the same function's AST subtree.
+
+    Deliberately static, not behavioural: an eighth failure branch added
+    later that calls obs.log() alone (bypassing the _fail closure or
+    forgetting the pairing in _kill_and_confirm/_remove_scratch) is caught the
+    moment it is written, not the next time a run happens to hit it silently
+    the way 2026-08-18 did."""
+    path = Path(__file__).resolve().parents[1] / "pipeline_app" / "comment_draft.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    orphans: dict[str, list[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        kinds: list[str] = []
+        has_record_event = False
+        for call in ast.walk(node):
+            func = getattr(call, "func", None)
+            if not (isinstance(func, ast.Attribute) and getattr(func.value, "id", None) == "obs"):
+                continue
+            if func.attr == "record_event":
+                has_record_event = True
+            elif func.attr == "log" and call.args and isinstance(call.args[0], ast.Constant):
+                kind = call.args[0].value
+                if isinstance(kind, str) and kind.startswith("comment_draft."):
+                    kinds.append(kind)
+        if kinds and not has_record_event:
+            orphans[node.name] = kinds
+    return orphans
+
+
+def test_every_comment_draft_failure_kind_is_also_recorded_to_the_db():
+    """2026-08-18: draft_comments() logged every failure via obs.log() alone.
+    Its file write is best-effort and the scheduled Task Scheduler invocation
+    discards stderr entirely, so two real drafting failures left NO trace
+    anywhere. Every comment_draft.* failure kind must also reach
+    obs.record_event() in the same function, so a future branch cannot
+    silently fall back to the one sink that already failed once."""
+    orphans = _log_only_comment_draft_failure_kinds()
+    assert orphans == {}, (
+        f"comment_draft.py: these functions log a failure kind without also "
+        f"recording it to the DB: {orphans}"
+    )
