@@ -1249,7 +1249,12 @@ def test_a_malformed_gates_value_shows_a_sensible_notice_not_garbage(two_stage_c
     assert page.status_code == 200
     assert "malformed" in page.text
     assert 'class="status "' not in page.text
-    assert page.text.count('status-') < 5
+    # Threshold raised from 5 to 9 by T8 (status strip): the strip adds two
+    # legitimate page-wide "status-" occurrences ("status-strip" and
+    # "status-{stage_status}") that have nothing to do with the malformed-gate
+    # regression this assertion guards against. "not-a-list" is 10 characters,
+    # so the old char-iteration bug would still produce far more than 9.
+    assert page.text.count('status-') < 9
 
 
 def test_a_missing_dependency_names_the_stage_id_and_says_missing(two_stage_client):

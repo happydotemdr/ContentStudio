@@ -2,6 +2,22 @@
 {% block content %}
 <h1>{{ project.run_id }} — {{ stage_id }}</h1>
 
+{# The page never stated its own status, and version / created_at /
+   finalized_at were parsed into output_meta and then thrown away, so an
+   operator could not tell whether the body on screen was v1 or v7 (E-06). #}
+<div class="status-strip">
+  <span class="status status-{{ stage_status }}">{{ stage_status }}</span>
+  {% if artifact_version %}<span class="strip-item">artifact v{{ artifact_version }}</span>{% endif %}
+  {% if artifact_created_at %}<span class="strip-item">generated {{ artifact_created_at }}</span>{% endif %}
+  {% if artifact_finalized_at %}<span class="strip-item">finalized {{ artifact_finalized_at }}</span>{% endif %}
+</div>
+{% if gate_override %}
+<p class="override-record">
+  Approved over a gate{% if gate_override.at %} on {{ gate_override.at }}{% endif %}.
+  Reason on record: {{ gate_override.reason }}
+</p>
+{% endif %}
+
 {% if error_banner %}<div class="error-banner">{{ error_banner.message }}</div>{% endif %}
 
 <section class="input-panel">

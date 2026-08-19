@@ -205,3 +205,28 @@ def test_htmx_is_served_from_the_local_static_mount(client: TestClient):
 def test_page_heading_matches_its_own_tab_label(client: TestClient, url, heading):
     resp = client.get(url)
     assert f"<h1>{heading}</h1>" in resp.text
+
+
+def test_stage_page_status_strip_states_status_version_and_generated_at(client_with_stage):
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    stage_dir = app.state.repo_root / "runs" / project["run_id"] / "01-ideation"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    (stage_dir / "artifact.v3.md").write_text(
+        "---\nversion: 3\ncreated_at: '2026-08-08T10:00:00+00:00'\n"
+        "finalized_at: '2026-08-08T10:05:00+00:00'\n"
+        "gate_override:\n  reason: dash is inside a verbatim 1886 quote\n"
+        "  at: '2026-08-08T10:05:00+00:00'\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert 'class="status-strip"' in page.text
+    assert "artifact v3" in page.text
+    assert "2026-08-08T10:00:00+00:00" in page.text
+    assert "dash is inside a verbatim 1886 quote" in page.text
