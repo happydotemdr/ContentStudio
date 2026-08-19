@@ -33,22 +33,45 @@
 <section class="input-panel">
   <h2>Input</h2>
   {% if grounding_input_html %}
-  <h3>Grounding companion</h3>
-  <div class="rendered-markdown">{{ grounding_input_html | safe }}</div>
+  <div class="input-card">
+    <h3>Grounding companion</h3>
+    <div class="rendered-markdown">{{ grounding_input_html | safe }}</div>
+  </div>
   {% endif %}
-  {% if inputs %}
-  {% for input in inputs %}
-  <h3>From {{ input.stage_id }}</h3>
-  {% if input.present and not input.malformed %}
-  <div class="rendered-markdown">{{ input.html | safe }}</div>
-  {% elif input.malformed %}
-  <p class="input-malformed">malformed -- could not read {{ input.artifact }}</p>
-  {% else %}
-  <p class="input-missing">no input yet from {{ input.stage_id }}</p>
-  {% endif %}
+  {# One card per DECLARED dependency, present or not. Concatenating only the
+     ones that resolved meant a missing upstream left no gap on the page -- and
+     the same partial context was what the turn was actually given. #}
+  {% for up in inputs %}
+  <div class="input-card{% if not up.present %} input-card-missing{% endif %}">
+    <h3>
+      From {{ up.stage_id }}
+      {% if up.present and not up.malformed %}
+      <span class="strip-item">{{ up.artifact }}</span>
+      {% elif up.malformed %}
+      <span class="status status-error">malformed</span>
+      {% else %}
+      <span class="status status-no_artifact">missing</span>
+      {% endif %}
+    </h3>
+    {% if up.present and not up.malformed %}
+    <div class="rendered-markdown">{{ up.html | safe }}</div>
+    {% elif up.malformed %}
+    <p class="gate-explainer">
+      <code>{{ up.artifact }}</code> from <code>{{ up.stage_id }}</code> could not be read. The
+      turn was given whatever partial context that produced.
+    </p>
+    {% else %}
+    <p class="gate-explainer">
+      This stage declares <code>{{ up.stage_id }}</code> as a dependency and no artifact for it
+      was found. The turn was given this same partial context.
+    </p>
+    {% endif %}
+  </div>
   {% endfor %}
-  {% elif not grounding_input_html %}
-  <p>No upstream input.</p>
+  {% if not inputs and not grounding_input_html %}
+  <div class="input-card">
+    <p>This stage has no upstream dependencies.</p>
+  </div>
   {% endif %}
 </section>
 
@@ -110,5 +133,20 @@
     {% endif %}
     <button type="submit">Mark Approved</button>
   </form>
+  {# 60 lines of carefully-reasoned re-gating behaviour that no template posted
+     to. Without this the only way to fix a typo in an output is to re-run a
+     whole turn or edit the file on disk, which bypasses exactly the re-gating
+     the route exists to guarantee. #}
+  {% if edit_allowed %}
+  <details class="edit-output">
+    <summary>Edit output</summary>
+    <form method="post" action="{{ edit_action }}">
+      <textarea name="{{ edit_field }}" rows="20">{{ output_body }}</textarea>
+      <button type="submit">Save as a new version and re-run gates</button>
+    </form>
+  </details>
+  {% elif edit_blocked_reason %}
+  <p class="browse-placeholder">Editing is unavailable: {{ edit_blocked_reason }}</p>
+  {% endif %}
 </section>
 {% endblock %}

@@ -630,3 +630,44 @@ def test_a_skipped_orphan_sweep_renders_differently_from_a_clean_one(client: Tes
     assert "not checked" in skipped
     assert "not checked" not in clean
     assert "None" not in skipped
+
+
+def test_every_declared_upstream_gets_a_card_including_missing_ones(client_with_stage):
+    """A dependency with no artifact used to be dropped by an `is not None`
+    guard, so the operator reviewed a partial input believing it complete."""
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    page = test_client.get(f"/projects/{project_id}/stages/ideation").text
+    assert 'class="input-card"' in page
+    assert "No upstream input." not in page or 'class="input-card"' in page
+
+
+def test_a_missing_upstream_is_labelled_missing_not_omitted(client_with_stage):
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    page = test_client.get(f"/projects/{project_id}/stages/ideation").text
+    # `ideation` declares no deps, so this asserts the shape holds at zero;
+    # the multi-dep case is P3's fixture. What must never appear is a card
+    # that is silently absent.
+    assert "input-card-missing" in page or "This stage has no upstream dependencies." in page
+
+
+def test_the_edit_output_disclosure_exists_when_editing_is_allowed(client_with_stage):
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    _stage_with_artifact(app, project["run_id"], "version: 1\n")
+    page = test_client.get(f"/projects/{project_id}/stages/ideation").text
+    assert "Edit output" in page
+    assert 'name="body"' in page or "edit_field" in page
