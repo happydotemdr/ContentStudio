@@ -1022,7 +1022,7 @@ def test_a_gate_block_re_renders_the_stage_page_with_a_banner(two_stage_client):
     assert resp.headers["content-type"].startswith("text/html")
     assert "gate_d_script_language" in resp.text        # the page, not a text file
     assert 'name="override_reason"' in resp.text        # a way forward from here
-    assert "error-banner" in resp.text
+    assert 'class="approval-error"' in resp.text
 
 
 def test_a_locked_stage_edit_re_renders_with_a_banner(two_stage_client):
@@ -1037,7 +1037,7 @@ def test_a_locked_stage_edit_re_renders_with_a_banner(two_stage_client):
     )
     assert resp.status_code == 409
     assert resp.headers["content-type"].startswith("text/html")
-    assert "error-banner" in resp.text
+    assert 'class="approval-error"' in resp.text
     assert "locked" in resp.text
 
 
@@ -1054,7 +1054,7 @@ def test_the_grounding_edit_refusal_keeps_its_message(client):
     )
     assert resp.status_code == 409
     assert resp.headers["content-type"].startswith("text/html")
-    assert "error-banner" in resp.text
+    assert 'class="approval-error"' in resp.text
     assert "rgs-briefs" in resp.text
 
 
