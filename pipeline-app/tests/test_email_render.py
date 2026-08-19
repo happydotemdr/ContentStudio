@@ -1,3 +1,9 @@
+import re
+from pathlib import Path
+
+import pytest
+
+from pipeline_app import discovery_digest as digest
 from pipeline_app import email_render
 
 
@@ -10,12 +16,51 @@ def _item(platform="youtube", handle="chan", display_name="Some Channel", item_i
             "views": views, "likes": likes, "comments": comments, "body": body}
 
 
-def _summary(items=None, spotlight=None, drafts=None, errored=None,
-             run_status="completed", has_issues=False):
+def _summary(items=None, spotlight=None, spotlight_rule=None, drafts=None, errored=None,
+             errors=None, run_status="completed", has_issues=False, coverage=None,
+             skips=None, warnings=None, duplicates=None, mismatches=None, started_at=None,
+             brand_coverage=None):
     return {"run_status": run_status, "has_issues": has_issues,
             "items": items if items is not None else [],
             "errored": errored if errored is not None else [],
-            "spotlight": spotlight, "drafts": drafts if drafts is not None else []}
+            "errors": errors if errors is not None else [],
+            "spotlight": spotlight, "spotlight_rule": spotlight_rule,
+            "drafts": drafts if drafts is not None else [],
+            "coverage": coverage or {"scanned": 3, "with_items": 0, "quiet": 3,
+                                     "errored": 0, "other": {}},
+            "skips": skips or [], "warnings": warnings or [],
+            "duplicates": duplicates or [], "mismatches": mismatches or [],
+            "started_at": started_at or "2026-08-01T06:00:00+00:00",
+            # Default: every brand "scanned" so existing quiet-section tests
+            # don't trip the new untagged-brand line (B-113) unless they ask.
+            "brand_coverage": brand_coverage or {
+                brand: {"scanned": 1, "with_items": 0}
+                for brand in email_render.BRAND_SECTION_ORDER
+            }}
+
+
+def _section(items=None, spotlight=None, spotlight_rule=None, drafts=None):
+    """A per-brand section dict, carrying ONLY genuinely per-section keys.
+
+    Deliberately narrower than _summary(): run-level facts (coverage, skips,
+    warnings, duplicates, mismatches, the handle `errors` list, and
+    run_status/has_issues behind the "Run status:" banner) live on `overall`
+    and are rendered once by render_brand_digest, never once per section.
+    """
+    return {"items": items if items is not None else [],
+            "spotlight": spotlight, "spotlight_rule": spotlight_rule,
+            "drafts": drafts if drafts is not None else []}
+
+
+SCHEMA = Path(__file__).resolve().parents[1] / "pipeline_app" / "schema.sql"
+
+
+def _schema_platforms() -> set[str]:
+    check = re.search(r"platform\s+IN\s*\(([^)]*)\)", SCHEMA.read_text(encoding="utf-8"))
+    if check is None:
+        raise AssertionError(
+            "handles has no platform CHECK constraint; this guard needs package P1's schema change")
+    return set(re.findall(r"'([^']+)'", check.group(1)))
 
 
 def test_subject_counts_posts_not_videos():
@@ -26,8 +71,44 @@ def test_subject_counts_posts_not_videos():
 def test_no_new_content_body():
     result = email_render.render_email(_summary(), "2026-08-08")
     assert result["subject"] == "ContentStudio Discovery 2026-08-08: 0 new post(s)"
-    assert result["text"] == "No new content today."
+    # No longer the WHOLE body: the coverage footer now follows it (B-95b).
+    assert "No new content today." in result["text"]
     assert "No new content today." in result["html"]
+
+
+def test_a_quiet_day_states_the_denominator_it_was_quiet_against():
+    result = email_render.render_email(_summary(), "2026-08-08")
+    assert result["text"] != "No new content today."          # inverts the old assertion
+    assert "No new content today." in result["text"]
+    assert "Scanned 3 handle(s)" in result["text"]
+    assert "3 quiet" in result["text"]
+    assert "Scanned 3 handle(s)" in result["html"]
+
+
+def test_an_empty_roster_says_so_instead_of_reading_as_a_quiet_day():
+    coverage = {"scanned": 0, "with_items": 0, "quiet": 0, "errored": 0, "other": {}}
+    result = email_render.render_email(
+        _summary(coverage=coverage, has_issues=True, run_status="completed"), "2026-08-08")
+    assert result["subject"].startswith("[ISSUE] ")
+    assert "No handles were scanned" in result["text"]
+    assert "No handles were scanned" in result["html"]
+
+
+@pytest.mark.parametrize("key", email_render.REQUIRED_SUMMARY_KEYS)
+def test_render_email_refuses_a_summary_missing_any_required_key(key):
+    # Parametrized off the real tuple for the same reason as the
+    # render_brand_digest guard below: a hand-kept list falls behind.
+    summary = _summary()
+    del summary[key]
+    with pytest.raises(KeyError, match=key):
+        email_render.render_email(summary, "2026-08-08")
+
+
+def test_unreadable_files_are_named_in_the_body():
+    skips = [{"handle": "Betty Liu", "reason": "bad_frontmatter", "name": "broken.md"}]
+    text = email_render.render_email(_summary(skips=skips, has_issues=True), "2026-08-08")["text"]
+    assert "1 captured file(s) could not be read" in text
+    assert "broken.md" in text
 
 
 def test_issue_prefixes_subject_and_opens_body_with_run_status():
@@ -39,10 +120,29 @@ def test_issue_prefixes_subject_and_opens_body_with_run_status():
 
 
 def test_errors_section_lists_handle_names():
-    summary = _summary(errored=["@dead-handle"], has_issues=True)
+    summary = _summary(errored=["@dead-handle"],
+                        errors=[{"label": "@dead-handle", "reason": "boom"}],
+                        has_issues=True)
     result = email_render.render_email(summary, "2026-08-08")
     assert "@dead-handle" in result["text"]
     assert "@dead-handle" in result["html"]
+
+
+def test_one_systemic_cause_is_visually_separable_from_many_independent_ones():
+    same = [{"label": f"Handle {i}", "reason": "BrightDataError: 401 unauthorized"}
+            for i in range(6)]
+    summary = _summary(errored=[e["label"] for e in same], errors=same, has_issues=True)
+    text = email_render.render_email(summary, "2026-08-08")["text"]
+    assert "401 unauthorized" in text
+    assert "1 distinct cause" in text
+
+
+def test_an_error_reason_is_html_escaped():
+    errors = [{"label": "Someone", "reason": '<img src=x onerror="alert(1)">'}]
+    html = email_render.render_email(
+        _summary(errored=["Someone"], errors=errors, has_issues=True), "2026-08-08")["html"]
+    assert "<img" not in html
+    assert "&lt;img" in html
 
 
 def test_click_here_to_view_is_the_anchor_text_in_html_and_a_raw_url_in_text():
@@ -57,8 +157,10 @@ def test_spotlight_renders_excerpt_metrics_and_drafts():
                  title="Moving fast", url="https://example.com/li", views=None,
                  likes=214, comments=37, body="We keep telling founders to move fast.")
     drafts = ["Draft one is here.", "Draft two is here.", "Draft three is here."]
-    result = email_render.render_email(_summary(items=[spot], spotlight=spot, drafts=drafts),
-                                       "2026-08-08")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_LINKEDIN, drafts=drafts),
+        "2026-08-08")
     assert "Betty Liu" in result["html"]
     assert "We keep telling founders" in result["html"]
     assert "214 likes" in result["html"]
@@ -70,8 +172,10 @@ def test_spotlight_renders_excerpt_metrics_and_drafts():
 
 def test_spotlight_notes_when_drafting_was_unavailable():
     spot = _item()
-    result = email_render.render_email(_summary(items=[spot], spotlight=spot, drafts=[]),
-                                       "2026-08-08")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT, drafts=[]),
+        "2026-08-08")
     assert "unavailable" in result["text"].lower()
     assert "How To Actually Finish A Video" in result["html"]
 
@@ -79,18 +183,31 @@ def test_spotlight_notes_when_drafting_was_unavailable():
 def test_spotlight_item_still_appears_in_the_inventory_with_a_marker():
     spot = _item()
     result = email_render.render_email(
-        _summary(items=[spot], spotlight=spot, drafts=[]), "2026-08-08")
+        _summary(items=[spot], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT, drafts=[]),
+        "2026-08-08")
     assert result["text"].count("How To Actually Finish A Video") >= 2
     assert "featured above" in result["text"]
 
 
-def test_unknown_platform_sorts_last_with_a_titlecased_label():
-    known = _item(platform="youtube")
-    unknown = _item(platform="threads", handle="t", display_name="T", item_id="th1",
-                    title="A Threads Post", url="https://example.com/t")
-    result = email_render.render_email(_summary(items=[unknown, known]), "2026-08-08")
-    assert "Threads" in result["text"]
-    assert result["text"].index("YouTube") < result["text"].index("Threads")
+def test_facebook_and_x_rank_above_no_platform_and_carry_real_labels():
+    items = [_item(platform="bluesky", handle="b", item_id="b1", title="Bluesky Post"),
+             _item(platform="facebook", handle="f", item_id="f1", title="Facebook Post"),
+             _item(platform="x", handle="x", item_id="x1", title="X Post")]
+    text = email_render.render_email(_summary(items=items), "2026-08-08")["text"]
+    assert "Facebook" in text and "\nX\n" in text
+    assert text.index("Facebook") < text.index("Bluesky")
+    assert text.index("X\n") < text.index("Bluesky")
+
+
+def test_an_unranked_platform_is_reported_rather_than_silently_titlecased():
+    # Replaces test_unknown_platform_sorts_last_with_a_titlecased_label, which
+    # ratified the fallback instead of catching the two real omissions (B-92).
+    unknown = _item(platform="linkedin-newsletter", handle="n", item_id="n1", title="A Newsletter")
+    result = email_render.render_email(_summary(items=[unknown]), "2026-08-08")
+    assert "Linkedin Newsletter" not in result["text"]      # never invent a label
+    assert "linkedin-newsletter" in result["text"]          # show the id verbatim
+    assert result["unknown_platforms"] == ["linkedin-newsletter"]
 
 
 def test_missing_url_renders_the_entry_without_a_link():
@@ -120,7 +237,9 @@ def test_href_escapes_quotes_and_cannot_break_out_of_the_attribute():
 def test_html_escapes_untrusted_title_and_excerpt():
     spot = _item(title='A <script>alert("x")</script> & more',
                  body='Body with <b>tags</b> & "quotes".')
-    result = email_render.render_email(_summary(items=[spot], spotlight=spot), "2026-08-08")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT), "2026-08-08")
     assert "<script>" not in result["html"]
     assert "&lt;script&gt;" in result["html"]
     assert "&amp;" in result["html"]
@@ -147,7 +266,9 @@ def test_spotlight_survives_an_empty_inventory():
     spot = _item()
     drafts = ["Draft one is here."]
     result = email_render.render_email(
-        _summary(items=[], spotlight=spot, drafts=drafts), "2026-08-08")
+        _summary(items=[], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT, drafts=drafts),
+        "2026-08-08")
     assert result["text"] != "No new content today."
     assert "How To Actually Finish A Video" in result["text"]
     assert "Draft one is here." in result["text"]
@@ -162,6 +283,20 @@ def test_text_and_html_list_the_same_titles():
     for title in ("How To Actually Finish A Video", "Second Video"):
         assert title in result["text"]
         assert title in result["html"]
+
+
+def test_spotlight_header_uses_the_same_field_order_in_both_parts():
+    spot = _item(platform="linkedin-profile", display_name="Betty Liu", item_id="7358",
+                 title="Moving fast", views=None, likes=214, comments=37,
+                 published="2026-08-07")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                spotlight_rule=email_render.SPOTLIGHT_RULE_LINKEDIN), "2026-08-08")
+    text, html = result["text"], result["html"]
+    order = ("Moving fast", "Betty Liu", "214 likes", "37 comments", "2026-08-07")
+    for part in (text, html):
+        positions = [part.index(field) for field in order]
+        assert positions == sorted(positions), f"field order broke in:\n{part}"
 
 
 def test_render_brand_digest_orders_sections_freedom2beu_then_rgs_then_guru():
@@ -228,8 +363,10 @@ def test_render_brand_digest_each_section_keeps_its_own_spotlight_and_drafts():
     rgs_spot = _item(item_id="r1", title="RGS Spotlight")
     sections = {
         "freedom2beu": _summary(items=[f2bu_spot], spotlight=f2bu_spot,
+                                spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT,
                                 drafts=["F2BU draft one.", "F2BU draft two.", "F2BU draft three."]),
         "raisinggoodsports": _summary(items=[rgs_spot], spotlight=rgs_spot,
+                                      spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT,
                                       drafts=["RGS draft one.", "RGS draft two.", "RGS draft three."]),
     }
     overall = _summary(items=[f2bu_spot, rgs_spot])
@@ -265,3 +402,184 @@ def test_render_brand_digest_no_warning_when_every_item_is_covered():
     result = email_render.render_brand_digest(overall, sections, "2026-08-15")
     assert "no brand tag" not in result["text"].lower()
     assert "no brand tag" not in result["html"].lower()
+
+
+def test_render_brand_digest_includes_unknown_platforms_in_return_dict():
+    # Parity with render_email: unknown platforms are surfaced for monitoring.
+    unknown = _item(platform="linkedin-newsletter", handle="n", item_id="n1", title="A Newsletter")
+    sections = {"guru": _summary(items=[unknown])}
+    overall = _summary(items=[unknown])
+    result = email_render.render_brand_digest(overall, sections, "2026-08-15")
+    assert result["unknown_platforms"] == ["linkedin-newsletter"]
+
+
+def test_the_email_states_that_linkedin_always_wins_the_spotlight():
+    spot = _item(platform="linkedin-profile", item_id="li")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                 spotlight_rule=email_render.SPOTLIGHT_RULE_LINKEDIN), "2026-08-08")
+    for part in (result["text"], result["html"]):
+        assert "LinkedIn posts are always picked first" in part
+
+
+def test_a_non_linkedin_spotlight_is_labelled_as_the_most_engaged():
+    spot = _item(platform="youtube", item_id="yt")
+    result = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                 spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT), "2026-08-08")
+    assert "most engagement" in result["text"]
+    assert "always picked first" not in result["text"]
+
+
+def _three_brand_sections():
+    return {
+        "freedom2beu": _section(items=[_item(item_id="f1", title="F2BU Post")]),
+        "raisinggoodsports": _section(items=[_item(item_id="r1", title="RGS Post")]),
+        "guru": _section(items=[_item(item_id="g1", title="Guru Post")]),
+    }
+
+
+def test_render_brand_digest_prints_run_level_facts_once_not_once_per_section():
+    # Task 12 threaded overall["coverage"] into every sections[brand] dict as an
+    # interim step, so a run with a non-empty other_statuses printed the
+    # "Handles reported as ..." block THREE times in one email -- once per brand
+    # section. Run-level facts belong to the run, not to any brand.
+    #
+    # `errors` and the "Run status:" banner were the last two facts still doing
+    # that, found in the final whole-branch review: two failed handles printed
+    # the whole Errors block under all three brand headings, including brands
+    # neither failing handle is tagged with.
+    errors = [{"label": "@dead-handle", "reason": "BrightDataError: 401 unauthorized"},
+              {"label": "Betty Liu", "reason": "HTTPError: 500 upstream"}]
+    overall = _summary(
+        items=[_item(item_id="f1"), _item(item_id="r1"), _item(item_id="g1")],
+        has_issues=True,
+        run_status="completed_with_errors",
+        errored=[e["label"] for e in errors],
+        errors=errors,
+        coverage={"scanned": 4, "with_items": 3, "quiet": 0, "errored": 2,
+                  "other": {"skipped": ["Someone BS"]}},
+        skips=[{"handle": "Betty Liu", "reason": "bad_frontmatter", "name": "broken.md"}],
+        duplicates=[{"item_id": "dupe1"}],
+        mismatches=[{"label": "Aspen", "db": 3, "found": 1, "direction": "missing",
+                     "escalated": True}],
+    )
+    result = email_render.render_brand_digest(overall, _three_brand_sections(), "2026-08-15")
+
+    for part in (result["text"], result["html"]):
+        assert part.count("Scanned 4 handle(s)") == 1
+        assert part.count("Handles reported as skipped") == 1
+        assert part.count("Someone BS") == 1
+        assert part.count("1 captured file(s) could not be read") == 1
+        assert part.count("broken.md") == 1
+        assert part.count("reported twice") == 1
+        assert part.count("but only 1 are on disk") == 1
+        # The two findings this test grew to cover: three brand sections, one
+        # Errors block, one Run status banner.
+        assert part.count("Errors (2 handle(s), 2 distinct cause(s))") == 1
+        assert part.count("@dead-handle") == 1
+        assert part.count("401 unauthorized") == 1
+        assert part.count("Run status: completed_with_errors") == 1
+    # ...while genuinely per-section content still renders once per section.
+    assert result["text"].count("F2BU Post") == 1
+    assert result["text"].count("RGS Post") == 1
+    assert result["text"].count("Guru Post") == 1
+
+
+def test_render_brand_digest_reports_an_unranked_platform_once_for_the_whole_run():
+    unknown = _item(platform="linkedin-newsletter", handle="n", item_id="n1",
+                    title="A Newsletter")
+    sections = {"freedom2beu": _section(items=[unknown]),
+                "raisinggoodsports": _section(items=[unknown])}
+    overall = _summary(items=[unknown])
+    result = email_render.render_brand_digest(overall, sections, "2026-08-15")
+    assert result["text"].count("no configured label or display rank") == 1
+    assert result["html"].count("no configured label or display rank") == 1
+
+
+def test_render_brand_digest_sections_need_no_run_level_keys():
+    # _section() carries no run-level key at all -- not the ones in
+    # RUN_LEVEL_SUMMARY_KEYS, not run_status/has_issues. The per-section
+    # renderers must not reach for any of them (this is what lets notify() stop
+    # copying them into every section).
+    assert not set(_section()) & set(email_render.RUN_LEVEL_SUMMARY_KEYS)
+    assert not set(_section()) & {"run_status", "has_issues"}
+    overall = _summary(items=[_item(item_id="g1")])
+    result = email_render.render_brand_digest(
+        overall, {"guru": _section(items=[_item(item_id="g1", title="Guru Post")])},
+        "2026-08-15")
+    assert "Guru Post" in result["text"]
+    assert "Scanned 3 handle(s)" in result["text"]
+
+
+@pytest.mark.parametrize("key", email_render.REQUIRED_OVERALL_KEYS)
+def test_render_brand_digest_refuses_an_overall_missing_any_required_key(key):
+    # The guard has to live here too: production calls render_brand_digest, never
+    # render_email, so a guard only on render_email protects nothing real.
+    #
+    # Parametrized off the real tuple, not a hand-kept list: the hand-kept
+    # version had already fallen four keys behind by the end of this package.
+    overall = _summary()
+    del overall[key]
+    with pytest.raises(KeyError, match=key):
+        email_render.render_brand_digest(overall, {}, "2026-08-15")
+
+
+def test_render_brand_digest_puts_the_coverage_footer_on_the_empty_email_too():
+    result = email_render.render_brand_digest(_summary(), {}, "2026-08-15")
+    assert "No new content today." in result["text"]
+    assert "Scanned 3 handle(s)" in result["text"]
+    assert "Scanned 3 handle(s)" in result["html"]
+
+
+def test_a_short_spotlight_is_emailed_in_full_which_is_what_the_cap_means():
+    # EXCERPT_MAX_CHARS is a ceiling, not a guarantee of partiality. Every X
+    # post is under it, so every X spotlight ships whole (B-90). Pinned here so
+    # CLAUDE.md's privacy paragraph has something to be accurate ABOUT.
+    body = "The whole post, all of it, under four hundred characters and therefore entire."
+    spot = _item(body=body)
+    text = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                 spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT), "2026-08-08")["text"]
+    assert body in text
+    assert "..." not in text.split(body)[1][:5]
+
+
+def test_a_long_spotlight_is_cut_at_the_ceiling_with_an_ellipsis():
+    spot = _item(body="word " * 400)
+    text = email_render.render_email(
+        _summary(items=[spot], spotlight=spot,
+                 spotlight_rule=email_render.SPOTLIGHT_RULE_ENGAGEMENT), "2026-08-08")["text"]
+    excerpt = email_render._excerpt(spot["body"])
+    assert excerpt.endswith("...")
+    assert len(excerpt) <= email_render.EXCERPT_MAX_CHARS + 3
+    assert excerpt in text
+
+
+def test_the_disclosure_constants_are_what_the_documentation_must_describe():
+    assert email_render.EXCERPT_MAX_CHARS == 400
+    assert email_render.DISCLOSURE == (
+        "Each item contributes a derived title of at most "
+        f"{digest.TITLE_MAX_CHARS} characters, which for a platform with no title "
+        "field is the opening of the post text. The spotlight additionally "
+        f"contributes up to {email_render.EXCERPT_MAX_CHARS} characters of its "
+        "primary text, which for a post shorter than that is the whole post.")
+
+
+def test_warnings_reach_the_email_body_not_just_the_log():
+    # build_summary() populates "warnings" from collect()'s two soft flaws
+    # (no url, no published field) -- the item still ships in `items`, but
+    # until now the flaw itself never reached the email, only obs.log().
+    warnings = [{"handle": "Betty Liu", "reason": "no_url", "name": "post.md"}]
+    text = email_render.render_email(_summary(warnings=warnings, has_issues=True), "2026-08-08")["text"]
+    html = email_render.render_email(_summary(warnings=warnings, has_issues=True), "2026-08-08")["html"]
+    assert "1" in text and "post.md" in text
+    assert "post.md" in html
+
+
+def test_every_accepted_platform_has_a_rank_and_a_label():
+    platforms = _schema_platforms()
+    assert platforms, "the CHECK constraint parsed to an empty vocabulary"
+    assert platforms - set(email_render.PLATFORM_ORDER) == set()
+    assert platforms - set(email_render.PLATFORM_LABELS) == set()
+    assert set(email_render.PLATFORM_ORDER) == set(email_render.PLATFORM_LABELS)

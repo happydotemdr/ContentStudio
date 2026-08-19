@@ -13,19 +13,31 @@ from __future__ import annotations
 import html as _html
 import re
 
-from pipeline_app.discovery_digest import published_rank
+from pipeline_app.discovery_digest import (
+    published_rank, TITLE_MAX_CHARS, SPOTLIGHT_RULE_LINKEDIN, SPOTLIGHT_RULE_ENGAGEMENT,
+)
 
-# Fixed display order. A platform not listed here is appended alphabetically,
-# so an adapter added later renders correctly with no change to this file -- it
-# just sorts to the bottom until someone gives it a rank.
+SPOTLIGHT_RULE_TEXT = {
+    SPOTLIGHT_RULE_LINKEDIN: "LinkedIn posts are always picked first, whatever else the day held.",
+    SPOTLIGHT_RULE_ENGAGEMENT: "Picked for the most engagement (likes plus comments).",
+}
+
+# Fixed display order. Every platform id the handles CHECK constraint accepts
+# MUST appear here and in PLATFORM_LABELS -- tests/test_email_render.py reads
+# the constraint and fails if one does not. An id that somehow arrives unranked
+# sorts last and renders VERBATIM: inventing "Linkedin Newsletter" for
+# linkedin-newsletter reads as a real label and hides the omission (B-92).
 PLATFORM_ORDER = (
-    "linkedin-profile", "linkedin-company", "youtube", "instagram", "bluesky",
+    "linkedin-profile", "linkedin-company", "youtube", "instagram",
+    "facebook", "x", "bluesky",
 )
 PLATFORM_LABELS = {
     "linkedin-profile": "LinkedIn",
     "linkedin-company": "LinkedIn (Company)",
     "youtube": "YouTube",
     "instagram": "Instagram",
+    "facebook": "Facebook",
+    "x": "X",
     "bluesky": "Bluesky",
 }
 
@@ -37,6 +49,20 @@ BRAND_LABELS = {
 }
 
 EXCERPT_MAX_CHARS = 400
+
+# The email's exact disclosure surface, in one string, so CLAUDE.md's privacy
+# paragraph has a single source to mirror and a test to fail against. The
+# excerpt cap is a CEILING, not a promise of partiality: a post shorter than it
+# ships whole (B-90), and a derived title on a platform with no title field is
+# the post's own opening (B-91).
+DISCLOSURE = (
+    "Each item contributes a derived title of at most "
+    f"{TITLE_MAX_CHARS} characters, which for a platform with no title "
+    "field is the opening of the post text. The spotlight additionally "
+    f"contributes up to {EXCERPT_MAX_CHARS} characters of its "
+    "primary text, which for a post shorter than that is the whole post."
+)
+
 LINK_TEXT = "Click here to view"
 # Middle dot, as an HTML entity. Joined into already-escaped pieces, never
 # passed through html.escape itself.
@@ -44,10 +70,152 @@ SEPARATOR = " &#183; "
 FEATURED_MARKER = "(featured above)"
 NO_CONTENT_TEXT = "No new content today."
 DRAFTS_UNAVAILABLE = "Comment drafting was unavailable for this run."
+NO_HANDLES_TEXT = "No handles were scanned. The roster is empty or entirely excluded."
+
+# Facts about the RUN, not about any one brand section. build_summary() puts
+# these on its top-level summary; _render_text/_render_html must never read
+# them, because they run once PER BRAND SECTION and would print each of these
+# up to three times in a single email.
+#
+# `errors` is in here for exactly that reason: a handle that failed belongs to
+# the run, not to a brand, and rendering it per section printed the whole
+# "Errors (N handle(s), M distinct cause(s))" block under all three brand
+# headings -- including brands the failing handles are not even tagged with.
+RUN_LEVEL_SUMMARY_KEYS = ("coverage", "skips", "warnings", "duplicates",
+                          "mismatches", "errors")
+
+# What render_brand_digest needs on `overall`. Deliberately does NOT include
+# spotlight/spotlight_rule/drafts: those are per-section, chosen by notify()'s
+# per-brand loop, and build_summary()'s overall dict has never carried them.
+REQUIRED_OVERALL_KEYS = (
+    "run_status", "has_issues", "items", "started_at", "brand_coverage"
+) + RUN_LEVEL_SUMMARY_KEYS
+
+# What render_email needs: one summary that is BOTH the section and the run.
+REQUIRED_SUMMARY_KEYS = (
+    "run_status", "has_issues", "items", "errored", "errors", "spotlight",
+    "spotlight_rule", "drafts", "coverage", "skips", "warnings", "duplicates",
+    "mismatches",
+)
+
+
+def _require(summary: dict, keys: tuple[str, ...], what: str) -> None:
+    """Raise rather than default on an incomplete summary: a missing `coverage`
+    used to render as a perfectly healthy-looking quiet day, which is the exact
+    confusion this package exists to remove (B-95)."""
+    missing = [k for k in keys if k not in summary]
+    if missing:
+        raise KeyError(f"email_render: {what} is missing {missing}")
+
+
+def _coverage_line(overall: dict) -> str:
+    c = overall["coverage"]
+    if c["scanned"] == 0:
+        return NO_HANDLES_TEXT
+    return (f"Scanned {c['scanned']} handle(s): {c['with_items']} with new posts, "
+            f"{c['quiet']} quiet, {c['errored']} errored.")
+
+
+def _notices(overall: dict) -> list[str]:
+    """Everything that went wrong that is not a handle error. Each line names
+    the count AND an example, so a reader can act without opening the DB."""
+    out = []
+    if overall["skips"]:
+        names = ", ".join(sorted({s["name"] for s in overall["skips"]})[:5])
+        out.append(f"{len(overall['skips'])} captured file(s) could not be read: {names}")
+    if overall["warnings"]:
+        names = ", ".join(sorted({w["name"] for w in overall["warnings"]})[:5])
+        out.append(f"{len(overall['warnings'])} item(s) shipped with a flaw "
+                   f"(missing url or publish date): {names}")
+    if overall["duplicates"]:
+        out.append(f"{len(overall['duplicates'])} post(s) were reported twice by "
+                   f"handles whose directory slugs collide.")
+    escalated = [m for m in overall["mismatches"] if m["escalated"]]
+    for m in escalated:
+        out.append(f"{m['label']}: the run recorded {m['db']} items but only "
+                   f"{m['found']} are on disk.")
+    for platform in unknown_platforms(overall["items"]):
+        out.append(f"Platform '{platform}' has no configured label or display rank.")
+    return out
+
+
+def _errors_heading(errors: list[dict]) -> str:
+    causes = {e["reason"] for e in errors}
+    return f"Errors ({len(errors)} handle(s), {len(causes)} distinct cause(s))"
+
+
+def _run_status_banner(overall: dict) -> str:
+    """The `Run status: <status>` line, or "" on a healthy run.
+
+    Run-level, like everything else in this neighborhood: rendered once for the
+    whole email by render_email/render_brand_digest, never by the per-section
+    renderers (which would print it once per brand heading).
+    """
+    return f"Run status: {overall['run_status']}" if overall["has_issues"] else ""
+
+
+def _run_status_text(overall: dict) -> str:
+    banner = _run_status_banner(overall)
+    return f"{banner}\n\n" if banner else ""
+
+
+def _run_status_html(overall: dict) -> str:
+    banner = _run_status_banner(overall)
+    return f"<p><strong>{_html.escape(banner)}</strong></p>\n" if banner else ""
+
+
+def _run_notice_lines(overall: dict) -> list[str]:
+    """The run-level footer, plain text. Called ONCE per email, on the run's
+    own summary -- never from _render_text, which runs once per brand."""
+    lines: list[str] = []
+    for status, names in sorted(overall["coverage"]["other"].items()):
+        lines.append(f"Handles reported as {status}:")
+        lines += [f"- {name}" for name in names]
+        lines.append("")
+    lines.append(_coverage_line(overall))
+    lines += _notices(overall)
+    if overall["errors"]:
+        lines.append("")
+        lines.append(f"{_errors_heading(overall['errors'])}:")
+        lines += [f"- {e['label']}: {e['reason']}" for e in overall["errors"]]
+    return lines
+
+
+def _run_notice_html(overall: dict) -> list[str]:
+    """The run-level footer, HTML. Same contract as _run_notice_lines."""
+    esc = _html.escape
+    parts: list[str] = []
+    for status, names in sorted(overall["coverage"]["other"].items()):
+        parts.append(f"<h2>Handles reported as {esc(status)}</h2><ul>")
+        parts += [f"<li>{esc(name)}</li>" for name in names]
+        parts.append("</ul>")
+    parts.append(f"<p>{esc(_coverage_line(overall))}</p>")
+    parts += [f"<p>{esc(n)}</p>" for n in _notices(overall)]
+    if overall["errors"]:
+        parts.append(f"<h2>{esc(_errors_heading(overall['errors']))}</h2><ul>")
+        parts += [f"<li>{esc(e['label'])}: {esc(e['reason'])}</li>"
+                  for e in overall["errors"]]
+        parts.append("</ul>")
+    return parts
+
+
+def _append_run_notices_text(body: str, overall: dict) -> str:
+    tail = "\n".join(_run_notice_lines(overall)).rstrip()
+    head = body.rstrip()
+    return (f"{head}\n\n{tail}" if head else tail).rstrip() + "\n"
+
+
+def _append_run_notices_html(body: str, overall: dict) -> str:
+    return "\n".join([body, *_run_notice_html(overall)])
 
 
 def _label(platform: str) -> str:
-    return PLATFORM_LABELS.get(platform) or platform.replace("-", " ").title()
+    return PLATFORM_LABELS.get(platform, platform)
+
+
+def unknown_platforms(items: list[dict]) -> list[str]:
+    """Every platform id in `items` with no rank and no label, sorted."""
+    return sorted({i["platform"] for i in items} - set(PLATFORM_LABELS))
 
 
 def _safe_url(url) -> str | None:
@@ -104,19 +272,29 @@ def _is_spotlight(item: dict, spotlight: dict | None) -> bool:
 
 
 def _render_text(summary: dict) -> str:
-    spotlight, drafts = summary["spotlight"], summary["drafts"]
-    items, errored = summary["items"], summary["errored"]
-    lines: list[str] = []
+    """ONE section's body. Runs once per brand in render_brand_digest, so it
+    reads ONLY per-section keys -- items, spotlight, spotlight_rule, drafts.
 
-    if summary["has_issues"]:
-        lines += [f"Run status: {summary['run_status']}", ""]
+    Everything true of the whole run -- coverage, skips, warnings, duplicates,
+    mismatches, the handle `errors` list, and the `Run status:` banner -- is
+    rendered once per email by _run_status_text()/_run_notice_lines(), off
+    `overall`. Reading any of them here prints them once per brand heading.
+    """
+    spotlight, drafts = summary["spotlight"], summary["drafts"]
+    items = summary["items"]
+    lines: list[str] = []
 
     if spotlight is not None:
         lines.append(f"TODAY'S PICK: {_label(spotlight['platform'])}")
+        lines.append(SPOTLIGHT_RULE_TEXT[summary["spotlight_rule"]])
         header = [spotlight["display_name"], *_metric_bits(spotlight)]
         if spotlight["published"]:
             header.append(spotlight["published"])
-        lines += [" | ".join(header), spotlight["title"], "", _excerpt(spotlight["body"]), ""]
+        # Title FIRST in both parts. The two branches previously disagreed on
+        # field order, so a text-fallback client read a different message from
+        # the same email (B-108).
+        lines += [spotlight["title"], " | ".join(header), "",
+                  _excerpt(spotlight["body"]), ""]
         url = _safe_url(spotlight["url"])
         if url:
             lines += [url, ""]
@@ -141,34 +319,34 @@ def _render_text(summary: dict) -> str:
                 lines.append(f"  {url}")
         lines.append("")
 
-    if errored:
-        lines.append("Errors:")
-        lines += [f"- {name}" for name in errored]
+    # spotlight is in the guard, not just items: a spotlight with an empty items
+    # list can't arise from select_spotlight, which draws from that same items
+    # list, but this renderer must not depend on that upstream invariant
+    # holding -- it has to stay correct on its own terms. `errored`/`has_issues`
+    # left the guard with B-95b: the body no longer ENDS here (a coverage footer
+    # always follows), so "nothing to show" is now a line, not a whole email.
+    if not items and spotlight is None:
+        lines.append(NO_CONTENT_TEXT)
         lines.append("")
-
-    # spotlight is in the guard, not just items/errored/has_issues: a spotlight
-    # with an empty items list can't arise from select_spotlight, which draws
-    # from that same items list, but this renderer must not depend on that
-    # upstream invariant holding -- it has to stay correct on its own terms.
-    if not items and not errored and not summary["has_issues"] and spotlight is None:
-        return NO_CONTENT_TEXT
     return "\n".join(lines).rstrip() + "\n"
 
 
 def _render_html(summary: dict) -> str:
+    """ONE section's body. Same per-section-only contract as _render_text: it
+    reads items, spotlight, spotlight_rule and drafts, and nothing that
+    describes the run (the `Run status:` banner and the handle `errors` list
+    included -- _run_status_html()/_run_notice_html() render those once)."""
     spotlight, drafts = summary["spotlight"], summary["drafts"]
-    items, errored = summary["items"], summary["errored"]
+    items = summary["items"]
     esc = _html.escape
     parts: list[str] = []
-
-    if summary["has_issues"]:
-        parts.append(f"<p><strong>Run status: {esc(summary['run_status'])}</strong></p>")
 
     if spotlight is not None:
         # No dash anywhere in the email's own chrome either. The no-dash rule
         # is enforced on drafts, but a template that types one undercuts the
         # point for a reader scanning on a phone.
         parts.append(f"<h2>Today's pick: {esc(_label(spotlight['platform']))}</h2>")
+        parts.append(f"<p><em>{esc(SPOTLIGHT_RULE_TEXT[summary['spotlight_rule']])}</em></p>")
         header = [spotlight["display_name"], *_metric_bits(spotlight)]
         if spotlight["published"]:
             header.append(spotlight["published"])
@@ -201,23 +379,37 @@ def _render_html(summary: dict) -> str:
             parts.append("<li>" + SEPARATOR.join(bits) + "</li>")
         parts.append("</ul>")
 
-    if errored:
-        parts.append("<h2>Errors</h2><ul>")
-        parts += [f"<li>{esc(name)}</li>" for name in errored]
-        parts.append("</ul>")
-
-    if not items and not errored and not summary["has_issues"] and spotlight is None:
-        return f"<p>{NO_CONTENT_TEXT}</p>"
+    if not items and spotlight is None:
+        parts.append(f"<p>{NO_CONTENT_TEXT}</p>")
     return "\n".join(parts)
 
 
 def render_email(summary: dict, run_date: str) -> dict:
-    """{"subject", "text", "html"} for one finished run."""
+    """{"subject", "text", "html", "unknown_platforms"} for one finished run.
+
+    Single-section entrypoint: `summary` is BOTH the only section and the run,
+    so the run-level footer is built from that same dict. Production uses
+    render_brand_digest instead; this stays a real, directly-tested entrypoint.
+
+    Raises on an incomplete summary rather than defaulting: a missing
+    `coverage` used to render as a perfectly healthy-looking quiet day, which
+    is the exact confusion this package exists to remove (B-95).
+    """
+    _require(summary, REQUIRED_SUMMARY_KEYS, "summary")
     total = len(summary["items"])
     subject = f"ContentStudio Discovery {run_date}: {total} new post(s)"
     if summary["has_issues"]:
         subject = f"[ISSUE] {subject}"
-    return {"subject": subject, "text": _render_text(summary), "html": _render_html(summary)}
+    # The run-level banner is prepended HERE rather than inside _render_text,
+    # for the same reason the footer is appended here: those renderers run once
+    # per section, and this is a fact about the run. With one section the
+    # distinction is invisible; render_brand_digest is where it bites.
+    text = _run_status_text(summary) + _render_text(summary)
+    html = _run_status_html(summary) + _render_html(summary)
+    return {"subject": subject,
+            "text": _append_run_notices_text(text, summary),
+            "html": _append_run_notices_html(html, summary),
+            "unknown_platforms": unknown_platforms(summary["items"])}
 
 
 def render_brand_digest(overall: dict, sections: dict, run_date: str) -> dict:
@@ -242,7 +434,29 @@ def render_brand_digest(overall: dict, sections: dict, run_date: str) -> dict:
     while the subject's count still included it -- Critical finding #1 from
     the pre-execution review. A warning banner makes that discoverable
     instead of silent.
+
+    A brand section with zero items is ALSO ambiguous on its own terms: it
+    reads identically whether that brand's handles were genuinely quiet, or
+    no handle carries that brand's tag at all. `overall["brand_coverage"]`
+    (from build_summary) resolves that per brand; a brand whose `scanned`
+    count is zero gets a distinct "No handles are tagged '<brand>'." line in
+    place of the bare quiet-day text, so the untagged case is named rather
+    than merely looking quiet (B-113).
+
+    Run-level facts (coverage, skips, duplicates, escalated mismatches, unranked
+    platforms, and the handle `errors` list) are read off `overall` ONLY and
+    rendered once, as a footer under all the sections; the `Run status:` banner
+    is likewise read off `overall` and rendered once, above them. They used to
+    be threaded into every `sections[brand]` dict and rendered by the
+    per-section renderers, which printed each of them up to three times in one
+    email -- including an errored handle's failure under brands it carries no
+    tag for (B-95b).
+
+    The missing-key guard lives here as well as on render_email because THIS is
+    the entrypoint production calls: a guard only on render_email would protect
+    a function notify() never reaches.
     """
+    _require(overall, REQUIRED_OVERALL_KEYS, "overall summary")
     total = len(overall["items"])
     subject = f"ContentStudio Discovery {run_date}: {total} new post(s)"
     if overall["has_issues"]:
@@ -268,13 +482,27 @@ def render_brand_digest(overall: dict, sections: dict, run_date: str) -> dict:
         if summary is None:
             continue
         label = BRAND_LABELS.get(brand, brand.title())
-        text_parts.append(f"===== {label.upper()} =====\n\n{_render_text(summary)}")
-        html_parts.append(f"<h1>{_html.escape(label)}</h1>\n{_render_html(summary)}")
+        section_text = _render_text(summary)
+        section_html = _render_html(summary)
+        untagged = (
+            not summary["items"] and summary["spotlight"] is None
+            and overall["brand_coverage"].get(brand, {}).get("scanned", 0) == 0
+        )
+        if untagged:
+            untagged_text = f"No handles are tagged '{label}'. {NO_CONTENT_TEXT}"
+            section_text = section_text.replace(NO_CONTENT_TEXT, untagged_text)
+            section_html = section_html.replace(
+                f"<p>{NO_CONTENT_TEXT}</p>", f"<p>{_html.escape(untagged_text)}</p>")
+        text_parts.append(f"===== {label.upper()} =====\n\n{section_text}")
+        html_parts.append(f"<h1>{_html.escape(label)}</h1>\n{section_html}")
 
-    text = warning_text + (
+    text = _run_status_text(overall) + warning_text + (
         "\n\n".join(text_parts).rstrip() + "\n" if text_parts else NO_CONTENT_TEXT + "\n"
     )
-    html = warning_html + (
+    html = _run_status_html(overall) + warning_html + (
         "\n<hr>\n".join(html_parts) if html_parts else f"<p>{NO_CONTENT_TEXT}</p>"
     )
-    return {"subject": subject, "text": text, "html": html}
+    text = _append_run_notices_text(text, overall)
+    html = _append_run_notices_html(html, overall)
+    return {"subject": subject, "text": text, "html": html,
+            "unknown_platforms": unknown_platforms(overall["items"])}

@@ -12,10 +12,19 @@ title, and spotlight eligibility -- with no change to any email-side module.
 `fetched_at` is the one MANDATORY field: it is the watermark, and an item
 without it is excluded from the run entirely. `url` is strongly expected but
 not required -- an item missing it is still collected and still rendered, just
-without a link, and collect_new_items warns to stderr. `like_count`,
+without a link, and collect() reports it on Collected.warnings. Nothing in this
+module writes to stderr: a caller (discovery_notify.build_summary) turns those
+warnings into obs.log lines and into the daily email's run-level notices, so
+the flaw is visible without anyone tailing a cron log. `like_count`,
 `comment_count`, `view_count`, and `published` are optional; each is omitted
 from the render when absent.
 `fetched_at` must be an aware-UTC isoformat(timespec="seconds") STRING.
+
+`published` is optional. `upload_date` is accepted as its ONE alias, for
+YouTube's yt-dlp-shaped frontmatter. No third name is read: an adapter writing
+`date_published` or `posted_at` gets published=None, which renders undated and
+sorts last, so collect() reports it as a warning rather than letting it pass
+for a post that genuinely has no date.
 
 One known exception: download_brandintel.py, the manual toolkit script at repo
 root, does not honor this contract and is deliberately left unmodified.
@@ -28,7 +37,7 @@ from __future__ import annotations
 
 import re
 import datetime as _dt
-import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pipeline_app import artifacts
@@ -43,6 +52,10 @@ TITLE_MAX_CHARS = 90
 # Seconds of slack on the mtime pre-filter, absorbing filesystem timestamp
 # granularity and clock skew between the run's recorded start and the write.
 MTIME_SLACK_S = 300
+
+# The publish-date field and its one accepted alias. Nothing else is read; a
+# name outside this tuple is reported by collect() (B-98).
+PUBLISHED_FIELDS = ("published", "upload_date")
 
 # Preference order when a body is section-structured (YouTube's is: an H1, then
 # "## description", then "## transcript" -- discovery_youtube.py:289-293).
@@ -160,6 +173,18 @@ def _as_optional_int(value) -> int | None:
         return None
 
 
+def _published(meta: dict) -> str | None:
+    """The publish date from meta, reading only the accepted field names.
+
+    Reads PUBLISHED_FIELDS in order; returns the first non-None value or None.
+    """
+    for field in PUBLISHED_FIELDS:
+        value = _as_optional_str(meta.get(field))
+        if value is not None:
+            return value
+    return None
+
+
 def _mtime_cutoff(run_started_at: str) -> float | None:
     """Epoch seconds below which a file cannot belong to this run, or None to
     disable the pre-filter.
@@ -185,8 +210,7 @@ def _build_item(handle_row, path: Path, meta: dict, body: str) -> dict:
         "item_id": path.stem,
         "title": derive_title(body, path.stem),
         "url": _as_optional_str(meta.get("url")),
-        # YouTube writes upload_date; every other adapter writes published.
-        "published": _as_optional_str(meta.get("published") or meta.get("upload_date")),
+        "published": _published(meta),
         "views": _as_optional_int(meta.get("view_count")),
         "likes": _as_optional_int(meta.get("like_count")),
         "comments": _as_optional_int(meta.get("comment_count")),
@@ -194,9 +218,37 @@ def _build_item(handle_row, path: Path, meta: dict, body: str) -> dict:
     }
 
 
-def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[dict]:
+# Why an item was dropped. Every one of these is a FAULT: a file the adapter
+# wrote that this reader could not honour. Two other `continue` paths -- the
+# mtime pre-filter and a fetched_at older than the run -- are the watermark
+# working as designed and are deliberately NOT reported (B-99).
+SKIP_STAT_FAILED = "stat_failed"
+SKIP_UNREADABLE = "unreadable"
+SKIP_BAD_FRONTMATTER = "bad_frontmatter"
+SKIP_MISSING_FETCHED_AT = "missing_fetched_at"
+
+# Not a skip: the item is still collected, but something about it is off.
+SKIP_NO_PUBLISHED_FIELD = "no_published_field"
+SKIP_NO_URL = "no_url"
+
+
+@dataclass(frozen=True)
+class Collected:
+    """What one handle's directory yielded, INCLUDING what it failed to yield.
+
+    Returning the failures is the whole point: the previous shape was a bare
+    list, so an adapter that wrote 30 unparseable files and an adapter that
+    wrote nothing were the same value (B-99).
+    """
+    items: list[dict] = field(default_factory=list)
+    skips: list[tuple[str, str]] = field(default_factory=list)      # (reason, filename)
+    warnings: list[tuple[str, str]] = field(default_factory=list)   # item kept, but flawed
+
+
+def collect(repo_root: Path, handle_row, run_started_at: str) -> Collected:
     """Every item this handle captured during the run identified by
-    run_started_at, newest-agnostic (the caller orders).
+    run_started_at, newest-agnostic (the caller orders), plus everything the
+    read dropped or flagged along the way.
 
     Selection is a WATERMARK -- frontmatter fetched_at >= run_started_at -- not
     a top-N. It self-corrects when the DB's items_downloaded under-reports,
@@ -206,10 +258,10 @@ def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[
     """
     directory = handle_dir(repo_root, handle_row["platform"], handle_row["handle"])
     if not directory.exists():
-        return []
+        return Collected()
 
     cutoff = _mtime_cutoff(run_started_at)
-    items: list[dict] = []
+    out = Collected()
     # glob("*.md") is non-recursive and does not match the ".md.tmp"
     # write-temps. YouTube's _tmp/ scratch directory is a SIBLING of the handle
     # directories (output/brand-intel/youtube/_tmp, discovery_youtube.py:205),
@@ -218,29 +270,42 @@ def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[
         if cutoff is not None:
             try:
                 if path.stat().st_mtime < cutoff:
-                    continue
+                    continue        # outside the run: expected, not a skip
             except OSError:
+                out.skips.append((SKIP_STAT_FAILED, path.name))
                 continue
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
+            out.skips.append((SKIP_UNREADABLE, path.name))
             continue
         try:
             meta, body = artifacts.parse_frontmatter(text)
         except artifacts.MalformedArtifactError:
+            out.skips.append((SKIP_BAD_FRONTMATTER, path.name))
             continue
         fetched_at = meta.get("fetched_at")
         # Non-str includes an unquoted YAML timestamp, which parses to a
         # datetime and would raise TypeError on the comparison below.
-        if not isinstance(fetched_at, str) or fetched_at < run_started_at:
+        if not isinstance(fetched_at, str):
+            out.skips.append((SKIP_MISSING_FETCHED_AT, path.name))
             continue
+        if fetched_at < run_started_at:
+            continue                # outside the run: expected, not a skip
         item = _build_item(handle_row, path, meta, body)
         if item["url"] is None:
-            print(f"discovery_digest: no url in {path.name} "
-                  f"({handle_row['platform']}/{handle_row['handle']}), rendering without a link",
-                  file=sys.stderr)
-        items.append(item)
-    return items
+            out.warnings.append((SKIP_NO_URL, path.name))
+        if item["published"] is None and any(k in meta for k in
+                                             ("date_published", "posted_at", "created_at", "date")):
+            out.warnings.append((SKIP_NO_PUBLISHED_FIELD, path.name))
+        out.items.append(item)
+    return out
+
+
+def collect_new_items(repo_root: Path, handle_row, run_started_at: str) -> list[dict]:
+    """collect().items. Kept because the item list is what most callers want;
+    anything that needs to know what was DROPPED must call collect()."""
+    return collect(repo_root, handle_row, run_started_at).items
 
 
 # Both LinkedIn modes rank equally against each other and both outrank
@@ -261,6 +326,20 @@ def _interactions(item: dict) -> int:
     return (item["likes"] or 0) + (item["comments"] or 0)
 
 
+def _metrics_reported(item: dict) -> int:
+    """0 when the source reported at least one engagement number, 1 when it
+    reported none.
+
+    An item with no like_count and no comment_count scores the same 0
+    interactions as an item that genuinely got none, and the old key then
+    resolved that tie on `platform` ASCENDING -- handing every all-zero day to
+    bluesky, the one platform whose engagement is never measured (B-97). This
+    is per-item, not a platform allowlist, so a future adapter that starts
+    reporting metrics is picked up with no change here.
+    """
+    return 0 if (item["likes"] is not None or item["comments"] is not None) else 1
+
+
 def _spotlight_sort_key(item: dict):
     # Ascending sort; negation carries the descending terms. (platform, handle,
     # item_id) is a filesystem path, so the key is TOTAL -- no two items can
@@ -270,20 +349,57 @@ def _spotlight_sort_key(item: dict):
         -_interactions(item),
         -(item["views"] or 0),
         published_rank(item["published"]),
+        _metrics_reported(item),
         item["platform"],
         item["handle"],
         item["item_id"],
     )
 
 
-def select_spotlight(items: list[dict]) -> dict | None:
-    """The one item the email features, or None."""
+SPOTLIGHT_RULE_LINKEDIN = "linkedin-priority"
+SPOTLIGHT_RULE_ENGAGEMENT = "top-engagement"
+
+
+def select_spotlight_with_rule(items: list[dict]) -> tuple[dict | None, str | None]:
+    """The one item the email features, and the rule that chose it.
+
+    The rule is returned rather than re-derived downstream so the email can
+    state the LinkedIn gate instead of leaving a reader to assume the pick is
+    the day's most-engaged post (B-96).
+    """
     # An item with no primary text gives the drafter nothing to read, so a
     # comment drafted from it would be drafted from the title alone.
     candidates = [i for i in items if i["body"]]
     if not candidates:
-        return None
+        return None, None
     linkedin = [i for i in candidates if i["platform"] in LINKEDIN_PLATFORMS]
     if linkedin:
-        candidates = linkedin
-    return min(candidates, key=_spotlight_sort_key)
+        return min(linkedin, key=_spotlight_sort_key), SPOTLIGHT_RULE_LINKEDIN
+    return min(candidates, key=_spotlight_sort_key), SPOTLIGHT_RULE_ENGAGEMENT
+
+
+def select_spotlight(items: list[dict]) -> dict | None:
+    """The one item the email features, or None."""
+    return select_spotlight_with_rule(items)[0]
+
+
+def dedupe_items(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(kept, duplicates), keyed on (platform, item_id, url).
+
+    handle_dir is slug-based and deliberately lossy, so `john.doe.5` and
+    `johndoe5` glob the SAME directory and each returns the other's files. The
+    duplicate previously read as two accounts posting the same thing, doubled
+    the subject count, and gave the spotlight ranking one post twice (B-101).
+    Not keyed on `handle`: the handles are exactly what differ.
+    """
+    seen: set[tuple] = set()
+    kept: list[dict] = []
+    duplicates: list[dict] = []
+    for item in items:
+        key = (item["platform"], item["item_id"], item["url"])
+        if key in seen:
+            duplicates.append(item)
+            continue
+        seen.add(key)
+        kept.append(item)
+    return kept, duplicates

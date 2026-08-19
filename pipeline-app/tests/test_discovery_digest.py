@@ -28,6 +28,11 @@ def test_derive_title_falls_back_on_empty_body():
     assert digest.derive_title("   \n\n  ", "vid1__some-slug") == "vid1__some-slug"
 
 
+def test_a_short_post_becomes_its_own_title_in_full():
+    body = "Ship the thing."
+    assert digest.derive_title(body, "fallback") == body
+
+
 def test_extract_primary_text_prefers_transcript_over_description():
     text = digest.extract_primary_text(YOUTUBE_BODY)
     assert text.startswith("So the first thing")
@@ -220,6 +225,34 @@ def test_mtime_prefilter_disabled_when_run_started_at_is_unparseable(tmp_path):
     assert len(items) == 1
 
 
+def test_collect_reports_unreadable_frontmatter_instead_of_dropping_it_silently(tmp_path):
+    out = discovery_paths.handle_dir(tmp_path, "linkedin-profile", "bettywliu")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "broken.md").write_text("---\n: : not yaml : :\n---\n\nBody.", encoding="utf-8")
+    collected = digest.collect(tmp_path, _handle_row(), RUN_START)
+    assert collected.items == []
+    assert collected.skips == [(digest.SKIP_BAD_FRONTMATTER, "broken.md")]
+
+
+def test_collect_reports_a_missing_fetched_at_distinctly_from_an_old_one(tmp_path):
+    _write(tmp_path, "linkedin-profile", "bettywliu", "nowatermark.md",
+           ["url: 'https://example.com/a'"], "Body.")
+    _write(tmp_path, "linkedin-profile", "bettywliu", "old.md",
+           ["url: 'https://example.com/b'", "fetched_at: '2026-07-31T06:00:00+00:00'"], "Body.")
+    collected = digest.collect(tmp_path, _handle_row(), RUN_START)
+    # A contract violation is a SKIP. Being outside the watermark is the
+    # watermark working and is NOT reported -- otherwise every run reports
+    # every file it has ever captured (B-99).
+    assert collected.skips == [(digest.SKIP_MISSING_FETCHED_AT, "nowatermark.md")]
+
+
+def test_collect_new_items_still_returns_a_plain_list(tmp_path):
+    _write(tmp_path, "linkedin-profile", "bettywliu", "ok.md",
+           ["url: 'https://example.com/a'", f"fetched_at: '{RUN_START}'"], "Body.")
+    assert [i["item_id"] for i in
+            digest.collect_new_items(tmp_path, _handle_row(), RUN_START)] == ["ok"]
+
+
 def _item(platform="youtube", handle="h", item_id="i", likes=0, comments=0,
           views=0, published="2026-08-01", body="Some body text.", display_name="D"):
     return {"platform": platform, "handle": handle, "display_name": display_name,
@@ -248,6 +281,19 @@ def test_select_spotlight_ranks_by_likes_plus_comments():
     a = _item(item_id="a", likes=100, comments=0)
     b = _item(item_id="b", likes=60, comments=50)
     assert digest.select_spotlight([a, b])["item_id"] == "b"
+
+
+def test_dedupe_items_collapses_a_slug_collision_and_names_the_duplicate():
+    a = _item(handle="john.doe.5", item_id="post1")
+    b = _item(handle="johndoe5", item_id="post1")   # same slug -> same directory
+    kept, duplicates = digest.dedupe_items([a, b])
+    assert len(kept) == 1
+    assert [d["handle"] for d in duplicates] == ["johndoe5"]
+
+
+def test_dedupe_items_keeps_two_genuinely_different_posts():
+    kept, duplicates = digest.dedupe_items([_item(item_id="p1"), _item(item_id="p2")])
+    assert len(kept) == 2 and duplicates == []
 
 
 def test_select_spotlight_breaks_interaction_tie_on_views():
@@ -291,3 +337,56 @@ def test_select_spotlight_excludes_empty_bodied_items():
 
 def test_select_spotlight_returns_none_when_every_item_is_empty_bodied():
     assert digest.select_spotlight([_item(body=""), _item(item_id="b", body="")]) is None
+
+
+def test_spotlight_prefers_a_reported_zero_over_an_unreported_metric():
+    # bluesky records neither like_count nor comment_count, so it scored 0 and
+    # then won the platform tie-break by ALPHABET over every platform that
+    # actually measured zero engagement (B-97).
+    silent = _item(platform="bluesky", item_id="bs", likes=None, comments=None,
+                   views=None, published="2026-08-01")
+    measured = _item(platform="youtube", item_id="yt", likes=0, comments=0,
+                     views=0, published="2026-08-01")
+    assert digest.select_spotlight([silent, measured])["item_id"] == "yt"
+
+
+def test_platform_alphabet_is_never_the_reason_one_item_beats_another():
+    a = _item(platform="bluesky", item_id="a", likes=None, comments=None, views=None)
+    b = _item(platform="zplatform", item_id="b", likes=None, comments=None, views=None)
+    # Both unmeasured, same date: the surviving tie-break is the total identity
+    # key, which is arbitrary but is not a disguised platform preference.
+    assert digest.select_spotlight([b, a])["item_id"] == "a"
+
+
+def test_select_spotlight_with_rule_names_the_linkedin_gate():
+    linkedin = _item(platform="linkedin-profile", item_id="li", likes=3)
+    youtube = _item(platform="youtube", item_id="yt", likes=40000)
+    item, rule = digest.select_spotlight_with_rule([youtube, linkedin])
+    assert item["item_id"] == "li"
+    assert rule == digest.SPOTLIGHT_RULE_LINKEDIN
+
+
+def test_select_spotlight_with_rule_names_engagement_when_no_linkedin_item_exists():
+    item, rule = digest.select_spotlight_with_rule([_item(item_id="yt", likes=5)])
+    assert rule == digest.SPOTLIGHT_RULE_ENGAGEMENT
+
+
+def test_select_spotlight_with_rule_returns_no_rule_when_there_is_no_spotlight():
+    assert digest.select_spotlight_with_rule([]) == (None, None)
+
+
+def test_published_fields_are_the_declared_contract_and_appear_in_the_docstring():
+    assert digest.PUBLISHED_FIELDS == ("published", "upload_date")
+    for field in digest.PUBLISHED_FIELDS:
+        assert field in digest.__doc__
+
+
+def test_a_third_publish_date_field_name_is_reported_not_silently_dropped(tmp_path):
+    _write(tmp_path, "linkedin-profile", "bettywliu", "odd.md", [
+        "url: 'https://example.com/x'",
+        "date_published: '2026-08-05'",
+        f"fetched_at: '{RUN_START}'",
+    ], "Body text here.")
+    collected = digest.collect(tmp_path, _handle_row(), RUN_START)
+    assert collected.items[0]["published"] is None
+    assert (digest.SKIP_NO_PUBLISHED_FIELD, "odd.md") in collected.warnings

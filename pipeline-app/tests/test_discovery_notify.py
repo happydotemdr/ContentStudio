@@ -1,8 +1,10 @@
+import ast
 from pathlib import Path
 
 import pytest
 
 from pipeline_app import discovery_notify
+from pipeline_app import email_render
 
 
 @pytest.fixture(autouse=True)
@@ -29,14 +31,75 @@ def test_api_key_returns_none_when_unconfigured(monkeypatch, tmp_path):
     assert discovery_notify.api_key() is None
 
 
+def test_recipient_reads_the_environment_and_defaults_to_the_owner(monkeypatch):
+    monkeypatch.delenv(discovery_notify.TO_ENV_VAR, raising=False)
+    assert discovery_notify.recipient() == discovery_notify.DEFAULT_RECIPIENT
+    monkeypatch.setenv(discovery_notify.TO_ENV_VAR, "someone@example.com")
+    assert discovery_notify.recipient() == "someone@example.com"
+
+
+def test_sender_is_resolved_per_call_not_at_import(monkeypatch):
+    monkeypatch.setenv(discovery_notify.FROM_ENV_VAR, "digest@verified.example")
+    assert discovery_notify.sender() == "digest@verified.example"
+    monkeypatch.delenv(discovery_notify.FROM_ENV_VAR)
+    assert discovery_notify.sender() == discovery_notify.SANDBOX_SENDER
+
+
+def test_sending_from_the_sandbox_address_warns_every_time(monkeypatch, capsys):
+    monkeypatch.setenv(discovery_notify.KEY_ENV_VAR, "test-key")
+    monkeypatch.delenv(discovery_notify.FROM_ENV_VAR, raising=False)
+
+    class FakeResponse:
+        status_code = 200
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(discovery_notify.requests, "post", lambda *a, **k: FakeResponse())
+    assert discovery_notify.send_email("s", "t") is True
+    assert "onboarding@resend.dev" in capsys.readouterr().err
+
+
+def test_a_verified_sender_does_not_warn(monkeypatch, capsys):
+    monkeypatch.setenv(discovery_notify.KEY_ENV_VAR, "test-key")
+    monkeypatch.setenv(discovery_notify.FROM_ENV_VAR, "digest@verified.example")
+
+    class FakeResponse:
+        status_code = 200
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(discovery_notify.requests, "post", lambda *a, **k: FakeResponse())
+    discovery_notify.send_email("s", "t")
+    assert "onboarding@resend.dev" not in capsys.readouterr().err
+
+
 import datetime as _dt
 
 from pipeline_app import db
 
 
-def _make_run(conn, started_at="2026-08-01T06:00:00+00:00", status="completed"):
+def _fake_overall(**over):
+    """A build_summary()-shaped dict, for tests that mock build_summary.
+
+    Carries every key email_render.render_brand_digest requires, so a fake can
+    never drift into a shape the real renderer would reject (T14's guard).
+    """
+    summary = {"run_status": "completed", "has_issues": False, "items": [],
+               "errored": [], "errors": [], "skips": [], "warnings": [],
+               "duplicates": [], "mismatches": [],
+               "coverage": {"scanned": 0, "with_items": 0, "quiet": 0,
+                            "errored": 0, "other": {}},
+               "brand_coverage": {brand: {"scanned": 1, "with_items": 0}
+                                  for brand in email_render.BRAND_SECTION_ORDER},
+               "started_at": "2026-08-01T06:00:00+00:00"}
+    summary.update(over)
+    return summary
+
+
+def _make_run(conn, started_at="2026-08-01T06:00:00+00:00", status="completed",
+              run_id="2026-08-01T06-00-00-000000"):
+    # run_id is a parameter because discovery_runs.run_id is UNIQUE and a test
+    # that inserts two runs into one DB (the T15 pair test) needs two ids.
     run_row_id = db.insert_terminal_run(
-        conn, "2026-08-01T06-00-00-000000", "scheduled", "incremental", status,
+        conn, run_id, "scheduled", "incremental", status,
         started_at, "2026-08-01T06:05:00+00:00",
     )
     return run_row_id
@@ -104,8 +167,8 @@ def test_send_email_posts_expected_payload(monkeypatch):
     assert result is True
     assert captured["url"] == discovery_notify.RESEND_API_URL
     assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert captured["json"]["to"] == [discovery_notify.RECIPIENT]
-    assert captured["json"]["from"] == discovery_notify.SENDER
+    assert captured["json"]["to"] == [discovery_notify.recipient()]
+    assert captured["json"]["from"] == discovery_notify.sender()
     assert captured["json"]["subject"] == "Test Subject"
     assert captured["json"]["text"] == "Test body text"
     assert captured["timeout"] == 15
@@ -150,9 +213,9 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
     calls = {}
     monkeypatch.setattr(discovery_notify, "build_summary",
                          lambda c, r, rid: (calls.setdefault("build_args", (c, r, rid)),
-                                             {"run_status": "completed", "has_issues": False,
-                                              "items": [], "errored": []})[1])
-    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight", lambda items: None)
+                                             _fake_overall())[1])
+    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
+                         lambda items: (None, None))
     monkeypatch.setattr(discovery_notify.email_render, "render_brand_digest",
                          lambda overall, sections, run_date:
                              (calls.setdefault("render_args", (overall, sections, run_date)),
@@ -165,8 +228,13 @@ def test_notify_orchestrates_build_render_send(monkeypatch, notify_db):
     assert result is True
     assert calls["build_args"] == (conn, repo_root, run_row_id)
     overall, sections, run_date = calls["render_args"]
-    assert overall == {"run_status": "completed", "has_issues": False, "items": [], "errored": []}
+    assert overall == _fake_overall()
     assert set(sections) == {"freedom2beu", "raisinggoodsports", "guru"}
+    # Run-level facts stay on `overall` only -- a section that carried them
+    # would have them rendered once per brand (B-95b).
+    for section in sections.values():
+        assert not set(section) & set(email_render.RUN_LEVEL_SUMMARY_KEYS)
+        assert not set(section) & {"run_status", "has_issues", "errored"}
     assert run_date == "2026-08-01"
     assert calls["send_args"] == ("s", "t", "h")
 
@@ -203,6 +271,22 @@ def test_notify_never_raises_when_build_summary_fails(monkeypatch, notify_db):
     # this test documents that notify() doesn't add its own extra failure mode.
     with pytest.raises(RuntimeError):
         discovery_notify.notify(conn, repo_root, run_row_id)
+
+
+def test_notify_reads_the_run_row_exactly_once(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    real_get_run = discovery_notify.db_mod.get_run
+    calls = []
+
+    def counting_get_run(c, rid):
+        calls.append(rid)
+        return real_get_run(c, rid)
+
+    monkeypatch.setattr(discovery_notify.db_mod, "get_run", counting_get_run)
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a, **k: True)
+    discovery_notify.notify(conn, repo_root, run_row_id)
+    assert calls == [run_row_id]
 
 
 def _write_post(repo_root, platform, handle, name, meta_lines, body):
@@ -255,6 +339,20 @@ def test_build_summary_scans_an_errored_handle_that_downloaded_partially(notify_
     assert summary["has_issues"] is True
 
 
+def test_the_errors_list_carries_the_reason_each_handle_failed(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, status="completed_with_errors")
+    hid = _make_handle(conn, "instagram", "someone", "Someone")
+    db.record_handle_result(conn, run_row_id, hid, "error", 0,
+                            "BrightDataError: 401 unauthorized\nat brightdata_job.py:88")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["errors"] == [{"label": "Someone",
+                                  "reason": "BrightDataError: 401 unauthorized"}]
+    assert summary["errored"] == ["Someone"]          # unchanged, still the name list
+
+
 def test_build_summary_scans_a_handle_recorded_with_zero_items(notify_db):
     conn, repo_root = notify_db
     run_row_id = _make_run(conn)
@@ -266,6 +364,45 @@ def test_build_summary_scans_a_handle_recorded_with_zero_items(notify_db):
 
     summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
     assert len(summary["items"]) == 1
+
+
+def test_build_summary_reports_the_denominator_it_was_quiet_against(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    for i in range(3):
+        hid = _make_handle(conn, "bluesky", f"a{i}.bsky.social", f"Author {i}")
+        db.record_handle_result(conn, run_row_id, hid, "no_new_content", 0)
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["coverage"] == {"scanned": 3, "with_items": 0, "quiet": 3,
+                                   "errored": 0, "other": {}}
+    assert summary["has_issues"] is False
+
+
+def test_a_skipped_handle_is_reported_under_its_own_status(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    hid = _make_handle(conn, "bluesky", "someone.bsky.social", "Someone BS")
+    db.record_handle_result(conn, run_row_id, hid, "skipped", 0)
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["coverage"]["other"] == {"skipped": ["Someone BS"]}
+    assert summary["has_issues"] is True
+    text = email_render.render_email(summary | {"spotlight": None, "spotlight_rule": None,
+                                                "drafts": []}, "2026-08-01")["text"]
+    assert "skipped" in text and "Someone BS" in text
+
+
+def test_an_empty_roster_is_an_issue_not_a_quiet_day(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)          # zero handle result rows at all
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["coverage"]["scanned"] == 0
+    assert summary["has_issues"] is True
 
 
 def test_build_summary_warns_on_count_mismatch_but_does_not_raise(notify_db, capsys):
@@ -283,6 +420,43 @@ def test_build_summary_warns_on_count_mismatch_but_does_not_raise(notify_db, cap
     assert "mismatch" in capsys.readouterr().err.lower()
 
 
+def test_an_errored_handle_with_partial_downloads_is_informational_not_an_alarm(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, status="completed_with_errors",
+                           started_at="2026-08-01T06:00:00+00:00")
+    hid = _make_handle(conn, "instagram", "someone", "Someone")
+    db.record_handle_result(conn, run_row_id, hid, "error", 0, "boom")
+    _write_post(repo_root, "instagram", "someone", "p1.md",
+                ["url: 'https://instagram.com/p/1'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A caption that did land.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+    mismatch = summary["mismatches"][0]
+
+    assert mismatch["direction"] == "extra"
+    assert mismatch["escalated"] is False
+
+
+def test_a_healthy_handle_that_lost_files_is_escalated_with_an_error_event(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    hid = _make_handle(conn, "linkedin-profile", "bettywliu", "Betty Liu")
+    db.record_handle_result(conn, run_row_id, hid, "ok", 2)      # db says 2
+    _write_post(repo_root, "linkedin-profile", "bettywliu", "one.md",
+                ["url: 'https://example.com/x'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "Only one of the two.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+    mismatch = summary["mismatches"][0]
+
+    assert mismatch["direction"] == "missing"
+    assert mismatch["escalated"] is True
+    assert summary["has_issues"] is True
+    row = conn.execute(
+        "SELECT severity FROM events WHERE kind = 'digest.items_missing'").fetchone()
+    assert row["severity"] == "error"
+
+
 def test_build_summary_uses_handle_fallback_for_errored_handle_without_display_name(notify_db):
     conn, repo_root = notify_db
     run_row_id = _make_run(conn, status="completed_with_errors")
@@ -291,6 +465,41 @@ def test_build_summary_uses_handle_fallback_for_errored_handle_without_display_n
     db.record_handle_result(conn, run_row_id, handle_id, "error", 0, "gone")
     summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
     assert summary["errored"] == ["@dead-handle"]
+
+
+def test_build_summary_carries_unreadable_files_into_the_summary(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn, "linkedin-profile", "bettywliu", "Betty Liu")
+    db.record_handle_result(conn, run_row_id, handle_id, "no_new_content", 0)
+    out = repo_root  # written directly so the frontmatter is genuinely corrupt
+    _write_post(out, "linkedin-profile", "bettywliu", "broken.md",
+                [": : not yaml : :"], "Body.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["items"] == []
+    assert summary["skips"] == [
+        {"handle": "Betty Liu", "reason": "bad_frontmatter", "name": "broken.md"}]
+    assert summary["has_issues"] is True
+
+
+def test_build_summary_records_an_event_for_every_unreadable_file(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn, "linkedin-profile", "bettywliu", "Betty Liu")
+    db.record_handle_result(conn, run_row_id, handle_id, "no_new_content", 0)
+    _write_post(repo_root, "linkedin-profile", "bettywliu", "broken.md",
+                [": : not yaml : :"], "Body.")
+
+    discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    rows = conn.execute(
+        "SELECT kind, severity, message FROM events WHERE kind = 'digest.item_unreadable'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["severity"] == "error"
+    assert "broken.md" in rows[0]["message"]
 
 
 def test_send_email_includes_an_html_part(monkeypatch):
@@ -320,10 +529,10 @@ def test_notify_threads_spotlight_and_drafts_into_render(monkeypatch, notify_db)
     item = {"marker": "the-item", "brands": ["guru"], "platform": "youtube", "handle": "@x", "item_id": "i1"}
     spotlight = {"marker": "the-spotlight", "platform": "youtube", "handle": "@x", "item_id": "i1"}
     monkeypatch.setattr(discovery_notify, "build_summary",
-                        lambda *a: {"run_status": "completed", "has_issues": False,
-                                    "items": [item], "errored": []})
-    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight",
-                        lambda items: spotlight if items else None)
+                        lambda *a: _fake_overall(items=[item]))
+    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
+                        lambda items: (spotlight, discovery_notify.discovery_digest.SPOTLIGHT_RULE_ENGAGEMENT)
+                        if items else (None, None))
     monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments",
                         lambda item, **kw: ["d1", "d2", "d3"])
 
@@ -399,9 +608,9 @@ def test_notify_skips_drafting_when_there_is_no_spotlight(monkeypatch, notify_db
     run_row_id = _make_run(conn)
     calls = []
     monkeypatch.setattr(discovery_notify, "build_summary",
-                        lambda *a: {"run_status": "completed", "has_issues": False,
-                                    "items": [], "errored": []})
-    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight", lambda items: None)
+                        lambda *a: _fake_overall())
+    monkeypatch.setattr(discovery_notify.discovery_digest, "select_spotlight_with_rule",
+                        lambda items: (None, None))
     monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments",
                         lambda item, **kw: calls.append(item) or [])
     monkeypatch.setattr(discovery_notify, "send_email", lambda *a: True)
@@ -452,13 +661,16 @@ def test_notify_end_to_end_warns_on_orphaned_untagged_item(monkeypatch, notify_d
     assert "no brand tag" in captured["html"].lower()
 
 
-def test_notify_end_to_end_run_level_facts_render_identically_across_sections(monkeypatch, notify_db):
-    # run_status/has_issues/errored are run-wide facts copied verbatim into
-    # every brand section (discovery_notify.notify()), not filtered per
-    # brand like items are. Exercises that through the real notify()
-    # pipeline: one handle tagged with all three brands (so its section
-    # membership doesn't hide the shared facts) plus one errored, untagged
-    # handle whose error must still show up in all three sections.
+def test_notify_end_to_end_prints_the_error_list_and_run_status_once(monkeypatch, notify_db):
+    # run_status/has_issues and the handle `errors` list are run-wide facts,
+    # so they belong to the EMAIL, not to a brand section. They used to be
+    # copied verbatim into every sections[brand] dict, which printed the
+    # failing handle and the "Run status:" banner once under each of the three
+    # brand headings -- including brands the failing handle carries no tag for
+    # (@dead-handle here is tagged `guru` only). Exercises the fix through the
+    # real notify() pipeline: one handle tagged with all three brands (so its
+    # section membership doesn't hide the run-level facts) plus one errored
+    # handle whose failure must appear exactly once, in the run-level footer.
     conn, repo_root = notify_db
     run_row_id = _make_run(conn, status="completed_with_errors")
     handle_id = _make_handle(conn, "instagram", "aspenprojectplay", "Aspen Project Play")
@@ -482,11 +694,254 @@ def test_notify_end_to_end_run_level_facts_render_identically_across_sections(mo
 
     assert result is True
     text, html = captured["text"], captured["html"]
-    # Once per brand section (guru, raisinggoodsports, freedom2beu).
-    assert text.count("@dead-handle") == 3
-    assert html.count("@dead-handle") == 3
-    assert text.count("Run status: completed_with_errors") == 3
-    assert html.count("Run status: completed_with_errors") == 3
+    # Once for the whole email, NOT once per brand section.
+    assert text.count("@dead-handle") == 1
+    assert html.count("@dead-handle") == 1
+    assert text.count("Errors (1 handle(s), 1 distinct cause(s))") == 1
+    assert html.count("Errors (1 handle(s), 1 distinct cause(s))") == 1
+    assert text.count("Run status: completed_with_errors") == 1
+    assert html.count("Run status: completed_with_errors") == 1
+    # ...while the three brand headings really are all present, so the counts
+    # above are "once in a three-section email", not "the sections vanished".
+    for label in ("Freedom2BeU", "RaisingGoodSports", "Gurus"):
+        assert label.upper() in text
+        assert label in html
+
+
+def test_notify_end_to_end_prints_run_level_facts_once_not_once_per_section(monkeypatch, notify_db):
+    # The other side of the coin from the test above: run-wide facts that
+    # describe the RUN rather than a handle must appear ONCE in the whole
+    # email, not once per brand section. Task 12 threaded overall["coverage"]
+    # into every sections[brand] dict as an interim measure, which made the
+    # real production email print "Handles reported as skipped" three times
+    # (B-95b). This exercises the fix through the real notify() pipeline.
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = _make_handle(conn, "instagram", "aspenprojectplay", "Aspen Project Play")
+    db.set_handle_brands(conn, handle_id, ["guru", "raisinggoodsports", "freedom2beu"])
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_post(repo_root, "instagram", "aspenprojectplay", "p1.md",
+                ["url: 'https://instagram.com/p/1'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A caption.")
+    skipped_id = db.create_handle(conn, "youtube", "@quota-handle", "Quota Handle", "guru", None,
+                                  "2026-07-01T00:00:00+00:00")
+    db.record_handle_result(conn, run_row_id, skipped_id, "skipped", 0)
+
+    captured = {}
+    monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments", lambda item, **kw: [])
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text, html: (captured.setdefault("text", text),
+                                     captured.setdefault("html", html), True)[-1],
+    )
+
+    assert discovery_notify.notify(conn, repo_root, run_row_id) is True
+    for part in (captured["text"], captured["html"]):
+        assert part.count("Handles reported as skipped") == 1
+        assert part.count("Quota Handle") == 1
+        assert part.count("Scanned 2 handle(s)") == 1
+
+
+def test_notify_end_to_end_names_the_linkedin_gate_in_the_sent_email(monkeypatch, notify_db):
+    # Task 5 (B-96): the spotlight rule must reach the actual sent email, not
+    # just the unit-level select_spotlight_with_rule/render_email tests. This
+    # exercises the real build_summary -> notify -> render_brand_digest path
+    # with a LinkedIn item present, mocking only send_email and draft_comments.
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    handle_id = db.create_handle(conn, "linkedin-profile", "bettywliu", "Betty Liu",
+                                 "guru", None, "2026-07-01T00:00:00+00:00")
+    db.set_handle_brands(conn, handle_id, ["guru"])
+    db.record_handle_result(conn, run_row_id, handle_id, "ok", 1)
+    _write_post(repo_root, "linkedin-profile", "bettywliu", "7358.md",
+                ["url: 'https://example.com/li'", "like_count: 12",
+                 "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "A LinkedIn post body with enough text to spotlight.")
+
+    captured = {}
+    monkeypatch.setattr(discovery_notify.comment_draft, "draft_comments", lambda item, **kw: [])
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text, html: (captured.setdefault("text", text),
+                                     captured.setdefault("html", html), True)[-1],
+    )
+
+    result = discovery_notify.notify(conn, repo_root, run_row_id)
+
+    assert result is True
+    assert "LinkedIn posts are always picked first" in captured["text"]
+    assert "LinkedIn posts are always picked first" in captured["html"]
+
+
+def test_a_slug_collision_does_not_double_the_subject_count(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn, started_at="2026-08-01T06:00:00+00:00")
+    for handle in ("john.doe.5", "johndoe5"):
+        hid = _make_handle(conn, "linkedin-profile", handle, handle)
+        db.record_handle_result(conn, run_row_id, hid, "ok", 1)
+    _write_post(repo_root, "linkedin-profile", "john.doe.5", "post1.md",
+                ["url: 'https://example.com/p1'", "fetched_at: '2026-08-01T06:01:00+00:00'"],
+                "One post, two registered handles.")
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert len(summary["items"]) == 1
+    assert len(summary["duplicates"]) == 1
+    assert summary["has_issues"] is True
+
+
+def _three_handles(conn, run_row_id, prefix):
+    """Three linkedin-profile handles, all scanned, all reporting zero items.
+
+    `prefix` exists because handles has UNIQUE(platform, handle): the two runs
+    in the pair test below each need their own three rows.
+    """
+    handles = []
+    for i in range(3):
+        hid = _make_handle(conn, "linkedin-profile", f"{prefix}author{i}", f"Author {i}")
+        db.record_handle_result(conn, run_row_id, hid, "no_new_content", 0)
+        handles.append(f"{prefix}author{i}")
+    return handles
+
+
+def _sent(monkeypatch, conn, repo_root, run_row_id):
+    """What an operator's inbox actually receives for this run.
+
+    Deliberately drives the REAL production path -- discovery_notify.notify()
+    -> build_summary() -> render_brand_digest() -> send_email() -- and captures
+    send_email's own (subject, text, html) arguments. Asserting on
+    email_render.render_email() instead would prove nothing: production never
+    calls it (render_brand_digest is the entrypoint notify() reaches).
+    """
+    captured = {}
+
+    def fake_send(subject, text, html=None):
+        captured.update(subject=subject, text=text, html=html)
+        return True
+
+    monkeypatch.setattr(discovery_notify, "send_email", fake_send)
+    assert discovery_notify.notify(conn, repo_root, run_row_id) is True
+    return captured
+
+
+def test_a_quiet_day_and_a_broken_collection_are_not_the_same_email(monkeypatch, notify_db, tmp_path):
+    """The single defect this package exists to close.
+
+    Two runs, ZERO items each. One is genuinely quiet: three handles scanned,
+    every captured file legitimately older than the run's watermark. One is
+    broken: three handles scanned, every captured file inside the watermark and
+    unparseable. Before this package both rendered the byte-identical body
+    `No new content today.` with no [ISSUE] prefix.
+    """
+    conn, quiet_root = notify_db
+    started = "2026-08-01T06:00:00+00:00"
+
+    quiet_run = _make_run(conn, started_at=started)
+    for handle in _three_handles(conn, quiet_run, "quiet-"):
+        _write_post(quiet_root, "linkedin-profile", handle, "yesterday.md",
+                    ["url: 'https://example.com/old'",
+                     "fetched_at: '2026-07-31T06:00:00+00:00'"], "Yesterday's post.")
+
+    broken_root = tmp_path / "broken"
+    broken_run = _make_run(conn, started_at=started, run_id="2026-08-01T06-00-00-000001")
+    for handle in _three_handles(conn, broken_run, "broken-"):
+        _write_post(broken_root, "linkedin-profile", handle, "corrupt.md",
+                    [": : not yaml : :"], "Today's post, unreadable.")
+
+    # The premise, checked against build_summary directly -- notify() returns a
+    # bool, not the summary, so this assertion cannot ride on the send capture.
+    quiet_summary = discovery_notify.build_summary(conn, quiet_root, quiet_run)
+    broken_summary = discovery_notify.build_summary(conn, broken_root, broken_run)
+    assert len(quiet_summary["items"]) == len(broken_summary["items"]) == 0
+
+    # ...and different emails, as actually sent.
+    quiet = _sent(monkeypatch, conn, quiet_root, quiet_run)
+    broken = _sent(monkeypatch, conn, broken_root, broken_run)
+
+    assert quiet["subject"] != broken["subject"]
+    assert quiet["text"] != broken["text"]
+    assert quiet["html"] != broken["html"]
+
+    assert not quiet["subject"].startswith("[ISSUE] ")
+    assert broken["subject"].startswith("[ISSUE] ")
+    assert "Scanned 3 handle(s)" in quiet["text"]
+    assert "could not be read" not in quiet["text"]
+    assert "3 captured file(s) could not be read" in broken["text"]
+    assert "corrupt.md" in broken["text"]
+    # Same facts in the HTML part -- a text-only assertion would let the two
+    # emails stay indistinguishable for every client that renders HTML.
+    assert "could not be read" not in quiet["html"]
+    assert "3 captured file(s) could not be read" in broken["html"]
+    # The run-level notices are rendered ONCE, under all three brand sections,
+    # not once per section (B-95b).
+    for part in (quiet["text"], quiet["html"], broken["text"], broken["html"]):
+        assert part.count("Scanned 3 handle(s)") == 1
+    for part in (broken["text"], broken["html"]):
+        assert part.count("captured file(s) could not be read") == 1
+
+
+def test_only_the_broken_run_leaves_an_error_event(notify_db, tmp_path):
+    conn, quiet_root = notify_db
+    started = "2026-08-01T06:00:00+00:00"
+    quiet_run = _make_run(conn, started_at=started)
+    for handle in _three_handles(conn, quiet_run, "quiet-"):
+        _write_post(quiet_root, "linkedin-profile", handle, "yesterday.md",
+                    ["url: 'https://example.com/old'",
+                     "fetched_at: '2026-07-31T06:00:00+00:00'"], "Yesterday's post.")
+    discovery_notify.build_summary(conn, quiet_root, quiet_run)
+    assert conn.execute("SELECT COUNT(*) c FROM events WHERE severity = 'error'"
+                        ).fetchone()["c"] == 0
+
+    broken_root = tmp_path / "broken"
+    broken_run = _make_run(conn, started_at=started, run_id="2026-08-01T06-00-00-000001")
+    for handle in _three_handles(conn, broken_run, "broken-"):
+        _write_post(broken_root, "linkedin-profile", handle, "corrupt.md",
+                    [": : not yaml : :"], "Today's post, unreadable.")
+    discovery_notify.build_summary(conn, broken_root, broken_run)
+    assert conn.execute("SELECT COUNT(*) c FROM events WHERE severity = 'error'"
+                        ).fetchone()["c"] == 3
+
+
+def test_a_failed_send_leaves_an_error_event_because_no_email_can_report_itself(
+        monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a, **k: False)
+
+    assert discovery_notify.notify(conn, repo_root, run_row_id) is False
+
+    row = conn.execute(
+        "SELECT severity, message, detail FROM events WHERE kind = 'email.send_failed'"
+    ).fetchone()
+    assert row is not None
+    assert row["severity"] == "error"
+    assert str(run_row_id) in row["message"]
+
+
+def test_a_successful_send_leaves_the_heartbeat_row(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a, **k: True)
+
+    assert discovery_notify.notify(conn, repo_root, run_row_id) is True
+
+    row = conn.execute("SELECT severity FROM events WHERE kind = 'email.sent'").fetchone()
+    assert row["severity"] == "info"
+
+
+def test_a_delivered_and_an_undelivered_run_are_distinguishable_afterwards(
+        monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    ok_run = _make_run(conn)
+    bad_run = _make_run(conn, run_id="2026-08-01T06-00-00-000001")
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a, **k: True)
+    discovery_notify.notify(conn, repo_root, ok_run)
+    monkeypatch.setattr(discovery_notify, "send_email", lambda *a, **k: False)
+    discovery_notify.notify(conn, repo_root, bad_run)
+
+    kinds = {r["run_id"]: r["kind"] for r in
+             conn.execute("SELECT run_id, kind FROM events WHERE kind LIKE 'email.%'")}
+    assert kinds[ok_run] != kinds[bad_run]
 
 
 def test_build_summary_untagged_handle_produces_items_with_no_brands(notify_db):
@@ -499,3 +954,85 @@ def test_build_summary_untagged_handle_produces_items_with_no_brands(notify_db):
     summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
 
     assert summary["items"][0]["brands"] == []
+
+
+def test_build_summary_reports_per_brand_coverage(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    hid = _make_handle(conn, "linkedin-profile", "author0", "Author 0")
+    db.record_handle_result(conn, run_row_id, hid, "no_new_content", 0)
+    db.set_handle_brands(conn, hid, ["freedom2beu"])
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["brand_coverage"]["freedom2beu"] == {"scanned": 1, "with_items": 0}
+    assert summary["brand_coverage"]["raisinggoodsports"] == {"scanned": 0, "with_items": 0}
+    assert summary["brand_coverage"]["guru"] == {"scanned": 0, "with_items": 0}
+
+
+def test_a_brand_with_no_tagged_handles_is_distinguished_from_a_quiet_brand(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    hid = _make_handle(conn, "linkedin-profile", "author0", "Author 0")
+    db.record_handle_result(conn, run_row_id, hid, "no_new_content", 0)
+    db.set_handle_brands(conn, hid, ["freedom2beu"])
+    # raisinggoodsports and guru have ZERO tagged handles this run -- not quiet, untagged.
+
+    captured = {}
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text, html=None: captured.update(subject=subject, text=text) or True)
+    discovery_notify.notify(conn, repo_root, run_row_id)
+
+    text = captured["text"]
+    assert "no handles are tagged" in text.lower()
+    rows = conn.execute(
+        "SELECT kind, severity FROM events WHERE kind = 'digest.brand_untagged'").fetchall()
+    assert len(rows) == 2                            # raisinggoodsports and guru, each once
+    assert {r["severity"] for r in rows} == {"warning"}
+
+
+MODULES = ("discovery_digest", "email_render", "discovery_notify", "comment_draft")
+
+
+def _stderr_prints(tree):
+    """{function name: [lineno]} for every print(..., file=sys.stderr)."""
+    found = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for call in ast.walk(node):
+            if (isinstance(call, ast.Call) and getattr(call.func, "id", None) == "print"
+                    and any(kw.arg == "file" for kw in call.keywords)):
+                found.setdefault(node.name, []).append(call.lineno)
+    return found
+
+
+def _obs_functions(tree):
+    """Names of functions containing an obs.log or obs.record_event call."""
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for call in ast.walk(node):
+            func = getattr(call, "func", None)
+            if (isinstance(func, ast.Attribute)
+                    and getattr(func.value, "id", None) == "obs"
+                    and func.attr in ("log", "record_event")):
+                names.add(node.name)
+    return names
+
+
+@pytest.mark.parametrize("module", MODULES)
+def test_no_failure_is_reported_to_stderr_alone(module):
+    """Task Scheduler destroys this process's stderr (scripts/setup_discovery_task.py
+    registers /TR with no redirection), so a print() that is the ONLY signal is
+    a message nobody has ever read (B-93)."""
+    source = (Path(__file__).resolve().parents[1] / "pipeline_app" / f"{module}.py"
+              ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    logged = _obs_functions(tree)
+    orphans = {name: lines for name, lines in _stderr_prints(tree).items()
+               if name not in logged}
+    assert orphans == {}, (
+        f"{module}.py: these functions signal failure only to a discarded stderr: {orphans}")

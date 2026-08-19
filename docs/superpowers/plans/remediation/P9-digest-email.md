@@ -19,6 +19,137 @@ the `events` row that makes the second impossible.
 
 ---
 
+> ## 0. Amendment — architecture drift since this plan was authored (2026-08-18)
+>
+> **What changed.** After this plan was written (2026-08-08) and before P9 started execution, an
+> UNRELATED feature — PR #36, `claude/brand-scoped-discovery-email`, not part of this remediation
+> programme — merged directly to main and touched two of P9's exclusively-owned files
+> (`discovery_notify.py`, `email_render.py`). It added handle brand-tagging and a per-brand
+> multi-section email. This amendment reconciles the plan against that live shape. It does not
+> reopen any of the 24 findings' substance; every fix below still closes the finding it was written
+> to close. Verified by re-reading both files live on 2026-08-18, before Task 1 was dispatched.
+>
+> **The live shape, precisely.**
+> - `discovery_notify.build_summary(conn, repo_root, run_row_id)` now returns a CROSS-BRAND
+>   "overall" summary: `{run_status, has_issues, items, errored}`. Every item carries
+>   `item["brands"]` (a list of brand tags from `db.get_handle_brands`). No `spotlight`/`drafts` key
+>   — those are per-brand, computed downstream.
+> - `discovery_notify.notify(conn, repo_root, run_row_id)` calls `build_summary` once for the
+>   overall dict, then for each `brand` in `email_render.BRAND_SECTION_ORDER` filters
+>   `overall["items"]` to that brand, calls `discovery_digest.select_spotlight(brand_items)` and
+>   `comment_draft.draft_comments(spotlight)` (cached by `(platform, handle, item_id)` so a post
+>   spotlighted in two sections is drafted once), and builds
+>   `sections[brand] = {run_status, has_issues, items, errored, spotlight, drafts}` — i.e. one
+>   single-summary-shaped dict PER BRAND. It then calls
+>   `email_render.render_brand_digest(overall, sections, run_date)` and returns `send_email(...)`.
+> - `email_render.render_brand_digest(overall, sections, run_date)` is the PRODUCTION entrypoint.
+>   For each brand it calls the SAME private `_render_text(summary)` / `_render_html(summary)` that
+>   `render_email()` also calls, concatenating each brand's block under a heading. It drives the
+>   `[ISSUE]` subject prefix from `overall["has_issues"]` (a run-wide fact), and already computes an
+>   "orphan" warning for items tagged outside `BRAND_SECTION_ORDER`.
+>   `email_render.render_email(summary, run_date)` — this plan's originally-assumed entrypoint —
+>   still exists, unchanged, calling the same shared `_render_text`/`_render_html`, but production
+>   no longer calls it directly.
+>
+> **The reconciliation rule.** The private renderers (`_render_text`, `_render_html`, `_label`,
+> `_grouped`, `_excerpt`, `_metric_bits`) are shared by both `render_email` and
+> `render_brand_digest`, so this plan's fixes to THEM still reach production with no change. The
+> only load-bearing distinction is between a **run-level fact** (true of the whole run: the
+> coverage line, unreadable-file/duplicate/mismatch notices, unknown-platform notices) and a
+> **section-level fact** (true of one brand: `spotlight`, `spotlight_rule`, `drafts`, that brand's
+> `items`). A run-level fact rendered inside one brand's section reads as that brand's own claim and
+> is false the moment there is more than one section — reproducing, at brand granularity, the exact
+> "reader is misled" defect this package exists to close. **Decision (confirmed with the human
+> partner 2026-08-18): render run-level facts ONCE, not once per brand.**
+>
+> **Concretely, this plan's tasks apply as follows:**
+> - **T1** (platform rank/label): `PLATFORM_ORDER`/`PLATFORM_LABELS` already exist live
+>   (`email_render.py`, currently ranking only `linkedin-profile, linkedin-company, youtube,
+>   instagram, bluesky` — `facebook` and `x` are the exact B-92 gap). **EXTEND the existing tuple
+>   and dict with `facebook` and `x` in the shown order; do not redeclare them from scratch.** The
+>   `_label()` fallback (currently `PLATFORM_LABELS.get(platform) or platform.replace("-",
+>   " ").title()`) still needs its invented-title-case path removed and `unknown_platforms()` still
+>   needs adding, exactly as shown. Also add `"unknown_platforms": unknown_platforms(overall["items"])`
+>   to `render_brand_digest`'s returned dict, for parity with `render_email`'s new key.
+> - **T5** (spotlight rule): the per-brand loop already exists in `notify()`. Swap its
+>   `discovery_digest.select_spotlight(brand_items)` call for
+>   `discovery_digest.select_spotlight_with_rule(brand_items)`, unpack `(spotlight, spotlight_rule)`,
+>   and add `"spotlight_rule": spotlight_rule` to the `sections[brand]` dict literal alongside the
+>   existing `"spotlight": spotlight`. `spotlight_rule` is genuinely per-brand (T5's own test
+>   coverage is unaffected) — this is the one plan-shown key that DOES belong on the per-section
+>   dict, not the run-level block below.
+> - **T7, T8, T9, T10, T11 (coverage/skips/warnings/duplicates/mismatches), T13 (errors with
+>   reasons), T18 (started_at)**: unaffected — all of it lands on `build_summary`'s returned
+>   "overall" dict exactly as each task already shows. No task text changes.
+> - **T12** (`coverage["other"]` statuses rendered) — **correction (found during T12's
+>   implementation, 2026-08-18):** implement T12 exactly as its own shown code has it — the
+>   rendering loop goes directly into `_render_text`/`_render_html`, and `render_email`'s own test
+>   in T12's brief depends on that rendering existing immediately, so it cannot be deferred. Because
+>   `coverage["other"]` is a run-level fact, T14 (below) RELOCATES this same rendering block, along
+>   with the rest of `_coverage_line`/`_notices`, out of `_render_text`/`_render_html` and into the
+>   new run-level helpers — that relocation is T14's job, not T12's.
+> - **T14** (coverage footer + `REQUIRED_SUMMARY_KEYS` guard): this is the task requiring the most
+>   real change. Two amendments, both non-negotiable (not a style choice — the first is required for
+>   the guard to protect production at all; the second is required for the footer to render true
+>   facts instead of false per-brand claims):
+>   1. **The `REQUIRED_SUMMARY_KEYS` guard must move.** `render_brand_digest` never calls
+>      `render_email`, so a guard placed only inside `render_email` (as T14 shows) protects a
+>      function production does not call — every one of this package's 24 findings could pass its
+>      own unit test against `render_email` while `render_brand_digest` silently renders none of it.
+>      Add the same missing-key check to `render_brand_digest` itself, validating `overall` against
+>      the run-level keys (`coverage, skips, warnings, duplicates, mismatches, unknown_platforms`
+>      belong on `overall`, not on each section — see next point) before it builds any output.
+>      `render_email`'s own guard stays too (it is still directly unit-tested and still a real
+>      entrypoint).
+>   2. **Extract run-level rendering into two small shared helpers** — e.g.
+>      `_run_notice_lines(overall) -> list[str]` and `_run_notice_html(overall) -> list[str]`,
+>      built from exactly the `_coverage_line` / `_notices` logic T14 already shows, but reading
+>      `coverage`/`skips`/`warnings`/`duplicates`/`mismatches`/`unknown_platforms` off the `overall`
+>      dict rather than a per-section `summary`. `render_email` calls them once (immediately after
+>      its existing section body — behaviour for `render_email`'s own callers/tests is unchanged).
+>      `render_brand_digest` calls them ONCE on `overall`, rendered once near its existing orphan
+>      warning (before or after the per-brand sections — orchestrator's call at implementation time,
+>      no test depends on the exact position), and per-brand `sections[brand]` dicts do NOT carry
+>      `coverage`/`skips`/`warnings`/`duplicates`/`mismatches` at all — `_render_text`/`_render_html`
+>      keep rendering only what is genuinely per-section (`items`, `errored`, `spotlight`,
+>      `spotlight_rule`, `drafts`). T14's own tests, which call `email_render.render_email(...)`
+>      directly, are unaffected by this split and need no rewrite. **Also fold in T12's
+>      `coverage["other"]` loop** (added directly to `_render_text`/`_render_html` by T12, per the
+>      correction above) — move it into the same two new run-level helpers alongside
+>      `_coverage_line`/`_notices`, so a brand's section doesn't triple-print every "reported as
+>      skipped" line the way it would if left in the shared per-section renderer.
+> - **T15 (the headline pair test) — must be re-pointed at the production path.** As written, T15's
+>   `_render()` helper calls `email_render.render_email(summary, ...)` directly, which is no longer
+>   what `notify()` calls. A pair test that only proves `render_email` distinguishes the two cases
+>   proves nothing about what `notify()` actually sends. **Change T15's test bodies to call
+>   `discovery_notify.notify(conn, repo_root, run_row_id)` with `discovery_notify.send_email`
+>   monkeypatched to capture its `(subject, text, html)` arguments**, and assert distinguishability
+>   on the captured payload instead of on a directly-constructed summary/render_email call. This is
+>   the single highest-value change in this amendment: it is what makes the pair test actually cover
+>   the code path an operator's inbox depends on.
+> - **T16, T17** (events on send / recipient+sender): unaffected — both operate on `notify()`'s
+>   outer shape (`send_email`'s return value, `recipient()`/`sender()`), which this drift did not
+>   change.
+> - **T23** (drafter denial-list drift guard): `DRAFTER_DISALLOWED_TOOLS` already exists live
+>   (`comment_draft.py`) and is already wired into the `Popen` argv, missing only
+>   `SlashCommand,ExitPlanMode,AskUserQuestion` (add those, as shown). The drift-guard test must
+>   compare BARE tool names: `cli_runner.PIPELINE_DISALLOWED_TOOLS` contains scoped entries like
+>   `Write(pipeline-app/**)`, so `_bare_tool_names()`'s `part.split("(")[0]` step (already in the
+>   plan's shown test) is required, not optional — a raw string/set comparison would false-fail on
+>   every scoped entry.
+> - **T2, T3, T4, T6, T19, T20, T21, T22, T24, T25, T26**: unaffected by this drift. Apply as
+>   written.
+>
+> **New finding, folded into this package (human decision, confirmed 2026-08-18): B-113.**
+> Reconciling this drift surfaced a gap not in the original 24: a brand section with zero items
+> cannot currently distinguish "this brand's handles were genuinely quiet" from "no handle carries
+> this brand tag at all (or only a tag outside `BRAND_SECTION_ORDER`)" — B-95's exact defect,
+> reproduced at brand scope, and not answerable from `overall["coverage"]` alone (that is a
+> whole-roster count, not a per-brand one). Closed by **new Task 27**, appended after Task 26.
+> Finding-count and coverage-table updates below reflect 25/25, not 24/24.
+
+---
+
 ## 1. Scope
 
 ### Files owned (no other package may touch these)
@@ -34,10 +165,10 @@ pipeline-app/tests/test_discovery_notify.py
 pipeline-app/tests/test_comment_draft.py
 ```
 
-### Finding IDs (24)
+### Finding IDs (25 — 24 from the audit plus B-113, folded in per §0)
 
 B-90, B-91, B-92, B-93, B-94, B-95, B-96, B-97, B-98, B-99, B-100, B-101, B-102, B-103, B-104,
-B-105, B-106, B-107, B-108, B-109, B-110, B-111, B-112, D-54.
+B-105, B-106, B-107, B-108, B-109, B-110, B-111, B-112, D-54, B-113.
 
 ### Test command
 
@@ -81,8 +212,10 @@ cd "C:/Projects/ContentStudio/.claude/worktrees/pipeline-audit-review-4dd767/pip
 | B-111 | S4 | latent | **T12** | Every non-`ok`/`no_new_content` status is reported, not just `error` |
 | B-112 | S3 | silent | **T13** | Error reasons carried into `summary["errors"]` and rendered |
 | D-54 | S2 | latent | **T26** | `fence_untrusted` / `UNTRUSTED_PREAMBLE` published as the reusable containment API |
+| B-113 | S2 | silent | **T27** | Per-brand coverage distinguishes "brand quiet" from "brand untagged"; new `events` row on the latter |
 
-**Coverage: 24 / 24.**
+**Coverage: 25 / 25.** (B-113 discovered and folded in 2026-08-18, per §0 — not part of the original
+audit's 24.)
 
 ---
 
@@ -457,6 +590,12 @@ and in `_build_item`: `"published": _published(meta),`.
 
 ---
 
+> **Correction (found during T7's implementation, 2026-08-18):** the shown code's bad-frontmatter
+> `except yaml.YAMLError:` clause is wrong. `artifacts.parse_frontmatter` does not let a raw
+> `yaml.YAMLError` propagate — it wraps malformed YAML in its own `artifacts.MalformedArtifactError`
+> (confirmed by reading `artifacts.py`, and matching pre-existing `collect_new_items` behaviour
+> before this task). Use `except artifacts.MalformedArtifactError:` instead.
+
 ### T7 — B-99 (a): `collect()` classifies every drop instead of swallowing five of six
 
 - [ ] **Test first.** In `tests/test_discovery_digest.py`:
@@ -819,6 +958,13 @@ and add `"mismatches": mismatches` to the returned dict.
 - [ ] Commit: `fix(digest): split the count mismatch by direction and handle health`.
 
 ---
+
+> **Correction (found during T11's implementation, 2026-08-18):** the shown "Implement" snippet
+> references `errors` and `other_statuses`, neither of which exists yet at this point in the task
+> sequence — `errors` (a `{label, reason}` list) is T13's addition, `other_statuses` is T12's. T11
+> substitutes: `"errored": len(errored)` / `bool(errored)` using the existing plain-label list, and
+> declares `other_statuses: dict[str, list[str]] = {}` locally, inert until T12 populates it. No
+> plan text below needs to change beyond this note — T12 and T13 still populate the same names.
 
 ### T11 — B-95 (a): the summary counts what it scanned
 
@@ -1958,11 +2104,103 @@ length cap measures, the outer one is the fence's own guarantee.
 
 ---
 
+### T27 — B-113: a brand section distinguishes "quiet" from "no handle carries this tag"
+
+**Newly discovered 2026-08-18 while reconciling this plan against the brand-scoped digest
+architecture (§0) — not part of the original audit's 24 findings, folded in with the human
+partner's confirmation.** Same defect class as B-95, reproduced at brand scope: `overall`'s
+whole-roster `coverage` cannot answer whether a specific brand's section is empty because its
+handles were quiet, or because no handle carries that brand's tag at all (or only a tag outside
+`email_render.BRAND_SECTION_ORDER`).
+
+- [ ] **Test first.** In `tests/test_discovery_notify.py`:
+
+```python
+def test_build_summary_reports_per_brand_coverage(notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    hid = _make_handle(conn, "linkedin-profile", "author0", "Author 0")
+    db.record_handle_result(conn, run_row_id, hid, "no_new_content", 0)
+    db.set_handle_brands(conn, hid, ["freedom2beu"])
+
+    summary = discovery_notify.build_summary(conn, repo_root, run_row_id)
+
+    assert summary["brand_coverage"]["freedom2beu"] == {"scanned": 1, "with_items": 0}
+    assert summary["brand_coverage"]["raisinggoodsports"] == {"scanned": 0, "with_items": 0}
+    assert summary["brand_coverage"]["guru"] == {"scanned": 0, "with_items": 0}
+
+
+def test_a_brand_with_no_tagged_handles_is_distinguished_from_a_quiet_brand(monkeypatch, notify_db):
+    conn, repo_root = notify_db
+    run_row_id = _make_run(conn)
+    hid = _make_handle(conn, "linkedin-profile", "author0", "Author 0")
+    db.record_handle_result(conn, run_row_id, hid, "no_new_content", 0)
+    db.set_handle_brands(conn, hid, ["freedom2beu"])
+    # raisinggoodsports and guru have ZERO tagged handles this run -- not quiet, untagged.
+
+    captured = {}
+    monkeypatch.setattr(
+        discovery_notify, "send_email",
+        lambda subject, text, html=None: captured.update(subject=subject, text=text) or True)
+    discovery_notify.notify(conn, repo_root, run_row_id)
+
+    text = captured["text"]
+    assert "no handles are tagged" in text.lower()
+    rows = conn.execute(
+        "SELECT kind, severity FROM events WHERE kind = 'digest.brand_untagged'").fetchall()
+    assert len(rows) == 2                            # raisinggoodsports and guru, each once
+    assert {r["severity"] for r in rows} == {"warning"}
+```
+
+- [ ] Run. Fails: no `brand_coverage` key, no `digest.brand_untagged` event, no distinguishing text.
+- [ ] **Implement.** In `discovery_notify.build_summary`, after the existing handle loop (which
+      already computes `brands = db_mod.get_handle_brands(conn, handle_row["id"])` per handle —
+      reuse that, do not re-query):
+
+```python
+    brand_coverage = {brand: {"scanned": 0, "with_items": 0}
+                      for brand in email_render.BRAND_SECTION_ORDER}
+    for result, brands, found in zip(handle_results, all_brands, all_found):
+        for brand in brands:
+            if brand in brand_coverage:
+                brand_coverage[brand]["scanned"] += 1
+                if found:
+                    brand_coverage[brand]["with_items"] += 1
+```
+
+(fold this into the existing per-handle loop rather than a second pass — the loop already has
+`brands` and `found` in scope; the snippet above is shown separately only for clarity). Add
+`"brand_coverage": brand_coverage` to `build_summary`'s returned dict.
+
+In `discovery_notify.notify`, after building `sections[brand]` for a brand whose
+`overall["brand_coverage"][brand]["scanned"] == 0`, record the event:
+
+```python
+        if overall["brand_coverage"][brand]["scanned"] == 0:
+            obs.record_event(
+                conn, kind="digest.brand_untagged", severity="warning", source="discovery_notify",
+                message=f"no handle is tagged '{brand}'; the section below cannot distinguish "
+                        f"quiet from untagged",
+                detail={"brand": brand}, run_id=run_row_id)
+```
+
+In `email_render.render_brand_digest`, when a brand's section has zero items AND
+`overall["brand_coverage"].get(brand, {}).get("scanned", 0) == 0`, render a distinct line instead
+of (or ahead of) that section's ordinary empty-section body — e.g.
+`f"No handles are tagged '{label}'. {NO_CONTENT_TEXT}"` in place of the bare `NO_CONTENT_TEXT` — so
+a reader sees the untagged case named, not a section that merely looks quiet.
+
+- [ ] Update `render_brand_digest`'s docstring to name this new distinguishing case alongside the
+      orphan-item warning it already documents.
+- [ ] Run. Green. Commit: `feat(digest): distinguish a brand with zero tagged handles from a genuinely quiet one`.
+
+---
+
 ### Final gate
 
 - [ ] `cd pipeline-app && python -m pytest -q` — whole app suite green.
 - [ ] `cd .. && python -m pytest tests/ -q` — root suite unaffected.
-- [ ] Commit: `test(digest): P9 complete, 24 findings closed`.
+- [ ] Commit: `test(digest): P9 complete, 25 findings closed`.
 
 ---
 
