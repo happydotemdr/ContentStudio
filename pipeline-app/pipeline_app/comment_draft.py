@@ -251,7 +251,8 @@ def parse_envelope(stdout: str) -> list:
     return parsed if isinstance(parsed, list) else []
 
 
-def _kill_and_confirm(process) -> None:
+def _kill_and_confirm(process, *, conn=None, run_id: int | None = None,
+                      item_ref: str = "unknown") -> None:
     """Kill the tree, then check it actually died.
 
     taskkill /T walks descendants recursively, so the real claude/node
@@ -259,39 +260,93 @@ def _kill_and_confirm(process) -> None:
     is never checked, and a descendant whose parent already exited is
     re-parented and unreachable by PID. A kill that did not take leaves an
     orphaned, Anthropic-billed turn holding the scratch directory (B-105).
+    `conn`/`run_id`/`item_ref` are optional, matching draft_comments' contract.
     """
     cli_runner.kill_process_tree(process)
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
         obs.log("comment_draft.kill_failed", level="error", pid=process.pid)
+        if conn is not None:
+            obs.record_event(conn, kind="comment_draft.kill_failed", severity="error",
+                             source="comment_draft",
+                             message=f"pid {process.pid} did not terminate after the kill",
+                             detail={"item": item_ref, "pid": process.pid}, run_id=run_id)
         print(f"comment_draft: pid {process.pid} did not terminate after the kill; "
               f"an orphaned turn may still be running", file=sys.stderr)
 
 
-def _remove_scratch(scratch: str) -> None:
+def _remove_scratch(scratch: str, *, conn=None, run_id: int | None = None,
+                    item_ref: str = "unknown") -> None:
     """Best-effort removal that RECORDS the failure.
 
     ignore_cleanup_errors=True was load-bearing and stays in effect in spirit:
     this must not raise, because draft_comments promises never to and
     discovery_notify does not catch. What changes is that an abandoned
     directory -- a permanent %TEMP% leak, and the fingerprint of a surviving
-    child -- is no longer invisible (B-105).
+    child -- is no longer invisible (B-105). `conn`/`run_id`/`item_ref` are
+    optional, matching draft_comments' contract.
     """
     try:
         shutil.rmtree(scratch)
     except OSError as exc:
         obs.log("comment_draft.scratch_leaked", level="warning", path=scratch, error=str(exc))
+        if conn is not None:
+            obs.record_event(conn, kind="comment_draft.scratch_leaked", severity="warning",
+                             source="comment_draft",
+                             message=f"scratch directory {scratch} could not be removed: {exc}",
+                             detail={"item": item_ref, "path": scratch, "error": str(exc)},
+                             run_id=run_id)
         print(f"comment_draft: scratch directory {scratch} could not be removed: {exc}",
               file=sys.stderr)
 
 
-def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
-    """Three sanitized comment drafts for `item`, or []. Never raises."""
+def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S, *,
+                   conn=None, run_id: int | None = None) -> list[str]:
+    """Three sanitized comment drafts for `item`, or []. Never raises.
+
+    `conn`/`run_id` are optional. When given, every failure branch below also
+    writes an `events` row (obs.record_event), a second sink independent of
+    obs.log()'s file write. obs.log()'s write is deliberately best-effort (a
+    read-only disk must not kill the caller), and the scheduled Task
+    Scheduler invocation discards stderr entirely (discovery_scheduling.py) --
+    so without this, a drafting failure's reason can vanish with NO trace at
+    all. That happened for real on 2026-08-18: two spotlighted posts both
+    failed to draft, and every log line obs.log() should have written was
+    lost. conn is optional so every existing call site/test keeps working
+    unchanged; only discovery_notify.py, which always has a run's conn and
+    row id on hand, passes it through.
+
+    `_fail` below is a closure, not a module-level helper: it still keeps
+    every failure branch's obs.log()/obs.record_event() pair inside
+    draft_comments's own AST subtree (ast.walk descends into nested
+    FunctionDefs), so test_no_failure_is_reported_to_stderr_alone's check --
+    which looks for that pair lexically inside the same function as the
+    stderr print it backs up -- still verifies this function directly, while
+    collapsing what would otherwise be seven near-identical inline blocks
+    that could individually drift out of sync (one edited, one missed).
+    test_every_comment_draft_failure_kind_is_also_recorded_to_the_db statically
+    enforces that no comment_draft.* failure kind is ever logged without also
+    being recorded, so an eighth branch added later that calls obs.log() alone
+    (bypassing `_fail`) fails the suite instead of silently repeating this.
+    """
+    # .get(), not [] -- this must never raise, including on the very first
+    # branch below (binary missing), before anything has validated `item`'s
+    # shape. An f-string with [] here previously turned a malformed item into
+    # an uncaught KeyError, breaking draft_comments' own "never raises"
+    # contract that discovery_notify.py's module docstring leans on.
+    item_ref = "/".join(str(item.get(k, "?")) for k in ("platform", "handle", "item_id"))
+
+    def _fail(kind: str, severity: str, message: str, **detail) -> None:
+        obs.log(kind, level=severity, **detail)
+        if conn is not None:
+            obs.record_event(conn, kind=kind, severity=severity, source="comment_draft",
+                             message=message, detail={"item": item_ref, **detail}, run_id=run_id)
+
     try:
         binary = cli_runner.resolve_claude_binary()
     except FileNotFoundError as exc:
-        obs.log("comment_draft.binary_missing", level="error", error=str(exc))
+        _fail("comment_draft.binary_missing", "error", str(exc), error=str(exc))
         print(f"comment_draft: {exc}", file=sys.stderr)
         return []
 
@@ -320,7 +375,8 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
     try:
         scratch = tempfile.mkdtemp(prefix="cs-comment-draft-")
     except OSError as exc:
-        obs.log("comment_draft.scratch_failed", level="error", error=str(exc))
+        _fail("comment_draft.scratch_failed", "error", f"scratch directory failed: {exc}",
+             error=str(exc))
         print(f"comment_draft: scratch directory failed: {exc}", file=sys.stderr)
         return []
     try:
@@ -351,40 +407,47 @@ def draft_comments(item: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> list[str]:
         # kwargs above, but this matches communicate()'s handler below
         # rather than leaving the pair gratuitously asymmetric.
         except (OSError, ValueError) as exc:
-            obs.log("comment_draft.spawn_failed", level="error", error=str(exc))
+            _fail("comment_draft.spawn_failed", "error", f"could not start claude: {exc}",
+                 error=str(exc))
             print(f"comment_draft: could not start claude: {exc}", file=sys.stderr)
             return []
 
         try:
             stdout, stderr_text = process.communicate(prompt, timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            _kill_and_confirm(process)
+            _kill_and_confirm(process, conn=conn, run_id=run_id, item_ref=item_ref)
             try:
                 process.communicate(timeout=5)
             except (subprocess.TimeoutExpired, OSError, ValueError):
                 pass  # cleanup is best-effort; the drafts are already forfeit
-            obs.log("comment_draft.timed_out", level="error", timeout_s=timeout_s)
+            _fail("comment_draft.timed_out", "error", f"timed out after {timeout_s}s",
+                 timeout_s=timeout_s)
             print(f"comment_draft: timed out after {timeout_s}s", file=sys.stderr)
             return []
         except (OSError, ValueError) as exc:
             # Kill before returning. Without this the child is GUARANTEED
             # still running at the `with` exit, holding scratch as its cwd.
-            _kill_and_confirm(process)
-            obs.log("comment_draft.subprocess_failed", level="error", error=str(exc))
+            _kill_and_confirm(process, conn=conn, run_id=run_id, item_ref=item_ref)
+            _fail("comment_draft.subprocess_failed", "error", f"subprocess failed: {exc}",
+                 error=str(exc))
             print(f"comment_draft: subprocess failed: {exc}", file=sys.stderr)
             return []
     finally:
-        _remove_scratch(scratch)
+        _remove_scratch(scratch, conn=conn, run_id=run_id, item_ref=item_ref)
 
     if process.returncode != 0:
         tail = (stderr_text or "").strip()[-STDERR_TAIL_CHARS:] or "no stderr output"
-        obs.log("comment_draft.claude_failed", level="error",
-                returncode=process.returncode, stderr=tail)
+        _fail("comment_draft.claude_failed", "error", f"claude exited {process.returncode}: {tail}",
+             returncode=process.returncode, stderr=tail)
         print(f"comment_draft: claude exited {process.returncode}: {tail}", file=sys.stderr)
         return []
 
     drafts = sanitize_drafts(parse_envelope(stdout))
     if not drafts:
-        obs.log("comment_draft.no_usable_drafts", level="warning")
+        # "error", not "warning": /doctor only surfaces severity IN
+        # ('error','critical') (db.py), and a post that got zero comments is
+        # exactly the failure this whole fix exists to make visible -- the
+        # same user-facing outcome as every other branch above.
+        _fail("comment_draft.no_usable_drafts", "error", "no usable drafts in the model's output")
         print("comment_draft: no usable drafts in the model's output", file=sys.stderr)
     return drafts
