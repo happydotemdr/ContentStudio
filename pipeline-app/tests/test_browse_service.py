@@ -639,6 +639,24 @@ def test_sanitize_html_self_closing_allowed_void_tag_still_renders():
     assert "after" in out
 
 
+def test_sanitize_html_mismatched_disallowed_tags_do_not_leak_content():
+    """A flat integer skip-depth counter can't tell WHICH disallowed tag
+    closed. <script><style>x</script>PAYLOAD</style> opens script (depth 1),
+    opens style (depth 2), then a mismatched </script> -- which doesn't
+    actually close the still-open <style> in real browser parsing -- merely
+    decrements the counter back to 1 (nonzero), yet at that count the payload
+    text between the mismatched </script> and the real </style> must still be
+    suppressed, since we're logically still inside the open <style> element.
+    A correct implementation tracks tag identity (a stack), not just depth."""
+    out = browse_service.sanitize_html(
+        "<script><style>x</script>fetch('/discovery/run-now', {method:'POST'})</style>"
+    )
+    assert "fetch(" not in out
+    assert "discovery/run-now" not in out
+    assert "<script" not in out
+    assert "<style" not in out
+
+
 def test_render_md_file_body_html_is_sanitized(tmp_path):
     path = tmp_path / "post.md"
     path.write_text(

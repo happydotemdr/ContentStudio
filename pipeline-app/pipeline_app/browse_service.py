@@ -41,10 +41,10 @@ _VOID_TAGS = {"br", "hr", "img"}
 _DANGEROUS_SCHEMES = ("javascript:", "data:", "vbscript:")
 # All HTML5 void elements -- these never emit a matching end tag, whether or
 # not this sanitizer allows them. Used only to decide whether a *disallowed*
-# start tag should push _skip_depth: doing that for a void-like tag (e.g. a
-# disallowed <meta>) would wait forever for a </meta> that will never arrive,
-# leaving _skip_depth stuck above zero and silently dropping every character
-# of the document after that point.
+# start tag should push onto _skip_stack: doing that for a void-like tag
+# (e.g. a disallowed <meta>) would wait forever for a </meta> that will never
+# arrive, leaving _skip_stack stuck non-empty and silently dropping every
+# character of the document after that point.
 _HTML_VOID_ELEMENTS = {
     "area", "base", "br", "col", "embed", "hr", "img", "input",
     "link", "meta", "param", "source", "track", "wbr",
@@ -65,21 +65,49 @@ def _safe_url(value: str | None) -> str | None:
 
 
 class _Sanitizer(HTMLParser):
+    # HTMLParser's default CDATA_CONTENT_ELEMENTS = ("script", "style",
+    # "xmp", "iframe", "noembed", "noframes") puts the parser into rawtext
+    # mode inside those tags: everything up to the literal matching close
+    # tag is handed to handle_data as-is, WITHOUT parsing any tags nested in
+    # it. That defeats our own tag-name stack before it can even see the
+    # nested tag: <script><style>x</script>PAYLOAD</style> would have "
+    # <style>x" swallowed as script's raw text (never firing a starttag for
+    # style), so the real </script> looks like a clean, fully-matched close
+    # and suppression ends right before PAYLOAD -- even though a browser
+    # parses <script>/<style> as rawtext identically and PAYLOAD is not
+    # meant to be trusted output either. Disabling rawtext mode here makes
+    # every nested tag -- including a disallowed tag textually embedded
+    # inside another disallowed tag -- a real starttag/endtag event our
+    # stack can track, closing that gap.
+    CDATA_CONTENT_ELEMENTS: tuple[str, ...] = ()
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.out: list[str] = []
-        # Depth of nested disallowed elements we're currently inside (e.g.
-        # <script>...</script>). A dropped tag's own inner text must not
-        # leak through handle_data -- the tag ban is pointless if the payload
-        # still shows up as plain text right below it.
-        self._skip_depth = 0
+        # Stack of nested disallowed elements we're currently inside (e.g.
+        # <script>...</script>), by tag name. A dropped tag's own inner text
+        # must not leak through handle_data -- the tag ban is pointless if
+        # the payload still shows up as plain text right below it.
+        #
+        # This must be a stack of tag NAMES, not a flat depth counter. A flat
+        # counter can't tell which disallowed tag a given end tag actually
+        # closes: <script><style>x</script>PAYLOAD</style> increments to 2 on
+        # open script+style, then a mismatched </script> (which a real
+        # browser would NOT treat as closing the still-open <style>) merely
+        # decrements a counter to 1 -- still "suppressing", but only by
+        # accident, and a different mismatch shape can just as easily
+        # decrement to 0 too early and leak content. A stack lets an end tag
+        # only end suppression when it actually matches the innermost open
+        # disallowed tag; a non-matching end tag is a no-op, same as a real
+        # HTML5 parser would not close an element via the wrong tag name.
+        self._skip_stack: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         if tag not in _ALLOWED_TAGS:
             if tag not in _HTML_VOID_ELEMENTS:
-                self._skip_depth += 1
+                self._skip_stack.append(tag)
             return
-        if self._skip_depth:
+        if self._skip_stack:
             return
         kept = []
         for name, value in attrs:
@@ -97,10 +125,15 @@ class _Sanitizer(HTMLParser):
 
     def handle_endtag(self, tag):
         if tag not in _ALLOWED_TAGS:
-            if self._skip_depth:
-                self._skip_depth -= 1
+            # Only a genuinely matching close tag ends suppression for this
+            # nesting level. A mismatched end tag (it doesn't match the
+            # innermost still-open disallowed tag) is a no-op -- fail safe by
+            # continuing to suppress, since a real browser wouldn't treat it
+            # as closing the still-open element either.
+            if self._skip_stack and self._skip_stack[-1] == tag:
+                self._skip_stack.pop()
             return
-        if self._skip_depth:
+        if self._skip_stack:
             return
         if tag not in _VOID_TAGS:
             self.out.append(f"</{tag}>")
@@ -112,9 +145,9 @@ class _Sanitizer(HTMLParser):
         # parsing does the opposite for any non-void element: a trailing
         # "/" on <script>, <style>, <iframe>, etc. is ignored and the
         # element stays open until a real closing tag or EOF. Firing both
-        # handlers here would increment then immediately decrement
-        # _skip_depth, leaving suppression off for the attacker's payload
-        # text that follows -- exactly the bypass this override closes.
+        # handlers here would push then immediately pop _skip_stack, leaving
+        # suppression off for the attacker's payload text that follows --
+        # exactly the bypass this override closes.
         #
         # Allowed tags and genuine void elements (<br/>, <img .../>) are
         # unaffected: those still get the default starttag+endtag pair,
@@ -126,7 +159,7 @@ class _Sanitizer(HTMLParser):
         self.handle_endtag(tag)
 
     def handle_data(self, data):
-        if self._skip_depth:
+        if self._skip_stack:
             return
         self.out.append(_html_escape(data, quote=False))
 
