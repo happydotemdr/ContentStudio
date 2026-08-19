@@ -40,9 +40,14 @@ All 5 success criteria (spec §5) passed on the first run, in order, with no `As
 | BedA | -15.6 / -1.3 / 23.3 | -14.2 / -2.5 / 23.1 | — | — |
 | BedB | -12.1 / -2.9 / 14.2 | -14.0 / -4.8 / 14.2 | — | — |
 
-All 7 VO clips required limiting (true peak above -2.5 dBTP pre-conditioning); both beds did not
-(the harness's `condition_clip` call reports `limited`/`peak_reduction_db` only for VO stems in this
-harness's print statements — beds print input/output measurement only).
+All 7 VO clips required limiting (post-gain true peak above the -2.5 dBTP ceiling). Three of them —
+vo1, vo6, vo7 — actually had *raw* input true peaks already below -2.5 dBTP (-3.2, -3.2, -6.0
+respectively); they still needed limiting because the makeup gain applied (+10.60 / +10.80 / +11.70
+dB) pushed the post-gain peak back over the ceiling. The harness's `condition_clip` call reports
+`limited`/`peak_reduction_db` only for VO stems in this harness's print statements (beds print
+input/output measurement only), but the underlying `validate_final.log` records `peak_reduction_db`
+for the beds too: BedA (`peak_reduction_db=2.80`) required limiting; BedB (`peak_reduction_db=-0.00`)
+essentially did not.
 
 `BedFull_provoice_conditioned.wav` assembled to **53.241750s** against a runtime of 51.92s (silence
 prepend + BedA trimmed to 15.022948s + BedB in full — no crossfade engineering, per spec §4.5).
@@ -60,10 +65,13 @@ LRA estimate.
 
 **Note on divergence from the design spec's prose:** the design spec (§5, an earlier exploratory
 pass) reports a max per-clip LRA loss of ~2.5–2.7 LU attributed to **vo5**. This run's actual max
-loss (2.70 LU) belongs to **vo2**, not vo5 (vo5 came in at 2.50 LU, the second-highest). The mean
-(0.93 LU) is close to but not identical to the spec's quoted 0.89/0.94 LU range. Reporting this
-plainly per the brief's Step 5 instruction rather than reconciling it — it does not affect the
-pass/fail outcome (mean is still well under the 1.2 LU gate either way).
+loss (2.70 LU) belongs to **vo2**, not vo5 (vo5 came in at 2.50 LU, the second-highest). The spec's
+0.89 LU and 0.94 LU figures are not a range — they are two separate measurements at two different
+`CONDITION_TP_DBTP` settings (spec lines 261-262): 0.89 LU at `-2.0`, 0.94 LU at `-2.5`.
+This run used `-2.5`, so the apples-to-apples comparison is this run's mean (0.93 LU) against the
+spec's 0.94 LU figure specifically — a tight match. Reporting this plainly per the brief's Step 5
+instruction rather than reconciling it further — it does not affect the pass/fail outcome (mean is
+still well under the 1.2 LU gate either way).
 
 ## Independent re-measurement of the delivered mix (criterion 3)
 
