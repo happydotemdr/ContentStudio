@@ -1383,6 +1383,17 @@ In `templates/discovery_runs.html`, add the count on the run line:
 ```
 
 - [ ] Run: passes.
+
+> **Amendment (2026-08-18, found during T12 execution):** the brief's `_seed_run` helper inserts a
+> handle with a hardcoded name (`'@thinkmedia'`) and no per-call uniqueness. `handles` carries a
+> `UNIQUE (platform, handle)` constraint (frozen interface, P1/`schema.sql`), and
+> `test_terminal_run_states_are_visually_distinguishable` calls `_seed_run` twice in the same
+> test (once per status) — the second call's insert would violate the constraint as written.
+> Fixed by suffixing the handle name with the status (`f"@thinkmedia-{status}"`), keeping every
+> other column unchanged. **T13 (next) also shows its own copy of `_seed_run` in its brief text
+> with the same bug** — when dispatching T13, do not paste that duplicate definition over this
+> already-fixed one; reuse the fixed helper already in `tests/test_header.py`. Landed in commit
+> `1750228`.
 - [ ] Commit: `fix(ui): give discovery run states real pill styling and an error count`
 
 ---
