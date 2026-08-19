@@ -479,3 +479,32 @@ def test_browse_tree_expansion_can_be_retried_after_a_failure(client):
     resp = test_client.get("/browse")
     assert 'hx-trigger="toggle from:closest details"' in resp.text
     assert "once" not in resp.text
+
+
+def test_browse_file_unexpected_exception_renders_an_error_not_a_500(client, monkeypatch):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "thinkers" / "plato.md", "---\na: 1\n---\n\nBody.\n")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr("pipeline_app.browse_service.render_md_file", _boom)
+    resp = test_client.get("/browse/file", params={"path": "thinkers/plato.md"})
+    assert resp.status_code == 200          # htmx only swaps 2xx
+    assert "Could not render this document" in resp.text
+    assert "kaboom" in resp.text
+
+
+def test_browse_file_render_failure_is_distinct_from_an_empty_document(client, monkeypatch):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "thinkers" / "empty.md", "---\na: 1\n---\n")
+    ok = test_client.get("/browse/file", params={"path": "thinkers/empty.md"}).text
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr("pipeline_app.browse_service.render_md_file", _boom)
+    broken = test_client.get("/browse/file", params={"path": "thinkers/empty.md"}).text
+    assert broken != ok
+    assert "browse-error" in broken
+    assert "browse-error" not in ok
