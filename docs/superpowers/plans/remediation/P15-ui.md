@@ -2654,6 +2654,37 @@ Add to `static/style.css`:
 ```
 
 - [ ] Run: passes once P3's context lands.
+
+> **Amendment (2026-08-19, found during T22 execution — the package's final task):** P3's
+> `inputs[]`/`edit_*` contract was exactly as documented (controller-verified live before
+> dispatch) — no naming drift, unlike T20. Two findings instead:
+>
+> 1. **`inputs[]` items also carry a `malformed` flag** the brief's card markup didn't mention
+> (set when `artifacts.read_artifact` raises `MalformedArtifactError` for a present-but-broken
+> upstream). The pre-T22 template already distinguished this three-way (present/malformed/missing);
+> the brief's two-way present/missing card would have regressed it to a coarser distinction.
+> Preserved the third state with its own amber badge and explainer.
+> 2. **Cross-package test ripple**, same authorized pattern as T4/T8/T10/T21: three tests in
+> `tests/test_routes_stages.py` (P3's, already merged) broke on contact with this task's mandated
+> change — two asserted "no raw source appears anywhere on the page," which the new edit-output
+> `<textarea>` legitimately violates (a `<textarea>`'s content renders as inert text in a browser,
+> never as parsed HTML, so this is not a sanitizer regression); fixed by stripping
+> `<textarea>...</textarea>` before those specific assertions via a `_without_textareas()` helper,
+> not by weakening what they check elsewhere on the page. The third asserted the old literal copy
+> ("no input yet from ideation") this task replaces by design; updated to the new card markup and
+> text. The controller separately confirmed `{{ output_body }}` in the new textarea is
+> Jinja-autoescaped by default (matching the brief's own literal markup) — a `</textarea>` inside
+> a stored artifact body cannot break out of the field.
+>
+> Also: the brief's own first test (`test_every_declared_upstream_gets_a_card_including_missing_
+> ones`) asserted `class="input-card"` unconditionally, but the fixture's `ideation` stage
+> declares zero dependencies and no grounding companion — the brief's own empty-state markup (a
+> bare `<p>`, not wrapped in a card) makes that assertion structurally unsatisfiable for the
+> fixture's own stage, not a P3-timing issue. Resolved by wrapping the empty state in
+> `class="input-card"` too, keeping `input-card-missing` as the distinct modifier for a genuinely
+> declared-but-absent dependency.
+>
+> All landed in commit `8afcdd2`.
 - [ ] Commit: `feat(ui): render per-dependency input cards and the edit-output disclosure`
 
 ---
