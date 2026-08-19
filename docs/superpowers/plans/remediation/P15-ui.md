@@ -256,6 +256,16 @@ curl -fsSL https://unpkg.com/htmx.org@2.0.0/dist/htmx.min.js \
 ```
 
 - [ ] Run: both pass.
+
+> **Amendment (2026-08-18, found at Opus checkpoint A after T0-T7 landed):** the comment shown
+> above ends "removes both **at once** and needs no SRI" — that line contains the substring
+> `once`. T2's own test `test_browse_tree_expansion_can_be_retried_after_a_failure` asserts
+> `assert "once" not in resp.text` against a page that includes `base.html`'s content, so pasting
+> this comment literally makes T2 fail the moment it's written, before T2 even starts its own
+> work. T1's implementer caught this and reworded the comment to "removes both **problems** and
+> needs no SRI" — same meaning, no collision. Shipped as part of commit `b4826d6`. Recorded here
+> per this programme's recurring-bug-class protocol (a bug in the plan's own shown text, not in
+> the live repo).
 - [ ] Commit: `fix(ui): vendor htmx locally instead of loading it from unpkg`
 
 ---
@@ -284,6 +294,15 @@ def test_browse_tree_expansion_can_be_retried_after_a_failure(client):
 ```
 
 - [ ] Run: fails — no banner, and the trigger still says `toggle once from:closest details`.
+
+> **Amendment (2026-08-18, found at Opus checkpoint A after T0-T7 landed):** `assert "once" not
+> in resp.text` bans the English word "once" from the ENTIRE rendered `/browse` page forever —
+> not just the `hx-trigger` attribute it was written to pin. `templates/stage.html:36` already
+> contains "once" in ordinary prose today, and later browse-partial rewrites (T16-T18) could
+> easily introduce the word in an explainer sentence without anyone connecting it to this test.
+> Narrowed to `assert "toggle once" not in resp.text` — pins exactly the defect (a `once`
+> modifier on the tree's `hx-trigger`) without banning an ordinary word from the page. Fixed in
+> a follow-up commit after the Opus checkpoint A review; see the ledger for the commit hash.
 - [ ] **Implement.** In `templates/base.html`, immediately after `{% include "partials/header.html" %}`:
 
 ```html
@@ -552,6 +571,52 @@ Add to `static/style.css`:
 
 - [ ] Run: passes.
 - [ ] Commit: `feat(ui): collapse seven flat nav peers into Projects / Discovery / Library`
+
+---
+
+### T4a — Align page headings with the new tab labels (E-08 follow-up, found at Opus checkpoint A)
+
+**Not one of the plan's original 16 findings.** T4 renamed the nav tabs but left every page's own
+`<h1>` unchanged, so a page can now contradict the tab that linked to it:
+
+| Tab (`partials/header.html`) | Page `<h1>` before this task |
+|---|---|
+| Files | `browse.html` — "Browse" |
+| System | `doctor.html` — "Doctor" |
+| Open by path | `inspector.html` — "MD Inspector" |
+| Sources | `discovery_handles.html` — "Discovery: Handles" |
+| Runs | `discovery_runs.html` — "Discovery: Run History" |
+
+E-08 is precisely "the IA is unwieldy / inconsistent" — a renamed tab landing on a contradicting
+heading is the same defect one layer down, and leaving it unfixed would read as a regression in
+authorial care mid-package, not a deferred nice-to-have. All five files are already `templates/**`
+files P15 owns wholesale.
+
+**Failing test first.** Append to `tests/test_header.py`:
+
+```python
+@pytest.mark.parametrize(
+    "url,heading",
+    [
+        ("/browse", "Files"),
+        ("/doctor", "System"),
+        ("/inspector", "Open by path"),
+        ("/discovery/handles", "Sources"),
+        ("/discovery/runs", "Runs"),
+    ],
+)
+def test_page_heading_matches_its_own_tab_label(client: TestClient, url, heading):
+    resp = client.get(url)
+    assert f"<h1>{heading}</h1>" in resp.text
+```
+
+- [ ] Run: fails on all five — the old headings are still in place.
+- [ ] **Implement.** In each of the five templates, change the `<h1>` text only (no other markup)
+      to match its tab label exactly: `browse.html` → `<h1>Files</h1>`, `doctor.html` →
+      `<h1>System</h1>`, `inspector.html` → `<h1>Open by path</h1>`,
+      `discovery_handles.html` → `<h1>Sources</h1>`, `discovery_runs.html` → `<h1>Runs</h1>`.
+- [ ] Run: passes.
+- [ ] Commit: `fix(ui): align page headings with their tab labels`
 
 ---
 
