@@ -101,7 +101,7 @@
     <p id="approve-blocked-reason" class="approve-blocked-reason">
       Approval is blocked:
       {% set blocking_gates = gate_view | selectattr("blocking") | list %}
-      {% for gate in blocking_gates %}{{ gate.name }} ({{ gate.state.replace("_", " ") }}){% if not loop.last %}; {% endif %}{% endfor %}.
+      {% for gate in blocking_gates %}{{ gate.name or "unknown gate" }} ({{ gate.state.replace("_", " ") }}){% if not loop.last %}; {% endif %}{% endfor %}.
       Fix the findings and regenerate, or record a reason below to approve anyway.
     </p>
     <label for="override_reason">Override reason (required to approve past the block)</label>

@@ -21,7 +21,7 @@
   {% for gate in gate_view %}
   <div class="gate-result">
     <span class="status status-{{ gate.state }}">
-      {{ gate.name }}: {{ _labels.get(gate.state, gate.state) }}
+      {{ gate.name or "unknown gate" }}: {{ _labels.get(gate.state, gate.state) }}
     </span>
     {% if gate.blocking %}<span class="gate-blocking-tag">blocks approval</span>{% endif %}
     {% if gate.state == "never_ran" %}

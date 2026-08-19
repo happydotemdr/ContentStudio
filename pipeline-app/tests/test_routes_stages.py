@@ -1249,6 +1249,7 @@ def test_a_malformed_gates_value_shows_a_sensible_notice_not_garbage(two_stage_c
     assert page.status_code == 200
     assert "malformed" in page.text
     assert 'class="status "' not in page.text
+    assert "None:" not in page.text
     # Threshold raised from 5 to 9 by T8 (status strip): the strip adds two
     # legitimate page-wide "status-" occurrences ("status-strip" and
     # "status-{stage_status}") that have nothing to do with the malformed-gate
