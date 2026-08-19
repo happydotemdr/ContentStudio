@@ -10,9 +10,19 @@
 </form>
 
 <h2>Kickoff template</h2>
+{% if kickoff_template_applies %}
 <form method="post" action="/skills/{{ skill_name }}/save">
   <input type="hidden" name="target" value="kickoff_template">
   <textarea name="content" rows="10">{{ kickoff_template_content }}</textarea>
   <button type="submit">Save kickoff template</button>
 </form>
+{% else %}
+{# Rendering this form for an unmapped skill gave the operator a live Save
+   button pointed at a file that cannot exist, and no way to tell an absent
+   template from an empty one (E-15). #}
+<p class="browse-placeholder">
+  This skill is not bound to a pipeline stage, so it has no kickoff template.
+  Kickoff templates exist only for the stages declared in <code>pipeline.yaml</code>.
+</p>
+{% endif %}
 {% endblock %}

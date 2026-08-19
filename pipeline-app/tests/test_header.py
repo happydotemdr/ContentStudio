@@ -539,3 +539,42 @@ def test_platform_options_match_the_adapter_registry_exactly():
     select = re.search(r'<select name="platform">(.*?)</select>', html, re.S).group(1)
     options = set(re.findall(r'<option value="([^"]+)"', select))
     assert options == set(build_adapters().keys())
+
+
+@pytest.fixture
+def client_with_skills(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # shorts-ideation is bound to a real stage so stage_id_by_skill() maps it;
+    # midjourney-prompting has no stage entry, so it stays unmapped. The
+    # brief's literal fixture used "stages: []", which leaves nothing mapped
+    # at all and makes test_a_mapped_skill_still_shows_the_kickoff_editor
+    # unsatisfiable regardless of the template fix -- corrected here.
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n  - id: ideation\n    skill: shorts-ideation\n    dir_prefix: \"01\"\n    depends_on: []\n",
+        encoding="utf-8",
+    )
+    for name in ("shorts-ideation", "midjourney-prompting"):
+        d = tmp_path / ".claude" / "skills" / name
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+    (tmp_path / "pipeline-app" / "stage_templates").mkdir(parents=True)
+    (tmp_path / "pipeline-app" / "stage_templates" / "ideation.md").write_text(
+        "/x", encoding="utf-8"
+    )
+    app = create_app(repo_root=tmp_path, db_path=tmp_path / "pipeline.db")
+    return TestClient(app)
+
+
+def test_a_skill_with_no_stage_mapping_shows_no_kickoff_editor(client_with_skills):
+    """STAGE_ID_BY_SKILL maps 8 of 13 skills. The other five rendered an empty
+    textarea with a live Save button targeting a template that does not exist,
+    and "no kickoff template" was indistinguishable from "it is empty" (E-15)."""
+    page = client_with_skills.get("/skills/midjourney-prompting").text
+    assert 'value="kickoff_template"' not in page
+    assert "This skill is not bound to a pipeline stage" in page
+
+
+def test_a_mapped_skill_still_shows_the_kickoff_editor(client_with_skills):
+    page = client_with_skills.get("/skills/shorts-ideation").text
+    assert 'value="kickoff_template"' in page
+    assert 'name="content"' in page
