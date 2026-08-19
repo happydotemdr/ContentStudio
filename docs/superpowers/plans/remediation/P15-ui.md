@@ -2031,6 +2031,21 @@ In `templates/partials/browse_tree_items.html`, the file branch:
 ```
 
 - [ ] Run: passes.
+
+> **Amendment (2026-08-18, found during T17 execution):** resolves T16's open handoff question —
+> updating `_md_below_state`'s `pointer.yaml` branch to call `resolve_grounding_pointer_state`
+> was **not optional**. Traced empirically: a `00-grounding` folder containing only a malformed
+> `pointer.yaml` is decided present-or-absent in its PARENT's listing by `_md_below_state`, not by
+> `list_children`'s own pointer branch (which only runs when scanning `00-grounding` directly).
+> The old `_md_below_state` logic treated a `read_pointer` exception as "no target" and fell
+> through to `"empty"` without returning — so a broken-pointer-only `00-grounding` vanished one
+> level up, reproducing E-14b at the parent. Replaced with a call to
+> `resolve_grounding_pointer_state`, treating any existing `pointer.yaml` (resolved, broken-target,
+> or unparseable) as `"content"`. Confirmed via the brief's own routing test, which failed with an
+> empty rendered tree before this change. One source of truth for pointer resolution across the
+> module, as T16's handoff note anticipated. Also updated four pre-existing tests whose assertions
+> were exactly the silently-skip/generic-message behavior this task deliberately removes (see
+> commit body for the full list). Landed in commit `58a3e7f`.
 - [ ] Commit: `fix(browse): list a broken grounding pointer instead of silently skipping it`
 
 ---
