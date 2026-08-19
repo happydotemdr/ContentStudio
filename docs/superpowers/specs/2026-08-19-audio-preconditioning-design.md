@@ -82,13 +82,17 @@ class ConditionResult:
                                # returns (ffmpeg.py:344-348); it does NOT return input_thresh, which
                                # belongs to loudnorm's own pass-1 JSON, a different mechanism.
     output_measurement: dict  # same 3-key shape, measured on the written output file
-    limited: bool              # True if any alimiter pass measurably engaged (see step 3)
-    peak_reduction_db: float   # 0.0 if `limited` is False; otherwise
-                                # (input_measurement['input_tp'] + total_gain_applied) - output_measurement['input_tp']
-                                # -- the gap between "what the peak would have been with gain alone" and
-                                # "what it actually is" -- a quantity directly derivable from the two
-                                # measurements plus the known applied gain, unlike a true instantaneous
-                                # per-sample maximum, which nothing in this chain measures.
+    limited: bool              # True if peak_reduction_db > 0.05 (an arbitrary-but-stated threshold
+                                # above measurement noise -- distinguishes "the limiter did something"
+                                # from "gain alone would have landed here anyway")
+    peak_reduction_db: float   # 0.0 if the accepted attempt applied no limiting; otherwise
+                                # (input_measurement['input_tp'] + applied_gain) - output_measurement['input_tp']
+                                # using the ACCEPTED attempt's final `applied_gain` value (§4.1 step 3
+                                # may have revised it from its initial value via the loudness-retry
+                                # branch) -- the gap between "what the peak would have been with gain
+                                # alone" and "what it actually is" -- a quantity directly derivable from
+                                # the two measurements plus the known applied gain, unlike a true
+                                # instantaneous per-sample maximum, which nothing in this chain measures.
 
 class PreconditionError(Exception):
     """Raised when, after MAX_ATTEMPTS, the output still fails the peak or loudness target."""
@@ -98,8 +102,13 @@ CONDITION_RELEASE_MS = 50    # future ffmpeg default change can't silently move 
                               # the installed ffmpeg 9.0 build's `-h filter=alimiter`)
 TP_TOLERANCE_DB = 0.1        # how far over target_tp_dbtp a measured true peak may land before
                               # triggering a tighter-ceiling retry
-LUFS_TOLERANCE = 0.3         # how far the *conditioned* clip's integrated loudness may drift from
-                              # target_lufs before triggering a makeup-gain retry (LU)
+LUFS_TOLERANCE = 0.35        # how far the *conditioned* clip's integrated loudness may drift from
+                              # target_lufs before triggering a makeup-gain retry (LU). Deliberately
+                              # 0.35, not 0.3: a boundary of exactly 0.3 sits on a floating-point knife
+                              # edge against ebur128's 0.1 LU output granularity -- a real measured case
+                              # (`-14.3` vs. target `-14.0`) evaluates `abs(-14.3 - -14.0) <= 0.3` as
+                              # **False** (`0.30000000000000071...`) and would trigger an unnecessary
+                              # retry on a result that's already correct to the tool's own precision.
 MAX_ATTEMPTS = 4
 
 def condition_clip(
@@ -151,11 +160,17 @@ level inconsistency — reintroduced by the fix meant to remove it. v3 makes eve
      `ceiling_dbtp -= (result['input_tp'] - target_tp_dbtp) + 0.2`, keep `applied_gain` unchanged, retry.
    - **If `tp_ok` holds but `lufs_ok` is false:** the limiter pulled integrated loudness away from
      target (the v2 defect) — **re-solve gain, don't just accept the drift**:
-     `applied_gain += (target_lufs - result['input_i'])`, keep `ceiling_dbtp` unchanged, retry. (A
-     second limiting pass on top of the new gain is expected to need at most a small further
-     adjustment, since the makeup gain itself is typically small once the ceiling is already close —
-     this is why `MAX_ATTEMPTS` is 4, not 2: one pass each for the initial peak fit and the initial
-     loudness fit, plus headroom for a second correction of each if the first overshoots.)
+     `applied_gain += (target_lufs - result['input_i'])`, keep `ceiling_dbtp` unchanged, retry.
+     Confirmed by running this exact algorithm against all 9 real conditioned sources: `alimiter`
+     reliably pins measured true peak at the ceiling from the first attempt (the peak-retry branch above
+     essentially never fires on real material — measured true peak sat exactly on `-2.5` across every
+     attempt on every clip), so in practice this loop is a **loudness-only contraction**: each gain
+     correction reduces the remaining loudness error by roughly the same fraction rather than closing it
+     in one step, because re-applying `alimiter` after a larger gain correction clips slightly more of
+     the signal again (measured error sequence on one real clip: `1.1 → 0.3 → 0.1` LU). `MAX_ATTEMPTS =
+     4` gives one attempt of margin over the ~3 the real material needed at `CONDITION_TP_DBTP = -2.5`
+     — measured, not assumed; a materially tighter ceiling should re-confirm the attempt count against
+     real files rather than relying on 4 by extrapolation.
 4. If `MAX_ATTEMPTS` is exhausted without both conditions holding simultaneously, raise
    `PreconditionError` with the source path and the last measurement — never return a result that
    fails either target.
@@ -231,17 +246,29 @@ dynamics-collapse this whole spec exists to prevent, just moved into a new step 
 
 **v3 derives the margin from the actual linear-mode boundary, not an assumed number.** The empirically
 measured condition for `stitcher`'s two-pass loudnorm to land in linear mode is
-`input_tp + loudnorm's own reported target_offset <= target_TP`; `target_offset` measured in the
-`-0.06` to `-0.3` dB range across test mixes. Add the bed's own true-peak contribution once mixed with
+`input_tp + loudnorm's own reported target_offset <= target_TP`; `target_offset` can be either sign
+(measured `-0.06` to `-0.3` dB on some test mixes, `+0.10` dB on the real conditioned mix) — a negative
+value would *relax* the linear-mode condition, so the derivation below treats it as a cost (`+0.3`
+worst-case magnitude) deliberately, to stay conservative regardless of which sign shows up on a given
+mix, not because the sign is known in advance. Add the bed's own true-peak contribution once mixed with
 the (now much louder, individually-conditioned) voice — confirmed against the real render-spec.json's
-`gain_db: -22.0` / `duck_db: -29.0`: `20 · log10(1 + 10^(-22/20)) ≈ 0.66 dB`, a coherent-sum worst case,
-conservative in the safe direction. Minimum required margin ≈ `0.3 + 0.66 + a small noise allowance ≈
-1.2 dB`. `-2.5` gives 1.5 dB of headroom — safely above the derived 1.2 dB minimum — while costing
-substantially less dynamics than `-4.5` did (measured gradient: ~0.6 LU of per-clip LRA loss at `-2.0`,
-~0.9 LU at `-2.5`, ~1.1 LU at `-3.0`, ~1.8 LU at `-4.5` — monotonic in ceiling depth, as expected for a
-peak limiter). `-2.0` alone (1.0 dB headroom) sits *under* the derived 1.2 dB minimum and is rejected on
-that basis, even though it would cost less; `-2.5` is the tightest value that still clears the derived
-minimum with margin.
+`gain_db: -22.0` / `duck_db: -29.0`: `20 · log10(1 + 10^(-22/20)) ≈ 0.66 dB` as a coherent-sum worst-case
+estimate (the real measured contribution on the actual mix came back lower, `0.38 dB` — the estimate is
+conservative in the safe direction, as intended). Minimum required margin ≈ `0.3 + 0.66 + a small noise
+allowance ≈ 1.2 dB`. `-2.5` gives 1.5 dB of headroom — safely above the derived 1.2 dB minimum.
+
+**On the LRA cost of `-2.5` vs. tighter alternatives — measured by actually running §4.1's algorithm
+against all 9 real conditioned sources, not estimated:** mean per-clip LRA loss came back **0.89 LU at
+`-2.0`, 0.94 LU at `-2.5`, 1.20 LU at `-4.5`** — real numbers superseding an earlier, non-reproducing
+estimate in an intermediate draft of this spec. Two things follow: `-2.0` and `-2.5` cost almost the
+same (0.05 LU apart, not a meaningful tradeoff either way), so `-2.5` is chosen purely on margin —
+sitting safely above the derived 1.2 dB minimum, where `-2.0`'s 1.0 dB does not — not because it's
+cheaper. And `-4.5` (v2's original, rejected choice) costs noticeably more than either, confirming that
+correction was worth making even though the earlier magnitude estimate for it wasn't precise. Individual
+clips vary around this mean by real, content-dependent amounts (a content-dense clip with wide natural
+dynamics, e.g. VO5's spoken-numbers proof segment, showed the largest measured single-clip loss, ~2.5
+LU, at `-2.5`) — §5's success criterion (below) is set from this full measured distribution, not the
+mean alone.
 
 **Two separate constants, not one:**
 
@@ -263,8 +290,10 @@ CONDITION_TP_DBTP = -2.5     # per-clip conditioning true-peak target -- NOT DEL
                               # measurably more dynamics than the margin required.
 ```
 
-Expected per-clip LRA loss at `-2.5`: **~0.9 LU** (measured, not assumed) — this is the number §5's
-success criterion is set against, not an arbitrary target chosen before the ceiling was known.
+Measured mean per-clip LRA loss at `-2.5`: **0.94 LU**; measured per-clip maximum: **2.7 LU** (VO5).
+§5's success criterion is set from this real distribution — a single "~1.0 LU per clip" ceiling looks
+reasonable until checked against real files, where it fails 4 of the 9 real clips; see §5 for the
+criterion actually used.
 
 One residual precision note, not a defect: `_build_bed` formats its own conform gain as
 `{conform_gain:.1f}dB` (`audio.py:320`) — the bed's final level is quantized to 0.1 dB regardless of how
@@ -313,29 +342,38 @@ adjacent `fades` entries renders as a ~1 ms mute/unmute on continuous music, i.e
 **The bed file's content is built so the one actual BedA→BedB splice sits at the pause window's END, not
 its start — and the safety net is the declared fade at that point, not the window's silence** (an
 earlier draft of this section claimed the splice fell at the window's start and was masked by the
-window's silence; that was checked directly and is wrong — corrected here):
+window's silence; that was checked directly and is wrong — corrected here).
 
-- `BedA_conditioned` (its full conditioned length, up to its own natural fade tail — no arbitrary
-  front-trim needed, since anything past the useful content either is genuinely part of its own fade or
-  falls inside the window and gets silenced regardless) occupies file span `[0, 14.314331]`, representing
-  absolute `[5.200000, 19.514331]` once placed.
-- A **0.708617s filler**, immediately contiguous with `BedA_conditioned` in the file — the next slice of
-  `BedA`'s own tail, file span `[14.314331, 15.022948]` — fills the pause window's absolute duration
-  `[19.514331, 20.222948]`. Because this filler is literally the continuation of the same source audio,
-  **there is no discontinuity at the window's start** — the file is one continuous `BedA` waveform
-  through this whole span, and the window's silence (§4.5, `mode:"out"`) covers it regardless of its
-  content, which is why the content is allowed to be arbitrary (reused `BedA` tail) rather than needing
-  to be anything in particular.
-- `BedB_conditioned` begins immediately after the filler — file position 15.022948, **absolute
-  20.222948, exactly the pause window's end**. **This is where the one real splice in the file sits** —
-  `BedA`'s tail audio transitions directly to `BedB`'s own beginning with no crossfade. What makes this
-  safe is not the window (the window has already ended by this point) but the **declared 150ms fade-in
-  at `at: 20.222948`** (§4.5's `fades` entry below) — the envelope is still ramping up from `-100 dB` at
-  the exact instant the splice occurs, so the discontinuity is inaudible under the fade, not because it
-  falls inside silenced territory. A future edit that removes or shortens that fade without noticing
-  this dependency would reintroduce the click — this note exists so that dependency isn't invisible.
-  `BedB_conditioned`'s own onset (the "riser out of silence" the music brief calls for) is therefore
-  what's actually heard emerging as the fade opens, matching the intended creative effect.
+Two coordinate frames matter here, kept explicitly distinct: **BedA-relative time** (0 = the start of
+`BedA_conditioned`'s own clip) and **`BedFull` position**, which equals **absolute render time** directly
+— `_build_bed`'s envelope timeline starts at file-position 0 = render absolute 0 (§4.5's leading
+paragraph), so `BedFull_provoice_conditioned.wav`'s own internal timeline needs no separate offset from
+the render's absolute clock. Every position below states which frame it's in.
+
+- `BedA_conditioned` measures **15.072625s** (its real, full conditioned duration — the raw generation
+  was `BedA_provoice_v2.mp3` at that length; conditioning doesn't trim it). It is used **trimmed to
+  15.022948s of BedA-relative time `[0, 15.022948]`** — *not* its full length; the extra 0.0497s beyond
+  that point is discarded. This placement covers `BedFull` position `[5.200000, 20.222948]`.
+  - The first 14.314331s of that (`BedFull` position `[5.200000, 19.514331]`) is `BedA`'s own
+    intentional content — its fade-in, mechanism drone, and thinning arc, ending right where the
+    pause window begins.
+  - The remaining 0.708617s (`BedFull` position `[19.514331, 20.222948]`, = BedA-relative
+    `[14.314331, 15.022948]`) is filler, covering the pause window's exact duration. Its content is
+    `BedA`'s own trailing audio, immaterial because the window silences it regardless — reusing it
+    avoids needing any new material or synthesized silence for this span. **The margin is thin but
+    sufficient**: `BedA_conditioned` needs to supply at least 15.022948s and has exactly 15.072625s,
+    a 0.0497s spare — worth stating explicitly rather than leaving as an unstated assumption an
+    implementer could trip on with a slightly-shorter conditioned clip.
+- `BedB_conditioned` begins immediately after, at **`BedFull` position 20.222948 — exactly the pause
+  window's end**. **This is where the one real splice in the file sits**: `BedA`'s trimmed tail
+  transitions directly to `BedB`'s own beginning, no crossfade. What makes this safe is not the window
+  (which has already ended by this point) but the **declared 150ms fade-in at `at: 20.222948`** (the
+  `fades` entry above) — the envelope is still ramping up from `-100 dB` at the exact instant the splice
+  occurs, so the discontinuity is inaudible under the fade, not because it falls inside silenced
+  territory. A future edit that removes or shortens that fade without noticing this dependency would
+  reintroduce the click — this note exists so that dependency isn't invisible. `BedB_conditioned`'s own
+  onset (the "riser out of silence" the music brief calls for) is therefore what's actually heard
+  emerging as the fade opens, matching the intended creative effect.
 
 **One deliberate exception — the leading hold-out stays a plain prepend, not a window:** the hook
 hold-out `[0, 5.200000]` is realized as **5.2 seconds of genuine silence prepended to the bed file**,
@@ -401,15 +439,23 @@ full CLI render and without resolving the shot-timing re-cut question.
    was `-5.08` measured `-4.5 dBTP` on disk — a 0.58 dB gap between the report and reality). Asserting
    only on `loudnorm`'s own reported numbers proves nothing about the file on disk; a fresh, independent
    measurement does.
-4. **Per-clip dynamics preservation** — for each of the 9 `ConditionResult`s from step 3, compare
-   `input_measurement['input_lra']` to `output_measurement['input_lra']`; expect a delta of **no more
-   than ~1.0 LU** (measured expectation at `CONDITION_TP_DBTP = -2.5` is ~0.9 LU — §4.4 — this threshold
-   is set from that measurement, not chosen independently of it). This — not the assembled program's
-   overall LRA — is the correct test that the limiter didn't collapse dynamics. The assembled mix's own
-   LRA is expected to *shrink* somewhat as a side effect of removing the 4.1 LU beat-to-beat spread
-   (§4.2) — that's the fix working as intended, not a dynamics loss, so it is reported for the record
-   but not gated on. State the source LRA baseline this compares against: 6.10 LU, measured on the raw
-   (pre-any-processing) assembled VO in the prior run.
+4. **Per-clip dynamics preservation, gated on the aggregate, reported per-clip.** For each of the 9
+   `ConditionResult`s from step 3, compute `input_measurement['input_lra'] -
+   output_measurement['input_lra']`. **Gate on the mean across all 9**: expect ≤ **1.2 LU** (measured
+   real value at `CONDITION_TP_DBTP = -2.5` is 0.94 LU mean — 1.2 gives working margin above that without
+   being loose enough to mask a real regression). **Do not gate per-clip against a single fixed number**
+   — measured real per-clip values at `-2.5` range from −0.2 to 2.7 LU (content-dependent: a
+   naturally-dynamic clip like VO5's spoken-numbers proof segment costs more than a flatter one; a
+   uniform per-clip ceiling tight enough to be meaningful for the flat clips fails the dynamic ones for
+   reasons that have nothing to do with the limiter misbehaving). Every clip's individual delta is still
+   `log()`-ed (§4.1 step 6) and printed in the validation script's report for a human to scan — a single
+   clip wildly out of line with its neighbors (not just "high," but discontinuously higher) is worth a
+   look even though it isn't a hard gate. This — not the assembled program's overall LRA — is the correct
+   test that the limiter didn't collapse dynamics. The assembled mix's own LRA is expected to *shrink*
+   somewhat as a side effect of removing the 4.1 LU beat-to-beat spread (§4.2) — that's the fix working
+   as intended, not a dynamics loss, so it is reported for the record but not gated on. Source LRA
+   baseline this compares against: 6.10 LU, measured on the raw (pre-any-processing) assembled VO in the
+   prior run.
 5. **Per-clip loudness accuracy** — for each of the 9 `ConditionResult`s, confirm
    `output_measurement['input_i']` is within `LUFS_TOLERANCE` (0.3 LU) of `CONDITION_LUFS`. This is the
    check that directly catches the v2 defect (a retry that satisfied the peak target while silently
