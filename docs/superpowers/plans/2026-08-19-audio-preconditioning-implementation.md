@@ -10,9 +10,9 @@ audio assets that motivated this work and deliver a corrected mix for a listen.
 **Architecture:** One new pure-function module (`condition_clip`) that measures a raw clip,
 applies gain + a true-peak limiter via ffmpeg, re-measures, and retries (up to 4 attempts) until
 both a peak ceiling and a loudness target are satisfied simultaneously — never returning a result
-that silently missed either. `build_audio()` itself is not modified. A throwaway script (outside
-any git worktree, so it can never be committed) wires `condition_clip` + a declarative bed
-assembly into a real call to `build_audio()` against the actual render assets.
+that silently missed either. `build_audio()` itself is not modified. A throwaway script (under the
+gitignored `stitcher/renders/` tree, so it can never be staged) wires `condition_clip` + a
+declarative bed assembly into a real call to `build_audio()` against the actual render assets.
 
 **Tech Stack:** Python 3, ffmpeg 9.0 (real binary, no mocking in the final task), pytest,
 pydantic v2 (via `stitcher.spec`).
@@ -20,6 +20,26 @@ pydantic v2 (via `stitcher.spec`).
 **Source spec:** `docs/superpowers/specs/2026-08-19-audio-preconditioning-design.md` (v3, three
 Opus review rounds, all empirically verified against real files). Every numeric constant and
 algorithm step below is copied from that spec verbatim — do not re-derive or re-round any of them.
+
+**Revision note:** this plan went through one Opus implementation-verification round after its
+first commit — the reviewer actually assembled Task 1's `precondition.py`, ran the mocked tests,
+and ran Task 5's harness against the real render assets, rather than only reading the plan text. It
+found one Critical bug (Task 1's temp-file path had no extension ffmpeg could infer a muxer from,
+so every *real* `condition_clip` call failed even though all four mocked test tasks passed clean —
+none of the mocked tests could see it) plus several Important/Minor gaps, all fixed below: a real,
+unmocked `@pytest.mark.e2e` smoke test was added (Task 1) specifically because the mocked suite's
+blind spot is exactly the class of bug that slipped through; two defensive guards were added to
+`condition_clip` (a digital-silence check and an `alimiter` valid-range floor on the peak-retry
+ceiling); a temp-file leak on `PreconditionError` was closed; several internally-contradictory task
+descriptions (Tasks 2–4 saying both "Modify precondition.py" and "write the failing test" while
+implementing nothing) were corrected to say plainly that they add tests only; the "outside every
+git worktree" claim about the throwaway script's location was corrected to the real reason it can
+never be committed (it sits under the repo's gitignored `renders/` tree, not outside the repo); and
+a vacuous single-item overlap check in Task 5 was replaced with an assertion that actually checks
+something. After these fixes, the reviewer confirmed a full green run: `condition_clip` against a
+real ffmpeg-generated tone, all mocked unit tests, and Task 5's real end-to-end harness against the
+actual 9 files (`normalization_type: linear`, independently re-measured mix at `-13.9 LUFS / -2.0
+dBTP`, mean per-clip LRA loss 0.93 LU — all within this plan's stated success criteria).
 
 ## Global Constraints
 
@@ -50,7 +70,7 @@ algorithm step below is copied from that spec verbatim — do not re-derive or r
 |---|---|
 | `stitcher/stitcher/precondition.py` | New. `condition_clip()`, `ConditionResult`, `PreconditionError`, the module constants. The only new production code this plan adds. |
 | `stitcher/tests/test_precondition.py` | New. Mocked-ffmpeg unit tests for `condition_clip()`'s clean/peak-retry/loudness-retry/exhausted paths, following `tests/test_audio.py`'s existing `wire()` pattern. |
-| `<render dir>/validate_precondition.py` | New, **outside every git worktree** (see Task 5) — throwaway, never committed. Runs `condition_clip` + a declarative bed reassembly + a real `build_audio()` call against the actual render assets, and checks §5's five success criteria. |
+| `<render dir>/validate_precondition.py` | New, under the gitignored `renders/` tree (see Task 5) — throwaway, never committed. Runs `condition_clip` + a declarative bed reassembly + a real `build_audio()` call against the actual render assets, and checks §5's five success criteria. |
 | `docs/superpowers/plans/2026-08-19-audio-preconditioning-implementation-RESULTS.md` | New. Written at the end of Task 5, capturing the real run's output. |
 
 ---
@@ -146,7 +166,35 @@ def test_a_clip_that_needed_no_limiting_reports_limited_false(tmp_path, monkeypa
     # (input_tp=-20.0 + applied_gain=6.0) - output_tp=-14.0 = 0.0
     assert result.peak_reduction_db == pytest.approx(0.0)
     assert result.limited is False
+
+
+@pytest.mark.e2e
+def test_condition_clip_against_real_ffmpeg(tmp_path):
+    """Every other test in this file mocks ffmpeg.run/measure_loudness, so
+    none of them can catch a command that's syntactically invalid to the
+    real binary -- e.g. a temp output filename ffmpeg can't infer a muxer
+    from, which is exactly the bug an Opus review of this plan caught by
+    actually running condition_clip against real ffmpeg (a mocked-only test
+    suite went green while the real thing failed on its first call). This
+    test runs the real ffmpeg 9.0 binary once, end to end, no mocking."""
+    source = tmp_path / "tone.wav"
+    pc.ffmpeg.run(
+        ["ffmpeg", "-hide_banner", "-y", "-f", "lavfi",
+         "-i", "sine=frequency=220:duration=3", "-ac", "1",
+         "-c:a", "pcm_s16le", str(source)],
+        tmp_path / "gen_log.txt",
+    )
+    out_path = tmp_path / "conditioned.wav"
+    result = pc.condition_clip(source, -14.0, -2.5, out_path, tmp_path / "log.txt")
+    assert result.output.is_file()
+    assert abs(result.output_measurement["input_i"] + 14.0) <= pc.LUFS_TOLERANCE
+    assert pc.ffmpeg.probe(result.output).duration == pytest.approx(3.0, abs=0.05)
 ```
+
+`stitcher/pytest.ini` already registers the `e2e` marker (`e2e: end-to-end render; needs a real
+ffmpeg on PATH`) and does not deselect it by default, so this test runs as part of every normal
+`pytest` invocation in this project — matching how the rest of the `stitcher` suite already treats
+real-ffmpeg tests.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -154,7 +202,7 @@ Run: `cd stitcher && python -m pytest tests/test_precondition.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'stitcher.precondition'` (or similar
 import error) — the module does not exist yet.
 
-- [ ] **Step 3: Write `precondition.py`'s constants, dataclasses, and the single-attempt loop shell (clean path only — retries added in Tasks 2–4)**
+- [ ] **Step 3: Write `precondition.py`'s constants, dataclasses, and the complete measure→gain→limit→re-measure→retry loop (all branches — Tasks 2–4 add the per-branch regression tests, they do not add new code)**
 
 Create `stitcher/stitcher/precondition.py`:
 
@@ -170,6 +218,7 @@ unmodified -- this module only makes its inputs safe for that gate.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -221,6 +270,13 @@ class ConditionResult:
     peak_reduction_db: float
 
 
+# alimiter's `limit` parameter is only valid in [0.0625, 1] (~-24.08..0
+# dBFS) -- verified against the installed ffmpeg 9.0 build's
+# `-h filter=alimiter`. A ceiling that would push `limit` below this floor
+# is a PreconditionError, not an invalid ffmpeg argument.
+_ALIMITER_MIN_DBTP = 20 * math.log10(0.0625)  # ~-24.08
+
+
 def condition_clip(
     source: Path,
     target_lufs: float,
@@ -231,62 +287,85 @@ def condition_clip(
     """Condition one clip so it is safe for build_audio()'s linear-loudnorm
     gate, without collapsing dynamics to get there (spec §4.1)."""
     input_measurement = ffmpeg.measure_loudness(source, log_path)
+    if ffmpeg.is_digital_silence(input_measurement):
+        # Matches stitcher's existing SilentVoiceError philosophy (audio.py):
+        # a silent source has no loudness to solve against, so failing loudly
+        # here beats a doomed 4-attempt encode loop ending in a confusing
+        # "-inf" peak_reduction_db.
+        raise PreconditionError(
+            f"{source}: input is digital silence (integrated "
+            f"{input_measurement['input_i']} LUFS, true peak "
+            f"{input_measurement['input_tp']} dBFS) -- there is no loudness "
+            "to condition against"
+        )
     applied_gain = target_lufs - input_measurement["input_i"]
     ceiling_dbtp = target_tp_dbtp
 
-    temp = out_path.with_suffix(out_path.suffix + ".tmp")
+    temp = out_path.with_suffix(".tmp" + out_path.suffix)
     output_measurement: dict = {}
 
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        limit = 10 ** (ceiling_dbtp / 20)
-        chain = (
-            f"aresample=48000,volume={applied_gain:.2f}dB,"
-            f"alimiter=limit={limit:.6f}:attack={CONDITION_ATTACK_MS}:"
-            f"release={CONDITION_RELEASE_MS}:level=0:latency=1"
+    try:
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            if ceiling_dbtp < _ALIMITER_MIN_DBTP:
+                raise PreconditionError(
+                    f"{source}: peak-retry tightened the ceiling to "
+                    f"{ceiling_dbtp:.2f} dBTP, below alimiter's valid range "
+                    f"(>= {_ALIMITER_MIN_DBTP:.2f} dBTP); the source's true "
+                    "peak is too extreme for this target to be reachable by "
+                    "limiting alone"
+                )
+            limit = 10 ** (ceiling_dbtp / 20)
+            chain = (
+                f"aresample=48000,volume={applied_gain:.2f}dB,"
+                f"alimiter=limit={limit:.6f}:attack={CONDITION_ATTACK_MS}:"
+                f"release={CONDITION_RELEASE_MS}:level=0:latency=1"
+            )
+            ffmpeg.run(
+                ["ffmpeg", "-hide_banner", "-y", "-i", str(source),
+                 "-af", chain,
+                 "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", str(temp)],
+                log_path,
+            )
+            output_measurement = ffmpeg.measure_loudness(temp, log_path)
+
+            tp_ok = output_measurement["input_tp"] <= target_tp_dbtp + TP_TOLERANCE_DB
+            lufs_ok = abs(output_measurement["input_i"] - target_lufs) <= LUFS_TOLERANCE
+
+            if tp_ok and lufs_ok:
+                temp.replace(out_path)
+                peak_reduction_db = (
+                    (input_measurement["input_tp"] + applied_gain)
+                    - output_measurement["input_tp"]
+                )
+                limited = peak_reduction_db > 0.05
+                _log_result(
+                    log_path, source, out_path, input_measurement, output_measurement,
+                    applied_gain, ceiling_dbtp, attempt, peak_reduction_db,
+                )
+                return ConditionResult(
+                    source, out_path, input_measurement, output_measurement,
+                    limited, peak_reduction_db,
+                )
+
+            if not tp_ok:
+                # Peak still too high -- tighten the ceiling, keep gain fixed.
+                ceiling_dbtp -= (output_measurement["input_tp"] - target_tp_dbtp) + 0.2
+            else:
+                # tp_ok held but lufs_ok didn't: the limiter pulled loudness
+                # away from target. Re-solve gain rather than accept the
+                # drift -- this is the fix for the defect the second Opus
+                # review round found (spec §4.1: a retry that only
+                # re-checked peak silently let integrated loudness drift up
+                # to 0.4 LU on real material).
+                applied_gain += target_lufs - output_measurement["input_i"]
+
+        raise PreconditionError(
+            f"{source}: failed to reach target_lufs={target_lufs} / "
+            f"target_tp_dbtp={target_tp_dbtp} within {MAX_ATTEMPTS} attempts; "
+            f"last measurement: {output_measurement}"
         )
-        ffmpeg.run(
-            ["ffmpeg", "-hide_banner", "-y", "-i", str(source),
-             "-af", chain,
-             "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", str(temp)],
-            log_path,
-        )
-        output_measurement = ffmpeg.measure_loudness(temp, log_path)
-
-        tp_ok = output_measurement["input_tp"] <= target_tp_dbtp + TP_TOLERANCE_DB
-        lufs_ok = abs(output_measurement["input_i"] - target_lufs) <= LUFS_TOLERANCE
-
-        if tp_ok and lufs_ok:
-            temp.replace(out_path)
-            peak_reduction_db = (
-                (input_measurement["input_tp"] + applied_gain)
-                - output_measurement["input_tp"]
-            )
-            limited = peak_reduction_db > 0.05
-            _log_result(
-                log_path, source, out_path, input_measurement, output_measurement,
-                applied_gain, ceiling_dbtp, attempt, peak_reduction_db,
-            )
-            return ConditionResult(
-                source, out_path, input_measurement, output_measurement,
-                limited, peak_reduction_db,
-            )
-
-        if not tp_ok:
-            # Peak still too high -- tighten the ceiling, keep gain fixed.
-            ceiling_dbtp -= (output_measurement["input_tp"] - target_tp_dbtp) + 0.2
-        else:
-            # tp_ok held but lufs_ok didn't: the limiter pulled loudness away
-            # from target. Re-solve gain rather than accept the drift -- this
-            # is the fix for the defect the second Opus review round found
-            # (spec §4.1: a retry that only re-checked peak silently let
-            # integrated loudness drift up to 0.4 LU on real material).
-            applied_gain += target_lufs - output_measurement["input_i"]
-
-    raise PreconditionError(
-        f"{source}: failed to reach target_lufs={target_lufs} / "
-        f"target_tp_dbtp={target_tp_dbtp} within {MAX_ATTEMPTS} attempts; "
-        f"last measurement: {output_measurement}"
-    )
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def _log_result(
@@ -321,7 +400,7 @@ def _log_result(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd stitcher && python -m pytest tests/test_precondition.py -v`
-Expected: PASS (2 tests)
+Expected: PASS (3 tests: clean path, limited-false, the real-ffmpeg e2e smoke test)
 
 - [ ] **Step 5: Commit**
 
@@ -335,14 +414,15 @@ git commit -m "feat(stitcher): add precondition.py clean-path conditioning"
 ### Task 2: Peak-retry branch — tighten the ceiling, keep gain fixed
 
 **Files:**
-- Modify: `stitcher/stitcher/precondition.py` (already implements this branch from Task 1 — this task is test-only, confirming the behavior)
+- Test-only. No production file is modified — Task 1 already implements this branch; this task adds
+  its regression test.
 - Test: `stitcher/tests/test_precondition.py`
 
 **Interfaces:**
 - Consumes: `condition_clip` (Task 1, unchanged signature).
 - Produces: no new symbols — a regression test for the peak-retry branch already written in Task 1's implementation.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the regression test for this branch**
 
 Append to `stitcher/tests/test_precondition.py`:
 
@@ -393,7 +473,8 @@ git commit -m "test(stitcher): cover precondition's peak-retry branch"
 ### Task 3: Loudness-retry branch — re-solve gain rather than accept drift (the critical fix)
 
 **Files:**
-- Modify: `stitcher/stitcher/precondition.py` (already implements this branch — test-only task)
+- Test-only. No production file is modified — Task 1 already implements this branch; this task adds
+  its regression test.
 - Test: `stitcher/tests/test_precondition.py`
 
 **Interfaces:**
@@ -401,7 +482,7 @@ git commit -m "test(stitcher): cover precondition's peak-retry branch"
 - Produces: no new symbols — the test that would have caught the v2 spec defect (a retry that
   silently let integrated loudness drift while only re-checking peak).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the regression test for this branch**
 
 Append to `stitcher/tests/test_precondition.py`:
 
@@ -450,14 +531,15 @@ git commit -m "test(stitcher): cover precondition's loudness-retry branch (the v
 ### Task 4: Exhausted-retries path — hard failure, never a silently out-of-envelope result
 
 **Files:**
-- Modify: `stitcher/stitcher/precondition.py` (already implements this — test-only task)
+- Test-only. No production file is modified — Task 1 already implements this path; this task adds
+  its regression test.
 - Test: `stitcher/tests/test_precondition.py`
 
 **Interfaces:**
 - Consumes: `condition_clip`, `PreconditionError`, `MAX_ATTEMPTS` (all Task 1).
 - Produces: no new symbols.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the regression test for this path**
 
 Append to `stitcher/tests/test_precondition.py`:
 
@@ -494,10 +576,11 @@ Expected: PASS
 - [ ] **Step 3: Run the full `precondition.py` test file and the full `stitcher` suite**
 
 Run: `cd stitcher && python -m pytest tests/test_precondition.py -v`
-Expected: PASS (6 tests: clean path, limited-false, peak-retry, loudness-retry, exhausted-retries,
-plus the properties asserted inline in the clean-path test cover timing-alignment and
-output-channel-count per spec §7 — no separate test functions needed for those two, since they are
-static properties of the single command built on the clean path, already asserted in Task 1 Step 1).
+Expected: PASS (6 tests: clean path, limited-false, the real-ffmpeg e2e smoke test, peak-retry,
+loudness-retry, exhausted-retries. The properties asserted inline in the clean-path test cover
+timing-alignment and output-channel-count per spec §7 — no separate test functions needed for those
+two, since they are static properties of the single command built on the clean path, already
+asserted in Task 1 Step 1).
 
 Run: `cd stitcher && python -m pytest tests/ -v`
 Expected: PASS (every existing `stitcher` test plus the new ones — confirms this module introduced
@@ -521,10 +604,11 @@ real, unmodified `build_audio()`.
 
 **Files:**
 - Create: `C:\Projects\ContentStudio\stitcher\renders\stop-over-specialization-in-youth-sports-20260811-004711\validate_precondition.py`
-  — **outside every git worktree** (the render lives at this path per spec §0, entirely outside
-  `C:\Projects\ContentStudio\.claude\worktrees\...`), so this script is structurally impossible to
-  commit to this repo. This is what makes it "throwaway" per spec §5/§7 without relying on
-  discipline to avoid `git add`-ing it.
+  — lives under `stitcher/renders/`, which the repo's `.gitignore` excludes wholesale
+  (`.gitignore:43`, `renders/`). This directory sits inside the same repo's working tree (it is
+  **not** outside version control the way an unrelated path would be), but `git add` from any
+  worktree cannot reach a file under an ignored directory, so this is what makes the script
+  "throwaway" per spec §5/§7 without relying on discipline to avoid staging it.
 - Create: `docs/superpowers/plans/2026-08-19-audio-preconditioning-implementation-RESULTS.md`
   (inside the worktree, committed).
 
@@ -561,8 +645,9 @@ Create `C:\Projects\ContentStudio\stitcher\renders\stop-over-specialization-in-y
 """Throwaway validation harness for
 docs/superpowers/specs/2026-08-19-audio-preconditioning-design.md.
 
-Not stitcher code -- deliberately lives outside every git worktree (see the
-implementation plan's Task 5) so it can never be committed. Run with:
+Not stitcher code -- deliberately lives under stitcher/renders/, which the
+repo's .gitignore excludes wholesale (.gitignore:43, "renders/"), so it can
+never be staged (see the implementation plan's Task 5). Run with:
     python validate_precondition.py
 """
 
@@ -622,12 +707,14 @@ def main() -> None:
     ws.ensure_dirs()
     log_path = ws.log_path("validate")
 
-    # Step 1 of spec §5's harness: confirm the bed's windows don't overlap
-    # (the manual check standing in for validate_spec, which a minimal
-    # audio-only spec cannot satisfy -- spec §5 finding N8).
-    windows = [(PAUSE_IN, PAUSE_OUT)]
-    for (a_in, a_out), (b_in, b_out) in zip(windows, windows[1:]):
-        assert a_out <= b_in, "bed windows overlap"
+    # Step 1 of spec §5's harness: confirm the bed's one window is
+    # well-formed and inside the runtime (the manual check standing in for
+    # validate_spec, which a minimal audio-only spec cannot satisfy -- spec
+    # §5 finding N8). There is only one window in this render, so there is
+    # no second window to overlap against -- this asserts the invariant that
+    # actually matters here rather than a loop that would vacuously pass
+    # with zero iterations if left in its two-or-more-windows form.
+    assert PAUSE_IN < PAUSE_OUT <= RUNTIME, "bed window is malformed or runs past the runtime"
 
     # Condition all 9 raw sources individually (spec §4.2).
     vo_results = []
@@ -808,6 +895,14 @@ and a closing **Status: pending user listen-confirmation** line (not resolved un
 confirms by ear, matching this project's established pattern for audio changes) — updated to
 **Status: confirmed clean** only after the user has actually listened and said so, never asserted
 in advance.
+
+**Use only numbers Step 3 actually printed — do not copy figures from the design spec's §4.4/§5
+prose as if they were this run's results.** The spec's own numbers came from an earlier exploratory
+pass (e.g. it quotes `LUFS_TOLERANCE` as "0.3 LU" in one place though the shipped constant is 0.35,
+and attributes the single largest measured per-clip LRA loss to VO5 in one draft) — those are
+useful as *expectations to sanity-check against*, not as substitutes for this run's actual stdout.
+If a real captured number differs materially from what the spec predicted, say so plainly in the
+RESULTS doc rather than silently reconciling it.
 
 - [ ] **Step 6: Commit**
 
