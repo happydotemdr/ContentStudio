@@ -2776,6 +2776,15 @@ six file updates and the directory move.
 - **P15** — render `health`, `pending_spawns`, and `.status-*` rules for
   `completed_with_errors` / `failed` / `abandoned` (B-43, E-11's UI halves); P1's
   `consecutive_failures` / `failing` counter on the handles page (B-82's UI half).
+  **Added 2026-08-18 (P15's own session, Opus checkpoint B):** `db.list_run_handle_results` /
+  `discovery_runs_page` still has no join to `handles`, so each `handle_results` row carries no
+  `platform`/`handle`/`display_name`. P15's `discovery_runs.html` (T13) already renders the
+  honest `unresolved handle id N` fallback for this, and TWO tests in
+  `pipeline-app/tests/test_header.py` — `test_a_failed_handle_is_named_not_numbered` and
+  `test_errored_handle_results_are_listed_before_healthy_ones` — are marked
+  `@pytest.mark.xfail(strict=True, ...)` pending exactly this join. Whoever lands the join: remove
+  both markers in that file (their `reason=` strings also say so); `strict=True` means the suite
+  will fail loudly on its own if this is missed, but do not rely on that as the only signal.
 - **P14** — `README.md` / `CLAUDE.md` say `python scripts/setup_discovery_task.py`; after
   Task 40 that is `python tools/setup_discovery_task.py`.
 - **P6** — raise `discovery_engine.HandleNotFound` for a definitive 404/"no such account", so

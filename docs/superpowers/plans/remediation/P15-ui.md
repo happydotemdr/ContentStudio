@@ -2710,7 +2710,7 @@ read by any template in this package.
 
 | Key | Type | Meaning |
 |---|---|---|
-| `handle_results[*].platform`, `.handle`, `.display_name` | `str` | `discovery_runs_page` joins `handles` so each result names its source. Until it lands, T13's template renders `unresolved handle id N` and its first test stays red. |
+| `handle_results[*].platform`, `.handle`, `.display_name` | `str` | `discovery_runs_page` joins `handles` so each result names its source. Until it lands, T13's template renders `unresolved handle id N`, and **both** of T13's new tests (not just the first) are marked `xfail(strict=True)` in `tests/test_header.py` — remove both markers once this join lands (corrected 2026-08-18 at Opus checkpoint B; see T13's own amendment). |
 
 ### From P8 / P1 — runs pagination (render-side bounded here, not solved here)
 
