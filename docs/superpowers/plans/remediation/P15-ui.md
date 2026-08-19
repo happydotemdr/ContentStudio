@@ -857,6 +857,19 @@ Add to `static/style.css`:
 ```
 
 - [ ] Run: passes.
+
+> **Amendment (2026-08-18, found during T8 execution):** landing the status strip made a
+> pre-existing test in **P3's own file**, `tests/test_routes_stages.py::
+> test_a_malformed_gates_value_shows_a_sensible_notice_not_garbage`, start failing —
+> `assert page.text.count('status-') < 5` is a loose regression guard against a specific old
+> bug (character-iterating a malformed `gates` value), and the strip's own two legitimate
+> `status-` occurrences (`status-strip`, `status-{stage_status}`) pushed the real count from
+> under 5 to 7, still nowhere near the double-digit count the guarded bug would produce.
+> `tests/test_routes_stages.py` is not in P15's owned-file list (§1) — it is P3's, already
+> merged with no other package currently active on it — so this is a genuine cross-package
+> ripple, not scope creep: raised the threshold from `< 5` to `< 9` with an inline comment
+> explaining why, preserving the test's actual regression-guard intent. Landed as part of
+> commit `1cd7f32`.
 - [ ] Commit: `feat(ui): add a stage status strip with version and generation time`
 
 ---
