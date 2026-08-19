@@ -2361,6 +2361,21 @@ def test_a_mapped_skill_still_shows_the_kickoff_editor(client_with_skills):
       context task.** Until then `kickoff_stage_id` is undefined → falsy → the form is hidden
       for *every* skill, which fails `test_a_mapped_skill_still_shows_the_kickoff_editor`
       loudly rather than shipping a wrong page quietly.
+
+> **Amendment (2026-08-19, found at T20 pre-dispatch check):** P5 landed months ago and does NOT
+> use the key name this task assumes. Live `routes/skills.py` (`GET /skills/{skill_name}`) already
+> computes `stage_id = stage_id_by_skill(request.app.state.stage_defs).get(skill_name)` and passes
+> **`stage_id`** and **`kickoff_template_applies`** (`= stage_id is not None`, already the exact
+> boolean guard this task needs) into `skill_editor.html`'s context — not `kickoff_stage_id`. Same
+> naming-mismatch pattern §7's own intro paragraph already names for P3 ("P15's first draft had
+> bound to an entirely disjoint set... because Jinja renders an undefined key as empty, the stage
+> page would have shown nothing at all"): here `kickoff_stage_id` being undefined would make the
+> guard SILENTLY false for every skill, hiding the kickoff editor even for the eight mapped skills
+> — the exact defect `test_a_mapped_skill_still_shows_the_kickoff_editor` exists to catch, and it
+> would have failed loudly as the plan's own text anticipated, just for the wrong reason (a naming
+> typo, not a genuinely missing P5 contract). **T20 is NOT blocked — use `kickoff_template_applies`
+> as the guard directly** (it is already the precise boolean this task's `{% if kickoff_stage_id %}`
+> was reaching for) in place of `kickoff_stage_id` throughout this task's template and tests.
 - [ ] Commit: `fix(ui): hide the kickoff-template editor for skills with no stage`
 
 ---
@@ -2796,7 +2811,7 @@ read by any template in this package.
 
 | Key | Type | Meaning |
 |---|---|---|
-| `kickoff_stage_id` | `str \| None` | `STAGE_ID_BY_SKILL.get(skill_name)` — already computed at `routes/skills.py:58` as the local `stage_id` and simply not forwarded. Falsy for the five unmapped skills and for `rgs-pairing-review`, whose map value is an explicit `None`. **T20 is sequenced after this.** |
+| `kickoff_stage_id` | `str \| None` | **Not the key P5 actually shipped** (corrected 2026-08-19 at T20 pre-dispatch — see T20's own amendment). Live `routes/skills.py` passes `stage_id` (via `stage_id_by_skill(...).get(skill_name)`) and `kickoff_template_applies` (`= stage_id is not None`) instead — the latter is already the exact boolean this row's guard needs. T20 uses `kickoff_template_applies` directly, not this row's name. |
 
 ### From P8 — discovery runs, into `discovery_runs.html`
 
