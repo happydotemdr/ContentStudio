@@ -25,6 +25,11 @@ OUT_OF_SCOPE_PATH_MARKERS = (
     "/compose_detailed",
     "/compose_detailed_stream",
 )
+SPEED_MIN, SPEED_MAX = 0.7, 1.2
+SIMILARITY_WARN_ABOVE = 0.9
+MAX_DICTIONARY_LOCATORS = 3
+MAX_REQUEST_IDS = 3
+SEED_MIN, SEED_MAX = 0, 4_294_967_295
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,16 @@ def validate(payload: dict, url: str) -> list[Finding]:
     findings: list[Finding] = []
     findings.extend(_check_url(url))
     findings.extend(_check_shape(payload))
+    findings.extend(_check_model_id(payload))
+    findings.extend(_check_speed(payload))
+    findings.extend(_check_stitching_conflict(payload, url))
+    findings.extend(_check_pvc_v3(payload, url))
+    findings.extend(_check_dictionary_locators(payload))
+    findings.extend(_check_request_ids(payload))
+    findings.extend(_check_seed_range(payload))
+    findings.extend(_check_music_conflicts(payload))
+    findings.extend(_check_output_format(url))
+    findings.extend(_check_similarity_boost(payload))
     return findings
 
 
@@ -94,3 +109,176 @@ def _check_shape(payload: dict) -> list[Finding]:
         "payload is neither TTS-shaped (non-empty text) nor music-shaped "
         "(exactly one of prompt/composition_plan)",
     )]
+
+
+def _check_model_id(payload: dict) -> list[Finding]:
+    if not payload.get("model_id"):
+        return [Finding("E4", "model_id must be present and non-empty")]
+    return []
+
+
+def _check_speed(payload: dict) -> list[Finding]:
+    settings = payload.get("voice_settings") or {}
+    speed = settings.get("speed")
+    if speed is None:
+        return []
+    if not isinstance(speed, (int, float)) or isinstance(speed, bool):
+        return [Finding("E5", f"voice_settings.speed {speed!r} must be a number")]
+    if not (SPEED_MIN <= speed <= SPEED_MAX):
+        return [Finding(
+            "E5",
+            f"voice_settings.speed {speed!r} is outside the valid range "
+            f"{SPEED_MIN}-{SPEED_MAX}",
+        )]
+    return []
+
+
+def _check_stitching_conflict(payload: dict, url: str) -> list[Finding]:
+    query = parse_qs(urlsplit(url).query)
+    enable_logging = query.get("enable_logging", ["true"])[0].lower()
+    has_stitching = "previous_request_ids" in payload or "next_request_ids" in payload
+    if enable_logging == "false" and has_stitching:
+        return [Finding(
+            "E6",
+            "enable_logging=false in the URL disables request stitching, "
+            "but the payload sets previous_request_ids/next_request_ids",
+        )]
+    return []
+
+
+def _voice_id_from_tts_path(parts) -> str | None:
+    """The path segment right after 'text-to-speech', or None.
+
+    Not simply the last segment: /v1/text-to-speech/{voice_id}/with-timestamps
+    is a real, in-scope path shape where the voice_id is NOT last.
+    """
+    segments = [segment for segment in parts.path.split("/") if segment]
+    if "text-to-speech" not in segments:
+        return None
+    index = segments.index("text-to-speech")
+    if index + 1 >= len(segments):
+        return None
+    return segments[index + 1]
+
+
+def _check_pvc_v3(payload: dict, url: str) -> list[Finding]:
+    parts = urlsplit(url)
+    voice_id = _voice_id_from_tts_path(parts)
+    model_id = str(payload.get("model_id") or "")
+    if voice_id != PINNED_NARRATOR_VOICE_ID or "v3" not in model_id:
+        return []
+    if "use_pvc_as_ivc" not in payload:
+        return [Finding(
+            "E7",
+            "the pinned narrator is a PVC on a v3 model; use_pvc_as_ivc "
+            "must be set explicitly (true or false) -- see "
+            "channel-voice.md Open action 3",
+        )]
+    if not isinstance(payload["use_pvc_as_ivc"], bool):
+        return [Finding("E7", "use_pvc_as_ivc must be a boolean")]
+    return []
+
+
+def _check_dictionary_locators(payload: dict) -> list[Finding]:
+    locators = payload.get("pronunciation_dictionary_locators")
+    if locators is None:
+        return []
+    if not isinstance(locators, list):
+        return [Finding("E8", "pronunciation_dictionary_locators must be a list")]
+    if len(locators) > MAX_DICTIONARY_LOCATORS:
+        return [Finding(
+            "E8",
+            f"pronunciation_dictionary_locators has {len(locators)} entries, "
+            f"the maximum is {MAX_DICTIONARY_LOCATORS}",
+        )]
+    return []
+
+
+def _check_request_ids(payload: dict) -> list[Finding]:
+    findings: list[Finding] = []
+    for field in ("previous_request_ids", "next_request_ids"):
+        ids = payload.get(field)
+        if ids is None:
+            continue
+        if not isinstance(ids, list):
+            findings.append(Finding("E9", f"{field} must be a list"))
+            continue
+        if len(ids) > MAX_REQUEST_IDS:
+            findings.append(Finding(
+                "E9",
+                f"{field} has {len(ids)} entries, the maximum is {MAX_REQUEST_IDS}",
+            ))
+    return findings
+
+
+def _check_seed_range(payload: dict) -> list[Finding]:
+    seed = payload.get("seed")
+    if seed is None:
+        return []
+    if isinstance(seed, bool) or not isinstance(seed, int) or not (SEED_MIN <= seed <= SEED_MAX):
+        return [Finding(
+            "E10", f"seed {seed!r} must be an integer in {SEED_MIN}-{SEED_MAX}"
+        )]
+    return []
+
+
+def _check_music_conflicts(payload: dict) -> list[Finding]:
+    findings: list[Finding] = []
+    has_prompt = payload.get("prompt") is not None
+    plan = payload.get("composition_plan")
+    has_plan = plan is not None
+
+    if payload.get("seed") is not None and has_prompt:
+        findings.append(Finding(
+            "E11", "seed is plan-only and cannot be used together with prompt"
+        ))
+    if payload.get("force_instrumental") is not None and has_plan:
+        findings.append(Finding(
+            "E12",
+            "force_instrumental is prompt-only and does not apply to composition_plan",
+        ))
+    if payload.get("music_length_ms") is not None and has_plan:
+        findings.append(Finding(
+            "E13",
+            "music_length_ms is prompt-only; a composition_plan's length "
+            "comes from its chunks",
+        ))
+    if has_plan and isinstance(plan, dict) and plan.get("chunks"):
+        if payload.get("model_id") != "music_v2":
+            findings.append(Finding(
+                "E14",
+                "composition_plan.chunks is set but model_id is not "
+                "'music_v2' -- chunk plans require music_v2",
+            ))
+    return findings
+
+
+def _check_output_format(url: str) -> list[Finding]:
+    query = parse_qs(urlsplit(url).query)
+    if "output_format" not in query:
+        return [Finding(
+            "W1",
+            "URL has no output_format query param -- a default applies, "
+            "but state the value chosen rather than leaving it implicit",
+        )]
+    return []
+
+
+def _check_similarity_boost(payload: dict) -> list[Finding]:
+    settings = payload.get("voice_settings") or {}
+    similarity = settings.get("similarity_boost")
+    if similarity is None:
+        return []
+    if not isinstance(similarity, (int, float)) or isinstance(similarity, bool):
+        return [Finding(
+            "W2", f"voice_settings.similarity_boost {similarity!r} must be a number"
+        )]
+    if similarity > SIMILARITY_WARN_ABOVE:
+        return [Finding(
+            "W2",
+            f"voice_settings.similarity_boost {similarity!r} is above "
+            f"{SIMILARITY_WARN_ABOVE} -- risk of an over-enunciated artifact "
+            "(voice-selection.md) or reproducing reference noise "
+            "(voice-settings.md, [T-unverified])",
+        )]
+    return []
