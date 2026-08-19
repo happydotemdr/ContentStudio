@@ -466,7 +466,13 @@ def test_terminal_run_states_are_visually_distinguishable(client: TestClient):
     _seed_run(app, "completed_with_errors", error_message="HTTP 403 from the API")
     page = client.get("/discovery/runs").text
     assert "status-completed_with_errors" in page
-    assert "status-completed" in page
+    # A bare "status-completed" in page is also a substring of
+    # "status-completed_with_errors", which the line above already
+    # separately seeds and asserts -- that would let this pass even if
+    # the plain "completed" run's own pill were entirely absent from the
+    # page. Anchor on the closing quote of the class attribute so this can
+    # only match the exact `status-completed` class, not the errors variant.
+    assert 'status-completed"' in page
 
     css = (Path(__import__("pipeline_app.main", fromlist=["x"]).PACKAGE_DIR)
            / "static" / "style.css").read_text(encoding="utf-8")
