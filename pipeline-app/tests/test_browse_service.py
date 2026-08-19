@@ -384,7 +384,7 @@ def test_list_children_synthesizes_current_brief_entry_for_pointer(root, tmp_pat
     assert entries[0].is_dir is False
 
 
-def test_list_children_omits_pointer_entry_when_target_missing(root, tmp_path):
+def test_list_children_lists_pointer_entry_when_target_missing(root, tmp_path):
     grounding_dir = root / "00-grounding"
     briefs_dir = tmp_path / "rgs-briefs"
     briefs_dir.mkdir()
@@ -393,7 +393,8 @@ def test_list_children_omits_pointer_entry_when_target_missing(root, tmp_path):
     grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md", tmp_path)
     brief_path.unlink()
     entries = browse_service.list_children(grounding_dir, root, tmp_path)
-    assert entries == []
+    assert [e.name for e in entries] == ["pointer.yaml (unresolvable)"]
+    assert "does not exist" in entries[0].broken_reason
 
 
 @pytest.fixture
@@ -493,7 +494,9 @@ def test_resolve_grounding_pointer_returns_none_when_pointer_not_a_mapping(tmp_p
     pointer_dir.mkdir(parents=True)
     (pointer_dir / "pointer.yaml").write_text("not-a-mapping", encoding="utf-8")
     assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
-    assert browse_service._md_below_state(pointer_dir, tmp_path) == "empty"
+    # A pointer.yaml that exists but cannot be resolved is still content --
+    # it must not vanish from its parent's listing (E-14b).
+    assert browse_service._md_below_state(pointer_dir, tmp_path) == "content"
 
 
 def test_md_below_state_reports_unreadable_not_empty(root, tmp_path, monkeypatch):
@@ -537,3 +540,34 @@ def test_unreadable_folder_is_distinguishable_from_an_empty_one(root, tmp_path, 
     assert "genuinely_empty" not in names          # no content: correctly hidden
     assert "unreadable" in names                   # broken: shown, and marked
     assert names["unreadable"].unreadable is True
+
+
+def test_pointer_state_reports_malformed_yaml_as_an_error(tmp_path):
+    """FAULT."""
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    pointer_dir.mkdir(parents=True)
+    (pointer_dir / "pointer.yaml").write_text("brief_path: [unclosed\n", encoding="utf-8")
+    target, error = browse_service.resolve_grounding_pointer_state(pointer_dir, tmp_path)
+    assert target is None
+    assert error is not None and "could not be parsed" in error
+
+
+def test_malformed_pointer_is_distinguishable_from_no_pointer(tmp_path):
+    """DISTINGUISHABILITY. Both used to return a bare None."""
+    no_pointer = tmp_path / "runs" / "a" / "00-grounding"
+    no_pointer.mkdir(parents=True)
+    broken = tmp_path / "runs" / "b" / "00-grounding"
+    broken.mkdir(parents=True)
+    (broken / "pointer.yaml").write_text("brief_path: [unclosed\n", encoding="utf-8")
+
+    assert browse_service.resolve_grounding_pointer_state(no_pointer, tmp_path) == (None, None)
+    assert browse_service.resolve_grounding_pointer_state(broken, tmp_path)[1] is not None
+
+
+def test_list_children_lists_a_broken_pointer_instead_of_skipping_it(root, tmp_path):
+    grounding_dir = root / "00-grounding"
+    grounding_dir.mkdir(parents=True)
+    (grounding_dir / "pointer.yaml").write_text("brief_path: [unclosed\n", encoding="utf-8")
+    entries = browse_service.list_children(grounding_dir, root, tmp_path)
+    assert [e.name for e in entries] == ["pointer.yaml (unresolvable)"]
+    assert entries[0].broken_reason is not None

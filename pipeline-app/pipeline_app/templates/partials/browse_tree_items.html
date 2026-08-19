@@ -23,6 +23,15 @@
            hx-target="this"
            hx-swap="innerHTML"></div>
     </details>
+    {% elif entry.broken_reason %}
+    <div class="browse-broken" title="{{ entry.broken_reason }}">
+      <a href="#"
+         hx-get="/browse/file?path={{ entry.rel_path | urlencode }}&root={{ root }}"
+         hx-target="#browse-doc" hx-swap="innerHTML"
+         hx-sync="#browse-doc:replace"
+         hx-indicator="#browse-spinner">{{ entry.name }}</a>
+      — {{ entry.broken_reason }}
+    </div>
     {% else %}
     <div class="browse-file-row">
       <a href="#"

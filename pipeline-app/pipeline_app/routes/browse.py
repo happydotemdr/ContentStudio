@@ -93,9 +93,11 @@ def browse_file(request: Request, path: str = "", root: str = "output"):
             elif file_path.is_dir():
                 context = {"error": "Path is a directory, not a file."}
             elif file_path.name == "pointer.yaml":
-                target = browse_service.resolve_grounding_pointer(file_path.parent, repo_root)
+                target, pointer_error = browse_service.resolve_grounding_pointer_state(
+                    file_path.parent, repo_root
+                )
                 if target is None:
-                    context = {"error": "Grounding pointer could not be resolved."}
+                    context = {"error": pointer_error or "Grounding pointer could not be resolved."}
                 else:
                     context = browse_service.render_md_file(target)
             elif not file_path.name.lower().endswith(".md"):

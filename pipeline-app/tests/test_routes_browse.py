@@ -425,7 +425,7 @@ def test_browse_file_pipeline_grounding_pointer_missing_target_shows_error(clien
         params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding/pointer.yaml"},
     )
     assert resp.status_code == 200
-    assert "Grounding pointer could not be resolved." in resp.text
+    assert "does not exist" in resp.text
 
 
 def test_browse_file_pipeline_grounding_pointer_outside_rgs_briefs_shows_error(client):
@@ -447,7 +447,7 @@ def test_browse_file_pipeline_grounding_pointer_outside_rgs_briefs_shows_error(c
         params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding/pointer.yaml"},
     )
     assert resp.status_code == 200
-    assert "Grounding pointer could not be resolved." in resp.text
+    assert "could not be parsed" in resp.text
     assert "Secret" not in resp.text
 
 
@@ -529,3 +529,25 @@ def test_unreadable_folder_renders_as_a_disabled_row_with_a_reason(client, monke
     assert "locked" in resp.text
     assert "browse-unreadable" in resp.text
     assert "could not be read" in resp.text
+
+
+def test_broken_grounding_pointer_stays_reachable_through_the_tree(client):
+    """SURFACING. The route's 'Grounding pointer could not be resolved.'
+    message was unreachable: list_children skipped the entry, so there was
+    nothing left to click (E-14b)."""
+    test_client, tmp_path = client
+    grounding = tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding"
+    grounding.mkdir(parents=True)
+    (grounding / "pointer.yaml").write_text("brief_path: [unclosed\n", encoding="utf-8")
+
+    project = test_client.get(
+        "/browse/tree", params={"root": "pipeline", "path": "my-run-20260728-120000"}
+    )
+    assert "00-grounding" in project.text            # the folder did not vanish
+
+    stage = test_client.get(
+        "/browse/tree",
+        params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding"},
+    )
+    assert "unresolvable" in stage.text
+    assert "browse-broken" in stage.text

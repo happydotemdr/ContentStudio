@@ -107,28 +107,40 @@ def list_pipeline_projects(conn, repo_root: Path) -> list["Entry"]:
     ]
 
 
-def resolve_grounding_pointer(pointer_dir: Path, repo_root: Path) -> Path | None:
-    """Resolve a grounding stage's pointer.yaml to the real rgs-briefs/ file
-    it references. pointer.yaml's content is read from disk, not derived
-    from the request/tree structure, so its target path is a new trust
-    boundary here and gets an explicit containment check against the real
-    rgs-briefs/ folder rather than being trusted outright."""
+def resolve_grounding_pointer_state(
+    pointer_dir: Path, repo_root: Path
+) -> tuple[Path | None, str | None]:
+    """Return (target, error). Exactly one is non-None, or both are None when
+    there is simply no pointer here.
+
+    The old single-return-value form collapsed "no pointer" and "the pointer
+    is broken" into the same bare None, so a hand-edited or truncated
+    pointer.yaml was invisible: list_children skipped the entry and its
+    folder could vanish with it (E-14b). pointer.yaml's content comes off
+    disk rather than from the request, so its target is still a trust
+    boundary and keeps its explicit containment check against the real
+    rgs-briefs/ folder."""
+    if not (pointer_dir / "pointer.yaml").is_file():
+        return None, None
     try:
         target_rel = grounding_service.read_pointer(pointer_dir)
-    except grounding_service.InvalidPointerError:
-        # Malformed or non-mapping pointer.yaml content (hand-edited or
-        # truncated) -- treat the same as "no valid pointer here" rather
-        # than crashing tree expansion for the whole project.
-        return None
+    except grounding_service.InvalidPointerError as exc:
+        return None, f"pointer.yaml could not be parsed: {exc}"
     if not target_rel:
-        return None
+        return None, "pointer.yaml records no brief path."
     rgs_briefs_root = (repo_root / "rgs-briefs").resolve()
     target = (repo_root / target_rel).resolve()
     if not target.is_relative_to(rgs_briefs_root):
-        return None
+        return None, f"pointer.yaml points outside rgs-briefs/: {target_rel}"
     if not target.exists():
-        return None
-    return target
+        return None, f"pointer.yaml points at a file that does not exist: {target_rel}"
+    return target, None
+
+
+def resolve_grounding_pointer(pointer_dir: Path, repo_root: Path) -> Path | None:
+    """Back-compat wrapper: target or None. Callers that need to tell a
+    broken pointer from an absent one must use resolve_grounding_pointer_state."""
+    return resolve_grounding_pointer_state(pointer_dir, repo_root)[0]
 
 
 def resolve_under_output(root: Path, rel_path: str) -> Path:
@@ -189,16 +201,15 @@ def _md_below_state(folder: Path, repo_root: Path) -> str:
                 if entry.is_file() and _is_md_name(entry.name):
                     return "content"
                 if entry.is_file() and entry.name == "pointer.yaml":
-                    try:
-                        target_rel = grounding_service.read_pointer(folder)
-                    except grounding_service.InvalidPointerError:
-                        target_rel = None
-                    if target_rel:
-                        # A pointer with valid syntax is content even when
-                        # its target file is missing on disk: the operator
-                        # must be able to click through and read why
-                        # (E-14b) -- it must not be silently treated as
-                        # empty.
+                    target, error = resolve_grounding_pointer_state(Path(entry.path).parent, repo_root)
+                    if target is not None or error is not None:
+                        # A pointer.yaml that exists -- whether it resolves
+                        # cleanly, points at a missing/out-of-bounds target,
+                        # or fails to parse at all -- is content: the
+                        # operator must be able to click through and read
+                        # why (E-14b). It must not be silently treated as
+                        # empty, which would make the malformed-pointer
+                        # folder itself vanish from its parent's listing.
                         return "content"
                 if entry.is_dir():
                     below = _md_below_state(Path(entry.path), repo_root)
@@ -248,12 +259,19 @@ def list_children(folder: Path, root: Path, repo_root: Path) -> list["Entry"]:
                     if _is_md_name(entry.name):
                         files.append(Entry(name=entry.name, rel_path=rel_path, is_dir=False))
                     elif entry.name == "pointer.yaml":
-                        target = resolve_grounding_pointer(folder, repo_root)
+                        target, error = resolve_grounding_pointer_state(folder, repo_root)
                         if target is not None:
                             files.append(Entry(
                                 name=f"current-brief.md ({target.name})",
                                 rel_path=rel_path,
                                 is_dir=False,
+                            ))
+                        elif error is not None:
+                            files.append(Entry(
+                                name="pointer.yaml (unresolvable)",
+                                rel_path=rel_path,
+                                is_dir=False,
+                                broken_reason=error,
                             ))
     except OSError as exc:
         # Unlike an empty folder, this must surface as an error rather than
