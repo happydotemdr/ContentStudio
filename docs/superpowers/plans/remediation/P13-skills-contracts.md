@@ -182,6 +182,74 @@ conformance check (or one already-added check) with the file edits that turn it 
 
 ---
 
+## 0. Amendment — pre-flight check before starting (2026-08-19)
+
+Checked before this package's Task 1 is ever dispatched, per this programme's established
+discipline (every prior package that landed between a plan's authoring and its execution has
+been the norm, not the exception — see P9's and P15's own §0/§8 for precedent).
+
+**P13's own owned scope (every file under §1 — all of `.claude/skills/**` plus
+`tests/test_skill_provenance.py`) is untouched.** `git log 634bb2e..HEAD -- .claude/skills/
+tests/test_skill_provenance.py` (634bb2e is this plan file's own authoring commit,
+2026-08-10) returns **zero commits**. `tests/test_skill_provenance.py` still has exactly the 6
+tests this plan's own intro paragraph describes. Nothing has drifted inside P13's actual file
+list.
+
+**`pipeline.yaml` (P4's file, read-only reference for P13, explicitly named in §6.2) changed on
+2026-08-15 — five days after this plan was authored — in exactly the way §6.2's own "one open
+item P4 must decide" anticipated.** Commit `28d1862` ("declare the script, styleboard and
+bed-arc edges assembly and repurpose actually need"):
+
+```diff
+   - id: assembly
+     skill: shorts-assembly
+     dir_prefix: "04"
+-    depends_on: [voiceover, visual]
++    depends_on: [scripting, styleboard, voiceover, visual]
++    optional_depends_on: [music]
+   - id: repurpose
+     skill: social-repurpose
+     dir_prefix: "05"
+-    depends_on: [assembly]
++    depends_on: [ideation, scripting, assembly]
+```
+
+§6.2 predicted precisely this: "If P4 instead adds `scripting` to `assembly`'s `depends_on`,
+T5's 'Input 2 in app-driven mode' paragraph becomes wrong and must be simplified to a direct
+read." P4 took that route. **Two concrete, confirmed task impacts:**
+
+1. **T5 (C-03)** — the plan's fix routes `shorts-assembly`'s script input through the voiceover
+   brief's `script:` pointer, because at authoring time `assembly` had no direct `scripting`
+   edge. That workaround is now unnecessary and, per §6.2's own words, **wrong**: `assembly` now
+   declares `scripting` directly, so T5 should have `shorts-assembly` read the script directly
+   rather than routing through voiceover's pointer. Simplify T5's "Input 2 in app-driven mode"
+   paragraph before dispatching it — do not implement the pointer-chase workaround as originally
+   written.
+2. **T7 (C-05)** — `test_downstream_list_matches_the_stage_graph` (§4) asserts
+   `shorts-scripting`'s Downstream bullet names every stage whose `depends_on` contains
+   `scripting`. At authoring time that was 4 stages (`styleboard`, `voiceover`, `visual`,
+   `music`) — T7's row literally says "lists all **four** consumers." The live graph now has
+   **six**: those four plus `assembly` and `repurpose` (both gained a direct `scripting` edge in
+   the same commit). T7's task text needs the same correction before dispatch — the test itself
+   is graph-driven and will assert the true count regardless of what the task's prose claims, but
+   the prose is now wrong and would mislead whoever implements it.
+
+**Not yet checked, and worth a narrower verification pass before dispatching each — not a full
+re-audit, just confirming each task's own specific claim still holds against the current
+`pipeline.yaml`/skill files:** T2's `KIND_REGISTRY` (must mirror the current 9-stage graph, not
+the 8-stage one implied by the old `depends_on` shapes); C-08/C-09/C-10/C-11's "N things → N+1
+things" counts in T5/T7/T9 (these read like prose-list corrections unrelated to `depends_on`
+counts, but verify each against its own file before assuming so); §6.2's `repurpose` edge, which
+also changed (`[assembly]` → `[ideation, scripting, assembly]`) and is not analyzed above — check
+whether any C-0x finding about `social-repurpose`'s stated inputs (C-04, T6) needs the same
+treatment as T5/T7.
+
+**Everything else in this plan (all 48 findings' task assignments, the six kept/generalised
+existing tests in §5, the P14 contract in §6.1) is confirmed unaffected by any drift — the
+`pipeline.yaml` change above is the only discrepancy found.**
+
+---
+
 ## 3. Tasks
 
 ### T1 — Make the provenance module a suite, not a guard
