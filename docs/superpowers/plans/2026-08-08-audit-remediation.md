@@ -181,12 +181,12 @@ make the landing order free. Three constraints bind it:
 | **B2** ✅ | **P3 + P11 + P12** (together) — all three merged | Tripwire cluster. Also the gate correctness core: P11's fail-closed parser, P12's fail-closed beat parser, P3's required-`upstream` and `UpstreamMap`. |
 | **B3** ✅ | **P4**, then **P5** — both merged | P4 adopts P2's + P3's APIs and fixes the stage graph; P5 swaps its private `stage_id_by_skill` copy for P4's at its T19. |
 | **B4** ✅ | **P6**, **P7**, **P8**, **P9** (parallel) — **all four merged** | Discovery. P8 consumes seams from P6 (`BlueskyFetchError` reaching the engine) and P7 (`drain_diagnostics`, `preflight`), so land P6 and P7 before P8; P9 is independent. P9 merged as PR #51 (`62e91d0`), closing 25 findings (24 original + B-113, discovered and folded in mid-package — see P9's plan §0/§8). |
-| **B5** | **P15** — next, not started | Binds to P3's gate context keys and P1's `recent_events`; both already merged (P3 in Wave B2, P1 in Wave A). **Pre-flight check done 2026-08-19** (before Wave B5 kickoff): all 16 of P15's own findings confirmed untouched by any package that has landed since this plan was written; P3's gate/approval/edit contract already supplies every key P15's templates were planned to consume, so T9/T10/T22's "Consumes P3" dependency is already satisfied with no wait — see P15's plan §0. |
-| **C** | **P13**, then **P14** — not started | Documentation describes the fixed code, or it is fiction again. P14 is last because six packages owe it contract decisions. |
+| **B5** ✅ | **P15** — merged | Binds to P3's gate context keys and P1's `recent_events`; both already merged (P3 in Wave B2, P1 in Wave A). **Pre-flight check done 2026-08-19** (before Wave B5 kickoff): all 16 of P15's own findings confirmed untouched by any package that has landed since this plan was written; P3's gate/approval/edit contract already supplied every key P15's templates were planned to consume, so T9/T10/T22's "Consumes P3" dependency was already satisfied with no wait — see P15's plan §0. P15 merged as PR #54 (`8893789`), closing all 16 findings; its final whole-branch review found and fixed two Important, security-relevant gaps beyond its own 16 — see P15's plan §8. |
+| **C** | **P13**, then **P14** — next, not started | Documentation describes the fixed code, or it is fiction again. P14 is last because six packages owe it contract decisions. |
 
-**Programme status as of 2026-08-19:** Waves A, B1, B2, B3, B4 fully merged (13 of 16 packages:
-P0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12). Wave B5 (P15) is next — pre-flight checked,
-not yet started. Wave C (P13, then P14) not started.
+**Programme status as of 2026-08-19:** Waves A, B1, B2, B3, B4, B5 fully merged (14 of 16
+packages: P0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P15). Wave C (P13, then P14) is
+next — not started.
 
 ### Cross-package contracts (frozen during validation)
 
