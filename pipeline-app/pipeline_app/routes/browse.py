@@ -6,6 +6,14 @@ from pipeline_app import browse_service
 router = APIRouter()
 
 
+def _entries_context(entries: list) -> dict:
+    # {"entries": []} rendered as literal blank space under the heading, which
+    # reads as a broken page rather than an empty folder (E-14c).
+    if not entries:
+        return {"entries": [], "empty_message": "Nothing to show here yet."}
+    return {"entries": entries}
+
+
 def _folder_context(request: Request, root: str, rel_path: str) -> dict:
     repo_root = request.app.state.repo_root
     try:
@@ -21,7 +29,7 @@ def _folder_context(request: Request, root: str, rel_path: str) -> dict:
             entries = browse_service.list_pipeline_projects(request.app.state.conn, repo_root)
         except browse_service.FolderReadError as exc:
             return {"error": f"Could not read folder: {exc}"}
-        return {"entries": entries}
+        return _entries_context(entries)
 
     try:
         folder = browse_service.resolve_under_output(root_dir, rel_path)
@@ -30,7 +38,7 @@ def _folder_context(request: Request, root: str, rel_path: str) -> dict:
     if not folder.is_dir():
         return {"error": "Folder not found."}
     try:
-        return {"entries": browse_service.list_children(folder, root_dir, repo_root)}
+        return _entries_context(browse_service.list_children(folder, root_dir, repo_root))
     except browse_service.FolderReadError as exc:
         return {"error": f"Could not read folder: {exc}"}
 

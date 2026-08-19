@@ -551,3 +551,26 @@ def test_broken_grounding_pointer_stays_reachable_through_the_tree(client):
     )
     assert "unresolvable" in stage.text
     assert "browse-broken" in stage.text
+
+
+def test_an_empty_root_renders_an_explicit_empty_line_not_blank_space(client):
+    test_client, tmp_path = client
+    # output/ exists (the fixture makes it) and contains nothing at all.
+    resp = test_client.get("/browse")
+    assert resp.status_code == 200
+    assert "Nothing to show here yet." in resp.text
+
+
+def test_an_empty_root_is_distinguishable_from_an_unreadable_one(client, monkeypatch):
+    test_client, tmp_path = client
+    empty_page = test_client.get("/browse").text
+
+    import os as _os
+    def _raise(*args, **kwargs):
+        raise OSError("permission denied")
+    monkeypatch.setattr(_os, "scandir", _raise)
+    broken_page = test_client.get("/browse").text
+
+    assert empty_page != broken_page
+    assert "Nothing to show here yet." in empty_page
+    assert "Could not read folder:" in broken_page
