@@ -2376,6 +2376,15 @@ def test_a_mapped_skill_still_shows_the_kickoff_editor(client_with_skills):
 > typo, not a genuinely missing P5 contract). **T20 is NOT blocked — use `kickoff_template_applies`
 > as the guard directly** (it is already the precise boolean this task's `{% if kickoff_stage_id %}`
 > was reaching for) in place of `kickoff_stage_id` throughout this task's template and tests.
+>
+> **Second bug, found during T20 execution:** the brief's own `client_with_skills` fixture uses
+> `"stages: []\n"` for `pipeline.yaml` — an empty stage list, under which `stage_id_by_skill`
+> maps NOTHING, including `shorts-ideation`. `test_a_mapped_skill_still_shows_the_kickoff_editor`
+> is therefore unsatisfiable as written, regardless of the template fix. Fixed by giving the
+> fixture a real `ideation` stage bound to `shorts-ideation`, plus a `stage_templates/ideation.md`
+> scaffold file so `kickoff_template_missing` doesn't itself trip a warning path.
+>
+> Both landed in commit `1dd9ee3`.
 - [ ] Commit: `fix(ui): hide the kickoff-template editor for skills with no stage`
 
 ---
