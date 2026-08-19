@@ -89,3 +89,7 @@ doc-ingest-app/calendar_token.json
 # Real icacls-locked test fixtures (Task 13) -- not guaranteed deletable by
 # the same non-elevated account that created them; accumulates over time.
 doc-ingest-app/tests/.lock_test_scratch/
+
+# elevenlabs-tooling's structured request logs (elevenlabs_tooling/log.py):
+# one tooling-YYYY-MM-DD.log per day, local diagnostics only.
+elevenlabs-tooling/logs/
