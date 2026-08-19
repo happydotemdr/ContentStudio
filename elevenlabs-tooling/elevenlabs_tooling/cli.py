@@ -113,7 +113,7 @@ def _resolve_timeout(cli_value: float | None) -> float:
     if value <= 0:
         print(
             f"elevenlabs_tooling: {TIMEOUT_ENV_VAR}={raw!r} is not a positive "
-            f"number of seconds; using the default of {DEFAULT_TIMEOUT_S:.0g}s",
+            f"number of seconds; using the default of {DEFAULT_TIMEOUT_S:g}s",
             file=sys.stderr,
         )
         return DEFAULT_TIMEOUT_S

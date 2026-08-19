@@ -287,6 +287,7 @@ def test_send_falls_back_to_default_on_invalid_env_timeout(mock_send, tmp_path, 
     assert kwargs["timeout"] == 300.0
     captured = capsys.readouterr()
     assert "ELEVENLABS_TOOLING_TIMEOUT_S" in captured.err
+    assert "300" in captured.err  # Ensure the timeout value is rendered correctly
 
 
 @patch("elevenlabs_tooling.cli.client_send")
@@ -307,6 +308,7 @@ def test_send_falls_back_to_default_on_non_positive_cli_timeout(mock_send, tmp_p
     assert kwargs["timeout"] == 300.0
     captured = capsys.readouterr()
     assert "--timeout" in captured.err
+    assert "300" in captured.err  # Ensure the timeout value is rendered correctly
 
 
 @patch("elevenlabs_tooling.cli.client_send")
