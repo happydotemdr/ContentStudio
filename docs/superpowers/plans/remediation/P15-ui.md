@@ -864,7 +864,9 @@ Add to `static/style.css`:
 > `assert page.text.count('status-') < 5` is a loose regression guard against a specific old
 > bug (character-iterating a malformed `gates` value), and the strip's own two legitimate
 > `status-` occurrences (`status-strip`, `status-{stage_status}`) pushed the real count from
-> under 5 to 7, still nowhere near the double-digit count the guarded bug would produce.
+> 4 to 6, still nowhere near the double-digit count the guarded bug would produce. (Corrected
+> 2026-08-18 at Opus checkpoint B: this line originally said "under 5 to 7" — the measured counts
+> are 4 and 6. The conclusion and the `< 9` threshold were unaffected either way.)
 > `tests/test_routes_stages.py` is not in P15's owned-file list (§1) — it is P3's, already
 > merged with no other package currently active on it — so this is a genuine cross-package
 > ripple, not scope creep: raised the threshold from `< 5` to `< 9` with an inline comment
@@ -1074,7 +1076,12 @@ Add to `static/style.css`:
 > merged) depend on that dynamic behavior — one exercises an `info`-kind finding, the other
 > monkeypatches `_NON_BLOCKING_KINDS` itself and asserts the template follows it. The brief's
 > hardcoded `"skipped"`-only check would have silently regressed both. Kept the context-driven
-> check; the new `gate_strip.html` is otherwise identical to the brief.
+> check; the new `gate_strip.html` is otherwise identical to the brief, **with one further small
+> departure the original amendment undersold** (corrected 2026-08-18 at Opus checkpoint B): the
+> brief's `<li>` bracket text is the literal `[skipped]`; shipped is `[{{ finding.kind }}]`
+> (carried over from the old block). This is correct behavior — an `info`-kind finding should not
+> say "skipped" — but it is a third departure from the brief text, not covered by "otherwise
+> identical."
 >
 > Both landed in commit `84b1f55`.
 - [ ] Commit: `fix(ui): render gates above the artifact and show a never-ran gate as never-ran`
@@ -1650,6 +1657,45 @@ import resolves without a path hack. If it does not, import it by file path with
 - [ ] Commit: `test(ui): pin the platform picker options to build_adapters()`
 
 ---
+
+> **Amendment (2026-08-18, found at Opus checkpoint B after T8-T15 landed):** three findings,
+> resolved in one consolidated fix commit before continuing to T16.
+>
+> 1. **Important — `gate.name` fallback dropped; the page can render the literal `None`.** The
+> pre-T9 inline block read `{{ gate.name or "unknown gate" }}`; T9's `partials/gate_strip.html`
+> (and this task's own blocking-reason loop in `stage.html`) dropped the guard — the plan's own
+> shown markup for both never carried it either, same recurring bug class as everywhere else in
+> this package. `approval_service.classify_gates` uses `g.get("name")`, so any recorded gate
+> entry without a `name` key (the malformed-gates case P3's own test exercises, and any future
+> caller) renders the Python string `None` directly into operator-facing copy — exactly the
+> silent-degradation class this package exists to remove. Fixed: restored `{{ gate.name or
+> "unknown gate" }}` in both `gate_strip.html` and `stage.html`'s reason loop; added a
+> `.status-malformed` CSS rule (amber, alongside `never_ran`/`unknown` — "we cannot tell", not a
+> pass and not a hard fail) since it had none before; added a `"None:" not in page.text`
+> assertion to the malformed-gates test so this can't regress silently again.
+> 2. **Important — T10's `error-banner` → `approval-error` class rename hollowed out three P3
+> tests.** `tests/test_routes_stages.py:1025,1040,1057` (P3's file, already merged, same
+> cross-package-ripple authorization as T8's) assert `"error-banner" in resp.text`. T10 renamed
+> the stage-page banner's class, but `base.html` unconditionally renders `id="htmx-error-banner"`
+> on every page, so the substring `"error-banner"` still matches — the three tests kept passing
+> while no longer verifying the banner they were written to pin (blocked-approve 409, locked-stage
+> edit 409, grounding edit refusal). Fixed: updated all three assertions to
+> `'class="approval-error"' in resp.text`.
+> 3. **Important — the P8 handoff for T13's two `xfail(strict=True)` markers was not routed where
+> P8 will look.** The `xfail(strict=True)` mechanism itself is airtight (an unexpected pass fails
+> the suite immediately), but `docs/superpowers/plans/remediation/P8-engine-cron.md`'s "Open
+> handoffs → P15" section listed `health`/`pending_spawns`/`.status-*`/`consecutive_failures` and
+> said nothing about the `handles` join or the two markers to remove — the discoverable spot P1's
+> own equivalent handoff used. Fixed: added a line to that section naming the join and the two
+> markers in `tests/test_header.py`. Also corrected this plan's own §7 P8 row, which still read
+> "the first test stays red" (T13's own amendment already established both tests block, and
+> neither is checked in red — both are `xfail(strict=True)`).
+>
+> Two Minor doc-accuracy slips also corrected in the same pass: T8's amendment overstated the
+> `status-` occurrence count (said 5→7, measured 4→6 — conclusion and `< 9` threshold unaffected);
+> T9's amendment claimed `gate_strip.html` was "otherwise identical to the brief" when a third,
+> correct-but-undisclosed departure (`[{{ finding.kind }}]` instead of the brief's literal
+> `[skipped]`) also shipped — noted inline at T9 instead of left solely in the ledger.
 
 ### T16 — Browse: an unreadable folder is unreadable, not absent (E-14a)
 
