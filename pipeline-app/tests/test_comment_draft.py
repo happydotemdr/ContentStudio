@@ -218,6 +218,15 @@ def test_a_scratch_directory_that_could_not_be_removed_is_recorded(fake_claude, 
     assert "WinError" in err or "being used by another process" in err
 
 
+class CommunicateFailsPopen(FakePopen):
+    """A child whose communicate() raises directly -- distinct from a timeout
+    or a spawn (Popen.__init__) failure, exercising draft_comments' OWN
+    `except (OSError, ValueError)` around process.communicate()."""
+
+    def communicate(self, input=None, timeout=None):
+        raise OSError("broken pipe")
+
+
 def test_draft_comments_returns_empty_when_the_binary_is_missing(monkeypatch):
     def raise_missing():
         raise FileNotFoundError("claude CLI not found on PATH.")
@@ -441,6 +450,37 @@ def test_a_scratch_directory_failure_is_recorded(events_conn, monkeypatch):
     rows = _events(events_conn)
     assert len(rows) == 1
     assert rows[0][0] == "comment_draft.scratch_failed"
+
+
+def test_a_subprocess_communicate_failure_is_recorded(fake_claude, events_conn):
+    fake_claude(CommunicateFailsPopen(_envelope(ARRAY)))
+    assert comment_draft.draft_comments(_item(), conn=events_conn, run_id=10) == []
+    rows = _events(events_conn)
+    assert len(rows) == 1
+    assert rows[0][0] == "comment_draft.subprocess_failed"
+
+
+def test_a_kill_that_did_not_take_is_recorded_to_the_db(fake_claude, events_conn):
+    fake_claude(SurvivingPopen(_envelope(ARRAY), timeout=True))
+    assert comment_draft.draft_comments(_item(), timeout_s=1, conn=events_conn, run_id=11) == []
+    kinds = {row[0] for row in _events(events_conn)}
+    # Both the kill that did not take AND the timeout that triggered it.
+    assert "comment_draft.kill_failed" in kinds
+    assert "comment_draft.timed_out" in kinds
+
+
+def test_a_scratch_leak_is_recorded_to_the_db(fake_claude, events_conn, monkeypatch):
+    fake_claude(FakePopen(_envelope(ARRAY)))
+
+    def refusing_rmtree(path, **kwargs):
+        raise PermissionError(32, "being used by another process")
+    monkeypatch.setattr(comment_draft.shutil, "rmtree", refusing_rmtree)
+    # The drafts still come back -- a scratch leak does not fail the draft.
+    assert len(comment_draft.draft_comments(_item(), conn=events_conn, run_id=12)) == 3
+    rows = _events(events_conn)
+    assert len(rows) == 1
+    assert rows[0][0] == "comment_draft.scratch_leaked"
+    assert rows[0][1] == "warning"
 
 
 def test_an_item_missing_handle_or_item_id_never_raises_even_on_the_first_branch(monkeypatch):
