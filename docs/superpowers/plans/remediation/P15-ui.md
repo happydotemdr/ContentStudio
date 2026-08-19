@@ -1054,6 +1054,29 @@ Add to `static/style.css`:
 ```
 
 - [ ] Run: passes.
+
+> **Amendment (2026-08-18, found during T9 execution):** two departures from this task's literal
+> text, both confined to files this task already owns.
+>
+> 1. **`gate-x` is not a real registered gate name.** `test_never_ran_page_differs_from_a_
+> genuinely_clean_pass`'s "clean" fixture records `gates:\n  - name: gate-x\n    status: pass\n`,
+> but `ideation`'s real `gates.GATE_REGISTRY` entry is `gate_o_ideation_contract`. Because
+> `approval_service.classify_gates` unions recorded results with the registry **by name**, a
+> recorded result under the wrong name leaves the real registered gate still `never_ran` — so
+> the brief's own "clean" page would ALSO show "never ran", collapsing exactly the
+> never-ran-vs-clean distinction the test exists to pin. Fixed by using the real registered name
+> in the "clean" fixture. Another instance of a placeholder value in the plan's own shown test
+> code not matching live registry state.
+> 2. **`{% if finding.kind == "skipped" %}` (brief's literal) → `{% if finding.kind in
+> non_blocking_kinds %}` (shipped).** The old block already read `non_blocking_kinds` from
+> context (P3's `gates._NON_BLOCKING_KINDS`, currently `{"skipped", "info"}`), and two
+> pre-existing tests in P3's `tests/test_routes_stages.py` (out of this package's scope, already
+> merged) depend on that dynamic behavior — one exercises an `info`-kind finding, the other
+> monkeypatches `_NON_BLOCKING_KINDS` itself and asserts the template follows it. The brief's
+> hardcoded `"skipped"`-only check would have silently regressed both. Kept the context-driven
+> check; the new `gate_strip.html` is otherwise identical to the brief.
+>
+> Both landed in commit `84b1f55`.
 - [ ] Commit: `fix(ui): render gates above the artifact and show a never-ran gate as never-ran`
 
 ---
