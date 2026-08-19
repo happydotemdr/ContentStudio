@@ -121,3 +121,30 @@ def test_condition_clip_against_real_ffmpeg(tmp_path):
     assert result.output.is_file()
     assert abs(result.output_measurement["input_i"] + 14.0) <= pc.LUFS_TOLERANCE
     assert pc.ffmpeg.probe(result.output).duration == pytest.approx(3.0, abs=0.05)
+
+
+def test_a_peak_ok_loudness_drifted_result_re_solves_gain_not_just_accepts_drift(tmp_path, monkeypatch):
+    """This is the case v2 of the design spec got wrong: it only re-checked
+    true peak on retry, so a limiter-induced loudness drift (here, 0.4 LU)
+    was silently accepted -- reintroducing the exact beat-to-beat
+    inconsistency defect this module exists to remove. v3 re-solves gain."""
+    calls = wire(monkeypatch, [
+        {"input_i": -20.0, "input_tp": -6.0, "input_lra": 5.0},    # source
+        {"input_i": -14.4, "input_tp": -2.4, "input_lra": 4.0},    # attempt 1: tp ok, lufs drifted 0.4 LU
+        {"input_i": -14.05, "input_tp": -2.5, "input_lra": 4.0},   # attempt 2: both ok
+    ])
+    source = tmp_path / "raw.wav"
+    source.write_bytes(b"x")
+    out_path = tmp_path / "out.wav"
+    log_path = tmp_path / "log.txt"
+
+    result = pc.condition_clip(source, -14.0, -2.5, out_path, log_path)
+
+    assert len(calls) == 2
+    first, second = calls
+    assert "volume=6.00dB" in " ".join(first)
+    assert "volume=6.40dB" in " ".join(second)  # 6.0 + (-14.0 - -14.4)
+    # ceiling is untouched by a loudness-only retry
+    expected_limit = 10 ** (-2.5 / 20)
+    assert f"alimiter=limit={expected_limit:.6f}" in " ".join(second)
+    assert result.output_measurement["input_i"] == pytest.approx(-14.05)
