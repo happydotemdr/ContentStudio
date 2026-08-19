@@ -161,37 +161,52 @@ class Entry:
     name: str
     rel_path: str
     is_dir: bool
+    unreadable: bool = False
+    broken_reason: str | None = None
 
 
 def _is_md_name(name: str) -> bool:
     return name.lower().endswith(".md")
 
 
-def _has_md_below(folder: Path, repo_root: Path) -> bool:
+def _md_below_state(folder: Path, repo_root: Path) -> str:
+    """One of "content", "empty", "unreadable".
+
+    The tri-state is the whole point. The old boolean (_has_md_below)
+    returned False for both "nothing to show here" and "I could not look",
+    and list_children used it as the include test -- so a permission-denied
+    folder was not rendered as unreadable, it vanished from its parent's
+    listing and the operator saw a shorter tree with no error anywhere
+    (E-14a)."""
     try:
         with os.scandir(folder) as it:
             for entry in it:
                 if entry.is_symlink():
                     continue
                 if entry.is_file() and entry.name == "raw_output.md":
-                    # Must agree with list_children's exclusion below --
-                    # otherwise a stage folder containing only this file
-                    # would appear as an expandable folder that renders
-                    # empty when opened.
+                    # Must agree with list_children's exclusion below.
                     continue
                 if entry.is_file() and _is_md_name(entry.name):
-                    return True
+                    return "content"
                 if entry.is_file() and entry.name == "pointer.yaml":
-                    if resolve_grounding_pointer(folder, repo_root) is not None:
-                        return True
-                if entry.is_dir() and _has_md_below(Path(entry.path), repo_root):
-                    return True
+                    try:
+                        target_rel = grounding_service.read_pointer(folder)
+                    except grounding_service.InvalidPointerError:
+                        target_rel = None
+                    if target_rel:
+                        # A pointer with valid syntax is content even when
+                        # its target file is missing on disk: the operator
+                        # must be able to click through and read why
+                        # (E-14b) -- it must not be silently treated as
+                        # empty.
+                        return "content"
+                if entry.is_dir():
+                    below = _md_below_state(Path(entry.path), repo_root)
+                    if below in ("content", "unreadable"):
+                        return below
     except OSError:
-        # Can't even scan this folder (permission denied, removed mid-scan,
-        # etc.) -- treat it as contributing no visible content to its
-        # ancestor's listing. Defensive default, not a correctness claim.
-        return False
-    return False
+        return "unreadable"
+    return "empty"
 
 
 _ARTIFACT_VERSION_RE = re.compile(r"artifact\.v(\d+)\.md$", re.IGNORECASE)
@@ -215,8 +230,15 @@ def list_children(folder: Path, root: Path, repo_root: Path) -> list["Entry"]:
                 path = Path(entry.path)
                 rel_path = path.relative_to(root).as_posix()
                 if entry.is_dir():
-                    if _has_md_below(path, repo_root):
+                    state = _md_below_state(path, repo_root)
+                    if state == "content":
                         dirs.append(Entry(name=entry.name, rel_path=rel_path, is_dir=True))
+                    elif state == "unreadable":
+                        dirs.append(Entry(
+                            name=entry.name, rel_path=rel_path, is_dir=True,
+                            unreadable=True,
+                            broken_reason="this folder could not be read (permission denied, or it changed during the scan)",
+                        ))
                 elif entry.is_file():
                     if entry.name == "raw_output.md":
                         # Pre-versioning scratch state, already captured in

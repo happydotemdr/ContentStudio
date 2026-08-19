@@ -223,6 +223,8 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .browse-doc-wrap { flex: 1 1 auto; min-width: 0; }
 .browse-error { color: #a00; }
 .browse-placeholder { color: #777; font-style: italic; }
+.browse-unreadable { margin-left: 0.25rem; color: #ff5f5f; font-style: italic; cursor: not-allowed; }
+.browse-broken { margin-left: 1.25rem; color: #ff5f5f; font-style: italic; }
 .htmx-indicator { opacity: 0; }
 .htmx-request.htmx-indicator, .htmx-request .htmx-indicator { opacity: 1; }
 

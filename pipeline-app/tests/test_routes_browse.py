@@ -1,4 +1,5 @@
 # tests/test_routes_browse.py
+import os
 from pathlib import Path
 
 import pytest
@@ -509,3 +510,22 @@ def test_browse_file_render_failure_is_distinct_from_an_empty_document(client, m
     assert broken != ok
     assert "browse-error" in broken
     assert "browse-error" not in ok
+
+
+def test_unreadable_folder_renders_as_a_disabled_row_with_a_reason(client, monkeypatch):
+    """SURFACING."""
+    test_client, tmp_path = client
+    unreadable = tmp_path / "output" / "locked"
+    unreadable.mkdir()
+    real_scandir = os.scandir
+
+    def _raise_for_locked(path, *args, **kwargs):
+        if Path(path) == unreadable:
+            raise OSError("permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", _raise_for_locked)
+    resp = test_client.get("/browse")
+    assert "locked" in resp.text
+    assert "browse-unreadable" in resp.text
+    assert "could not be read" in resp.text

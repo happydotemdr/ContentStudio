@@ -10,7 +10,11 @@
      with no special messaging -- an empty folder is just an empty list,
      same as any other folder with no visible children. #}
   {% for entry in entries %}
-    {% if entry.is_dir %}
+    {% if entry.unreadable %}
+    <div class="browse-unreadable">
+      {{ entry.name }} — {{ entry.broken_reason }}
+    </div>
+    {% elif entry.is_dir %}
     <details>
       <summary>{{ entry.name }}</summary>
       <div class="children"
