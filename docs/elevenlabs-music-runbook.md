@@ -99,10 +99,18 @@ three-term version quoted elsewhere — record what was actually seen today, abo
 chunks have **no `lines` field** — confirmed today; the field is `text` `[T]`. For `music_v1`, an
 empty `lines: []` is **not documented as an instrumental guarantee** — record it as
 `[T-unverified]` and do not rely on it alone. **Every plan this skill emits carries the vocal
-guard on every chunk**, regardless of shape `[I]`. Whether the guard is *sufficient* in practice —
-whether `negative_styles` vocal terms actually suppress vocals in the rendered audio — is
-`[T-unverified]` pending a live generation (§7): **that check could not be run in this
-environment.**
+guard on every chunk**, regardless of shape `[I]`.
+
+**Verified live 2026-08-19, and the answer is no.** A real `composition_plan`/`chunks` generation
+(two `music_v2` beds, `negative_styles` carrying `vocals`/`singing`/`spoken word`/`lyrics` on every
+chunk, chunk `text` fields written as scene-setting prose rather than lyrics) came back with
+audible words/vocal content bleeding into the mix — confirmed by ear against the finished mix,
+where it sat audibly under the narration. **`negative_styles` alone is not a sufficient vocal
+guard for `composition_plan`/`chunks` generation in practice — treat it as advisory, not a gate,
+and route anything that must guarantee instrumental output through `prompt` mode +
+`force_instrumental: true` instead** (see `docs/superpowers/plans/2026-08-19-fix-bed-vocal-leakage.md`
+for the incident and fix). This resolves the `[T-unverified]` this section flagged as pending —
+promote it to `[T]`: **the vocal guard is confirmed insufficient**, not confirmed sufficient.
 
 ---
 
