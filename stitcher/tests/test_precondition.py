@@ -148,3 +148,27 @@ def test_a_peak_ok_loudness_drifted_result_re_solves_gain_not_just_accepts_drift
     expected_limit = 10 ** (-2.5 / 20)
     assert f"alimiter=limit={expected_limit:.6f}" in " ".join(second)
     assert result.output_measurement["input_i"] == pytest.approx(-14.05)
+
+
+def test_exhausting_all_attempts_raises_precondition_error(tmp_path, monkeypatch):
+    # Every attempt reports the same tp_ok-but-lufs-drifted measurement,
+    # which never converges inside MAX_ATTEMPTS -- must never be silently
+    # accepted or returned.
+    calls = wire(monkeypatch, [
+        {"input_i": -20.0, "input_tp": -6.0, "input_lra": 5.0},   # source
+        {"input_i": -15.0, "input_tp": -2.5, "input_lra": 4.0},   # attempt 1
+        {"input_i": -15.0, "input_tp": -2.5, "input_lra": 4.0},   # attempt 2
+        {"input_i": -15.0, "input_tp": -2.5, "input_lra": 4.0},   # attempt 3
+        {"input_i": -15.0, "input_tp": -2.5, "input_lra": 4.0},   # attempt 4
+    ])
+    source = tmp_path / "raw.wav"
+    source.write_bytes(b"x")
+    out_path = tmp_path / "out.wav"
+    log_path = tmp_path / "log.txt"
+
+    with pytest.raises(pc.PreconditionError) as caught:
+        pc.condition_clip(source, -14.0, -2.5, out_path, log_path)
+
+    assert len(calls) == pc.MAX_ATTEMPTS
+    assert not out_path.is_file()
+    assert str(source) in str(caught.value)
