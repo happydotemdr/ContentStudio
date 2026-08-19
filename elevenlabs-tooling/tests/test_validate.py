@@ -376,3 +376,48 @@ def test_fully_valid_music_prompt_payload_has_no_blocking_findings():
 def test_fully_valid_music_plan_payload_has_no_blocking_findings():
     findings = validate(_valid_music_plan_payload(), MUSIC_URL)
     assert not [f for f in findings if is_blocking(f)]
+
+
+def test_e5_rejects_non_dict_voice_settings_string():
+    payload = _valid_tts_payload()
+    payload["voice_settings"] = "loud"
+    assert _checks(validate(payload, TTS_URL), "E5")
+
+
+def test_e5_rejects_non_dict_voice_settings_list():
+    payload = _valid_tts_payload()
+    payload["voice_settings"] = [1.0, 0.75]
+    assert _checks(validate(payload, TTS_URL), "E5")
+
+
+def test_e5_rejects_non_dict_voice_settings_int():
+    payload = _valid_tts_payload()
+    payload["voice_settings"] = 42
+    assert _checks(validate(payload, TTS_URL), "E5")
+
+
+def test_w2_rejects_non_dict_voice_settings_string():
+    payload = _valid_tts_payload()
+    payload["voice_settings"] = "loud"
+    findings = validate(payload, TTS_URL)
+    w2_findings = _checks(findings, "W2")
+    assert w2_findings
+    assert not any(is_blocking(f) for f in w2_findings)
+
+
+def test_w2_rejects_non_dict_voice_settings_list():
+    payload = _valid_tts_payload()
+    payload["voice_settings"] = [1.0, 0.75]
+    findings = validate(payload, TTS_URL)
+    w2_findings = _checks(findings, "W2")
+    assert w2_findings
+    assert not any(is_blocking(f) for f in w2_findings)
+
+
+def test_w2_rejects_non_dict_voice_settings_int():
+    payload = _valid_tts_payload()
+    payload["voice_settings"] = 42
+    findings = validate(payload, TTS_URL)
+    w2_findings = _checks(findings, "W2")
+    assert w2_findings
+    assert not any(is_blocking(f) for f in w2_findings)

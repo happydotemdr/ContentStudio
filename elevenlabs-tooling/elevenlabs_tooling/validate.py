@@ -13,7 +13,7 @@ TypeError from a tool whose entire job is to fail safely on bad input.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, SplitResult
 
 PINNED_NARRATOR_VOICE_ID = "eDwT8Vhp2yxJzAMmuuPA"
 ALLOWED_HOST = "api.elevenlabs.io"
@@ -111,6 +111,12 @@ def _check_shape(payload: dict) -> list[Finding]:
     )]
 
 
+def _voice_settings(payload: dict) -> dict:
+    """Safely extract voice_settings as a dict; return {} if absent or wrong type."""
+    raw_settings = payload.get("voice_settings")
+    return raw_settings if isinstance(raw_settings, dict) else {}
+
+
 def _check_model_id(payload: dict) -> list[Finding]:
     if not payload.get("model_id"):
         return [Finding("E4", "model_id must be present and non-empty")]
@@ -118,7 +124,10 @@ def _check_model_id(payload: dict) -> list[Finding]:
 
 
 def _check_speed(payload: dict) -> list[Finding]:
-    settings = payload.get("voice_settings") or {}
+    raw_settings = payload.get("voice_settings")
+    if raw_settings is not None and not isinstance(raw_settings, dict):
+        return [Finding("E5", f"voice_settings {raw_settings!r} must be a dict")]
+    settings = _voice_settings(payload)
     speed = settings.get("speed")
     if speed is None:
         return []
@@ -146,7 +155,7 @@ def _check_stitching_conflict(payload: dict, url: str) -> list[Finding]:
     return []
 
 
-def _voice_id_from_tts_path(parts) -> str | None:
+def _voice_id_from_tts_path(parts: SplitResult) -> str | None:
     """The path segment right after 'text-to-speech', or None.
 
     Not simply the last segment: /v1/text-to-speech/{voice_id}/with-timestamps
@@ -265,7 +274,10 @@ def _check_output_format(url: str) -> list[Finding]:
 
 
 def _check_similarity_boost(payload: dict) -> list[Finding]:
-    settings = payload.get("voice_settings") or {}
+    raw_settings = payload.get("voice_settings")
+    if raw_settings is not None and not isinstance(raw_settings, dict):
+        return [Finding("W2", f"voice_settings {raw_settings!r} must be a dict")]
+    settings = _voice_settings(payload)
     similarity = settings.get("similarity_boost")
     if similarity is None:
         return []
