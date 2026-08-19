@@ -323,3 +323,66 @@ def test_an_unrecognised_gate_status_reads_as_unverified_not_as_a_pass(client_wi
     assert "unrecognised result" in page
     assert "passsed" in page          # status_raw is shown, not swallowed
     assert "status-passed" not in page
+
+
+def test_never_ran_gate_page_offers_a_usable_next_action(client_with_stage):
+    """THE mandated E-03 test. A gate that never ran must (a) say so and
+    (b) leave a way to complete the approval from inside the UI."""
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    _stage_with_artifact(app, project["run_id"], "version: 1\n")   # no gate result recorded
+
+    page = test_client.get(f"/projects/{project_id}/stages/ideation").text
+    assert "never ran" in page                                  # (a) it says so
+    assert 'name="override_reason"' in page                     # (b) the field exists
+    assert 'id="approve-blocked-reason"' in page                # and the reason is inline
+
+
+def test_a_blocked_approve_re_renders_the_stage_page_not_plain_text(client_with_stage):
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    _stage_with_artifact(app, project["run_id"], "version: 1\n")
+
+    blocked = test_client.post(
+        f"/projects/{project_id}/stages/ideation/approve",
+        data={"override_reason": ""}, follow_redirects=False,
+    )
+    assert blocked.status_code == 409
+    assert 'class="top-nav"' in blocked.text          # a real page, not a text document
+    assert 'class="approval-error"' in blocked.text
+    assert "data-error-kind=" in blocked.text         # P3's error_banner.kind
+    assert 'name="override_reason"' in blocked.text   # retry without navigating back
+
+
+def test_a_healthy_stage_approve_form_has_no_override_field(client_with_stage):
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    # NOTE: uses "gate_o_ideation_contract" -- the stage's actual GATE_REGISTRY
+    # entry (see gates.py) -- rather than the brief's literal "gate-x", which
+    # would leave the real registered gate unreported and therefore
+    # synthesized as a blocking never_ran result regardless of template
+    # changes. test_never_ran_page_differs_from_a_genuinely_clean_pass above
+    # establishes the same pattern for its "clean" case.
+    _stage_with_artifact(
+        app, project["run_id"], "gates:\n  - name: gate_o_ideation_contract\n    status: pass\n"
+    )
+    page = test_client.get(f"/projects/{project_id}/stages/ideation").text
+    assert 'name="override_reason"' not in page

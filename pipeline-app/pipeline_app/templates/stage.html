@@ -18,7 +18,17 @@
 </p>
 {% endif %}
 
-{% if error_banner %}<div class="error-banner">{{ error_banner.message }}</div>{% endif %}
+{# `error_banner` is P3's ONE error channel for this page -- gate blocks, stage
+   locked, another turn running, edit refusals all arrive here, distinguished by
+   `kind`. Before this every one of them was a bare PlainTextResponse: an
+   unstyled text document with no header, no nav and no form to retry from
+   (E-04, P3's), reached by a POST the operator could only escape with
+   browser-back. #}
+{% if error_banner %}
+<p class="approval-error" role="alert" data-error-kind="{{ error_banner.kind }}">
+  {{ error_banner.message }}
+</p>
+{% endif %}
 
 <section class="input-panel">
   <h2>Input</h2>
@@ -69,8 +79,25 @@
   {% endif %}
   <form method="post" action="/projects/{{ project.id }}/stages/{{ stage_id }}/approve">
     {% if has_blocking_gate %}
-    <label for="override_reason">Override reason (a gate above is failing/erroring)</label>
-    <input type="text" id="override_reason" name="override_reason" placeholder="e.g. dash is inside a verbatim 1886 quote">
+    {# `has_failing_gate` used to be "any recorded fail/error", strictly
+       narrower than what approval_service actually blocks on. A never-ran
+       gate therefore rendered a form WITHOUT this field, the POST 409'd into
+       a bare text page, and back-navigation returned to the same field-less
+       form -- no way to finish the approval from the UI at all (E-03).
+       `has_blocking_gate` is computed by the route from the same condition
+       it raises on, so the two cannot drift again. The reason list below is
+       built from `gate_view` (P3's ONE gate classifier, also driving the
+       gate strip above) rather than a separately-computed list, so the two
+       surfaces can't say different things about why approval is blocked. #}
+    <p id="approve-blocked-reason" class="approve-blocked-reason">
+      Approval is blocked:
+      {% set blocking_gates = gate_view | selectattr("blocking") | list %}
+      {% for gate in blocking_gates %}{{ gate.name }} ({{ gate.state.replace("_", " ") }}){% if not loop.last %}; {% endif %}{% endfor %}.
+      Fix the findings and regenerate, or record a reason below to approve anyway.
+    </p>
+    <label for="override_reason">Override reason (required to approve past the block)</label>
+    <input type="text" id="override_reason" name="override_reason" required
+           placeholder="e.g. dash is inside a verbatim 1886 quote">
     {% endif %}
     <button type="submit">Mark Approved</button>
   </form>

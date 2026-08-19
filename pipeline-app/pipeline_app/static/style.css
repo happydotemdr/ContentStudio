@@ -119,6 +119,13 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .input-panel, .chat-panel, .output-panel { margin-bottom: 1.5rem; }
 .stale-override-note { color: var(--accent-amber); font-size: 0.9rem; }
 
+.approval-error {
+  padding: 0.5rem 0.75rem; margin: 0.75rem 0;
+  border: 1px solid #ff5f5f; border-radius: 0.25rem;
+  background: color-mix(in srgb, #ff5f5f 15%, transparent); color: #ff5f5f;
+}
+.approve-blocked-reason { color: var(--accent-amber); font-size: 0.9rem; }
+
 .status-pass { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
 .status-fail { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
 .status-error { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
