@@ -524,3 +524,18 @@ def test_the_status_poller_stops_and_reports_when_a_fetch_fails(client: TestClie
     assert "catch" in page
     assert "status unknown — reload" in page
     assert "clearInterval(poll)" in page
+
+
+def test_platform_options_match_the_adapter_registry_exactly():
+    """The seven <option> values are the only enumeration of trackable
+    platforms an operator ever sees, hand-duplicated from build_adapters().
+    They agree today and nothing enforced it: a new adapter was silently
+    untrackable through the only supported entry point (B-74)."""
+    import re
+    from pipeline_app.main import PACKAGE_DIR
+    from run_discovery_cron import build_adapters
+
+    html = (PACKAGE_DIR / "templates" / "discovery_handles.html").read_text(encoding="utf-8")
+    select = re.search(r'<select name="platform">(.*?)</select>', html, re.S).group(1)
+    options = set(re.findall(r'<option value="([^"]+)"', select))
+    assert options == set(build_adapters().keys())
