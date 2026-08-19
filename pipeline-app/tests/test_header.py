@@ -99,3 +99,30 @@ def test_stage_page_shows_breadcrumb_with_run_id_and_stage_id(client_with_stage)
     assert stage_resp.status_code == 200
     assert 'class="breadcrumb"' in stage_resp.text
     assert f"{project['run_id']} / ideation" in stage_resp.text
+
+
+def test_no_template_references_an_external_host():
+    """CLAUDE.md says local-only. A CDN <script> is an undocumented outbound
+    dependency with no SRI (D-41) and a silent offline failure (D-42)."""
+    from pipeline_app.main import PACKAGE_DIR
+    offenders = []
+    for path in sorted((PACKAGE_DIR / "templates").rglob("*.html")):
+        text = path.read_text(encoding="utf-8")
+        for scheme in ("https://", "http://", "//unpkg.com"):
+            if scheme in text:
+                offenders.append(f"{path.name}: {scheme}")
+    assert offenders == []
+
+
+def test_htmx_is_served_from_the_local_static_mount(client: TestClient):
+    from pipeline_app.main import PACKAGE_DIR
+    vendored = PACKAGE_DIR / "static" / "htmx-2.0.0.min.js"
+    assert vendored.is_file(), "htmx must be vendored, not fetched from a CDN"
+    assert vendored.stat().st_size > 10_000, "vendored htmx looks truncated"
+
+    resp = client.get("/")
+    assert '<script src="/static/htmx-2.0.0.min.js"></script>' in resp.text
+
+    served = client.get("/static/htmx-2.0.0.min.js")
+    assert served.status_code == 200
+    assert "javascript" in served.headers["content-type"]

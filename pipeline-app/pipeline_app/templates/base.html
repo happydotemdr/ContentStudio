@@ -4,7 +4,13 @@
   <meta charset="utf-8">
   <title>{% block title %}ContentStudio Pipeline{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
-  <script src="https://unpkg.com/htmx.org@2.0.0"></script>
+  <!-- Vendored, not CDN-loaded. A third-party <script> with no integrity hash
+       runs with full same-origin authority over an unauthenticated local app
+       whose POST routes rewrite skill files, commit to git, spend Anthropic
+       credit and start billed Bright Data jobs (D-41) -- and when the CDN is
+       unreachable the Browse tree dies with no UI signal at all (D-42).
+       Serving it from /static removes both at once and needs no SRI. -->
+  <script src="/static/htmx-2.0.0.min.js"></script>
   <script>
     function attachSSEChat(formEl) {
       formEl.addEventListener("submit", async (e) => {
