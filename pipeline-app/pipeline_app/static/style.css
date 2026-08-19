@@ -199,3 +199,8 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
   font-family: var(--font-mono);
   font-size: 0.9rem;
 }
+
+.project-meta { color: var(--text-dim); font-family: var(--font-mono); font-size: 0.9rem; }
+.project-rollup { margin: 1.5rem 0; }
+.project-rollup .status { margin-right: 0.5rem; }
+.project-next-action { margin-top: 0.75rem; }

@@ -162,6 +162,22 @@ def test_no_template_references_an_external_host():
     assert offenders == []
 
 
+def test_project_home_shows_a_gate_roll_up_and_a_next_action(client_with_stage):
+    test_client, _app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    page = test_client.get(f"/projects/{project_id}")
+    assert page.status_code == 200
+    assert 'class="project-rollup"' in page.text
+    assert "Next action" in page.text
+    # A fresh project's only stage is ready -- the overview must name it and
+    # link straight to it rather than making the operator read the rail.
+    assert f'href="/projects/{project_id}/stages/ideation"' in page.text
+    assert "ready" in page.text
+
+
 def test_htmx_is_served_from_the_local_static_mount(client: TestClient):
     from pipeline_app.main import PACKAGE_DIR
     vendored = PACKAGE_DIR / "static" / "htmx-2.0.0.min.js"
