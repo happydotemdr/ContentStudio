@@ -16,6 +16,86 @@
 
 ---
 
+> ## 0. Amendment — live-state check before starting (2026-08-18)
+>
+> Before dispatching Task 1, every one of P15's 16 findings was checked against the live repo
+> (P3, P6, P7, P8, P9 and one out-of-programme feature branch have all merged since this plan was
+> written, and several touched files P15 will soon own exclusively). Verdict: **13 of 16 findings
+> are untouched — proceed exactly as written.** Three tasks (T9, T10, T22) have their blocking
+> "Consumes P3" dependency already satisfied, and two of those three templates already carry a
+> partial, differently-shaped implementation that this amendment describes so the task's
+> "delete the old block" step isn't dispatched against stale line numbers.
+>
+> **What already landed, and why:** P3 (Wave B2) merged its full gate/approval contract —
+> `gate_view[]`, `has_blocking_gate`, `error_banner`, `artifact_version/created_at/finalized_at`,
+> `gate_override`, and the 409-re-renders-`stage.html` behavior — plus `edit_allowed`,
+> `edit_blocked_reason`, `edit_action`, `edit_field` for the `inputs[]` disclosure T22 renders.
+> All of it exists in `routes/stages.py`/`approval_service.py` exactly as this plan's §7
+> "Consumes P3" notes assume. **None of this is a P15 finding and none of it required any
+> amendment to what P3 shipped** — it means T8, T9, T10 and T22 can start immediately with no
+> wait, which the original wave table already scheduled correctly (P15 was always meant to land
+> after P3), but is worth confirming explicitly since three other Wave-B4 packages (P6/P7/P8/P9)
+> landed in between and it was not re-verified until now.
+>
+> **T9 (E-02) — the old block to delete is not empty, and not at the plan's assumed position.**
+> `templates/stage.html` currently has a WORKING gate-rendering block, added incidentally by
+> whichever commit adopted P3's `gate_view` contract (not a P15 change) — it is not the pre-P3
+> `output_gates`/`input_html` shape T9's "Run: fails" step describes.
+> Current shape, for the record (verified live, not from the diff that introduced it):
+> - Position: `stage.html:47-70`, rendered **below** the artifact body (`output_html` at line 49,
+>   `.gates-panel` opening at line 50) — the plan wants it **above**, per T9's own failing test
+>   `test_gate_panel_renders_above_the_artifact_body`.
+> - Guard: `{% if gate_view %}` (line 50) — when `gate_view` is empty (no gate registered for the
+>   stage at all, as opposed to one registered-but-`never_ran`), the **entire panel vanishes**,
+>   not just a status line. T9's own template ships a `{% if not gate_view %}` "No gate is
+>   registered for this stage." explainer for exactly this case — that case is not yet handled.
+> - CSS classes: `status-blocking` / `status-ok` (line 55) — two classes, not one-per-`state`.
+>   T9's plan replaces these with `status-{{ gate.state }}` (five values:
+>   `passed/failed/errored/never_ran/unknown`), which also requires the five new CSS rules T9
+>   adds to `static/style.css` (none of which exist yet — confirmed, `style.css` has no
+>   `.status-never_ran`/`.status-unknown` rule today).
+> - No `never_ran`/`unknown` explainer text, no `partials/gate_strip.html` extraction (the whole
+>   block is inline in `stage.html`) — both are new work, exactly as T9 already plans.
+>
+> **Net effect on T9:** delete `stage.html:47-70`'s current inline block (not the plan's assumed
+> "lines 35–55" — line numbers have drifted; find the block by content, `<div class="gates-panel">`
+> through its matching `{% endif %}`), not just move it. Everything else in T9's own text —
+> the new `partials/gate_strip.html`, the five CSS rules, the four tests — applies unchanged.
+>
+> **T10 (E-03) — half already done, half still open.** `has_blocking_gate` already gates the
+> override `<input>` (`stage.html:75-78`), and a blocked approve already re-renders full
+> `stage.html` at **409** via `_stage_conflict` (`routes/stages.py:369-378`) rather than a bare
+> `PlainTextResponse` — both are pre-existing, correct, and need no work. Still open, exactly as
+> T10 plans: no inline blocking-reason paragraph (`id="approve-blocked-reason"` or similar) next
+> to the override field, no `approval_block_reasons` key read anywhere in the template, and the
+> error banner element uses `class="error-banner"` with no `data-error-kind` attribute — T10's own
+> failing tests will catch all three; no change to T10's task text is needed, only awareness that
+> the override-field and 409-shape halves will already be green before this task's own edits land.
+>
+> **T22 (P3 `inputs[]`/`edit_*`, no P15 finding) — same shape as T10.** `routes/stages.py` already
+> computes and passes `edit_allowed`/`edit_blocked_reason`/`edit_action`/`edit_field`, and
+> `stage.html:13-26` already has a per-dependency loop distinguishing present/malformed/missing
+> inputs (a different, `input-card`-less shape than T22's planned markup) — but the `edit_*` keys
+> are computed and **completely unused** in the template today. T22 proceeds as written; the
+> `inputs[]` half needs re-shaping to the plan's card markup, the `edit_*` disclosure needs adding
+> from scratch.
+>
+> **B-74 (T15) — the underlying data already agrees; only the guard is missing.** The seven
+> `<option>` values in `discovery_handles.html` (`youtube, bluesky, instagram, linkedin-profile,
+> linkedin-company, facebook, x`) already match `run_discovery_cron.build_adapters().keys()`
+> exactly — this finding carries no live bug today, only unguarded risk. T15 proceeds exactly as
+> written; it is pinning a coincidence, not fixing a drift.
+>
+> **Everything else (D-41, D-42, E-13, E-08, E-06, E-01, E-09, E-10, E-12, E-14a/b/c, D-47, E-15,
+> E-16, T0) — confirmed NOT STARTED, no amendment needed.** htmx is still CDN-loaded
+> (`templates/base.html:7`, `https://unpkg.com/htmx.org@2.0.0`); `browse_service.py` has no
+> sanitizer and `_has_md_below`/`resolve_grounding_pointer` still collapse absent/broken into one
+> falsy value; `discovery_runs.html`/`discovery_handles.html` carry none of the planned CSS status
+> modifiers; `doctor.html` still bare-prints `{{ orphaned_count }}` (literally renders the string
+> `"None"` today) and duplicates the skill list instead of linking it. Every task not named above
+> applies exactly as written, against exactly the "before" state each task's own failing test
+> already assumes.
+
 ## 1. Scope
 
 ### Files this package owns (no other package may touch these)
