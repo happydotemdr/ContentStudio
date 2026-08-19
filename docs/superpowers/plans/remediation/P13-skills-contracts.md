@@ -242,11 +242,46 @@ things" counts in T5/T7/T9 (these read like prose-list corrections unrelated to 
 counts, but verify each against its own file before assuming so); §6.2's `repurpose` edge, which
 also changed (`[assembly]` → `[ideation, scripting, assembly]`) and is not analyzed above — check
 whether any C-0x finding about `social-repurpose`'s stated inputs (C-04, T6) needs the same
-treatment as T5/T7.
+treatment as T5/T7. (`assembly` also gained `optional_depends_on: [music]` in the same commit —
+omitted from the diff above for brevity; relevant if T2's `KIND_REGISTRY` distinguishes required
+from optional dependencies.)
+
+**Two inbound cross-package handoffs, found by this amendment's own reviewer, not by the pre-flight
+pass above (both are the same class of gap: a sibling package's plan recording a note FOR P13
+that nothing in P13's own scope-diff check could ever surface, since the drift is in the sibling's
+file, not P13's):**
+
+1. **From P11 (§6.4, `P11-gate-c.md:1880-1887`, "not a blocker"):** T18 widened
+   `BANNED_REGISTER_A_STRINGS`/`BANNED_REGISTER_B_STRINGS` in `scripts/lint_prompt_sheet.py`
+   (confirmed live: `lint_prompt_sheet.py:743-747` bans `"empty gym", "empty youth gym", "empty
+   pitch", "empty stadium"` and more). Their declared `[I]`-marked source of truth is
+   `.claude/skills/shorts-styleboard/references/visual-registers.md:47` and `:64` — confirmed
+   still only banning `empty gym`/`empty youth gym`. Mirror the widened lists into those two
+   lines so the skill instruction and the gate agree. P11 already classified this as non-blocking
+   (the gate is stricter than the instruction, which is the safe direction), so this is a
+   should-fix, not a must-fix-first — but it belongs on a task list somewhere in this package
+   (none of T1–T18 currently covers it).
+2. **From P12 (`P12-gate-d-tools.md:1068-1071`):** `shorts-scripting/SKILL.md:262` states
+   `resolve_brief_version.py` "prints `NONE\t0` and exits **1**" for the no-prior-version case.
+   Confirmed false against the live script (`scripts/resolve_brief_version.py:28-30,142-143`):
+   it now has three distinct exit codes (`EXIT_OK=0`, `EXIT_ERROR=2` for an actual failure,
+   `EXIT_NONE=3` for the expected empty case) — the no-prior-version case still prints `NONE\t0`
+   but exits **3**, not 1, and a genuine error (e.g. a malformed directory) now exits 2 instead of
+   being collapsed into the same code. Correct the sentence at `SKILL.md:262`; the printed
+   `<path>\t<version>` contract the other nine skills branch on is otherwise unchanged.
+
+Neither handoff has an assigned task above. Fold each into whichever task already touches its
+file (T8 touches `visual-registers.md` for C-06/C-07/C-26/C-27; no current task touches
+`shorts-scripting/SKILL.md:262` specifically — T7 is the closest, for `shorts-scripting`
+generally) or add a one-line addendum task before dispatching T7/T8.
 
 **Everything else in this plan (all 48 findings' task assignments, the six kept/generalised
-existing tests in §5, the P14 contract in §6.1) is confirmed unaffected by any drift — the
-`pipeline.yaml` change above is the only discrepancy found.**
+existing tests in §5, the P14 contract in §6.1) shows no sign of drift from what THIS package's
+own file-list check can see** — the `pipeline.yaml` change and the two inbound handoffs above are
+the only three discrepancies found. That check only covers drift *inside* P13's own scope or
+explicitly flagged by a sibling package's plan; it cannot rule out a sibling package's *silent*
+drift the same way the P11/P12 handoffs above were caught by having been recorded somewhere. Full
+finding-by-finding re-verification of all 48 findings was not performed.
 
 ---
 
@@ -2306,8 +2341,12 @@ change so the declared graph matches the reachable one. P13 makes that machine-c
 The package is done when all of these hold:
 
 ```bash
-cd "C:/Projects/ContentStudio/.claude/worktrees/pipeline-audit-review-4dd767" && python -m pytest tests/ -q
+python -m pytest tests/ -q
 ```
+
+(This section originally hardcoded a specific worktree path in the `cd`, which the master plan's
+own §Verification explicitly warns against — worktrees are created and torn down per package and
+that path is long gone. Run this from whatever worktree's repo root you're actually in.)
 
 1. `tests/test_skill_provenance.py` is parametrized over **13 skills** and sweeps **all 64
    reference files** (63 after T14 deletes the tombstone) — verified by
