@@ -65,11 +65,22 @@ def test_projects_page_has_no_tab_strip(client: TestClient):
     assert 'class="sub-nav"' not in resp.text
 
 
-def test_page_shell_wraps_sidebar_and_main(client: TestClient):
+def test_pages_without_a_stage_rail_ship_no_aside_at_all(client: TestClient):
     resp = client.get("/")
     assert 'class="app-shell"' in resp.text
-    assert 'class="app-sidebar"' in resp.text
     assert 'class="app-main"' in resp.text
+    assert "<aside" not in resp.text
+
+
+def test_a_project_page_does_ship_the_stage_rail_aside(client_with_stage):
+    test_client, _app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    page = test_client.get(f"/projects/{project_id}/stages/ideation")
+    assert 'class="app-sidebar"' in page.text
+    assert 'class="pipeline-nav"' in page.text
 
 
 def test_project_home_and_stage_page_mark_projects_active_with_breadcrumb(client: TestClient):

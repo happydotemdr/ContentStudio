@@ -132,7 +132,7 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 
 .app-shell { display: flex; gap: 2rem; align-items: flex-start; padding: 1.5rem 2rem; }
 .app-sidebar { flex: 0 0 260px; }
-.app-sidebar:not(:has(*)) { flex: 0 0 0; }
+.app-shell-full .app-shell { padding-left: 2rem; }
 .app-main { flex: 1 1 auto; min-width: 0; max-width: 1400px; }
 
 .site-header {

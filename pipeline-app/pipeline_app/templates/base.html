@@ -149,11 +149,11 @@
     });
   </script>
 </head>
-<body>
+<body{% if not nav %} class="app-shell-full"{% endif %}>
   {% include "partials/header.html" %}
   <div id="htmx-error-banner" class="htmx-error-banner" role="alert" hidden></div>
   <div class="app-shell">
-    <aside class="app-sidebar">{% block sidebar %}{% include "partials/sidebar.html" %}{% endblock %}</aside>
+    {% if nav %}<aside class="app-sidebar">{% block sidebar %}{% include "partials/sidebar.html" %}{% endblock %}</aside>{% endif %}
     <main class="app-main">{% block content %}{% endblock %}</main>
   </div>
 </body>
