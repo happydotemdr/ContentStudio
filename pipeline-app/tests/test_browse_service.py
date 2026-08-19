@@ -609,6 +609,36 @@ def test_sanitize_html_a_disallowed_void_tag_does_not_swallow_later_content():
     assert "after" in out
 
 
+def test_sanitize_html_self_closing_disallowed_tag_does_not_bypass_suppression():
+    """HTMLParser fires handle_startendtag (not a starttag/endtag pair spread
+    across two calls) for self-closing syntax like <script/>. The default
+    handle_startendtag implementation calls handle_starttag immediately
+    followed by handle_endtag, which -- for a disallowed non-void tag like
+    script -- pushes _skip_depth to 1 and instantly pops it back to 0. Every
+    real browser ignores a trailing "/" on a non-void element and keeps the
+    script open until a real </script> or EOF, so the attacker's payload text
+    must still be suppressed here."""
+    out = browse_service.sanitize_html(
+        "<script/>fetch('/discovery/run-now', {method:'POST'})</script>"
+    )
+    assert "fetch(" not in out
+    assert "discovery/run-now" not in out
+    assert "<script" not in out
+
+
+def test_sanitize_html_self_closing_disallowed_style_tag_does_not_bypass_suppression():
+    out = browse_service.sanitize_html("<style/>body{background:url(evil)}</style>")
+    assert "background" not in out
+    assert "<style" not in out
+
+
+def test_sanitize_html_self_closing_allowed_void_tag_still_renders():
+    out = browse_service.sanitize_html('<p>before</p><img src="https://example.com/x.png" /><p>after</p>')
+    assert 'img src="https://example.com/x.png" />' in out or "<img" in out
+    assert "before" in out
+    assert "after" in out
+
+
 def test_render_md_file_body_html_is_sanitized(tmp_path):
     path = tmp_path / "post.md"
     path.write_text(

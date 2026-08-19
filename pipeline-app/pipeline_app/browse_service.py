@@ -105,6 +105,26 @@ class _Sanitizer(HTMLParser):
         if tag not in _VOID_TAGS:
             self.out.append(f"</{tag}>")
 
+    def handle_startendtag(self, tag, attrs):
+        # HTMLParser's default handle_startendtag calls handle_starttag
+        # immediately followed by handle_endtag -- treating self-closing
+        # syntax (<script/>) as a complete open+close pair. Real HTML5
+        # parsing does the opposite for any non-void element: a trailing
+        # "/" on <script>, <style>, <iframe>, etc. is ignored and the
+        # element stays open until a real closing tag or EOF. Firing both
+        # handlers here would increment then immediately decrement
+        # _skip_depth, leaving suppression off for the attacker's payload
+        # text that follows -- exactly the bypass this override closes.
+        #
+        # Allowed tags and genuine void elements (<br/>, <img .../>) are
+        # unaffected: those still get the default starttag+endtag pair,
+        # since self-closing syntax on them is normal and harmless.
+        if tag not in _ALLOWED_TAGS and tag not in _HTML_VOID_ELEMENTS:
+            self.handle_starttag(tag, attrs)
+            return
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
     def handle_data(self, data):
         if self._skip_depth:
             return
