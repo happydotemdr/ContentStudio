@@ -1194,6 +1194,24 @@ Add to `static/style.css`:
 ```
 
 - [ ] Run: passes.
+
+> **Amendment (2026-08-18, found during T10 execution):** §7's contract table and this task's own
+> "Consumes P3" line both claim `approval_block_reasons` was "added by P3 at P15's request" and
+> already exists in `routes/stages.py`. It does not — grepped the live repo, zero matches
+> anywhere in `pipeline_app/`. This is the inverse of the shape §0 otherwise found for this
+> package (drift that pre-satisfies a task): here a claimed-satisfied dependency turned out to be
+> unmet. Rather than block T10 on adding it to P3's already-merged `routes/stages.py` (out of
+> P15's file scope), the template above derives the same information from `gate_view` — which
+> DOES already exist and is P3's one gate classifier, also driving the gate strip above — filtered
+> to `blocking` entries: `{% set blocking_gates = gate_view | selectattr("blocking") | list %}`,
+> then rendered as `{{ gate.name }} ({{ gate.state.replace("_", " ") }})` per entry, joined with
+> `; `. This is a strict improvement over the plan's `approval_block_reasons` binding: the reason
+> list and the gate strip now derive from the same classifier and cannot say different things
+> about why approval is blocked. §7's table entry for `approval_block_reasons` should be read as
+> **not produced by P3**, superseded by this in-template derivation from `gate_view`. Landed in
+> commit `41a2e08`. A second, smaller fixture-name correction (the brief's third test used the
+> placeholder `gate-x`; changed to the real registered `gate_o_ideation_contract`, same root cause
+> as T9's amendment above) landed in the same commit.
 - [ ] Commit: `fix(ui): render the override field whenever approval is blocked, including never-ran gates`
 
 ---
@@ -2578,7 +2596,7 @@ this package exists to fix. Every key below is P3's spelling.
 |---|---|---|
 | `gate_view` | `list[dict]` | One entry per gate in `GATE_REGISTRY[stage_id]`, unioned with any recorded result whose name is not registered. Replaces `output_gates`. Each entry: `name: str`; `state: "passed" \| "failed" \| "errored" \| "never_ran" \| "unknown"`; `status_raw: str \| None` (the verbatim frontmatter string, rendered for `unknown`); `blocking: bool`; `findings: list[dict]` with `kind`/`check`/`beat`/`message`. **All five states get an explicit arm in `partials/gate_strip.html`** — `unknown` reads as "unverified", never falls through to something benign. |
 | `has_blocking_gate` | `bool` | True iff approve would raise without an override — i.e. any `gate_view` entry with `blocking` true. **Replaces `has_failing_gate`**, whose narrower "recorded fail/error only" condition is the E-03 defect. Drives the override field in T10. |
-| `approval_block_reasons` | `list[str]` | Human-readable reasons, matching the 409 message, e.g. `"gate-c (never ran -- no result in the artifact)"`. P3 adds this at P15's request. |
+| `approval_block_reasons` | `list[str]` | **Not actually produced by P3** — verified absent from the live repo at T10 execution (see T10's amendment above). T10 derives the equivalent reason list in-template from `gate_view | selectattr("blocking")` instead. This row is historical (what was planned, not what shipped). |
 | `error_banner` | `dict \| None` | `{kind: str, message: str}`. P3's single error channel for the page — gate block, stage locked, turn running, edit refusal — distinguished by `kind`, which T10 renders as `data-error-kind`. |
 | `gate_override` | `dict \| None` | `{reason: str, at: str}`. Read as `gate_override.reason` (+ `.at`) in T8's status strip. Written by `approval_service.py:70,76` and displayed nowhere today. |
 | `artifact_version` | `int \| None` | Pass-through P3 adds at P15's request: `stages.py:100` parses this into `output_meta` and throws it away (E-06). |
