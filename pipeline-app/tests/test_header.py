@@ -1,3 +1,11 @@
+"""Rendered-template assertions for the P15 UI package.
+
+Despite the filename this covers every template except the two Browse
+partials (those live in test_routes_browse.py): the shared shell, the
+three-section nav, the stage page, the discovery pages, the skill editor
+and doctor. Everything here asserts on rendered HTML through the FastAPI
+TestClient -- there is no browser automation in this suite.
+"""
 from pathlib import Path
 
 import pytest
