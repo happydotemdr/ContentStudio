@@ -2252,6 +2252,37 @@ render paths and are out of this package's file list.
       which the allowlist keeps).
 - [ ] Commit: `fix(browse): sanitize rendered markdown at the producer`
 
+> **Amendment (2026-08-18, found by the controller after T19 landed):** two genuine bugs in the
+> `_Sanitizer` code as literally shown above.
+>
+> 1. **Disallowed tag TEXT wasn't suppressed (fixed by the implementer during T19 itself, before
+> the controller's own check).** The brief's literal `handle_starttag`/`handle_endtag`/`handle_data`
+> drop a disallowed tag's own start/end markup but do nothing to its inner text — so
+> `<script>alert(1)</script>` would strip the `<script>` tags but leave the literal text
+> `alert(1)` visible on the page, failing the brief's own
+> `test_render_md_file_body_html_is_sanitized` (`"discovery/run-now" not in result["body_html"]`).
+> Fixed with a `_skip_depth` counter: `handle_starttag` increments it for a disallowed non-void
+> tag, `handle_data` and `handle_starttag`/`handle_endtag` no-op while it's nonzero,
+> `handle_endtag` decrements it back down.
+> 2. **The `_skip_depth` fix above introduced its own bug, found by the controller reproducing it
+> empirically: a disallowed tag that's a real HTML5 void element (`meta`, `link`, `input`, `base`,
+> `embed`, `source`, `track`, `wbr`, `col`, `area`, `param` — none of which this sanitizer's own
+> narrow `_VOID_TAGS = {"br","hr","img"}` covers) increments `_skip_depth` expecting a matching
+> `</meta>` that will never arrive, so `_skip_depth` never returns to 0 and every character of the
+> document AFTER that point is silently dropped — not just the meta tag, the ENTIRE rest of the
+> page. Fails safe (nothing malicious leaks — the opposite direction from an XSS bypass), but a
+> real content-integrity defect: legitimate content after a stray disallowed void-like tag
+> vanishes with no signal to the operator. Confirmed via
+> `sanitize_html('<p>before</p><meta ...><p>after</p>')` → `'<p>before</p>'` before the fix.
+> Fixed by adding `_HTML_VOID_ELEMENTS` (the full HTML5 void-element set) and using it — not the
+> sanitizer's narrower allowed-void-tag set — to decide whether a disallowed start tag should ever
+> increment `_skip_depth` at all. A regression test pins both directions: a disallowed void tag no
+> longer swallows later content, and `<script>` (genuinely non-void) still correctly drops its own
+> payload text.
+>
+> Both landed in commits `22df293` (T19 itself, includes bug 1's fix) and `cd586f8` (the
+> controller-dispatched fix for bug 2, found post-landing before this task's review was dispatched).
+
 ---
 
 ### T20 — Kill the phantom kickoff-template editor (E-15)
