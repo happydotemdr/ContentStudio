@@ -1,11 +1,27 @@
 # Audio Preconditioning for `stitcher` — Design Spec
 
-**Status:** Draft, pending user review.
-**Scope:** Fix the leveling/clipping defect diagnosed in the pro-voice audio validation run (see
-`docs/superpowers/plans/2026-08-19-validation-run-pro-voice-audio-regen.md` and the Opus review that
-followed it). Audio-only. Does not touch shot timing, captions, overlays, or produce a video render.
+**Status:** Draft v3 — revised after two rounds of Opus technical review, both empirically verified
+against the installed ffmpeg 9.0 binary, not just documentation. v1's core premise (§4.4) was found
+empirically false; v2's fix was directionally right but its retry loop silently let integrated loudness
+drift (reintroducing the beat-to-beat defect this spec exists to remove) and its peak-conditioning
+target was more aggressive than the actual required margin justified. Both are fixed in this version.
+**Scope:** Fix the leveling/clipping defect diagnosed in the pro-voice audio validation run. Audio-only.
+Does not touch shot timing, captions, overlays, or produce a video render.
 
 ---
+
+## 0. Source material (this spec is self-contained; these are pointers, not requirements to read)
+
+The prior validation-run and vocal-leakage-fix results docs that motivated this spec live in a
+*different* worktree (`C:\Projects\ContentStudio\.claude\worktrees\elevenlabs-tooling-impl\docs\superpowers\plans\2026-08-19-*.md`)
+— not this one. All numbers this spec actually depends on (durations, offsets, measured loudness
+figures) are inlined below; nothing here requires cross-referencing those files.
+
+The render being fixed lives outside any git worktree, as local git-ignored files:
+`C:\Projects\ContentStudio\stitcher\renders\stop-over-specialization-in-youth-sports-20260811-004711\`.
+There is **no `render-spec.json` committed anywhere in this repo** — only the schema,
+`stitcher/schema/render-spec.schema.json`. References below to "the current render-spec.json" mean that
+live, local, gitignored file at the path above, observed directly, not a repo artifact.
 
 ## 1. Problem statement
 
@@ -22,57 +38,69 @@ regenerate this Short's audio with a new narrator voice:
    one take. Loudness range (LRA) collapsed from 6.10 LU (raw) to 3.00 LU to 2.50 LU (final). This is
    the audible "leveling and clipping."
 
-Critically: `stitcher` — this repo's actual tested render tool — already has a gate designed to catch
-exactly this failure (`audio.py`'s `linear=true` two-pass `loudnorm` check, raising
-`LoudnormNotLinearError` if pass 2 can't stay in linear mode). Running `stitcher`'s conform/duck/mix math
-by hand, outside the CLI, bypassed that gate. Verified directly: replaying `stitcher`'s real two-pass
-loudnorm against the new raw voiceover produces `"normalization_type": "dynamic"` — the exact condition
-the gate exists to refuse. The new voice's peak-to-loudness ratio (PLR) is measured at ~21 dB; reaching
-−14 LUFS integrated with any sane true-peak ceiling by static gain alone requires PLR ≤ ~13 dB. Gain
-cannot supply that — only actual peak reduction can.
+`stitcher` — this repo's actual tested render tool — already has a gate designed to catch exactly this:
+`audio.py`'s two-pass `loudnorm` with `linear=true`, raising `LoudnormNotLinearError`
+(`audio.py:532-538`) if pass 2 can't stay in linear mode. Running `stitcher`'s conform/duck/mix math by
+hand, outside the CLI, bypassed that gate. Replaying `stitcher`'s real two-pass loudnorm against the raw
+new voiceover produces `"normalization_type": "dynamic"` — the exact condition the gate exists to
+refuse. The new voice's peak-to-loudness ratio (PLR) is ~21 dB; reaching −14 LUFS integrated with a
+sane true-peak ceiling by static gain alone requires PLR low enough that gain alone can do it. Gain
+cannot supply peak reduction — only actual limiting can.
 
 ## 2. Goals
 
 - Produce a corrected audio mix (voiceover + music bed) for the already-generated new-voice assets that
   a human can listen to and confirm the leveling/clipping is gone.
-- Do this by adding a real, tested capability to `stitcher` — not another ad hoc script — so the same
-  fix applies automatically to every future render, including the next voice swap.
+- Add a real, tested capability to `stitcher` — not another ad hoc script — so the same fix applies
+  automatically to every future render, including the next voice swap.
 - Preserve narration dynamics (LRA) rather than collapsing them.
 - Route the actual render-time mixing math through `stitcher`'s existing, gated `build_audio()` — don't
   reimplement it a second time.
 
 ## 3. Non-goals
 
-- Re-cutting `render-spec.json`'s shot timings, captions, or overlays to match the new (shorter) voice
-  durations. That's a separate, already-flagged, still-open decision.
+- Re-cutting `render-spec.json`'s shot timings, captions, or overlays. Separate, still-open decision.
 - Producing a new `.mp4`. This is an audio-only validation.
-- Changing anything about how VO or music is *generated* (ElevenLabs payloads, voice/model choice). The
-  9 voiceover takes and the 2 corrected (prompt-mode, `force_instrumental`) music beds from the prior
-  runs are the inputs; nothing gets re-generated or re-spent.
-- A general redesign of `stitcher`'s render pipeline. This is one new, narrowly-scoped stage plus two
-  small, targeted schema uses.
+- Re-generating or re-spending on any ElevenLabs call. The 9 voiceover takes and the 2 corrected
+  (prompt-mode, `force_instrumental`) music beds from the prior runs are the inputs.
+- A general redesign of `stitcher`'s render pipeline.
 
 ## 4. Architecture
 
 ### 4.1 New module: `stitcher/stitcher/precondition.py`
 
-One function, one clear purpose: take a raw audio clip and a target loudness/peak envelope, and return a
-clip that is *safe* for `stitcher`'s own downstream linear-loudnorm gate to accept — without collapsing
-its dynamics to get there.
+One function: take a raw clip and a **per-clip conditioning target** (deliberately *not* the render's
+own delivery target — see §4.4 for why that distinction is load-bearing) and return a clip that is safe
+for `stitcher`'s downstream linear-loudnorm gate to accept, without collapsing dynamics to get there.
 
 ```python
 @dataclass(frozen=True)
 class ConditionResult:
     source: Path
     output: Path
-    input_measurement: dict   # {input_i, input_tp, input_lra, input_thresh} from ffmpeg.measure_loudness
-    output_measurement: dict  # same shape, measured after processing
-    limited: bool             # True if peak limiting was applied, False if gain-only sufficed
+    input_measurement: dict   # {input_i, input_tp, input_lra} -- the exact 3 keys ffmpeg.measure_loudness
+                               # returns (ffmpeg.py:344-348); it does NOT return input_thresh, which
+                               # belongs to loudnorm's own pass-1 JSON, a different mechanism.
+    output_measurement: dict  # same 3-key shape, measured on the written output file
+    limited: bool              # True if any alimiter pass measurably engaged (see step 3)
+    peak_reduction_db: float   # 0.0 if `limited` is False; otherwise
+                                # (input_measurement['input_tp'] + total_gain_applied) - output_measurement['input_tp']
+                                # -- the gap between "what the peak would have been with gain alone" and
+                                # "what it actually is" -- a quantity directly derivable from the two
+                                # measurements plus the known applied gain, unlike a true instantaneous
+                                # per-sample maximum, which nothing in this chain measures.
 
 class PreconditionError(Exception):
-    """Raised when the output, re-measured, still fails to meet the target envelope."""
+    """Raised when, after MAX_ATTEMPTS, the output still fails the peak or loudness target."""
 
-SAFETY_MARGIN_DB = 0.3  # headroom against filter/encode rounding
+CONDITION_ATTACK_MS = 5      # equals alimiter's own current ffmpeg default; pinned explicitly so a
+CONDITION_RELEASE_MS = 50    # future ffmpeg default change can't silently move these (verified against
+                              # the installed ffmpeg 9.0 build's `-h filter=alimiter`)
+TP_TOLERANCE_DB = 0.1        # how far over target_tp_dbtp a measured true peak may land before
+                              # triggering a tighter-ceiling retry
+LUFS_TOLERANCE = 0.3         # how far the *conditioned* clip's integrated loudness may drift from
+                              # target_lufs before triggering a makeup-gain retry (LU)
+MAX_ATTEMPTS = 4
 
 def condition_clip(
     source: Path,
@@ -84,195 +112,361 @@ def condition_clip(
     ...
 ```
 
-**Algorithm:**
+**Algorithm** (v3 — revised again after a second review found v2's retry loop verified-in-practice to
+let integrated loudness drift by up to 0.4 LU across differently-limited clips, because it only
+re-checked true peak on retry, never re-solving gain. That drift is exactly defect §1.1 — beat-to-beat
+level inconsistency — reintroduced by the fix meant to remove it. v3 makes every accepted result satisfy
+*both* the peak ceiling and the loudness target, explicitly, every attempt.):
 
-1. Measure the source with `ffmpeg.measure_loudness` (already exists, reused — `audio.py`'s own
-   pass-1 measurement helper).
-2. Compute `naive_gain = target_lufs - input_i`, and `projected_peak = input_tp + naive_gain` — what
-   the peak would be if we simply gain-shifted to the target loudness with no limiting.
-3. **If `projected_peak <= target_tp_dbtp - SAFETY_MARGIN_DB`:** gain-only suffices. Apply
-   `volume={naive_gain}dB,aresample=48000`. `limited=False`.
-4. **Otherwise:** peak reduction is required before the gain stage. Compute the pre-gain ceiling
-   `alimiter` must hold the signal under: `limiter_ceiling_dbtp = target_tp_dbtp - naive_gain -
-   SAFETY_MARGIN_DB`, convert to linear amplitude (`10 ** (limiter_ceiling_dbtp / 20)`), and apply
-   `alimiter=limit=<linear>:attack=5:release=50:level=0,volume={naive_gain}dB,aresample=48000` in one
-   pass — `alimiter`'s own auto-leveling is explicitly disabled (`level=0`) so it only clips peaks; the
-   subsequent `volume` stage remains the sole loudness control, keeping the operation deterministic and
-   auditable. `limited=True`.
+1. Measure the source with `ffmpeg.measure_loudness` (existing helper — the same ebur128 measurement
+   `_build_bed` already uses for the bed's own conform, `audio.py:313`, and `build_audio` uses for the
+   voice reference, `audio.py:375`). This is `input_measurement`, fixed for the whole call.
+2. `applied_gain = target_lufs - input_measurement['input_i']`; `ceiling_dbtp = target_tp_dbtp` (the
+   starting point for the loop below).
+3. **Loop, up to `MAX_ATTEMPTS`:**
+   - Build and run: `aresample=48000,volume={applied_gain:.2f}dB,alimiter=limit={10**(ceiling_dbtp/20):.6f}:attack=5:release=50:level=0:latency=1` → `-c:a pcm_s16le -ar 48000 -ac 2` → a temp file.
+     - **Resample first**: avoids a *later* resample (as in v1) reintroducing overshoot after the
+       limiter already ran. This does **not** guarantee the limiter's sample-peak ceiling exactly equals
+       the eventual measured *true* peak — `alimiter` fundamentally limits sample peak, not true peak,
+       and some gap between the two is intrinsic to any sample-peak limiter (verified directly: a chain
+       whose sample peak landed exactly on a `-4.5` dBFS ceiling measured `-1.4` dBTP true peak on
+       broadband material — a ~3 dB gap, not something reordering removes). That gap is *why* this
+       loop's re-measurement-and-retry (below) is the actual mechanism that closes it, not the filter
+       ordering by itself. (v2's spec text claimed the ordering alone closed the gap; that claim was
+       wrong and is corrected here.)
+     - **`level=0`**: disables `alimiter`'s own auto-leveling (verified: `level <boolean> auto level
+       (default true)`), so `volume=` remains the sole loudness control the algorithm reasons about.
+     - **`latency=1`**: without it, `alimiter` delays its output by its `attack` time — verified directly
+       (identical input, first content at 517.12ms with `latency=0` vs. 512.15ms with `latency=1`, a
+       ~5ms shift) — and **only on a pass that actually engages limiting**, an asymmetry that would
+       otherwise place a limited clip's audible content a few milliseconds later than its declared `at`
+       offset while an unlimited clip lands exactly on it. Total frame count/duration is unaffected
+       either way (`latency` shifts *content within* the clip, it does not change how many frames the
+       clip has) — this is a timing-alignment fix, not a duration fix.
+   - Measure the temp file: `result = ffmpeg.measure_loudness(temp)`.
+   - `tp_ok = result['input_tp'] <= target_tp_dbtp + TP_TOLERANCE_DB`
+   - `lufs_ok = abs(result['input_i'] - target_lufs) <= LUFS_TOLERANCE`
+   - **If both hold:** promote the temp file to `out_path`; done.
+   - **If `tp_ok` is false:** peak still too high — tighten the ceiling:
+     `ceiling_dbtp -= (result['input_tp'] - target_tp_dbtp) + 0.2`, keep `applied_gain` unchanged, retry.
+   - **If `tp_ok` holds but `lufs_ok` is false:** the limiter pulled integrated loudness away from
+     target (the v2 defect) — **re-solve gain, don't just accept the drift**:
+     `applied_gain += (target_lufs - result['input_i'])`, keep `ceiling_dbtp` unchanged, retry. (A
+     second limiting pass on top of the new gain is expected to need at most a small further
+     adjustment, since the makeup gain itself is typically small once the ceiling is already close —
+     this is why `MAX_ATTEMPTS` is 4, not 2: one pass each for the initial peak fit and the initial
+     loudness fit, plus headroom for a second correction of each if the first overshoots.)
+4. If `MAX_ATTEMPTS` is exhausted without both conditions holding simultaneously, raise
+   `PreconditionError` with the source path and the last measurement — never return a result that
+   fails either target.
+5. On acceptance: compute `limited` and `peak_reduction_db` from `input_measurement`, `applied_gain`
+   (the value actually used on the accepted attempt), and `output_measurement`.
+6. `log(...)` every call's before/after `I`/`TP`/`LRA`, `peak_reduction_db`, and the number of attempts
+   taken — a dynamics-losing fix must be visible in the QA trail, not another undocumented silent step
+   like the one that caused half of this bug originally. `peak_reduction_db` specifically answers "was
+   this clip pushed hard enough that a human should listen for dulled plosives" without requiring that
+   listen on every run.
 
-   `alimiter` is a brickwall peak limiter, not an adaptive normalizer: it only engages when the signal
-   exceeds the ceiling, and does not ride gain on passages that never approach it. This is the direct,
-   deliberate opposite of `loudnorm`'s dynamic mode, which is what produced the measured LRA collapse.
-5. Re-measure the output. If `output_measurement['input_tp'] > target_tp_dbtp` (the safety margin didn't
-   hold — a real possibility with filter/rounding behavior worth catching, not assuming away), raise
-   `PreconditionError` with the measured values. Never silently ship an out-of-envelope result.
-6. `log(...)` (via the existing `elevenlabs_tooling`-style / `stitcher` logging convention already used
-   elsewhere in this repo) the before/after `I`/`TP`/`LRA` for every call — a dynamics-losing fix must be
-   *visible* in the QA trail, not another undocumented silent step like the one that caused half of this
-   bug in the first place.
-
-**Exact `alimiter` attack/release values (5ms/50ms) and the 0.3 dB safety margin are stated explicitly,
-not left as ffmpeg defaults** — this project's convention throughout is to record the value chosen
-rather than let an implicit default stand in for a decision.
+Every conditioned clip, VO or bed, is written as explicit `-ac 2` (stereo) regardless of source channel
+layout — verified necessary: a mono VO stem `amix`ed with a stereo bed through `build_audio`'s real
+graph makes ffmpeg negotiate the **entire mix** down to mono. This is not optional per-clip; it applies
+uniformly.
 
 ### 4.2 Where it plugs in
 
 `condition_clip` runs once per raw asset, **before** that asset is referenced as a `render-spec.json`
-stem or bed file — replacing the old undocumented-by-hand "prep" step:
+stem or bed file:
 
-- **Each of the 7 raw VO takes** (`VO#_provoice.mp3`, the ones actually used — take 1 for VO1/VO7 unless
-  the take-2 re-roll is preferred) is conditioned individually, target = `spec.audio.loudness`'s values
-  (§4.4). Conditioning *before* concatenation is what removes the 4.1 LU beat-to-beat spread — each
-  clip lands at the same reference loudness independently, rather than being conformed as part of an
-  already-uneven combined track.
-- **`BedA_provoice_v2.mp3` and `BedB_provoice_v2.mp3` are each conditioned individually**, same targets,
-  same reasoning (consistency between the two halves before they're joined).
+- **Each of the 7 raw VO takes** is conditioned individually — target = §4.4's per-clip targets, *not*
+  the render's delivery targets. Conditioning before concatenation is what removes the 4.1 LU
+  beat-to-beat spread: each clip lands at the same reference loudness independently.
+- **`BedA_provoice_v2.mp3` and `BedB_provoice_v2.mp3` are each conditioned individually**, same
+  per-clip targets, same reasoning.
 - Conditioned VO clips are placed as `Audio.stems[]` entries at their exact new back-to-back offsets
-  (already known exactly from the prior run's measurement — §4.3).
-- Conditioned bed segments are **concatenated directly** (`BedA` then `BedB`, no gap, no crossfade, no
-  hand-placed silence) into one bed file. The hold-out and pause silences are expressed declaratively
-  instead (§4.5) — the concatenated file's own samples are just continuous music.
+  (§4.3, already known exactly).
+- Conditioned bed segments are assembled per §4.5 — concatenation only, no crossfade engineering; the
+  one remaining hand-placed silence is the leading hold-out only (§4.5 explains why that one span stays
+  a simple prepend rather than a declarative window).
 
-This keeps `condition_clip` a general-purpose, single-responsibility function (any source, target
-envelope in, safe clip out) reusable for both VO and bed, and keeps `stitcher`'s own `build_audio()`
-completely unmodified — it keeps doing exactly what it already does, gated exactly as it already gates,
-just fed inputs that no longer force it into a corner.
+`condition_clip` stays general-purpose (any source, any target envelope in, safe clip out); `stitcher`'s
+own `build_audio()` stays completely unmodified.
 
 ### 4.3 VO stem placement (known exactly, no re-measurement needed)
 
-From the prior run's results, using **take 1** for VO1 (Hook) and VO7 (CTA) — the same take used in
-both prior mix previews, kept for consistency with what's already been evaluated. The take-2 re-rolls
-remain available as an alternate; switching to one is a straightforward substitution (a different source
-file into the same `condition_clip` call, same target `at` offset) that doesn't otherwise change this
-design, and is not part of this validation pass.
+Using **take 1** for VO1 (Hook) and VO7 (CTA) — the take used in both prior mix previews. Take-2
+re-rolls remain available as a straightforward substitution, not part of this validation pass.
 
-| Stem | File (post-conditioning) | `at` |
-|---|---|---:|
-| vo1 | `VO1_provoice_conditioned.wav` | 0.000000 |
-| vo2 | `VO2_provoice_conditioned.wav` | 5.200000 |
-| vo3 | `VO3_provoice_conditioned.wav` | 10.800000 |
-| vo4 | `VO4_provoice_conditioned.wav` | 16.240000 |
-| vo5 | `VO5_provoice_conditioned.wav` | 22.560000 |
-| vo6 | `VO6_provoice_conditioned.wav` | 35.840000 |
-| vo7 | `VO7_provoice_conditioned.wav` | 46.480000 |
+| Stem | File (post-conditioning) | `at` | Measured duration |
+|---|---|---:|---:|
+| vo1 | `VO1_provoice_conditioned.wav` | 0.000000 | 5.200000 |
+| vo2 | `VO2_provoice_conditioned.wav` | 5.200000 | 5.600000 |
+| vo3 | `VO3_provoice_conditioned.wav` | 10.800000 | 5.440000 |
+| vo4 | `VO4_provoice_conditioned.wav` | 16.240000 | 6.320000 |
+| vo5 | `VO5_provoice_conditioned.wav` | 22.560000 | 13.280000 |
+| vo6 | `VO6_provoice_conditioned.wav` | 35.840000 | 10.640000 |
+| vo7 | `VO7_provoice_conditioned.wav` | 46.480000 | 5.440000 |
 
-Total runtime: 51.920000s.
+Total runtime: **51.920000s**. `condition_clip`'s `latency=1` fix (§4.1) keeps each clip's duration
+exactly equal to its measured input duration, so this table's durations hold after conditioning too. The
+implementation asserts `at + duration <= runtime` for every stem (VO7: `46.480000 + 5.440000 =
+51.920000`, exactly the runtime — the tightest case, asserted rather than assumed) — `_place_stems`'
+downstream `atrim=0:{runtime}` (`audio.py:476`) would otherwise silently truncate an overrunning clip
+with no error.
 
-### 4.4 Loudness targets
+### 4.4 Loudness targets — two different envelopes, deliberately decoupled
 
-`spec.audio.loudness`:
-```json
-{ "integrated_lufs": -14.0, "true_peak_dbtp": -1.0 }
+**This is the section both review rounds focused on, and it went through two corrections.**
+
+v1 conditioned every clip to the render's own delivery targets (`-14.0 LUFS / -1.0 dBTP`) directly,
+reasoning that `build_audio()`'s own subsequent gain-conform would then need only a trivial residual
+shift. That reasoning was wrong: a mix whose true peak sits *exactly* on the delivery ceiling still
+fails `stitcher`'s linear-mode gate — verified (a mix at `input_i -14.15 / input_tp -0.94` came back
+`"normalization_type": "dynamic"`, i.e. it would still raise `LoudnormNotLinearError`). Zero margin.
+
+v2's fix decoupled the conditioning target from the delivery target, which was the right move, but
+picked `-4.5 dBTP` — 3.5 dB of headroom — asserted rather than derived from what margin is actually
+needed. That over-shot: `-4.5` demands ~11.5 dB of peak reduction from the source's ~21 dB PLR, and
+measured directly, that much reduction cost up to **1.8 LU of per-clip loudness-range loss** — the
+dynamics-collapse this whole spec exists to prevent, just moved into a new step instead of removed.
+
+**v3 derives the margin from the actual linear-mode boundary, not an assumed number.** The empirically
+measured condition for `stitcher`'s two-pass loudnorm to land in linear mode is
+`input_tp + loudnorm's own reported target_offset <= target_TP`; `target_offset` measured in the
+`-0.06` to `-0.3` dB range across test mixes. Add the bed's own true-peak contribution once mixed with
+the (now much louder, individually-conditioned) voice — confirmed against the real render-spec.json's
+`gain_db: -22.0` / `duck_db: -29.0`: `20 · log10(1 + 10^(-22/20)) ≈ 0.66 dB`, a coherent-sum worst case,
+conservative in the safe direction. Minimum required margin ≈ `0.3 + 0.66 + a small noise allowance ≈
+1.2 dB`. `-2.5` gives 1.5 dB of headroom — safely above the derived 1.2 dB minimum — while costing
+substantially less dynamics than `-4.5` did (measured gradient: ~0.6 LU of per-clip LRA loss at `-2.0`,
+~0.9 LU at `-2.5`, ~1.1 LU at `-3.0`, ~1.8 LU at `-4.5` — monotonic in ceiling depth, as expected for a
+peak limiter). `-2.0` alone (1.0 dB headroom) sits *under* the derived 1.2 dB minimum and is rejected on
+that basis, even though it would cost less; `-2.5` is the tightest value that still clears the derived
+minimum with margin.
+
+**Two separate constants, not one:**
+
+```python
+DELIVERY_LUFS = -14.0        # unchanged -- render-spec.json's audio.loudness.integrated_lufs
+DELIVERY_TP_DBTP = -1.0      # relaxed from the original render's -0.15 (Opus's recommendation --
+                              # a tight -0.15 ceiling on a lossy-delivered platform buys negligible
+                              # benefit and consumes limiting headroom better spent on dynamics)
+
+CONDITION_LUFS = -14.0       # per-clip conditioning target -- matches delivery loudness;
+                              # `_place_stems`' non-overlapping stems (§4.3) mean the assembled VO's
+                              # own integrated loudness tracks each clip's, confirmed against the real
+                              # `amix` graph -- and §4.1's loop now actively re-solves gain on retry
+                              # to hold every accepted clip to this target, not just aim for it once.
+CONDITION_TP_DBTP = -2.5     # per-clip conditioning true-peak target -- NOT DELIVERY_TP_DBTP.
+                              # 1.5 dB of headroom below the -1.0 delivery ceiling: above the derived
+                              # ~1.2 dB minimum (target_offset + the bed's 0.66 dB true-peak
+                              # contribution + noise), without the excess of v2's -4.5, which cost
+                              # measurably more dynamics than the margin required.
 ```
 
-`true_peak_dbtp` is relaxed from the original render's −0.15 to **−1.0** (Opus's recommendation): a
-tight −0.15 dBTP ceiling on a lossy-delivered platform buys negligible practical benefit and consumes
-limiting headroom that's better spent preserving dynamics. `condition_clip` is called with these same
-two values for every VO and bed asset (§4.2) — pre-conditioning every input to (approximately) the
-render's own final target means `build_audio()`'s own subsequent gain-conform step, measuring an
-already-on-target mix, needs only a small residual shift, which stays linear trivially. This is *why*
-the fix works, not an incidental detail.
+Expected per-clip LRA loss at `-2.5`: **~0.9 LU** (measured, not assumed) — this is the number §5's
+success criterion is set against, not an arbitrary target chosen before the ceiling was known.
 
-### 4.5 Bed hold-outs via `Bed.windows`, not baked silence
+One residual precision note, not a defect: `_build_bed` formats its own conform gain as
+`{conform_gain:.1f}dB` (`audio.py:320`) — the bed's final level is quantized to 0.1 dB regardless of how
+precisely `condition_clip` conditioned its inputs. This is `stitcher`'s existing behavior, unrelated to
+and unaffected by this spec; noted so a future 0.1 dB discrepancy between a conditioning log and the
+final bed level isn't mistaken for a bug in `precondition.py`.
 
-`stitcher/stitcher/spec.py`'s `Bed` model already supports `windows: list[BedWindow]` and
-`fades: list[Fade]` (`BedWindow = {in, out, mode: "out"|"ducked"|"full", level_db?}`), consumed by
-`envelope.py`'s `_window_level`/`build_breakpoints`/`volume_expr` to shape the bed's gain envelope at
-mix time — confirmed these are unused-but-fully-functional in the current render-spec.json.
+`render-spec.json`'s `audio.loudness` is set to `{DELIVERY_LUFS, DELIVERY_TP_DBTP}` — this is what
+`build_audio()`'s own final two-pass loudnorm targets, unchanged from v1's design and correct. What
+changes is that `condition_clip`'s per-VO-clip and per-bed-segment calls use `CONDITION_LUFS` /
+`CONDITION_TP_DBTP` instead — a *tighter*, independently-verified-safe envelope that gives
+`build_audio()`'s own subsequent processing the margin it needs to land in linear mode at the *looser*
+delivery envelope. The two envelopes are never conflated again anywhere in this design.
+
+### 4.5 Bed assembly: mostly declarative, one deliberate exception
+
+`stitcher/stitcher/spec.py`'s `Bed` model supports `windows: list[BedWindow] = []` and
+`fades: list[Fade] = []` (`spec.py:135-142`; `BedWindow = {in, out, mode: "out"|"ducked"|"full",
+level_db?}`, `spec.py:122-126`; `Fade = {at, kind, ms}`, `spec.py:129-132`), consumed by `envelope.py`'s
+`_window_level`/`build_breakpoints`/`volume_expr` to shape the bed's gain envelope at mix time —
+confirmed unused-but-fully-functional against the live render-spec.json (§0). A `mode: "out"` window
+forces the bed to `SILENCE_DB` (`-100.0`) for its declared span, taking outright precedence over the
+duck/baseline envelope — **except** `_build_bed` subtracts `bed.gain_db` from every breakpoint
+(`audio.py:332-334`), so a `mode:"out"` window actually renders at `-100 - (-22) = -78` dB relative to
+the conformed bed level, not literal digital silence. -78 dB is inaudible under narration in practice,
+but "digital silence" is the wrong mental model for what's actually happening — worth stating plainly
+rather than letting an implementation assume otherwise.
+
+**The re-hook pause is declarative — the fragile part of v1's design:**
 
 ```json
-"bed": {
-  "file": "BedFull_provoice_conditioned.wav",
-  "gain_db": -22.0,
-  "duck_db": -29.0,
-  "duck_attack_ms": 120,
-  "duck_release_ms": 400,
-  "windows": [
-    { "in": 0.0, "out": 5.200000, "mode": "out" },
-    { "in": 19.514331, "out": 20.222948, "mode": "out" }
-  ],
-  "fades": [
-    { "at": 5.200000, "kind": "in", "ms": 300 }
-  ]
-}
+"windows": [
+  { "in": 19.514331, "out": 20.222948, "mode": "out" }
+],
+"fades": [
+  { "at": 19.514331, "kind": "out", "ms": 150 },
+  { "at": 20.222948, "kind": "in", "ms": 150 }
+]
 ```
 
-The hook hold-out and the re-hook pause (both timestamps already known exactly from the prior run's
-`ffmpeg silencedetect` measurement against the new VO4) are declared as `mode: "out"` windows —
-`envelope.py` forces the bed to `SILENCE_DB` for the declared span regardless of what audio is actually
-underneath. `BedFull_provoice_conditioned.wav` itself is nothing more than the two conditioned bed
-segments concatenated back-to-back — no silence-splicing, no crossfade engineering. This directly
-replaces the fragile hand-built splice from the prior run (which required a corrective crossfade fix
-once already, per its results doc) with the schema's own declarative mechanism.
+`envelope.py`'s edge transition is `_STEP = 0.001` (1 ms) with no fade declared — a window with no
+adjacent `fades` entries renders as a ~1 ms mute/unmute on continuous music, i.e. an audible click. The
+150ms fades above are declared on both edges of the pause window; `_fade_attenuation`
+(`envelope.py:95-108`) composes correctly with the window regardless of which side it's on.
+
+**The bed file's content is built so the one actual BedA→BedB splice sits at the pause window's END, not
+its start — and the safety net is the declared fade at that point, not the window's silence** (an
+earlier draft of this section claimed the splice fell at the window's start and was masked by the
+window's silence; that was checked directly and is wrong — corrected here):
+
+- `BedA_conditioned` (its full conditioned length, up to its own natural fade tail — no arbitrary
+  front-trim needed, since anything past the useful content either is genuinely part of its own fade or
+  falls inside the window and gets silenced regardless) occupies file span `[0, 14.314331]`, representing
+  absolute `[5.200000, 19.514331]` once placed.
+- A **0.708617s filler**, immediately contiguous with `BedA_conditioned` in the file — the next slice of
+  `BedA`'s own tail, file span `[14.314331, 15.022948]` — fills the pause window's absolute duration
+  `[19.514331, 20.222948]`. Because this filler is literally the continuation of the same source audio,
+  **there is no discontinuity at the window's start** — the file is one continuous `BedA` waveform
+  through this whole span, and the window's silence (§4.5, `mode:"out"`) covers it regardless of its
+  content, which is why the content is allowed to be arbitrary (reused `BedA` tail) rather than needing
+  to be anything in particular.
+- `BedB_conditioned` begins immediately after the filler — file position 15.022948, **absolute
+  20.222948, exactly the pause window's end**. **This is where the one real splice in the file sits** —
+  `BedA`'s tail audio transitions directly to `BedB`'s own beginning with no crossfade. What makes this
+  safe is not the window (the window has already ended by this point) but the **declared 150ms fade-in
+  at `at: 20.222948`** (§4.5's `fades` entry below) — the envelope is still ramping up from `-100 dB` at
+  the exact instant the splice occurs, so the discontinuity is inaudible under the fade, not because it
+  falls inside silenced territory. A future edit that removes or shortens that fade without noticing
+  this dependency would reintroduce the click — this note exists so that dependency isn't invisible.
+  `BedB_conditioned`'s own onset (the "riser out of silence" the music brief calls for) is therefore
+  what's actually heard emerging as the fade opens, matching the intended creative effect.
+
+**One deliberate exception — the leading hold-out stays a plain prepend, not a window:** the hook
+hold-out `[0, 5.200000]` is realized as **5.2 seconds of genuine silence prepended to the bed file**,
+*not* a `windows` entry. Reasoning: `_build_bed`'s envelope timeline starts at file-position 0 = render
+absolute 0, so whatever audio sits at the very front of the bed file is what a `mode:"out"` window there
+would be silencing. If `BedA_conditioned`'s own content started at file-position 0 instead of a prepend,
+its own fade-in arc (explicitly designed to be heard starting at 5.2s) would only become audible
+partway through its own generation, at whatever content happens to sit at the 5.2s mark — not its
+actual beginning. A plain silence prepend is trivial, was never the fragile part of the prior design
+(the fragile part was the *mid-track* splice requiring hand-computed crossfade timing, which this
+design eliminates), and is the only construction that lets `BedA`'s own composed fade-in be heard
+starting from its own true beginning.
+
+`BedFull_provoice_conditioned.wav` total length: `5.200000 + 14.314331 + 0.708617 +
+len(BedB_conditioned)` — comfortably exceeding the 51.920000s runtime given `BedB_conditioned`'s
+expected ~33s length, satisfying `_build_bed`'s requirement that the source not be shorter than
+`runtime` (a shorter source would loop-repeat rather than simply end, an audible seam this design avoids
+by construction, asserted in the implementation rather than assumed).
 
 ## 5. Validation plan
 
-`build_audio(spec, ws, mode, log_path, missing_audio, manifest=None) -> AudioResult` is a plain module
-function — confirmed it reads only `spec.audio` and `spec.shots[-1].end` (via `runtime_seconds`), never
-`overlays`/`captions`/`styles`/`delivery`, and does **not** call `validate_spec` itself. This means the
-real, gated `stitcher` pipeline can be exercised directly, without a full CLI render and without
-resolving the shot-timing re-cut question.
+`build_audio(spec, ws, mode, log_path, missing_audio, manifest=None) -> AudioResult` (`audio.py:347-354`)
+is a plain module function, confirmed to read only `spec.audio` and `spec.shots[-1].end` (via
+`runtime_seconds`, `spec.py:208-209`), never `overlays`/`captions`/`styles`/`delivery`, and to **not**
+call `validate_spec` itself. The real, gated `stitcher` pipeline can be exercised directly, without a
+full CLI render and without resolving the shot-timing re-cut question.
 
-**Test harness (a script, not a `stitcher` feature — this part is throwaway, unlike `precondition.py`):**
+**Test harness (a script, not a `stitcher` feature — throwaway, unlike `precondition.py`):**
 
-1. Construct a minimal `RenderSpec`: one dummy `Shot` spanning `[0, 51.920000]` (satisfies
-   `validate_spec`'s non-empty/contiguous requirement if ever invoked; irrelevant to `build_audio()`
-   itself either way), the 7 VO stems from §4.3, the bed from §4.5, loudness from §4.4, empty
-   `overlays`/`captions`.
+1. Construct a minimal `RenderSpec`. Required fields, confirmed against the model (`_Base` sets
+   `extra="forbid"`, `spec.py:31`): `spec_version`, `slug`, `canvas`, `safe_zone`, `styles`, `shots`,
+   `captions_style`, `audio`. One dummy `Shot` (fields `n`, `id`, `beat`, `in`, `out`, `source`, `kind`;
+   `populate_by_name=True` allows `start=`/`end=` aliases) spanning `[0, 51.920000]`. `overlays`/
+   `captions` default to `[]` and don't need to be supplied. **The script does not call
+   `validate_spec`** — confirmed it requires more than an audio-focused minimal spec conveniently
+   provides (an exact `1080x1920` canvas, `spec.py:275-279`, and a `captions_style` key that must
+   actually resolve against a populated `styles` dict, `spec.py:373-374`) and there is no audio-only
+   entrypoint into it; satisfying it fully would mean building a spec this validation doesn't otherwise
+   need. Instead, the script directly asserts §4.5's two `windows` don't overlap (a two-line check —
+   the same invariant `spec.py:393-400` enforces, just checked locally rather than through the full
+   validator) before calling `build_audio()`, which doesn't require `validate_spec` to have run either.
 2. Build a real `Workspace` (`root=<scratch dir>, slug="precondition-validation", mode="final"`),
    `ensure_dirs()`.
 3. Run `condition_clip` (real ffmpeg, not mocked) on each of the 9 raw source files (7 VO + 2 bed
-   segments), writing into the workspace's asset directory.
-4. Concatenate the two conditioned bed segments into `BedFull_provoice_conditioned.wav`.
+   segments) with `CONDITION_LUFS`/`CONDITION_TP_DBTP` (§4.4), writing into the workspace's asset
+   directory.
+4. Assemble `BedFull_provoice_conditioned.wav` per §4.5 (silence prepend + `BedA` + filler + `BedB`,
+   concatenation only).
 5. Call `build_audio(spec, ws, mode="final", log_path=..., missing_audio=[])` for real.
 
-**Success criteria (objective, checked before any listening):**
-- No exception raised (specifically: no `LoudnormNotLinearError`).
-- Returned `AudioResult.pass2["normalization_type"] == "linear"`.
-- LRA is preserved, not collapsed: compare `AudioResult.pass2`'s reported `input_lra`/`output_lra`
-  against the raw (pre-conditioning) VO's measured LRA — the fix is confirmed only if the gap is small,
-  not if LRA quietly dropped again by another route.
+**Success criteria — checked in this order, before any listening:**
 
-**Then, and only after the above passes:** produce the actual mixed output file and deliver it for a
-listen — the same closing step as the two prior rounds, now backed by an objective pass first instead of
-skipping straight to "does it sound okay."
+1. No exception raised (specifically: no `LoudnormNotLinearError`).
+2. `AudioResult.loudnorm["normalization_type"] == "linear"` — **note the field is `.loudnorm`, not
+   `.pass2`** (`audio.py:88`).
+3. **Independent re-measurement of the written output file** — `ffmpeg.measure_loudness(result.mix,
+   log_path)` — checking `input_i` within `±0.5` of `DELIVERY_LUFS` and `input_tp <=
+   DELIVERY_TP_DBTP`. This is necessary because in linear mode, `loudnorm`'s own reported
+   `output_i`/`output_tp`/`output_lra` are **arithmetic predictions from the pass-1 measurement, not
+   independent measurements of the file actually written** — verified directly (a case with
+   `input_tp -10.52` and `target_offset 0.21` reported `output_tp -10.31` by simple addition, and
+   `output_lra` came back byte-identical to `input_lra`, and separately, a file whose reported `output_tp`
+   was `-5.08` measured `-4.5 dBTP` on disk — a 0.58 dB gap between the report and reality). Asserting
+   only on `loudnorm`'s own reported numbers proves nothing about the file on disk; a fresh, independent
+   measurement does.
+4. **Per-clip dynamics preservation** — for each of the 9 `ConditionResult`s from step 3, compare
+   `input_measurement['input_lra']` to `output_measurement['input_lra']`; expect a delta of **no more
+   than ~1.0 LU** (measured expectation at `CONDITION_TP_DBTP = -2.5` is ~0.9 LU — §4.4 — this threshold
+   is set from that measurement, not chosen independently of it). This — not the assembled program's
+   overall LRA — is the correct test that the limiter didn't collapse dynamics. The assembled mix's own
+   LRA is expected to *shrink* somewhat as a side effect of removing the 4.1 LU beat-to-beat spread
+   (§4.2) — that's the fix working as intended, not a dynamics loss, so it is reported for the record
+   but not gated on. State the source LRA baseline this compares against: 6.10 LU, measured on the raw
+   (pre-any-processing) assembled VO in the prior run.
+5. **Per-clip loudness accuracy** — for each of the 9 `ConditionResult`s, confirm
+   `output_measurement['input_i']` is within `LUFS_TOLERANCE` (0.3 LU) of `CONDITION_LUFS`. This is the
+   check that directly catches the v2 defect (a retry that satisfied the peak target while silently
+   drifting loudness) were it to recur — §4.1's algorithm is designed to prevent it, and this criterion
+   is what proves the design held on the real files, not just in the abstract.
+
+**Then, and only after all four pass:** produce the mixed output and deliver it for a listen — the same
+closing step as the two prior rounds, now backed by an objective, independently-measured pass first.
 
 ## 6. Error handling
 
-- `condition_clip` raising `PreconditionError` on a source that can't be brought into envelope even with
-  limiting (e.g., true garbage input) is treated as a hard stop, not something to silently work around —
-  matching `stitcher`'s existing `LoudnormNotLinearError`/`SilentVoiceError` philosophy of failing loudly
-  on a genuine audio-quality problem rather than shipping a degraded result.
+- `condition_clip` raising `PreconditionError` after exhausting `MAX_ATTEMPTS` (§4.1 step 4) is a hard
+  stop, not something to silently work around — matching `stitcher`'s existing
+  `LoudnormNotLinearError`/`SilentVoiceError` philosophy: fail loudly on a genuine audio-quality problem
+  rather than ship a degraded result.
 - `build_audio()`'s own `LoudnormNotLinearError` remains untouched and still fires if, despite
-  preconditioning, the final assembled mix still can't reach linear mode — this is the correct backstop,
-  not a bug to route around a second time.
+  preconditioning, the assembled mix still can't reach linear mode — the correct backstop, not a bug to
+  route around a second time. If it fires here, that itself is a finding: it would mean
+  `CONDITION_TP_DBTP`'s 1.5 dB headroom (§4.4) was insufficient for this specific mix (e.g. the bed's
+  real true-peak contribution exceeded the 0.66 dB coherent-sum estimate), and the constant needs
+  revisiting, not the gate.
 
 ## 7. Testing
 
-`stitcher/stitcher/precondition.py` gets its own test file, `stitcher/tests/test_precondition.py`,
-following the existing `test_audio.py` pattern (mocked `ffmpeg.run`/`probe`/`measure_loudness`, no real
-binaries invoked in unit tests):
+`stitcher/tests/test_precondition.py`, following the existing `test_audio.py` pattern (`MINIMAL` spec
+fixture at `tests/test_spec.py:16`, `wire()` monkeypatching `ffmpeg.run`/`probe`/`measure_loudness` at
+`tests/test_audio.py:51-74` — confirmed as the real, existing precedent):
 
-- Gain-only path: a source whose projected peak already fits the target — confirms no `alimiter` stage
-  is applied and the exact `volume=` gain matches the computed value.
-- Limiting-required path: a high-PLR source (mirroring the real ~21 dB PLR measurement) — confirms
-  `alimiter` is applied with the correct computed `limit=`, `level=0` is present, and the subsequent
-  `volume=` stage still runs.
-- Post-condition verification failure: mock the re-measurement to still exceed the target — confirms
-  `PreconditionError` is raised rather than the out-of-envelope file being returned silently.
-- `SAFETY_MARGIN_DB` is honored: a source landing exactly at the ceiling before margin is still routed
-  through the limiting path, not the gain-only path.
+- **Clean path**: a source whose first attempt already satisfies both `tp_ok` and `lufs_ok` — confirms
+  the `volume=` gain matches the computed value, exactly one `ffmpeg.run` call happens, and `limited`/
+  `peak_reduction_db` reflect no meaningful limiting.
+- **Peak-retry path**: mock the first re-measurement to fail `tp_ok` (true peak over target) and the
+  second to satisfy both — confirms a second `ffmpeg.run` call happens with a tightened `ceiling_dbtp`
+  and *unchanged* `applied_gain`, and that `volume=` precedes `alimiter=` in the emitted chain (ordering,
+  not just presence — the exact defect the first review round caught in v1).
+- **Loudness-retry path** (the case the second review round's finding required adding): mock the first
+  re-measurement to pass `tp_ok` but fail `lufs_ok` (peak fine, loudness drifted from the limiter) —
+  confirms a second `ffmpeg.run` call happens with `applied_gain` adjusted by the measured drift and
+  `ceiling_dbtp` unchanged, and that the accepted `ConditionResult`'s `output_measurement['input_i']` is
+  within `LUFS_TOLERANCE` of target. This is the test that would have caught the v2 defect.
+- **Exhausted retries**: mock all `MAX_ATTEMPTS` measurements to keep failing one condition or the
+  other — confirms `PreconditionError` is raised, not a silently-out-of-envelope result returned.
+- **Timing alignment**: confirms `latency=1` is present in every constructed command. Framed correctly
+  as an *alignment* property, not duration — verified directly that total frame count is identical with
+  `latency=0` vs. `latency=1` (the flag shifts *where content starts within* the clip, it does not add
+  or remove frames), so a test asserting only "output duration equals input duration" would pass on a
+  build with the flag silently dropped; this test asserts flag presence in the command instead.
+- **Output channel count**: confirms `-ac 2` is present in every constructed command regardless of
+  source channel layout.
 
-The validation script itself (§5) is a one-off, not committed as permanent `stitcher` code — it exists to
-produce this round's proof, using `precondition.py` and `build_audio()` as its only two dependencies
-beyond the standard library.
+The validation script (§5) is throwaway — not committed as permanent `stitcher` code. It depends on
+`precondition.py` and `build_audio()` and nothing else beyond the standard library.
 
 ## 8. Out of scope (explicit)
 
 - The shot-timing re-cut (§3).
-- Any change to `elevenlabs_tooling` (payload construction, `validate`/`send`) — not touched by this
-  spec at all.
-- Extending `precondition.py` to run automatically as part of every `stitcher render` invocation (i.e.
-  wiring it into `cmd_render`/the CLI) — this spec adds the capability and proves it against this real
-  render; wiring it into the standard render path is a natural, small follow-up but is a separate,
-  reviewable change once this one's results are confirmed by ear.
+- Any change to `elevenlabs_tooling` — not touched by this spec at all.
+- Wiring `precondition.py` into `cmd_render`/the standard CLI render path automatically. This spec adds
+  the capability and proves it against this real render; wiring it into the standard path is a natural,
+  small follow-up once this round's results are confirmed by ear, but is a separate, reviewable change.
