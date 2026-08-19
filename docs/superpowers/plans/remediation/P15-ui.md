@@ -2506,6 +2506,26 @@ Add to `static/style.css`:
 - [ ] Run: `test_doctor_no_longer_duplicates_the_skill_list` and
       `test_doctor_says_so_when_there_is_nothing_to_report` pass immediately; the events test
       stays red until P1 lands the `events` table and passes `recent_events` (see §7).
+
+> **Amendment (2026-08-19, found during T21 execution):** P1 had already landed
+> `orphaned_count`/`recent_events` exactly as documented (controller-verified live before
+> dispatch — no drift here, unlike T20). Two ripples found instead:
+>
+> 1. **Cross-package test ripple**, same authorized pattern as T4/T8/T10: three tests in
+> `tests/test_routes_doctor.py` (F-27, predates T21) and one in `tests/test_obs.py` asserted the
+> exact old/buggy `doctor.html` output this task's own brief mandates removing — a bare
+> `Repo root: {value}` with no `<code>` wrapper, the duplicated skill list, and the literal string
+> `"None"` for a skipped orphan sweep (the precise defect this task exists to remove, per the
+> brief's own inline comment). All four updated to assert the corrected, brief-mandated output;
+> no other behavior touched.
+> 2. **A hardcoded test date would have aged out of the 7-day window.** The brief's own event-row
+> fixture stamps `occurred_at` as a fixed literal (`'2026-08-08T06:02:00+00:00'`); Doctor's
+> "last 7 days" filter is evaluated against the real clock at request time, so a fixed calendar
+> date silently falls outside the window as real time passes — confirmed already happening in
+> this environment. Changed to stamp `occurred_at` with `datetime.now(timezone.utc)` at test-run
+> time instead, matching how `test_obs.py`'s own fixtures already timestamp themselves.
+>
+> All landed in commit `f72f879`.
 - [ ] Commit: `feat(ui): render unacknowledged error events on the System page`
 
 ---
