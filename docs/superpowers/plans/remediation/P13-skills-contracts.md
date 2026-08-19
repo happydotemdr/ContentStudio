@@ -242,16 +242,16 @@ things" counts in T5/T7/T9 (these read like prose-list corrections unrelated to 
 counts, but verify each against its own file before assuming so); §6.2's `repurpose` edge, which
 also changed (`[assembly]` → `[ideation, scripting, assembly]`) and is not analyzed above — check
 whether any C-0x finding about `social-repurpose`'s stated inputs (C-04, T6) needs the same
-treatment as T5/T7. (`assembly` also gained `optional_depends_on: [music]` in the same commit —
-omitted from the diff above for brevity; relevant if T2's `KIND_REGISTRY` distinguishes required
-from optional dependencies.)
+treatment as T5/T7. (`assembly`'s new `optional_depends_on: [music]`, shown in the diff above, is
+relevant if T2's `KIND_REGISTRY` distinguishes required from optional dependencies.)
 
 **Two inbound cross-package handoffs, found by this amendment's own reviewer, not by the pre-flight
 pass above (both are the same class of gap: a sibling package's plan recording a note FOR P13
 that nothing in P13's own scope-diff check could ever surface, since the drift is in the sibling's
 file, not P13's):**
 
-1. **From P11 (§6.4, `P11-gate-c.md:1880-1887`, "not a blocker"):** T18 widened
+1. **From P11 (§6.4, `P11-gate-c.md:1880-1887`, "not a blocker"):** P11's own T18 (not this
+   plan's T18 — a different task in a different package) widened
    `BANNED_REGISTER_A_STRINGS`/`BANNED_REGISTER_B_STRINGS` in `scripts/lint_prompt_sheet.py`
    (confirmed live: `lint_prompt_sheet.py:743-747` bans `"empty gym", "empty youth gym", "empty
    pitch", "empty stadium"` and more). Their declared `[I]`-marked source of truth is
