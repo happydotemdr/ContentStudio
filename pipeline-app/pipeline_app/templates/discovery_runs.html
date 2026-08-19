@@ -13,14 +13,36 @@
     {% if errored %}
     <span class="status status-failed">{{ errored | length }} handle error{{ "s" if errored | length != 1 }}</span>
     {% endif %}
-    <ul>
-      {% for hr in entry.handle_results %}
-      <li>handle #{{ hr.handle_id }}: {{ hr.status }} ({{ hr.items_downloaded }} items){% if hr.error_message %} — {{ hr.error_message }}{% endif %}</li>
-      {% endfor %}
-    </ul>
+    {# `handle #7: error` attached the only failure signal on the page to an
+       anonymous database id -- answering "which source broke?" meant opening
+       pipeline.db by hand (E-10). Errored results sort first so the answer is
+       at the top of the run, not buried in it. #}
+    {% set ordered = (entry.handle_results | selectattr('status', 'equalto', 'error') | list)
+                   + (entry.handle_results | rejectattr('status', 'equalto', 'error') | list) %}
+    <details {% if errored %}open{% endif %}>
+      <summary>{{ ordered | length }} handle result{{ "s" if ordered | length != 1 }}</summary>
+      <ul>
+        {% for hr in ordered %}
+        <li>
+          <span class="status status-{{ hr.status }}">{{ hr.status }}</span>
+          {% if hr.platform is defined and hr.platform %}
+          <code>{{ hr.platform }}/{{ hr.handle }}</code>{% if hr.display_name %} ({{ hr.display_name }}){% endif %}
+          {% else %}
+          <code>unresolved handle id {{ hr.handle_id }}</code>
+          <span class="browse-error">— the run row could not be joined to a handle</span>
+          {% endif %}
+          — {{ hr.items_downloaded }} item{{ "s" if hr.items_downloaded != 1 }}
+          {% if hr.error_message %}<div class="gate-finding-blocking">{{ hr.error_message }}</div>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </details>
   </li>
   {% endfor %}
 </ul>
+{% if runs_with_results | length >= 50 %}
+<p class="browse-placeholder">Showing every run on record. Pagination is not implemented yet.</p>
+{% endif %}
 {% else %}
 <p>No discovery runs yet.</p>
 {% endif %}

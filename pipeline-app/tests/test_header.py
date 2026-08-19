@@ -458,3 +458,40 @@ def test_a_run_with_errors_carries_an_error_count_on_its_line(client: TestClient
     _seed_run(client.app, "completed_with_errors", error_message="HTTP 403 from the API")
     page = client.get("/discovery/runs").text
     assert "1 handle error" in page
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="db.list_run_handle_results does not yet join handles (P8); until then "
+           "the template's honest fallback renders 'unresolved handle id N' instead "
+           "of a platform/handle pair. Remove this marker when P8 lands the join.",
+)
+def test_a_failed_handle_is_named_not_numbered(client: TestClient):
+    _seed_run(client.app, "completed_with_errors", error_message="HTTP 403 from the API")
+    page = client.get("/discovery/runs").text
+    assert "youtube/@thinkmedia" in page
+    assert "handle #" not in page, "a bare row id is not an answer to 'which source broke?'"
+    assert "HTTP 403 from the API" in page
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="db.list_run_handle_results does not yet join handles (P8), so neither "
+           "row renders a handle name to order by. Remove this marker when P8 lands "
+           "the join.",
+)
+def test_errored_handle_results_are_listed_before_healthy_ones(client: TestClient):
+    app = client.app
+    run_row_id = _seed_run(app, "completed_with_errors", error_message="HTTP 403 from the API")
+    app.state.conn.execute(
+        "INSERT INTO handles (platform, handle, cohort, added_at) "
+        "VALUES ('bluesky', 'ok.bsky.social', 'creator-ed', '2026-08-01T00:00:00+00:00')"
+    )
+    ok_id = app.state.conn.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
+    app.state.conn.execute(
+        "INSERT INTO discovery_run_handles (run_id, handle_id, status, items_downloaded) "
+        "VALUES (?, ?, 'ok', 4)", (run_row_id, ok_id),
+    )
+    app.state.conn.commit()
+    page = client.get("/discovery/runs").text
+    assert page.index("@thinkmedia") < page.index("ok.bsky.social")
