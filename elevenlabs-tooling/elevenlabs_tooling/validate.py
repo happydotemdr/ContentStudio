@@ -85,7 +85,12 @@ def _check_url(url: str) -> list[Finding]:
 def _check_shape(payload: dict) -> list[Finding]:
     has_text = bool(payload.get("text"))
     has_prompt = payload.get("prompt") is not None
-    has_plan = payload.get("composition_plan") is not None
+    plan = payload.get("composition_plan")
+    has_plan = plan is not None
+
+    if has_plan and not isinstance(plan, dict):
+        return [Finding("E3", f"composition_plan {plan!r} must be a JSON object (dict)")]
+
     music_field_count = sum([has_prompt, has_plan])
 
     if has_text and music_field_count == 0:

@@ -144,12 +144,27 @@ def cmd_send(args: argparse.Namespace) -> int:
     api_key = os.environ.get(API_KEY_ENV_VAR)
     if not api_key:
         print(f"elevenlabs_tooling: {API_KEY_ENV_VAR} is not set", file=sys.stderr)
+        log(
+            "send.aborted",
+            level="warning",
+            url=args.url,
+            payload_path=str(payload_path),
+            reason="no_api_key",
+        )
         return EXIT_NO_API_KEY
 
     if output_path.exists() and not args.force:
         print(
             f"elevenlabs_tooling: {output_path} already exists; pass --force to overwrite",
             file=sys.stderr,
+        )
+        log(
+            "send.aborted",
+            level="warning",
+            url=args.url,
+            payload_path=str(payload_path),
+            output_path=str(output_path),
+            reason="output_exists",
         )
         return EXIT_USAGE
     # Path(".").is_dir() is True, so a bare filename like "out.mp3" (parent
@@ -158,6 +173,14 @@ def cmd_send(args: argparse.Namespace) -> int:
         print(
             f"elevenlabs_tooling: output directory does not exist: {output_path.parent}",
             file=sys.stderr,
+        )
+        log(
+            "send.aborted",
+            level="warning",
+            url=args.url,
+            payload_path=str(payload_path),
+            output_path=str(output_path),
+            reason="output_parent_missing",
         )
         return EXIT_USAGE
 
@@ -172,7 +195,25 @@ def cmd_send(args: argparse.Namespace) -> int:
         timeout=timeout,
     )
 
-    result = client_send(args.url, raw_bytes, api_key, timeout=timeout)
+    try:
+        result = client_send(args.url, raw_bytes, api_key, timeout=timeout)
+    except Exception as exc:
+        # client_send() only ever raises here for something outside
+        # requests.exceptions.RequestException (e.g. a ValueError from
+        # requests' header construction on a malformed API key). str(exc)
+        # can embed request internals -- including the API key itself -- so
+        # only the exception's type name is ever surfaced, never its message.
+        print(
+            f"elevenlabs_tooling: unexpected error sending the payload: {type(exc).__name__}",
+            file=sys.stderr,
+        )
+        log(
+            "send.failed",
+            level="error",
+            url=args.url,
+            error=type(exc).__name__,
+        )
+        return EXIT_SEND_FAILED
 
     if result.ok:
         try:

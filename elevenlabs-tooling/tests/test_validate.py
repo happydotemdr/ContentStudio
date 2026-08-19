@@ -95,6 +95,11 @@ def test_e3_treats_null_composition_plan_as_absent():
     assert not _checks(validate(payload, MUSIC_URL), "E3")
 
 
+def test_e3_rejects_non_dict_composition_plan():
+    findings = validate({"composition_plan": "oops", "model_id": "music_v1"}, MUSIC_URL)
+    assert _checks(findings, "E3")
+
+
 def _valid_tts_payload():
     return {
         "text": "Hello there.",

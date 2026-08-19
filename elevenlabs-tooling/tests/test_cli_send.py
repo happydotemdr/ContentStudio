@@ -99,6 +99,17 @@ def test_send_missing_api_key_returns_no_api_key(mock_send, tmp_path, monkeypatc
 
 
 @patch("elevenlabs_tooling.cli.client_send")
+def test_send_missing_api_key_logs_send_aborted(mock_send, tmp_path, monkeypatch):
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    payload_path = _valid_payload_path(tmp_path)
+    output_path = tmp_path / "out.mp3"
+
+    main(["send", "--payload", str(payload_path), "--url", MUSIC_URL, "--output", str(output_path)])
+
+    assert "send.aborted" in _logged_events()
+
+
+@patch("elevenlabs_tooling.cli.client_send")
 def test_send_missing_api_key_reported_after_validation_findings(mock_send, tmp_path, monkeypatch, capsys):
     # A payload with BOTH a validation problem and no API key must report
     # the validation problem (EXIT_FINDINGS), not hide it behind the key
@@ -134,6 +145,18 @@ def test_send_refuses_to_overwrite_existing_output_without_force(mock_send, tmp_
 
 
 @patch("elevenlabs_tooling.cli.client_send")
+def test_send_output_collision_logs_send_aborted(mock_send, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
+    payload_path = _valid_payload_path(tmp_path)
+    output_path = tmp_path / "out.mp3"
+    output_path.write_bytes(b"EXISTING")
+
+    main(["send", "--payload", str(payload_path), "--url", MUSIC_URL, "--output", str(output_path)])
+
+    assert "send.aborted" in _logged_events()
+
+
+@patch("elevenlabs_tooling.cli.client_send")
 def test_send_overwrites_existing_output_with_force(mock_send, tmp_path, monkeypatch):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
     mock_send.return_value = SendResult(
@@ -164,6 +187,17 @@ def test_send_output_parent_directory_missing(mock_send, tmp_path, monkeypatch):
 
     assert code == EXIT_USAGE
     mock_send.assert_not_called()
+
+
+@patch("elevenlabs_tooling.cli.client_send")
+def test_send_output_parent_missing_logs_send_aborted(mock_send, tmp_path, monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
+    payload_path = _valid_payload_path(tmp_path)
+    output_path = tmp_path / "does_not_exist" / "out.mp3"
+
+    main(["send", "--payload", str(payload_path), "--url", MUSIC_URL, "--output", str(output_path)])
+
+    assert "send.aborted" in _logged_events()
 
 
 @patch("elevenlabs_tooling.cli.client_send")
@@ -328,3 +362,55 @@ def test_send_cli_timeout_overrides_env_timeout(mock_send, tmp_path, monkeypatch
 
     _, kwargs = mock_send.call_args
     assert kwargs["timeout"] == 12.5
+
+
+@patch("elevenlabs_tooling.cli.client_send")
+def test_send_forwards_exact_payload_bytes_not_reserialized(mock_send, tmp_path, monkeypatch):
+    # Deliberately non-canonical JSON formatting -- 4-space indentation and a
+    # trailing newline -- that json.dumps(payload).encode() (the shape a
+    # re-serializing bug would produce) would normalize away. If cmd_send
+    # ever re-derives the bytes from the parsed dict instead of forwarding
+    # the literal file contents, this comparison catches it.
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
+    mock_send.return_value = SendResult(
+        ok=True, status_code=200, content_type="audio/mpeg", body=b"X", error_message=None
+    )
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(
+        '{\n    "prompt": "a calm ambient bed",\n    "model_id": "music_v1"\n}\n',
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "out.mp3"
+
+    main(["send", "--payload", str(payload_path), "--url", MUSIC_URL, "--output", str(output_path)])
+
+    args, kwargs = mock_send.call_args
+    assert args[1] == payload_path.read_bytes()
+    assert args[2] == "fake-key"
+
+
+@patch("elevenlabs_tooling.cli.client_send")
+def test_send_unexpected_exception_returns_send_failed_without_leaking_message(
+    mock_send, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "fake-key")
+    mock_send.side_effect = ValueError("Invalid header value b'sk_SECRETKEY123\\n'")
+    payload_path = _valid_payload_path(tmp_path)
+    output_path = tmp_path / "out.mp3"
+
+    code = main([
+        "send", "--payload", str(payload_path), "--url", MUSIC_URL, "--output", str(output_path),
+    ])
+
+    assert code == EXIT_SEND_FAILED
+    assert not output_path.exists()
+
+    captured = capsys.readouterr()
+    assert "sk_SECRETKEY123" not in captured.err
+    assert "sk_SECRETKEY123" not in captured.out
+
+    events = _logged_events()
+    assert "send.failed" in events
+    log_files = list(log_module.LOG_DIR.glob("tooling-*.log"))
+    log_text = log_files[0].read_text(encoding="utf-8")
+    assert "sk_SECRETKEY123" not in log_text

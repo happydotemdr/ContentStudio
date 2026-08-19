@@ -51,7 +51,7 @@ allow it. Its parent directory must already exist.
 0  EXIT_PASS               validation clean / send succeeded
 1  EXIT_FINDINGS           blocking (E#) errors found -- the payload is the problem
 2  EXIT_USAGE              argparse only, or a CLI-level problem (e.g. --output exists without --force)
-3  EXIT_UNREADABLE_INPUT   payload file or --url missing/unreadable
+3  EXIT_UNREADABLE_INPUT   payload file missing or unreadable
 4  EXIT_UNPARSEABLE        payload file is not valid JSON, or is valid JSON that isn't an object
 5  EXIT_SEND_FAILED        validation passed but the live API call failed, or returned an unexpected content-type
 6  EXIT_NO_API_KEY         ELEVENLABS_API_KEY not set (checked only after validation passes)
