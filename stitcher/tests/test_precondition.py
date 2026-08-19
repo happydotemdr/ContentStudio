@@ -76,6 +76,30 @@ def test_a_clip_that_needed_no_limiting_reports_limited_false(tmp_path, monkeypa
     assert result.limited is False
 
 
+def test_a_high_true_peak_triggers_a_tightened_ceiling_retry_with_gain_unchanged(tmp_path, monkeypatch):
+    calls = wire(monkeypatch, [
+        {"input_i": -20.0, "input_tp": -6.0, "input_lra": 5.0},   # source
+        {"input_i": -14.0, "input_tp": -2.0, "input_lra": 4.0},   # attempt 1: tp fails (-2.0 > -2.4)
+        {"input_i": -14.0, "input_tp": -3.2, "input_lra": 4.0},   # attempt 2: tp passes at tightened ceiling
+    ])
+    source = tmp_path / "raw.wav"
+    source.write_bytes(b"x")
+    out_path = tmp_path / "out.wav"
+    log_path = tmp_path / "log.txt"
+
+    result = pc.condition_clip(source, -14.0, -2.5, out_path, log_path)
+
+    assert len(calls) == 2
+    first, second = calls
+    assert "volume=6.00dB" in " ".join(first)
+    assert "volume=6.00dB" in " ".join(second)  # gain untouched by a peak-only retry
+    expected_ceiling = -2.5 - ((-2.0 - -2.5) + 0.2)
+    expected_limit = 10 ** (expected_ceiling / 20)
+    assert f"alimiter=limit={expected_limit:.6f}" in " ".join(second)
+    assert result.output_measurement["input_tp"] == -3.2
+    assert out_path.is_file()
+
+
 @pytest.mark.e2e
 def test_condition_clip_against_real_ffmpeg(tmp_path):
     """Every other test in this file mocks ffmpeg.run/measure_loudness, so
