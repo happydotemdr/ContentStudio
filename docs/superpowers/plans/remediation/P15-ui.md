@@ -2891,3 +2891,109 @@ not this package's to make.
 | Symbol | Consumer |
 |---|---|
 | `browse_service.sanitize_html(html: str) -> str` | **P3** at `routes/stages.py:78,94,102` and **P5** at `routes/inspector.py:45` — the remaining `| safe` producer sites (D-47). The filter is stdlib-only (`html.parser`), so adopting it adds no dependency and needs no `requirements.txt` change. |
+
+---
+
+## 8. Outcome (recorded 2026-08-19, PR #54 merged as `8893789`)
+
+All 22 tasks (T0–T22) landed as written, plus 16 inline plan-amendment commits recording real
+discrepancies found during execution, 3+3 Important findings from two mid-wave Opus checkpoints,
+and 2 Important + 5 Minor findings from the mandatory final whole-branch review — all fixed and
+re-reviewed clean. No task hit the fix-loop breaker; no finding was parked unresolved.
+
+**Pre-flight paid off exactly as intended.** 13 of P15's 16 findings needed zero adjustment from
+the plan as written. The three flagged at pre-flight (T9, T10, T22 — "Consumes P3") were indeed
+already unblocked, confirming the wave-table sequencing call. The session's own pre-flight check
+(this plan's §0) is the reason none of that surfaced as a mid-execution surprise.
+
+**The recurring-bug-class held again, at unusually high volume.** 16 amendment commits is more
+than any prior package in this programme, but every one is a proportionate, minimal fix to a
+concrete, falsifiable discrepancy — never a scope expansion. Breakdown:
+
+- **8 instances of a bug in the plan's own shown code or test fixtures**, caught before or during
+  the task that would have shipped it: T1/T2's comment-vs-test substring collision; T5's
+  `app-shell-full` markup conflicting with its own paired test; T9's placeholder gate name
+  (`gate-x`) not matching the live `GATE_REGISTRY`, plus a hardcoded `finding.kind == "skipped"`
+  that would have regressed two P3 tests; T12's `_seed_run` helper colliding with the `handles`
+  `UNIQUE` constraint when called twice; T16's forward reference to a function T17 hadn't written
+  yet; T19's sanitizer text-suppression gap; T20's empty-`stages` fixture making its own second
+  test unsatisfiable; T22's empty-state markup making its own first test unsatisfiable against
+  its own fixture.
+- **2 instances of a sibling package's contract differing from what the plan assumed**, because
+  the package landed after the plan was written: T10's `approval_block_reasons` was never
+  actually produced by P3 (§7's table corrected in place, marked historical) — resolved with a
+  strictly better in-template derivation from `gate_view`. T20's `kickoff_stage_id` was never the
+  key P5 shipped; P5 passes `kickoff_template_applies` instead — not a blocker at all, just a
+  naming correction.
+- **5 instances of an authorized cross-package test ripple**, into already-merged sibling
+  packages' test files (never production code), each verified to track the NEW correct behavior
+  rather than being weakened: T4/T8/T10/T21/T22 into `tests/test_routes_browse.py`,
+  `tests/test_routes_stages.py`, `tests/test_routes_doctor.py`, `tests/test_obs.py`. The most
+  consequential one (checkpoint B) caught T10's `error-banner`→`approval-error` class rename
+  silently hollowing out three P3 tests — they kept "passing" only because `base.html`'s
+  unconditional `id="htmx-error-banner"` also matched the old substring assertion.
+- **1 genuinely blocked finding, carried forward honestly.** E-10 (T13) cannot fully close until
+  P8 lands a `handles` join that doesn't exist yet. Both of T13's new tests are marked
+  `xfail(strict=True)` rather than left checked-in red (which would have violated this
+  programme's own "both suites fully green" definition of done) — `strict=True` means P8 landing
+  the join without removing the markers fails the suite immediately. The handoff is filed in
+  `P8-engine-cron.md`'s own "Open handoffs → P15" section, not just a commit message (added at
+  Opus checkpoint B, after the first attempt at this handoff via a commit-message-only mention
+  was found to be undiscoverable there).
+
+**Two mid-wave Opus checkpoints** (after T7, after T15 — requested by the human partner
+mid-session) each reviewed scope control, documentation accuracy, and cross-task page coherence
+for their block, and each found 3 Important findings, all fixed same-session:
+- Checkpoint A (T0–T7): the T1/T2 comment collision (already worked around in code, needed
+  documenting), the same collision's test assertion being over-broad, and T4's nav-tab rename
+  leaving five page `<h1>`s contradicting their own tabs (closed as new task T4a).
+- Checkpoint B (T8–T15): the `gate.name` fallback dropped from `gate_strip.html` (a nameless
+  gate could render the literal Python string `None` into operator-facing copy), the
+  `error-banner`→`approval-error` rename hollowing out three P3 tests (above), and the
+  undiscoverable P8 handoff (above).
+
+**Mandatory final whole-branch review** (Opus, range `2bc6ede..8afcdd2`, 46 commits) found 0
+Critical, 2 Important, 5 Minor — both Important findings security-relevant:
+
+1. **`_safe_url` in `browse_service.py` was a scheme DENYLIST**, bypassable by a leading C0
+   control character before `javascript:` (`\x01javascript:alert(1)` survived; confirmed
+   end-to-end through `render_md_file`). Replaced with the ALLOWLIST pattern already proven at
+   `routes/stages.py`'s `_is_safe_url` (P3's own sanitizer). Re-review ran 31 direct vectors plus
+   16 end-to-end `sanitize_html` vectors against the fix and found no bypass.
+2. **`/inspector` (P5's route, already merged, no active owner) had no sanitizer at all**,
+   despite `browse_service.sanitize_html` being published by this very package specifically for
+   that call site. Wired in with an end-to-end regression test. Cross-package production-code
+   fix, not just a test ripple — justified the same way as this session's test ripples (P5 is
+   merged and inactive) but flagged here explicitly since it touches a route file, not a test.
+
+Both fixed in one consolidated dispatch, independently re-reviewed (Opus, adversarial) and
+confirmed ADDRESSED with zero new breakage — the re-reviewer traced the new allowlist logic
+side-by-side against `routes/stages.py`'s proven version rather than trusting the fix report's
+claim of equivalence. Five Minor findings (dead CSS: a no-op `app-shell-full` rule and orphaned
+`.status-pass`/`.status-fail`; a duplicate `.status-failed` rule; `gate_strip.html` missing an
+explainer for the `malformed` gate state P3 can actually emit; one weakened test assertion) were
+folded into the same fix wave rather than deferred.
+
+**Security depth on D-47, worth calling out on its own.** The sanitizer (T19) is the most
+adversarially-reviewed code in this package: 2 bugs in the plan's own shown `_Sanitizer` code
+(inner text of a disallowed tag not suppressed; that fix's own skip-counter permanently locking
+on a disallowed HTML5 void element like `<meta>`, silently dropping all later content) were found
+and fixed during T19's own execution. The task reviewer's adversarial security pass then found
+and the fix loop closed two genuine Critical-severity bypasses: self-closing syntax
+(`<script/>...</script>`) defeating suppression via `HTMLParser`'s synthetic
+`handle_startendtag`, and — found by the RE-review of that fix — a flat skip-counter letting
+mismatched nested disallowed tags end suppression early, replaced with a proper tag-name stack.
+The final whole-branch review then found the two Important findings above. Six real security
+bugs found and fixed across one task's lifecycle plus the final review, every one independently
+reproduced against the actual exploit payload before and after the fix, not just asserted by a
+fix report. Left as documented, programme-level tech debt (not blocking, not P15's alone to
+fix): `browse_service._Sanitizer` and `routes/stages._HTMLSanitizer` are now two independently-
+evolved sanitizer implementations with different tag allowlists and, until this review, opposite
+URL-scheme policies — worth consolidating toward `browse_service`'s (the more thoroughly
+adversarially-tested one) in a future pass.
+
+**CI:** both triggered runs (branch push + PR event, six check rows total) green — `app-suite`,
+`root-suite`, `no-live-credentials` — on the PR's final commit and the merge commit `8893789`.
+Both suites re-verified green after the final-review fix: app suite 1954 passed/4 skipped/2
+xfailed (the 2 xfail are T13's documented, deliberate P8 block, not a regression), root suite 445
+passed/1 skipped (P15 touches no root-suite files).
