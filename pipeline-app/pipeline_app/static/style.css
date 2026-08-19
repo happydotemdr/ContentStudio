@@ -232,3 +232,14 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .override-record {
   color: var(--accent-amber); font-size: 0.9rem; margin: 0 0 1rem;
 }
+
+.turn-complete {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--accent-green);
+  border-radius: 0.25rem;
+  background: color-mix(in srgb, var(--accent-green) 12%, transparent);
+  color: var(--accent-green);
+  font-size: 0.9rem;
+}
+.turn-status { color: var(--accent-amber); font-family: var(--font-mono); }

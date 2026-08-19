@@ -59,6 +59,15 @@
     <p><strong>{{ message.type }}:</strong> {{ message.text }}</p>
     {% endfor %}
   </div>
+  {# Server-rendered and hidden rather than built in JS, so the affordance is
+     assertable from a template test. Before this, a completed turn removed the
+     "running…" line and left Output and Gates showing the PREVIOUS state with
+     no cue to reload -- the natural read being that the turn produced nothing
+     (E-01). #}
+  <p id="turn-complete" class="turn-complete" hidden>
+    Turn complete. Output and Gates below are from before this turn.
+    <button type="button" id="turn-complete-reload">Reload to see the new output</button>
+  </p>
   <!-- Not a plain htmx hx-post/hx-swap form: htmx's default swap fires once,
        after the whole response completes, and would inject raw `data: {...}`
        SSE lines as text rather than streaming them live. Task 14 adds a small

@@ -80,12 +80,14 @@
                   }
                 }
               } else if (event.type === "result" && event.result) {
-                // The final assistant text block above is byte-identical to
-                // event.result on a real recorded turn -- rendering it again
-                // here would show the turn's final answer twice. Only clear
-                // the "running…" status; the assistant-text branch already
-                // rendered the content.
+                // The final assistant text block is byte-identical to
+                // event.result on a real recorded turn, so re-rendering it
+                // here would show the answer twice. Clear the status line and
+                // reveal the (server-rendered, initially hidden) affordance --
+                // the Output and Gates panels below are now stale.
                 statusLine.remove();
+                const turnComplete = document.getElementById("turn-complete");
+                if (turnComplete) { turnComplete.hidden = false; }
               }
             }
           }
@@ -109,6 +111,11 @@
     // raw `data: {...}` SSE stream as page text.
     document.addEventListener("DOMContentLoaded", () => {
       document.querySelectorAll("form[data-sse-chat]").forEach(attachSSEChat);
+
+      const reloadBtn = document.getElementById("turn-complete-reload");
+      if (reloadBtn) {
+        reloadBtn.addEventListener("click", () => window.location.reload());
+      }
 
       // htmx does not swap on a non-2xx response and does nothing at all on a
       // network error, so before this every failed hx-get left the previously

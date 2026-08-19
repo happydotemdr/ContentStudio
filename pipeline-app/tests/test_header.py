@@ -386,3 +386,29 @@ def test_a_healthy_stage_approve_form_has_no_override_field(client_with_stage):
     )
     page = test_client.get(f"/projects/{project_id}/stages/ideation").text
     assert 'name="override_reason"' not in page
+
+
+def test_stage_page_ships_a_hidden_turn_complete_affordance(client_with_stage):
+    test_client, _app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    page = test_client.get(f"/projects/{project_id}/stages/ideation").text
+    assert 'id="turn-complete"' in page
+    assert "hidden" in page.split('id="turn-complete"')[1][:200]
+    assert "Output and Gates below are from before this turn" in page
+    assert 'id="turn-complete-reload"' in page
+
+
+def test_the_sse_result_branch_reveals_the_affordance(client_with_stage):
+    """The result branch used to do nothing but statusLine.remove(), which
+    reads as 'the turn produced nothing' (E-01)."""
+    test_client, _app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    page = test_client.get(f"/projects/{project_id}/stages/ideation").text
+    assert 'document.getElementById("turn-complete")' in page
+    assert "turnComplete.hidden = false" in page
