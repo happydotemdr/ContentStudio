@@ -6,6 +6,8 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from html import escape as _html_escape
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import markdown
@@ -14,6 +16,100 @@ from pipeline_app import artifacts, grounding_service
 from pipeline_app import db as db_mod
 
 MAX_FILE_BYTES = 5 * 1024 * 1024
+
+# Python-Markdown performs no sanitization: <script>, onerror= and
+# javascript: hrefs all survive it verbatim. The discovery cron writes
+# third-party post bodies straight to disk as markdown and /browse renders
+# exactly those files, so anything executing here has same-origin authority
+# over every unauthenticated mutating route in the app (D-47). Sanitizing at
+# the PRODUCER keeps the templates' `| safe` honest and covers any future
+# render site; sanitizing per-template does not. Allowlist, not blocklist --
+# a blocklist of dangerous tags is a list you will always be behind on.
+_ALLOWED_TAGS = {
+    "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6",
+    "strong", "em", "b", "i", "u", "s", "code", "pre", "blockquote",
+    "ul", "ol", "li", "dl", "dt", "dd",
+    "table", "thead", "tbody", "tr", "th", "td",
+    "a", "img", "span", "div",
+}
+_ALLOWED_ATTRS = {
+    "a": {"href", "title"},
+    "img": {"src", "alt", "title"},
+    "th": {"align"}, "td": {"align"},
+}
+_VOID_TAGS = {"br", "hr", "img"}
+_DANGEROUS_SCHEMES = ("javascript:", "data:", "vbscript:")
+
+
+def _safe_url(value: str | None) -> str | None:
+    """Drop a URL whose scheme can execute. Whitespace inside the scheme is
+    stripped first -- `java\\tscript:alert(1)` is a real browser-accepted form
+    and a naive startswith() misses it."""
+    if value is None:
+        return None
+    candidate = value.strip()
+    lowered = "".join(candidate.lower().split())
+    if lowered.startswith(_DANGEROUS_SCHEMES):
+        return None
+    return candidate
+
+
+class _Sanitizer(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.out: list[str] = []
+        # Depth of nested disallowed elements we're currently inside (e.g.
+        # <script>...</script>). A dropped tag's own inner text must not
+        # leak through handle_data -- the tag ban is pointless if the payload
+        # still shows up as plain text right below it.
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag not in _ALLOWED_TAGS:
+            if tag not in _VOID_TAGS:
+                self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        kept = []
+        for name, value in attrs:
+            # Every on* handler is dropped by the allowlist below anyway; the
+            # allowlist is per-tag so no attribute survives by accident.
+            if name not in _ALLOWED_ATTRS.get(tag, set()):
+                continue
+            if name in ("href", "src"):
+                value = _safe_url(value)
+                if value is None:
+                    continue
+            kept.append(f' {name}="{_html_escape(value or "", quote=True)}"')
+        slash = " /" if tag in _VOID_TAGS else ""
+        self.out.append(f"<{tag}{''.join(kept)}{slash}>")
+
+    def handle_endtag(self, tag):
+        if tag not in _ALLOWED_TAGS:
+            if self._skip_depth:
+                self._skip_depth -= 1
+            return
+        if self._skip_depth:
+            return
+        if tag not in _VOID_TAGS:
+            self.out.append(f"</{tag}>")
+
+    def handle_data(self, data):
+        if self._skip_depth:
+            return
+        self.out.append(_html_escape(data, quote=False))
+
+
+def sanitize_html(html: str) -> str:
+    """Allowlist-filter rendered markdown HTML. Published for P3 (routes/
+    stages.py) and P5 (routes/inspector.py) to adopt at their own producer
+    sites -- the `| safe` filters in stage.html and inspector.html are only
+    honest once every producer feeding them runs through here."""
+    parser = _Sanitizer()
+    parser.feed(html)
+    parser.close()
+    return "".join(parser.out)
 
 
 class PathSafetyError(Exception):
@@ -313,5 +409,5 @@ def render_md_file(path: Path) -> dict:
 
     return {
         "frontmatter": meta,
-        "body_html": markdown.markdown(body, extensions=["tables"]),
+        "body_html": sanitize_html(markdown.markdown(body, extensions=["tables"])),
     }

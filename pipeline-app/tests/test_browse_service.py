@@ -571,3 +571,40 @@ def test_list_children_lists_a_broken_pointer_instead_of_skipping_it(root, tmp_p
     entries = browse_service.list_children(grounding_dir, root, tmp_path)
     assert [e.name for e in entries] == ["pointer.yaml (unresolvable)"]
     assert entries[0].broken_reason is not None
+
+
+@pytest.mark.parametrize(
+    "dangerous,must_not_contain",
+    [
+        ("<script>alert(1)</script>", "<script"),
+        ('<img src=x onerror="alert(1)">', "onerror"),
+        ('<a href="javascript:alert(1)">x</a>', "javascript:"),
+        ('<iframe src="http://evil"></iframe>', "<iframe"),
+        ('<div onclick="alert(1)">x</div>', "onclick"),
+    ],
+)
+def test_sanitize_html_strips_script_vectors(dangerous, must_not_contain):
+    out = browse_service.sanitize_html(dangerous)
+    assert must_not_contain not in out
+
+
+def test_sanitize_html_keeps_ordinary_markdown_output():
+    out = browse_service.sanitize_html(
+        '<h1>Title</h1><p><strong>bold</strong> <a href="https://example.com">link</a></p>'
+        "<table><tr><td>cell</td></tr></table><pre><code>x = 1</code></pre>"
+    )
+    for keep in ("<h1>", "<strong>", 'href="https://example.com"', "<table>", "<code>"):
+        assert keep in out
+
+
+def test_render_md_file_body_html_is_sanitized(tmp_path):
+    path = tmp_path / "post.md"
+    path.write_text(
+        "---\nurl: https://example.com\n---\n\n"
+        "A captured post.\n\n<script>fetch('/discovery/run-now', {method:'POST'})</script>\n",
+        encoding="utf-8",
+    )
+    result = browse_service.render_md_file(path)
+    assert "A captured post." in result["body_html"]
+    assert "<script" not in result["body_html"]
+    assert "discovery/run-now" not in result["body_html"]
