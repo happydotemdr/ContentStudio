@@ -95,7 +95,8 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .status-queued { background: color-mix(in srgb, var(--text-dim) 20%, transparent); color: var(--text-dim); border-color: var(--border); }
 .status-completed { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
 .status-completed_with_errors { background: color-mix(in srgb, var(--accent-amber) 25%, transparent); color: var(--accent-amber); border-color: var(--accent-amber); }
-.status-failed { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
+/* .status-failed is defined once, below, in the gate-states section --
+   it's byte-identical to what used to be duplicated here. */
 .status-ok { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
 
 /* Handle validation states (E-12): pending/validating/validated/invalid each
@@ -147,8 +148,6 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 }
 .approve-blocked-reason { color: var(--accent-amber); font-size: 0.9rem; }
 
-.status-pass { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
-.status-fail { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
 .status-error { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
 
 .gates-panel { margin: 1rem 0; }
@@ -173,7 +172,6 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 
 .app-shell { display: flex; gap: 2rem; align-items: flex-start; padding: 1.5rem 2rem; }
 .app-sidebar { flex: 0 0 260px; }
-.app-shell-full .app-shell { padding-left: 2rem; }
 .app-main { flex: 1 1 auto; min-width: 0; max-width: 1400px; }
 
 .site-header {
