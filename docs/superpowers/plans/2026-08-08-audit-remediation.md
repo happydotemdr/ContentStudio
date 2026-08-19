@@ -144,7 +144,7 @@ Every file in the repo touched by a finding belongs to **exactly one** package. 
 | **P6** | Native adapters: `discovery_youtube.py`, `discovery_youtube_api.py`, `discovery_bluesky.py` | 18 | 4 | S1×5 |
 | **P7** | Bright Data: `brightdata_job.py`, `discovery_{instagram,linkedin,facebook,x}.py` | 14 | 5 | S1×2 |
 | **P8** | Engine & cron: `discovery_engine.py`, `run_discovery_cron.py`, `routes/discovery.py`, scheduling/records/paths, `setup_discovery_task.py` | 31 | 9 | S1×4 |
-| **P9** | Digest & email: `discovery_digest.py`, `email_render.py`, `discovery_notify.py`, `comment_draft.py` | 24 | 4 | S2×7 |
+| **P9** | Digest & email: `discovery_digest.py`, `email_render.py`, `discovery_notify.py`, `comment_draft.py` | 24 (25 as merged — B-113 found and folded in mid-package, see P9's plan §0/§8) | 4 | S2×7 |
 | **P10** | Roster: `manifests/`, `migrate_handles_from_manifest.py`, `backfill_youtube_frontmatter.py` | 11 | 4 | **S0×1** |
 | **P11** | Gate C: `scripts/lint_prompt_sheet.py`, `docs/style-library.md` | 28 | 3 | S1×7 |
 | **P12** | Gate D & tools: `lint_script_language.py`, `resolve_brief_version.py`, `build-cowork-plugin.sh` | 15 | 3 | S1×4 |
@@ -176,13 +176,17 @@ make the landing order free. Three constraints bind it:
 
 | Wave | Packages | Why here |
 |---|---|---|
-| **A** | **P0** → **P1** | P0 gives everything else a CI that proves its tests ran and a guard that stops a test billing Bright Data. P1 gives everything else somewhere to report a failure. Fixing anything before these means fixing it twice. |
-| **B1** | **P2**, then **P10** | The four S0s. P2 holds three (artifact truncation, lost-version race, backfill overwrite); P10 holds the corpus destroyer. Land the data-loss fixes before anything that increases write traffic. |
-| **B2** | **P3 + P11 + P12** (together) | Tripwire cluster. Also the gate correctness core: P11's fail-closed parser, P12's fail-closed beat parser, P3's required-`upstream` and `UpstreamMap`. |
-| **B3** | **P4**, then **P5** | P4 adopts P2's + P3's APIs and fixes the stage graph; P5 swaps its private `stage_id_by_skill` copy for P4's at its T19. |
-| **B4** | **P6**, **P7**, **P8**, **P9** (parallel) | Discovery. P8 consumes seams from P6 (`BlueskyFetchError` reaching the engine) and P7 (`drain_diagnostics`, `preflight`), so land P6 and P7 before P8; P9 is independent. |
-| **B5** | **P15** | Binds to P3's gate context keys and P1's `recent_events`; both must exist first. |
-| **C** | **P13**, then **P14** | Documentation describes the fixed code, or it is fiction again. P14 is last because six packages owe it contract decisions. |
+| **A** ✅ | **P0** → **P1** — both merged | P0 gives everything else a CI that proves its tests ran and a guard that stops a test billing Bright Data. P1 gives everything else somewhere to report a failure. Fixing anything before these means fixing it twice. |
+| **B1** ✅ | **P2**, then **P10** — both merged | The four S0s. P2 holds three (artifact truncation, lost-version race, backfill overwrite); P10 holds the corpus destroyer. Land the data-loss fixes before anything that increases write traffic. |
+| **B2** ✅ | **P3 + P11 + P12** (together) — all three merged | Tripwire cluster. Also the gate correctness core: P11's fail-closed parser, P12's fail-closed beat parser, P3's required-`upstream` and `UpstreamMap`. |
+| **B3** ✅ | **P4**, then **P5** — both merged | P4 adopts P2's + P3's APIs and fixes the stage graph; P5 swaps its private `stage_id_by_skill` copy for P4's at its T19. |
+| **B4** ✅ | **P6**, **P7**, **P8**, **P9** (parallel) — **all four merged** | Discovery. P8 consumes seams from P6 (`BlueskyFetchError` reaching the engine) and P7 (`drain_diagnostics`, `preflight`), so land P6 and P7 before P8; P9 is independent. P9 merged as PR #51 (`62e91d0`), closing 25 findings (24 original + B-113, discovered and folded in mid-package — see P9's plan §0/§8). |
+| **B5** | **P15** — next, not started | Binds to P3's gate context keys and P1's `recent_events`; both already merged (P3 in Wave B2, P1 in Wave A). **Pre-flight check done 2026-08-19** (before Wave B5 kickoff): all 16 of P15's own findings confirmed untouched by any package that has landed since this plan was written; P3's gate/approval/edit contract already supplies every key P15's templates were planned to consume, so T9/T10/T22's "Consumes P3" dependency is already satisfied with no wait — see P15's plan §0. |
+| **C** | **P13**, then **P14** — not started | Documentation describes the fixed code, or it is fiction again. P14 is last because six packages owe it contract decisions. |
+
+**Programme status as of 2026-08-19:** Waves A, B1, B2, B3, B4 fully merged (13 of 16 packages:
+P0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12). Wave B5 (P15) is next — pre-flight checked,
+not yet started. Wave C (P13, then P14) not started.
 
 ### Cross-package contracts (frozen during validation)
 
@@ -236,15 +240,20 @@ Every package plan must contain, in this order:
 The remediation is complete when all of these hold:
 
 1. `docs/superpowers/plans/remediation/` contains 16 plan files; the union of their file lists equals the 114 audited files with no duplicates.
-2. The union of their finding→task maps covers all 328 IDs exactly once.
-3. CI exists and is green on both suites:
+2. The union of their finding→task maps covers all 328 IDs exactly once (plus B-113, discovered and folded into P9 mid-programme — 329 findings closed against the audit's original 328, not a discrepancy: see P9's plan §0/§8).
+3. CI exists and is green on both suites, run from a fresh worktree or the main checkout root (not a specific named worktree — those are created and torn down per package; do not hardcode a worktree path here, it will go stale the moment that worktree is removed):
    ```bash
-   cd "C:/Projects/ContentStudio/.claude/worktrees/pipeline-audit-review-4dd767" && python -m pytest tests/ -q
+   python -m pytest tests/ -q
    ```
    ```bash
-   cd "C:/Projects/ContentStudio/.claude/worktrees/pipeline-audit-review-4dd767/pipeline-app" && python -m pytest -q
+   cd pipeline-app && python -m pytest -q
    ```
 4. Every one of the 4 S0 and 43 S1 findings has a named regression test that was observed failing before its fix.
 5. The six defect-affirming tests are gone or inverted, and `grep -rn "returns_empty_on_fetch_failure\|scoped_permissions_settings_scopes" pipeline-app/tests/` returns only inverted forms.
-6. A scheduled discovery run with an injected adapter fault exits **non-zero** and leaves an `events` row of severity `error`.
-7. Gate C rejects a sheet with a malformed shot heading instead of printing `PASS`.
+6. A scheduled discovery run with an injected adapter fault exits **non-zero** and leaves an `events` row of severity `error`. ✅ Closed by P8 (PR #48), confirmed via its own final review and CI.
+7. Gate C rejects a sheet with a malformed shot heading instead of printing `PASS`. ✅ Closed by P11 (Wave B2, Gate C's owning package), verified end to end.
+
+**Baselines, last verified 2026-08-19 at `62e91d0` (P9 merged):** root suite 445 passed/1 skipped/0
+failed; app suite 1874 passed/4 skipped/0 failed. CI green on all three jobs
+(`app-suite`/`root-suite`/`no-live-credentials`) on P9's merge commit. Re-verify at the start of
+each future session — this line is a snapshot, not a live status.
