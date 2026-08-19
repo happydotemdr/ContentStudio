@@ -252,8 +252,11 @@ The remediation is complete when all of these hold:
 5. The six defect-affirming tests are gone or inverted, and `grep -rn "returns_empty_on_fetch_failure\|scoped_permissions_settings_scopes" pipeline-app/tests/` returns only inverted forms.
 6. A scheduled discovery run with an injected adapter fault exits **non-zero** and leaves an `events` row of severity `error`. ✅ Closed by P8 (PR #48), confirmed via its own final review and CI.
 7. Gate C rejects a sheet with a malformed shot heading instead of printing `PASS`. ✅ Closed by P11 (Wave B2, Gate C's owning package), verified end to end.
+8. The operator-facing UI stops hiding or misrepresenting the signals the rest of this programme made trustworthy underneath: a gate that never ran reads as "never ran," not as a pass; an htmx request failure is visible, not silent; Browse shows what it can't read instead of omitting it; doctor.html stops printing the literal string `"None"`. ✅ Closed by P15 (PR #54), see its plan §8 for the full record, including the D-47 sanitizer's six independently-found-and-fixed security bugs.
 
-**Baselines, last verified 2026-08-19 at `62e91d0` (P9 merged):** root suite 445 passed/1 skipped/0
-failed; app suite 1874 passed/4 skipped/0 failed. CI green on all three jobs
-(`app-suite`/`root-suite`/`no-live-credentials`) on P9's merge commit. Re-verify at the start of
-each future session — this line is a snapshot, not a live status.
+**Baselines, last verified 2026-08-19 at `8893789` (P15 merged):** root suite 445 passed/1
+skipped/0 failed; app suite 1954 passed/4 skipped/2 xfailed/0 failed (the 2 xfail are P15's T13,
+a deliberate, documented block on P8 landing a `handles` join — see P15's plan §8). CI green on
+all three jobs (`app-suite`/`root-suite`/`no-live-credentials`), across both triggered CI runs
+(branch push + PR event), on P15's merge commit. Re-verify at the start of each future session —
+this line is a snapshot, not a live status.
