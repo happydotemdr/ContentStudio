@@ -230,3 +230,96 @@ def test_stage_page_status_strip_states_status_version_and_generated_at(client_w
     assert "artifact v3" in page.text
     assert "2026-08-08T10:00:00+00:00" in page.text
     assert "dash is inside a verbatim 1886 quote" in page.text
+
+
+def _stage_with_artifact(app, project_run_id, frontmatter):
+    stage_dir = app.state.repo_root / "runs" / project_run_id / "01-ideation"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    (stage_dir / "artifact.v1.md").write_text(
+        f"---\n{frontmatter}---\n\n# Artifact body\n", encoding="utf-8"
+    )
+    return stage_dir
+
+
+def test_gate_panel_renders_above_the_artifact_body(client_with_stage):
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    _stage_with_artifact(app, project["run_id"], "gates:\n  - name: gate-x\n    status: pass\n")
+    page = test_client.get(f"/projects/{project_id}/stages/ideation").text
+    assert page.index('class="gates-panel"') < page.index("Artifact body"), \
+        "the gate verdict is the page's most decision-relevant fact and must precede the body"
+
+
+def test_a_gate_that_never_ran_is_rendered_as_never_ran(client_with_stage):
+    """THE E-02/E-03 test. An artifact carrying no result for a registered
+    gate must not present as a clean pass."""
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    _stage_with_artifact(app, project["run_id"], "version: 1\n")   # no `gates:` key at all
+    page = test_client.get(f"/projects/{project_id}/stages/ideation").text
+    assert 'class="gates-panel"' in page, "the panel must not vanish when no gate ran"
+    assert "never ran" in page
+    assert "status-never_ran" in page
+
+
+def test_never_ran_page_differs_from_a_genuinely_clean_pass(client_with_stage):
+    """Distinguishability: broken != legitimately-fine."""
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    url = f"/projects/{project_id}/stages/ideation"
+
+    _stage_with_artifact(app, project["run_id"], "version: 1\n")
+    never_ran = test_client.get(url).text
+
+    # Uses the ideation stage's actual registered gate name
+    # (gates.GATE_REGISTRY["ideation"]) rather than the placeholder "gate-x" --
+    # classify_gates unions recorded results with the registry by name, so a
+    # recorded result under any other name still leaves the real registered
+    # gate reading as never_ran, which would make this "clean" page
+    # indistinguishable from the never-ran one and defeat the test's point.
+    stage_dir = app.state.repo_root / "runs" / project["run_id"] / "01-ideation"
+    (stage_dir / "artifact.v2.md").write_text(
+        "---\nversion: 2\ngates:\n  - name: gate_o_ideation_contract\n    status: pass\n---\n\n# Artifact body\n",
+        encoding="utf-8",
+    )
+    clean = test_client.get(url).text
+
+    assert never_ran != clean
+    assert "never ran" in never_ran and "never ran" not in clean
+
+
+def test_an_unrecognised_gate_status_reads_as_unverified_not_as_a_pass(client_with_stage):
+    """P3's fifth state. A typo'd or future status string must not fall
+    through to something that looks benign."""
+    test_client, app = client_with_stage
+    resp = test_client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
+    project = app.state.conn.execute(
+        "SELECT * FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    _stage_with_artifact(app, project["run_id"], "gates:\n  - name: gate-x\n    status: passsed\n")
+    page = test_client.get(f"/projects/{project_id}/stages/ideation").text
+    assert "status-unknown" in page
+    assert "unrecognised result" in page
+    assert "passsed" in page          # status_raw is shown, not swallowed
+    assert "status-passed" not in page

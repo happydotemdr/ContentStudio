@@ -62,28 +62,8 @@
 
 <section class="output-panel">
   <h2>Output</h2>
+  {% include "partials/gate_strip.html" %}
   {% if output_html %}<div class="rendered-markdown">{{ output_html | safe }}</div>{% else %}<p>No output yet.</p>{% endif %}
-  {% if gate_view %}
-  <div class="gates-panel">
-    <h3>Gates</h3>
-    {% for gate in gate_view %}
-    <div class="gate-result">
-      <span class="status {{ 'status-blocking' if gate.blocking else 'status-ok' }}">{{ gate.name or "unknown gate" }}: {{ gate.state }}{% if gate.status_raw and gate.status_raw != gate.state %} ({{ gate.status_raw }}){% endif %}</span>
-      {% if gate.findings %}
-      <ul class="gate-findings">
-        {% for finding in gate.findings %}
-        {% if finding.kind in non_blocking_kinds %}
-        <li class="gate-finding gate-finding-skipped">[{{ finding.kind }}] {{ finding.check }}{% if finding.beat %} ({{ finding.beat }}){% endif %}: {{ finding.message }}</li>
-        {% else %}
-        <li class="gate-finding gate-finding-blocking">[{{ finding.check }}]{% if finding.beat %} ({{ finding.beat }}){% endif %}: {{ finding.message }}</li>
-        {% endif %}
-        {% endfor %}
-      </ul>
-      {% endif %}
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
   {% if stage_status == "stale" %}
   <p class="stale-override-note">This stage is stale (built on a since-changed upstream input). Approving now will override the staleness cascade instead of regenerating.</p>
   {% endif %}

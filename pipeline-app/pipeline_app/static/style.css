@@ -127,6 +127,18 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .gate-result { margin-bottom: 0.75rem; }
 .gate-findings { margin: 0.35rem 0 0; padding-left: 1.25rem; }
 .gate-finding { font-size: 0.9rem; }
+
+/* One modifier per state in P3's `gate_view.state` enum. never_ran and unknown
+   are deliberately amber-dashed rather than red: they are "we do not know",
+   which must not look like a pass and must not look like a measured failure. */
+.status-passed { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
+.status-failed { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
+.status-errored { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
+.status-never_ran { background: color-mix(in srgb, var(--accent-amber) 25%, transparent); color: var(--accent-amber); border-color: var(--accent-amber); border-style: dashed; }
+.status-unknown { background: color-mix(in srgb, var(--accent-amber) 25%, transparent); color: var(--accent-amber); border-color: var(--accent-amber); border-style: dashed; }
+.gate-blocking-tag { margin-left: 0.5rem; font-family: var(--font-mono); font-size: 0.8rem; color: #ff5f5f; }
+.gate-explainer { font-size: 0.9rem; color: var(--accent-amber); margin: 0.25rem 0 0; }
+.gate-none { font-size: 0.9rem; color: var(--text-dim); }
 .gate-finding-blocking { color: #ff5f5f; }
 .gate-finding-skipped { color: var(--text-dim); font-style: italic; }
 
