@@ -24,15 +24,45 @@ def client(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.parametrize("url", ["/", "/skills", "/doctor", "/inspector"])
-def test_every_page_renders_shared_header(client: TestClient, url: str):
+def test_every_page_renders_the_three_section_top_nav(client: TestClient, url: str):
     resp = client.get(url)
     assert resp.status_code == 200
     assert 'class="wordmark"' in resp.text
     assert 'class="top-nav"' in resp.text
-    assert 'href="/skills"' in resp.text
-    assert 'href="/doctor"' in resp.text
-    assert 'href="/inspector"' in resp.text
     assert 'class="status-dot' in resp.text
+    # Exactly three top-level sections -- Skills/Doctor/Inspector/Browse are
+    # demoted into Library, and the two Discovery entries collapse to one.
+    import re
+    nav = re.search(r'<nav class="top-nav">(.*?)</nav>', resp.text, re.S).group(1)
+    assert re.findall(r'<a href="([^"]+)"', nav) == ["/", "/discovery/handles", "/browse"]
+    assert ">Projects<" in nav and ">Discovery<" in nav and ">Library<" in nav
+    assert "Discovery Runs" not in nav
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("/skills", ["/browse", "/skills", "/doctor", "/inspector"]),
+        ("/doctor", ["/browse", "/skills", "/doctor", "/inspector"]),
+        ("/inspector", ["/browse", "/skills", "/doctor", "/inspector"]),
+    ],
+)
+def test_library_pages_render_the_library_tab_strip(client: TestClient, url, expected):
+    import re
+    resp = client.get(url)
+    strip = re.search(r'<nav class="sub-nav">(.*?)</nav>', resp.text, re.S).group(1)
+    assert re.findall(r'<a href="([^"#]+)', strip) == expected
+
+
+def test_the_current_section_and_tab_are_both_marked_active(client: TestClient):
+    resp = client.get("/doctor")
+    assert '<a href="/browse" class="active">Library</a>' in resp.text
+    assert '<a href="/doctor" class="active">System</a>' in resp.text
+
+
+def test_projects_page_has_no_tab_strip(client: TestClient):
+    resp = client.get("/")
+    assert 'class="sub-nav"' not in resp.text
 
 
 def test_page_shell_wraps_sidebar_and_main(client: TestClient):
@@ -42,29 +72,20 @@ def test_page_shell_wraps_sidebar_and_main(client: TestClient):
     assert 'class="app-main"' in resp.text
 
 
-def test_active_nav_marks_the_current_top_nav_link(client: TestClient):
-    resp = client.get("/")
-    assert '<a href="/" class="active">Projects</a>' in resp.text
-
-    resp = client.get("/skills")
-    assert '<a href="/skills" class="active">Skills</a>' in resp.text
-
-    resp = client.get("/doctor")
-    assert '<a href="/doctor" class="active">Doctor</a>' in resp.text
-
-    resp = client.get("/inspector")
-    assert '<a href="/inspector" class="active">Inspector</a>' in resp.text
-
-
 def test_project_home_and_stage_page_mark_projects_active_with_breadcrumb(client: TestClient):
-    client.post("/projects", data={"slug": "abc", "brand": "generic"})
-    home = client.get("/")
-    import re
-    project_id = re.search(r'/projects/(\d+)', home.text).group(1)
+    resp = client.post(
+        "/projects", data={"slug": "abc", "brand": "generic"}, follow_redirects=False
+    )
+    project_id = int(resp.headers["location"].rsplit("/", 1)[-1])
 
     resp = client.get(f"/projects/{project_id}")
     assert '<a href="/" class="active">Projects</a>' in resp.text
-    assert 'class="breadcrumb"' not in resp.text  # no stage_id on the project-home page
+    # The header always renders a breadcrumb once `project` is set, project-home
+    # included -- but with no stage_id there is no " / <stage>" segment.
+    import re
+    run_id = re.search(r'<a href="/projects/\d+">([^<]+)</a>', resp.text).group(1)
+    assert f'<a href="/projects/{project_id}">{run_id}</a>' in resp.text
+    assert 'class="breadcrumb-current"' not in resp.text  # no stage_id on the project-home page
 
 
 @pytest.fixture
@@ -98,7 +119,8 @@ def test_stage_page_shows_breadcrumb_with_run_id_and_stage_id(client_with_stage)
     stage_resp = test_client.get(f"/projects/{project_id}/stages/ideation")
     assert stage_resp.status_code == 200
     assert 'class="breadcrumb"' in stage_resp.text
-    assert f"{project['run_id']} / ideation" in stage_resp.text
+    assert f'<a href="/projects/{project_id}">{project["run_id"]}</a>' in stage_resp.text
+    assert '<span class="breadcrumb-current">ideation</span>' in stage_resp.text
 
 
 def test_no_template_references_an_external_host():

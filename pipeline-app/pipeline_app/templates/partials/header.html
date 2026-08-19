@@ -1,19 +1,47 @@
+{# The section is derived from the `active_nav` key the routes already pass,
+   so collapsing seven flat peers into three sections needs no route change.
+   Projects is a hierarchy, Discovery is a subsystem with co-equal views, and
+   everything else is a utility drawer -- ranking those four as siblings of
+   the whole production pipeline is what made this "unwieldy" (E-08). #}
+{% set _an = active_nav | default('') %}
+{% set nav_section = {
+     'projects': 'projects',
+     'discovery_handles': 'discovery', 'discovery_runs': 'discovery',
+     'browse': 'library', 'skills': 'library',
+     'doctor': 'library', 'inspector': 'library',
+   }.get(_an, '') %}
 <header class="site-header">
   <a class="wordmark" href="/">ContentStudio</a>
   <nav class="top-nav">
-    <a href="/" class="{{ 'active' if active_nav == 'projects' }}">Projects</a>
-    <a href="/discovery/handles" class="{{ 'active' if active_nav == 'discovery_handles' }}">Discovery</a>
-    <a href="/discovery/runs" class="{{ 'active' if active_nav == 'discovery_runs' }}">Discovery Runs</a>
-    <a href="/skills" class="{{ 'active' if active_nav == 'skills' }}">Skills</a>
-    <a href="/doctor" class="{{ 'active' if active_nav == 'doctor' }}">Doctor</a>
-    <a href="/inspector" class="{{ 'active' if active_nav == 'inspector' }}">Inspector</a>
-    <a href="/browse" class="{{ 'active' if active_nav == 'browse' }}">Browse</a>
+    <a href="/" class="{{ 'active' if nav_section == 'projects' }}">Projects</a>
+    <a href="/discovery/handles" class="{{ 'active' if nav_section == 'discovery' }}">Discovery</a>
+    <a href="/browse" class="{{ 'active' if nav_section == 'library' }}">Library</a>
   </nav>
-  {% if project and stage_id %}
-  <div class="breadcrumb">{{ project.run_id }} / {{ stage_id }}</div>
+  {% if project %}
+  <div class="breadcrumb">
+    <a href="/projects/{{ project.id }}">{{ project.run_id }}</a>
+    {% if stage_id %} / <span class="breadcrumb-current">{{ stage_id }}</span>{% endif %}
+  </div>
   {% endif %}
   <div class="cli-status">
     <span class="status-dot {{ 'online' if cli_available else 'offline' }}"></span>
     {{ "SYSTEM ONLINE" if cli_available else "CLI UNAVAILABLE" }}
   </div>
 </header>
+{% if nav_section in ('discovery', 'library') %}
+<nav class="sub-nav">
+  {% if nav_section == 'discovery' %}
+  <a href="/discovery/handles" class="{{ 'active' if _an == 'discovery_handles' }}">Sources</a>
+  <a href="/discovery/runs" class="{{ 'active' if _an == 'discovery_runs' }}">Runs</a>
+  {# Schedule is a section of the Sources page, not its own route: splitting it
+     out needs routes/discovery.py, which belongs to P8. The anchor is the
+     in-package approximation and the section id it targets is added in T14. #}
+  <a href="/discovery/handles#schedule">Schedule</a>
+  {% else %}
+  <a href="/browse" class="{{ 'active' if _an == 'browse' }}">Files</a>
+  <a href="/skills" class="{{ 'active' if _an == 'skills' }}">Skills</a>
+  <a href="/doctor" class="{{ 'active' if _an == 'doctor' }}">System</a>
+  <a href="/inspector" class="{{ 'active' if _an == 'inspector' }}">Open by path</a>
+  {% endif %}
+</nav>
+{% endif %}

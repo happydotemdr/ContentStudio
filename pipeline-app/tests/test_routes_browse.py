@@ -73,7 +73,8 @@ def test_browse_root_marks_nav_link_active(client):
     test_client, _ = client
     resp = test_client.get("/browse")
     assert resp.status_code == 200
-    assert '<a href="/browse" class="active">Browse</a>' in resp.text
+    assert '<a href="/browse" class="active">Library</a>' in resp.text
+    assert '<a href="/browse" class="active">Files</a>' in resp.text
 
 
 def test_browse_root_cli_status_reflects_app_state_true(tmp_path: Path, monkeypatch):

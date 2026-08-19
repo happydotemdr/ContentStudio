@@ -163,6 +163,20 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .status-dot.online { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
 .status-dot.offline { background: #ff4444; box-shadow: 0 0 6px #ff4444; }
 
+.sub-nav {
+  display: flex;
+  gap: 1.25rem;
+  padding: 0.4rem 1.5rem;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+.sub-nav a { color: var(--text-dim); }
+.sub-nav a:hover { color: var(--text); text-decoration: none; }
+.sub-nav a.active { color: var(--accent-cyan); text-shadow: 0 0 4px var(--accent-cyan); }
+.breadcrumb-current { color: var(--text); }
+
 .browse-shell { display: flex; gap: 1.5rem; align-items: flex-start; }
 .browse-tree { flex: 0 0 22rem; max-height: 80vh; overflow-y: auto; }
 .browse-tree details { margin-left: 0.25rem; }
