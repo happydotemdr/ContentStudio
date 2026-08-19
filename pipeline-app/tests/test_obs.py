@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -261,8 +262,14 @@ def test_the_doctor_page_renders_a_skipped_sweep_distinguishably_from_a_clean_on
     finally:
         skipped.state.conn.close()
 
-    assert "Orphaned turns reconciled at startup: 0" in clean_text
-    assert "Orphaned turns reconciled at startup: None" in skipped_text
+    # T21 fixed the exact confusion this test guards: the rendered page must
+    # say "not checked" for a skipped sweep, never print the literal string
+    # "None" (which would be indistinguishable from a stray Python repr, not
+    # a deliberate status). See test_header.py's
+    # test_a_skipped_orphan_sweep_renders_differently_from_a_clean_one.
+    assert re.search(r"Orphaned turns reconciled at startup:\s*0\s*</li>", clean_text)
+    assert "not checked" in skipped_text
+    assert "None" not in skipped_text
     assert clean_text != skipped_text
 
 

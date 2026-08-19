@@ -6,6 +6,8 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from html import escape as _html_escape
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import markdown
@@ -14,6 +16,177 @@ from pipeline_app import artifacts, grounding_service
 from pipeline_app import db as db_mod
 
 MAX_FILE_BYTES = 5 * 1024 * 1024
+
+# Python-Markdown performs no sanitization: <script>, onerror= and
+# javascript: hrefs all survive it verbatim. The discovery cron writes
+# third-party post bodies straight to disk as markdown and /browse renders
+# exactly those files, so anything executing here has same-origin authority
+# over every unauthenticated mutating route in the app (D-47). Sanitizing at
+# the PRODUCER keeps the templates' `| safe` honest and covers any future
+# render site; sanitizing per-template does not. Allowlist, not blocklist --
+# a blocklist of dangerous tags is a list you will always be behind on.
+_ALLOWED_TAGS = {
+    "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6",
+    "strong", "em", "b", "i", "u", "s", "code", "pre", "blockquote",
+    "ul", "ol", "li", "dl", "dt", "dd",
+    "table", "thead", "tbody", "tr", "th", "td",
+    "a", "img", "span", "div",
+}
+_ALLOWED_ATTRS = {
+    "a": {"href", "title"},
+    "img": {"src", "alt", "title"},
+    "th": {"align"}, "td": {"align"},
+}
+_VOID_TAGS = {"br", "hr", "img"}
+_URL_SAFE_SCHEMES = frozenset({"http", "https", "mailto"})
+# All HTML5 void elements -- these never emit a matching end tag, whether or
+# not this sanitizer allows them. Used only to decide whether a *disallowed*
+# start tag should push onto _skip_stack: doing that for a void-like tag
+# (e.g. a disallowed <meta>) would wait forever for a </meta> that will never
+# arrive, leaving _skip_stack stuck non-empty and silently dropping every
+# character of the document after that point.
+_HTML_VOID_ELEMENTS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+}
+
+
+def _safe_url(value: str | None) -> str | None:
+    """Keep a relative/scheme-relative URL, or one using an allowlisted
+    scheme; drop everything else.
+
+    This mirrors routes/stages.py's `_is_safe_url` (same allowlist, same
+    approach), which replaced an earlier denylist of `javascript:`/`data:`/
+    `vbscript:` here. A denylist checked via `.strip().startswith(...)` only
+    strips whitespace -- a leading C0 control character like `\\x01` is not
+    whitespace, so `\\x01javascript:alert(1)` survived the strip and the
+    startswith() check unfiltered. Extracting the scheme up to the first `:`
+    (before any `/`) and checking it against an allowlist closes that gap:
+    the control character becomes part of the extracted "scheme" string,
+    which then simply fails to match any allowlisted entry, whatever
+    unexpected characters it's prefixed with."""
+    if value is None:
+        return None
+    stripped = "".join(ch for ch in value if ch not in "\t\n\r").strip()
+    colon = stripped.find(":")
+    slash = stripped.find("/")
+    if colon == -1 or (slash != -1 and slash < colon):
+        return stripped  # no scheme before the first '/' -> relative/scheme-relative
+    scheme = stripped[:colon].lower()
+    if scheme in _URL_SAFE_SCHEMES:
+        return stripped
+    return None
+
+
+class _Sanitizer(HTMLParser):
+    # HTMLParser's default CDATA_CONTENT_ELEMENTS = ("script", "style",
+    # "xmp", "iframe", "noembed", "noframes") puts the parser into rawtext
+    # mode inside those tags: everything up to the literal matching close
+    # tag is handed to handle_data as-is, WITHOUT parsing any tags nested in
+    # it. That defeats our own tag-name stack before it can even see the
+    # nested tag: <script><style>x</script>PAYLOAD</style> would have "
+    # <style>x" swallowed as script's raw text (never firing a starttag for
+    # style), so the real </script> looks like a clean, fully-matched close
+    # and suppression ends right before PAYLOAD -- even though a browser
+    # parses <script>/<style> as rawtext identically and PAYLOAD is not
+    # meant to be trusted output either. Disabling rawtext mode here makes
+    # every nested tag -- including a disallowed tag textually embedded
+    # inside another disallowed tag -- a real starttag/endtag event our
+    # stack can track, closing that gap.
+    CDATA_CONTENT_ELEMENTS: tuple[str, ...] = ()
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.out: list[str] = []
+        # Stack of nested disallowed elements we're currently inside (e.g.
+        # <script>...</script>), by tag name. A dropped tag's own inner text
+        # must not leak through handle_data -- the tag ban is pointless if
+        # the payload still shows up as plain text right below it.
+        #
+        # This must be a stack of tag NAMES, not a flat depth counter. A flat
+        # counter can't tell which disallowed tag a given end tag actually
+        # closes: <script><style>x</script>PAYLOAD</style> increments to 2 on
+        # open script+style, then a mismatched </script> (which a real
+        # browser would NOT treat as closing the still-open <style>) merely
+        # decrements a counter to 1 -- still "suppressing", but only by
+        # accident, and a different mismatch shape can just as easily
+        # decrement to 0 too early and leak content. A stack lets an end tag
+        # only end suppression when it actually matches the innermost open
+        # disallowed tag; a non-matching end tag is a no-op, same as a real
+        # HTML5 parser would not close an element via the wrong tag name.
+        self._skip_stack: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag not in _ALLOWED_TAGS:
+            if tag not in _HTML_VOID_ELEMENTS:
+                self._skip_stack.append(tag)
+            return
+        if self._skip_stack:
+            return
+        kept = []
+        for name, value in attrs:
+            # Every on* handler is dropped by the allowlist below anyway; the
+            # allowlist is per-tag so no attribute survives by accident.
+            if name not in _ALLOWED_ATTRS.get(tag, set()):
+                continue
+            if name in ("href", "src"):
+                value = _safe_url(value)
+                if value is None:
+                    continue
+            kept.append(f' {name}="{_html_escape(value or "", quote=True)}"')
+        slash = " /" if tag in _VOID_TAGS else ""
+        self.out.append(f"<{tag}{''.join(kept)}{slash}>")
+
+    def handle_endtag(self, tag):
+        if tag not in _ALLOWED_TAGS:
+            # Only a genuinely matching close tag ends suppression for this
+            # nesting level. A mismatched end tag (it doesn't match the
+            # innermost still-open disallowed tag) is a no-op -- fail safe by
+            # continuing to suppress, since a real browser wouldn't treat it
+            # as closing the still-open element either.
+            if self._skip_stack and self._skip_stack[-1] == tag:
+                self._skip_stack.pop()
+            return
+        if self._skip_stack:
+            return
+        if tag not in _VOID_TAGS:
+            self.out.append(f"</{tag}>")
+
+    def handle_startendtag(self, tag, attrs):
+        # HTMLParser's default handle_startendtag calls handle_starttag
+        # immediately followed by handle_endtag -- treating self-closing
+        # syntax (<script/>) as a complete open+close pair. Real HTML5
+        # parsing does the opposite for any non-void element: a trailing
+        # "/" on <script>, <style>, <iframe>, etc. is ignored and the
+        # element stays open until a real closing tag or EOF. Firing both
+        # handlers here would push then immediately pop _skip_stack, leaving
+        # suppression off for the attacker's payload text that follows --
+        # exactly the bypass this override closes.
+        #
+        # Allowed tags and genuine void elements (<br/>, <img .../>) are
+        # unaffected: those still get the default starttag+endtag pair,
+        # since self-closing syntax on them is normal and harmless.
+        if tag not in _ALLOWED_TAGS and tag not in _HTML_VOID_ELEMENTS:
+            self.handle_starttag(tag, attrs)
+            return
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_data(self, data):
+        if self._skip_stack:
+            return
+        self.out.append(_html_escape(data, quote=False))
+
+
+def sanitize_html(html: str) -> str:
+    """Allowlist-filter rendered markdown HTML. Published for P3 (routes/
+    stages.py) and P5 (routes/inspector.py) to adopt at their own producer
+    sites -- the `| safe` filters in stage.html and inspector.html are only
+    honest once every producer feeding them runs through here."""
+    parser = _Sanitizer()
+    parser.feed(html)
+    parser.close()
+    return "".join(parser.out)
 
 
 class PathSafetyError(Exception):
@@ -107,28 +280,40 @@ def list_pipeline_projects(conn, repo_root: Path) -> list["Entry"]:
     ]
 
 
-def resolve_grounding_pointer(pointer_dir: Path, repo_root: Path) -> Path | None:
-    """Resolve a grounding stage's pointer.yaml to the real rgs-briefs/ file
-    it references. pointer.yaml's content is read from disk, not derived
-    from the request/tree structure, so its target path is a new trust
-    boundary here and gets an explicit containment check against the real
-    rgs-briefs/ folder rather than being trusted outright."""
+def resolve_grounding_pointer_state(
+    pointer_dir: Path, repo_root: Path
+) -> tuple[Path | None, str | None]:
+    """Return (target, error). Exactly one is non-None, or both are None when
+    there is simply no pointer here.
+
+    The old single-return-value form collapsed "no pointer" and "the pointer
+    is broken" into the same bare None, so a hand-edited or truncated
+    pointer.yaml was invisible: list_children skipped the entry and its
+    folder could vanish with it (E-14b). pointer.yaml's content comes off
+    disk rather than from the request, so its target is still a trust
+    boundary and keeps its explicit containment check against the real
+    rgs-briefs/ folder."""
+    if not (pointer_dir / "pointer.yaml").is_file():
+        return None, None
     try:
         target_rel = grounding_service.read_pointer(pointer_dir)
-    except grounding_service.InvalidPointerError:
-        # Malformed or non-mapping pointer.yaml content (hand-edited or
-        # truncated) -- treat the same as "no valid pointer here" rather
-        # than crashing tree expansion for the whole project.
-        return None
+    except grounding_service.InvalidPointerError as exc:
+        return None, f"pointer.yaml could not be parsed: {exc}"
     if not target_rel:
-        return None
+        return None, "pointer.yaml records no brief path."
     rgs_briefs_root = (repo_root / "rgs-briefs").resolve()
     target = (repo_root / target_rel).resolve()
     if not target.is_relative_to(rgs_briefs_root):
-        return None
+        return None, f"pointer.yaml points outside rgs-briefs/: {target_rel}"
     if not target.exists():
-        return None
-    return target
+        return None, f"pointer.yaml points at a file that does not exist: {target_rel}"
+    return target, None
+
+
+def resolve_grounding_pointer(pointer_dir: Path, repo_root: Path) -> Path | None:
+    """Back-compat wrapper: target or None. Callers that need to tell a
+    broken pointer from an absent one must use resolve_grounding_pointer_state."""
+    return resolve_grounding_pointer_state(pointer_dir, repo_root)[0]
 
 
 def resolve_under_output(root: Path, rel_path: str) -> Path:
@@ -161,37 +346,51 @@ class Entry:
     name: str
     rel_path: str
     is_dir: bool
+    unreadable: bool = False
+    broken_reason: str | None = None
 
 
 def _is_md_name(name: str) -> bool:
     return name.lower().endswith(".md")
 
 
-def _has_md_below(folder: Path, repo_root: Path) -> bool:
+def _md_below_state(folder: Path, repo_root: Path) -> str:
+    """One of "content", "empty", "unreadable".
+
+    The tri-state is the whole point. The old boolean (_has_md_below)
+    returned False for both "nothing to show here" and "I could not look",
+    and list_children used it as the include test -- so a permission-denied
+    folder was not rendered as unreadable, it vanished from its parent's
+    listing and the operator saw a shorter tree with no error anywhere
+    (E-14a)."""
     try:
         with os.scandir(folder) as it:
             for entry in it:
                 if entry.is_symlink():
                     continue
                 if entry.is_file() and entry.name == "raw_output.md":
-                    # Must agree with list_children's exclusion below --
-                    # otherwise a stage folder containing only this file
-                    # would appear as an expandable folder that renders
-                    # empty when opened.
+                    # Must agree with list_children's exclusion below.
                     continue
                 if entry.is_file() and _is_md_name(entry.name):
-                    return True
+                    return "content"
                 if entry.is_file() and entry.name == "pointer.yaml":
-                    if resolve_grounding_pointer(folder, repo_root) is not None:
-                        return True
-                if entry.is_dir() and _has_md_below(Path(entry.path), repo_root):
-                    return True
+                    target, error = resolve_grounding_pointer_state(Path(entry.path).parent, repo_root)
+                    if target is not None or error is not None:
+                        # A pointer.yaml that exists -- whether it resolves
+                        # cleanly, points at a missing/out-of-bounds target,
+                        # or fails to parse at all -- is content: the
+                        # operator must be able to click through and read
+                        # why (E-14b). It must not be silently treated as
+                        # empty, which would make the malformed-pointer
+                        # folder itself vanish from its parent's listing.
+                        return "content"
+                if entry.is_dir():
+                    below = _md_below_state(Path(entry.path), repo_root)
+                    if below in ("content", "unreadable"):
+                        return below
     except OSError:
-        # Can't even scan this folder (permission denied, removed mid-scan,
-        # etc.) -- treat it as contributing no visible content to its
-        # ancestor's listing. Defensive default, not a correctness claim.
-        return False
-    return False
+        return "unreadable"
+    return "empty"
 
 
 _ARTIFACT_VERSION_RE = re.compile(r"artifact\.v(\d+)\.md$", re.IGNORECASE)
@@ -215,8 +414,15 @@ def list_children(folder: Path, root: Path, repo_root: Path) -> list["Entry"]:
                 path = Path(entry.path)
                 rel_path = path.relative_to(root).as_posix()
                 if entry.is_dir():
-                    if _has_md_below(path, repo_root):
+                    state = _md_below_state(path, repo_root)
+                    if state == "content":
                         dirs.append(Entry(name=entry.name, rel_path=rel_path, is_dir=True))
+                    elif state == "unreadable":
+                        dirs.append(Entry(
+                            name=entry.name, rel_path=rel_path, is_dir=True,
+                            unreadable=True,
+                            broken_reason="this folder could not be read (permission denied, or it changed during the scan)",
+                        ))
                 elif entry.is_file():
                     if entry.name == "raw_output.md":
                         # Pre-versioning scratch state, already captured in
@@ -226,12 +432,19 @@ def list_children(folder: Path, root: Path, repo_root: Path) -> list["Entry"]:
                     if _is_md_name(entry.name):
                         files.append(Entry(name=entry.name, rel_path=rel_path, is_dir=False))
                     elif entry.name == "pointer.yaml":
-                        target = resolve_grounding_pointer(folder, repo_root)
+                        target, error = resolve_grounding_pointer_state(folder, repo_root)
                         if target is not None:
                             files.append(Entry(
                                 name=f"current-brief.md ({target.name})",
                                 rel_path=rel_path,
                                 is_dir=False,
+                            ))
+                        elif error is not None:
+                            files.append(Entry(
+                                name="pointer.yaml (unresolvable)",
+                                rel_path=rel_path,
+                                is_dir=False,
+                                broken_reason=error,
                             ))
     except OSError as exc:
         # Unlike an empty folder, this must surface as an error rather than
@@ -273,5 +486,5 @@ def render_md_file(path: Path) -> dict:
 
     return {
         "frontmatter": meta,
-        "body_html": markdown.markdown(body, extensions=["tables"]),
+        "body_html": sanitize_html(markdown.markdown(body, extensions=["tables"])),
     }

@@ -153,26 +153,6 @@ def test_list_children_scandir_oserror_raises_folder_read_error(root, tmp_path, 
         browse_service.list_children(root, root, tmp_path)
 
 
-def test_has_md_below_scandir_oserror_returns_false(root, tmp_path, monkeypatch):
-    subfolder = root / "sub"
-    subfolder.mkdir()
-    _touch(subfolder / "note.md")
-
-    real_scandir = os.scandir
-
-    def _raise_for_subfolder(path, *args, **kwargs):
-        if Path(path) == subfolder:
-            raise OSError("permission denied")
-        return real_scandir(path, *args, **kwargs)
-
-    monkeypatch.setattr(os, "scandir", _raise_for_subfolder)
-    assert browse_service._has_md_below(subfolder, tmp_path) is False
-    # And the unreadable subfolder is excluded from its parent's listing
-    # rather than blowing up the whole scan.
-    entries = browse_service.list_children(root, root, tmp_path)
-    assert entries == []
-
-
 def test_render_md_file_returns_frontmatter_and_body(tmp_path):
     f = tmp_path / "fixture.md"
     f.write_text("---\nstage: shorts-ideation\n---\n\n# Title\n\nBody text.\n", encoding="utf-8")
@@ -337,34 +317,38 @@ def test_list_children_sorts_artifact_versions_numerically(root, tmp_path):
     assert [e.name for e in entries] == ["artifact.v1.md", "artifact.v2.md", "artifact.v10.md"]
 
 
-def test_has_md_below_true_when_valid_grounding_pointer_present(root, tmp_path):
+def test_md_below_state_content_when_valid_grounding_pointer_present(root, tmp_path):
     briefs_dir = tmp_path / "rgs-briefs"
     briefs_dir.mkdir()
     (briefs_dir / "topic.md").write_text("# Brief", encoding="utf-8")
     grounding_dir = root / "00-grounding"
     grounding_service.write_pointer(grounding_dir, "rgs-briefs/topic.md", tmp_path)
-    assert browse_service._has_md_below(grounding_dir, tmp_path) is True
+    assert browse_service._md_below_state(grounding_dir, tmp_path) == "content"
 
 
-def test_has_md_below_false_when_only_raw_output_md_present(root, tmp_path):
-    # _has_md_below and list_children must agree on raw_output.md: if
-    # list_children hides it but _has_md_below still counts it as content,
+def test_md_below_state_empty_when_only_raw_output_md_present(root, tmp_path):
+    # _md_below_state and list_children must agree on raw_output.md: if
+    # list_children hides it but _md_below_state still counts it as content,
     # a stage folder containing only raw_output.md would show up as an
     # expandable folder that renders completely empty when opened.
     stage_dir = root / "01-ideation"
     _touch(stage_dir / "raw_output.md")
-    assert browse_service._has_md_below(stage_dir, tmp_path) is False
+    assert browse_service._md_below_state(stage_dir, tmp_path) == "empty"
     entries = browse_service.list_children(root, root, tmp_path)
     assert entries == []
 
 
-def test_has_md_below_false_when_no_pointer_and_no_md(root, tmp_path):
+def test_md_below_state_empty_when_no_pointer_and_no_md(root, tmp_path):
     grounding_dir = root / "00-grounding"
     (grounding_dir / "events").mkdir(parents=True)
-    assert browse_service._has_md_below(grounding_dir, tmp_path) is False
+    assert browse_service._md_below_state(grounding_dir, tmp_path) == "empty"
 
 
-def test_has_md_below_false_when_pointer_target_missing(root, tmp_path):
+def test_md_below_state_counts_a_broken_pointer_as_content(root, tmp_path):
+    # A pointer.yaml with valid syntax but a target file that no longer
+    # exists on disk must still be treated as content, not empty: the
+    # operator needs to be able to click through and read why it's broken
+    # (E-14b), not have it silently vanish from the tree.
     grounding_dir = root / "00-grounding"
     briefs_dir = tmp_path / "rgs-briefs"
     briefs_dir.mkdir()
@@ -372,12 +356,12 @@ def test_has_md_below_false_when_pointer_target_missing(root, tmp_path):
     brief_path.write_text("temporary", encoding="utf-8")
     grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md", tmp_path)
     brief_path.unlink()
-    assert browse_service._has_md_below(grounding_dir, tmp_path) is False
+    assert browse_service._md_below_state(grounding_dir, tmp_path) == "content"
 
 
 def test_list_children_includes_grounding_folder_when_pointer_valid(root, tmp_path):
     # This is the parent-level survival check the Opus review caught as
-    # broken: without the _has_md_below fix, "00-grounding" never appears
+    # broken: without the _md_below_state fix, "00-grounding" never appears
     # here at all, regardless of what list_children itself would do with it.
     briefs_dir = tmp_path / "rgs-briefs"
     briefs_dir.mkdir()
@@ -400,7 +384,7 @@ def test_list_children_synthesizes_current_brief_entry_for_pointer(root, tmp_pat
     assert entries[0].is_dir is False
 
 
-def test_list_children_omits_pointer_entry_when_target_missing(root, tmp_path):
+def test_list_children_lists_pointer_entry_when_target_missing(root, tmp_path):
     grounding_dir = root / "00-grounding"
     briefs_dir = tmp_path / "rgs-briefs"
     briefs_dir.mkdir()
@@ -409,7 +393,8 @@ def test_list_children_omits_pointer_entry_when_target_missing(root, tmp_path):
     grounding_service.write_pointer(grounding_dir, "rgs-briefs/does-not-exist.md", tmp_path)
     brief_path.unlink()
     entries = browse_service.list_children(grounding_dir, root, tmp_path)
-    assert entries == []
+    assert [e.name for e in entries] == ["pointer.yaml (unresolvable)"]
+    assert "does not exist" in entries[0].broken_reason
 
 
 @pytest.fixture
@@ -509,4 +494,192 @@ def test_resolve_grounding_pointer_returns_none_when_pointer_not_a_mapping(tmp_p
     pointer_dir.mkdir(parents=True)
     (pointer_dir / "pointer.yaml").write_text("not-a-mapping", encoding="utf-8")
     assert browse_service.resolve_grounding_pointer(pointer_dir, tmp_path) is None
-    assert browse_service._has_md_below(pointer_dir, tmp_path) is False
+    # A pointer.yaml that exists but cannot be resolved is still content --
+    # it must not vanish from its parent's listing (E-14b).
+    assert browse_service._md_below_state(pointer_dir, tmp_path) == "content"
+
+
+def test_md_below_state_reports_unreadable_not_empty(root, tmp_path, monkeypatch):
+    """FAULT. _has_md_below returned False on OSError, and list_children used
+    it as the include test -- so an unreadable folder was omitted from its
+    parent's listing entirely and the operator saw a shorter tree (E-14a)."""
+    subfolder = root / "sub"
+    subfolder.mkdir()
+    _touch(subfolder / "note.md")
+
+    real_scandir = os.scandir
+
+    def _raise_for_subfolder(path, *args, **kwargs):
+        if Path(path) == subfolder:
+            raise OSError("permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", _raise_for_subfolder)
+    assert browse_service._md_below_state(subfolder, tmp_path) == "unreadable"
+
+
+def test_unreadable_folder_is_distinguishable_from_an_empty_one(root, tmp_path, monkeypatch):
+    """DISTINGUISHABILITY."""
+    empty = root / "genuinely_empty"
+    (empty / "notes").mkdir(parents=True)
+    unreadable = root / "unreadable"
+    unreadable.mkdir()
+
+    real_scandir = os.scandir
+
+    def _raise_for_unreadable(path, *args, **kwargs):
+        if Path(path) == unreadable:
+            raise OSError("permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", _raise_for_unreadable)
+    assert browse_service._md_below_state(empty, tmp_path) == "empty"
+    assert browse_service._md_below_state(unreadable, tmp_path) == "unreadable"
+
+    names = {e.name: e for e in browse_service.list_children(root, root, tmp_path)}
+    assert "genuinely_empty" not in names          # no content: correctly hidden
+    assert "unreadable" in names                   # broken: shown, and marked
+    assert names["unreadable"].unreadable is True
+
+
+def test_pointer_state_reports_malformed_yaml_as_an_error(tmp_path):
+    """FAULT."""
+    pointer_dir = tmp_path / "runs" / "my-run" / "00-grounding"
+    pointer_dir.mkdir(parents=True)
+    (pointer_dir / "pointer.yaml").write_text("brief_path: [unclosed\n", encoding="utf-8")
+    target, error = browse_service.resolve_grounding_pointer_state(pointer_dir, tmp_path)
+    assert target is None
+    assert error is not None and "could not be parsed" in error
+
+
+def test_malformed_pointer_is_distinguishable_from_no_pointer(tmp_path):
+    """DISTINGUISHABILITY. Both used to return a bare None."""
+    no_pointer = tmp_path / "runs" / "a" / "00-grounding"
+    no_pointer.mkdir(parents=True)
+    broken = tmp_path / "runs" / "b" / "00-grounding"
+    broken.mkdir(parents=True)
+    (broken / "pointer.yaml").write_text("brief_path: [unclosed\n", encoding="utf-8")
+
+    assert browse_service.resolve_grounding_pointer_state(no_pointer, tmp_path) == (None, None)
+    assert browse_service.resolve_grounding_pointer_state(broken, tmp_path)[1] is not None
+
+
+def test_list_children_lists_a_broken_pointer_instead_of_skipping_it(root, tmp_path):
+    grounding_dir = root / "00-grounding"
+    grounding_dir.mkdir(parents=True)
+    (grounding_dir / "pointer.yaml").write_text("brief_path: [unclosed\n", encoding="utf-8")
+    entries = browse_service.list_children(grounding_dir, root, tmp_path)
+    assert [e.name for e in entries] == ["pointer.yaml (unresolvable)"]
+    assert entries[0].broken_reason is not None
+
+
+@pytest.mark.parametrize(
+    "dangerous,must_not_contain",
+    [
+        ("<script>alert(1)</script>", "<script"),
+        ('<img src=x onerror="alert(1)">', "onerror"),
+        ('<a href="javascript:alert(1)">x</a>', "javascript:"),
+        ('<iframe src="http://evil"></iframe>', "<iframe"),
+        ('<div onclick="alert(1)">x</div>', "onclick"),
+        # A leading C0 control character (not whitespace, so `.strip()`
+        # alone leaves it in place) used to survive a denylist's
+        # `.startswith("javascript:")` check, since the string no longer
+        # started with the literal banned prefix. The allowlist rewrite
+        # extracts everything up to the first ':' as the "scheme" and
+        # checks THAT against http/https/mailto, so a control-character
+        # prefix just makes the extracted scheme fail to match -- same
+        # outcome as any other disallowed scheme.
+        ('<a href="\x01javascript:alert(1)">x</a>', "javascript:"),
+    ],
+)
+def test_sanitize_html_strips_script_vectors(dangerous, must_not_contain):
+    out = browse_service.sanitize_html(dangerous)
+    assert must_not_contain not in out
+
+
+def test_sanitize_html_control_char_prefixed_javascript_href_is_stripped():
+    out = browse_service.sanitize_html('<a href="\x01javascript:alert(1)">x</a>')
+    assert "href" not in out
+    assert "javascript:" not in out
+
+
+def test_sanitize_html_keeps_ordinary_markdown_output():
+    out = browse_service.sanitize_html(
+        '<h1>Title</h1><p><strong>bold</strong> <a href="https://example.com">link</a></p>'
+        "<table><tr><td>cell</td></tr></table><pre><code>x = 1</code></pre>"
+    )
+    for keep in ("<h1>", "<strong>", 'href="https://example.com"', "<table>", "<code>"):
+        assert keep in out
+
+
+def test_sanitize_html_a_disallowed_void_tag_does_not_swallow_later_content():
+    """A disallowed HTML5 void element (e.g. <meta>) never emits a matching
+    end tag, so incrementing _skip_depth for it (as if it were a container
+    like <script>) leaves _skip_depth stuck above zero forever -- silently
+    dropping every character of the document after that point."""
+    out = browse_service.sanitize_html(
+        "<p>before</p><meta http-equiv=refresh content=0><p>after</p>"
+    )
+    assert "before" in out
+    assert "after" in out
+
+
+def test_sanitize_html_self_closing_disallowed_tag_does_not_bypass_suppression():
+    """HTMLParser fires handle_startendtag (not a starttag/endtag pair spread
+    across two calls) for self-closing syntax like <script/>. The default
+    handle_startendtag implementation calls handle_starttag immediately
+    followed by handle_endtag, which -- for a disallowed non-void tag like
+    script -- pushes _skip_depth to 1 and instantly pops it back to 0. Every
+    real browser ignores a trailing "/" on a non-void element and keeps the
+    script open until a real </script> or EOF, so the attacker's payload text
+    must still be suppressed here."""
+    out = browse_service.sanitize_html(
+        "<script/>fetch('/discovery/run-now', {method:'POST'})</script>"
+    )
+    assert "fetch(" not in out
+    assert "discovery/run-now" not in out
+    assert "<script" not in out
+
+
+def test_sanitize_html_self_closing_disallowed_style_tag_does_not_bypass_suppression():
+    out = browse_service.sanitize_html("<style/>body{background:url(evil)}</style>")
+    assert "background" not in out
+    assert "<style" not in out
+
+
+def test_sanitize_html_self_closing_allowed_void_tag_still_renders():
+    out = browse_service.sanitize_html('<p>before</p><img src="https://example.com/x.png" /><p>after</p>')
+    assert 'img src="https://example.com/x.png" />' in out or "<img" in out
+    assert "before" in out
+    assert "after" in out
+
+
+def test_sanitize_html_mismatched_disallowed_tags_do_not_leak_content():
+    """A flat integer skip-depth counter can't tell WHICH disallowed tag
+    closed. <script><style>x</script>PAYLOAD</style> opens script (depth 1),
+    opens style (depth 2), then a mismatched </script> -- which doesn't
+    actually close the still-open <style> in real browser parsing -- merely
+    decrements the counter back to 1 (nonzero), yet at that count the payload
+    text between the mismatched </script> and the real </style> must still be
+    suppressed, since we're logically still inside the open <style> element.
+    A correct implementation tracks tag identity (a stack), not just depth."""
+    out = browse_service.sanitize_html(
+        "<script><style>x</script>fetch('/discovery/run-now', {method:'POST'})</style>"
+    )
+    assert "fetch(" not in out
+    assert "discovery/run-now" not in out
+    assert "<script" not in out
+    assert "<style" not in out
+
+
+def test_render_md_file_body_html_is_sanitized(tmp_path):
+    path = tmp_path / "post.md"
+    path.write_text(
+        "---\nurl: https://example.com\n---\n\n"
+        "A captured post.\n\n<script>fetch('/discovery/run-now', {method:'POST'})</script>\n",
+        encoding="utf-8",
+    )
+    result = browse_service.render_md_file(path)
+    assert "A captured post." in result["body_html"]
+    assert "<script" not in result["body_html"]
+    assert "discovery/run-now" not in result["body_html"]

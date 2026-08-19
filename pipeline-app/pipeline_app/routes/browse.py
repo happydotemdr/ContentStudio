@@ -6,6 +6,14 @@ from pipeline_app import browse_service
 router = APIRouter()
 
 
+def _entries_context(entries: list) -> dict:
+    # {"entries": []} rendered as literal blank space under the heading, which
+    # reads as a broken page rather than an empty folder (E-14c).
+    if not entries:
+        return {"entries": [], "empty_message": "Nothing to show here yet."}
+    return {"entries": entries}
+
+
 def _folder_context(request: Request, root: str, rel_path: str) -> dict:
     repo_root = request.app.state.repo_root
     try:
@@ -21,7 +29,7 @@ def _folder_context(request: Request, root: str, rel_path: str) -> dict:
             entries = browse_service.list_pipeline_projects(request.app.state.conn, repo_root)
         except browse_service.FolderReadError as exc:
             return {"error": f"Could not read folder: {exc}"}
-        return {"entries": entries}
+        return _entries_context(entries)
 
     try:
         folder = browse_service.resolve_under_output(root_dir, rel_path)
@@ -30,7 +38,7 @@ def _folder_context(request: Request, root: str, rel_path: str) -> dict:
     if not folder.is_dir():
         return {"error": "Folder not found."}
     try:
-        return {"entries": browse_service.list_children(folder, root_dir, repo_root)}
+        return _entries_context(browse_service.list_children(folder, root_dir, repo_root))
     except browse_service.FolderReadError as exc:
         return {"error": f"Could not read folder: {exc}"}
 
@@ -46,9 +54,24 @@ def browse_root(request: Request):
     return request.app.state.templates.TemplateResponse(request, "browse.html", context)
 
 
+def _render_partial_error(request: Request, template: str, message: str, exc: Exception):
+    # htmx does not swap a non-2xx response, so raising here leaves the
+    # operator looking at the PREVIOUS document with no cue that the click
+    # failed (E-13). Render the failure into the swap target instead, at 200,
+    # and name the exception so the message is diagnosable rather than vague.
+    return request.app.state.templates.TemplateResponse(
+        request, template, {"error": f"{message}: {type(exc).__name__}: {exc}"}
+    )
+
+
 @router.get("/browse/tree")
 def browse_tree(request: Request, path: str = "", root: str = "output"):
-    context = _folder_context(request, root, path)
+    try:
+        context = _folder_context(request, root, path)
+    except Exception as exc:  # noqa: BLE001 - deliberate: see _render_partial_error
+        return _render_partial_error(
+            request, "partials/browse_tree_items.html", "Could not list this folder", exc
+        )
     context["root"] = root
     return request.app.state.templates.TemplateResponse(
         request, "partials/browse_tree_items.html", context
@@ -57,35 +80,42 @@ def browse_tree(request: Request, path: str = "", root: str = "output"):
 
 @router.get("/browse/file")
 def browse_file(request: Request, path: str = "", root: str = "output"):
-    repo_root = request.app.state.repo_root
     try:
-        root_dir = browse_service.root_path(repo_root, root)
-    except ValueError:
-        return request.app.state.templates.TemplateResponse(
-            request, "partials/browse_file.html", {"error": "Invalid path."}
-        )
+        repo_root = request.app.state.repo_root
+        try:
+            root_dir = browse_service.root_path(repo_root, root)
+        except ValueError:
+            return request.app.state.templates.TemplateResponse(
+                request, "partials/browse_file.html", {"error": "Invalid path."}
+            )
 
-    try:
-        file_path = browse_service.resolve_under_output(root_dir, path)
-    except browse_service.PathSafetyError:
-        file_path = None
-        context = {"error": "Invalid path."}
+        try:
+            file_path = browse_service.resolve_under_output(root_dir, path)
+        except browse_service.PathSafetyError:
+            file_path = None
+            context = {"error": "Invalid path."}
 
-    if file_path is not None:
-        if not file_path.exists():
-            context = {"error": "Path does not exist."}
-        elif file_path.is_dir():
-            context = {"error": "Path is a directory, not a file."}
-        elif file_path.name == "pointer.yaml":
-            target = browse_service.resolve_grounding_pointer(file_path.parent, repo_root)
-            if target is None:
-                context = {"error": "Grounding pointer could not be resolved."}
+        if file_path is not None:
+            if not file_path.exists():
+                context = {"error": "Path does not exist."}
+            elif file_path.is_dir():
+                context = {"error": "Path is a directory, not a file."}
+            elif file_path.name == "pointer.yaml":
+                target, pointer_error = browse_service.resolve_grounding_pointer_state(
+                    file_path.parent, repo_root
+                )
+                if target is None:
+                    context = {"error": pointer_error or "Grounding pointer could not be resolved."}
+                else:
+                    context = browse_service.render_md_file(target)
+            elif not file_path.name.lower().endswith(".md"):
+                context = {"error": "Not a valid .md file path."}
             else:
-                context = browse_service.render_md_file(target)
-        elif not file_path.name.lower().endswith(".md"):
-            context = {"error": "Not a valid .md file path."}
-        else:
-            context = browse_service.render_md_file(file_path)
+                context = browse_service.render_md_file(file_path)
+    except Exception as exc:  # noqa: BLE001 - deliberate: see _render_partial_error
+        return _render_partial_error(
+            request, "partials/browse_file.html", "Could not render this document", exc
+        )
 
     return request.app.state.templates.TemplateResponse(
         request, "partials/browse_file.html", context

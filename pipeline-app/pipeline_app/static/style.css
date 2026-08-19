@@ -89,6 +89,24 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .status-stale { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
 .status-no_artifact { background: transparent; color: var(--text-dim); border: 1px dashed var(--text-dim); }
 
+/* Discovery run + handle states. Before this every one of them fell through to
+   the unstyled base .status pill, so "did last night's run go cleanly?" -- the
+   entire purpose of the runs page -- was unanswerable at a glance (E-09). */
+.status-queued { background: color-mix(in srgb, var(--text-dim) 20%, transparent); color: var(--text-dim); border-color: var(--border); }
+.status-completed { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
+.status-completed_with_errors { background: color-mix(in srgb, var(--accent-amber) 25%, transparent); color: var(--accent-amber); border-color: var(--accent-amber); }
+/* .status-failed is defined once, below, in the gate-states section --
+   it's byte-identical to what used to be duplicated here. */
+.status-ok { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
+
+/* Handle validation states (E-12): pending/validating/validated/invalid each
+   need their own pill so an operator can tell the difference at a glance,
+   the same as the run-state pills above. */
+.status-pending { background: color-mix(in srgb, var(--text-dim) 20%, transparent); color: var(--text-dim); border-color: var(--border); }
+.status-validating { background: color-mix(in srgb, var(--accent-amber) 25%, transparent); color: var(--accent-amber); border-color: var(--accent-amber); }
+.status-validated { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
+.status-invalid { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
+
 .pipeline-nav { list-style: none; margin: 0; padding: 0; }
 .pipeline-step {
   margin-left: 0.4rem;
@@ -117,22 +135,43 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 
 .error { color: #ff5f5f; }
 .input-panel, .chat-panel, .output-panel { margin-bottom: 1.5rem; }
+.input-card { border: 1px solid var(--border); border-radius: 0.25rem; padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; }
+.input-card-missing { border-color: var(--accent-amber); border-style: dashed; }
+.edit-output { margin-top: 1rem; }
+.edit-output summary { cursor: pointer; font-family: var(--font-mono); color: var(--accent-magenta); }
 .stale-override-note { color: var(--accent-amber); font-size: 0.9rem; }
 
-.status-pass { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
-.status-fail { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
+.approval-error {
+  padding: 0.5rem 0.75rem; margin: 0.75rem 0;
+  border: 1px solid #ff5f5f; border-radius: 0.25rem;
+  background: color-mix(in srgb, #ff5f5f 15%, transparent); color: #ff5f5f;
+}
+.approve-blocked-reason { color: var(--accent-amber); font-size: 0.9rem; }
+
 .status-error { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
 
 .gates-panel { margin: 1rem 0; }
 .gate-result { margin-bottom: 0.75rem; }
 .gate-findings { margin: 0.35rem 0 0; padding-left: 1.25rem; }
 .gate-finding { font-size: 0.9rem; }
+
+/* One modifier per state in P3's `gate_view.state` enum. never_ran and unknown
+   are deliberately amber-dashed rather than red: they are "we do not know",
+   which must not look like a pass and must not look like a measured failure. */
+.status-passed { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); border-color: var(--accent-green); }
+.status-failed { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
+.status-errored { background: color-mix(in srgb, #ff5f5f 25%, transparent); color: #ff5f5f; border-color: #ff5f5f; }
+.status-never_ran { background: color-mix(in srgb, var(--accent-amber) 25%, transparent); color: var(--accent-amber); border-color: var(--accent-amber); border-style: dashed; }
+.status-unknown { background: color-mix(in srgb, var(--accent-amber) 25%, transparent); color: var(--accent-amber); border-color: var(--accent-amber); border-style: dashed; }
+.status-malformed { background: color-mix(in srgb, var(--accent-amber) 25%, transparent); color: var(--accent-amber); border-color: var(--accent-amber); border-style: dashed; }
+.gate-blocking-tag { margin-left: 0.5rem; font-family: var(--font-mono); font-size: 0.8rem; color: #ff5f5f; }
+.gate-explainer { font-size: 0.9rem; color: var(--accent-amber); margin: 0.25rem 0 0; }
+.gate-none { font-size: 0.9rem; color: var(--text-dim); }
 .gate-finding-blocking { color: #ff5f5f; }
 .gate-finding-skipped { color: var(--text-dim); font-style: italic; }
 
 .app-shell { display: flex; gap: 2rem; align-items: flex-start; padding: 1.5rem 2rem; }
 .app-sidebar { flex: 0 0 260px; }
-.app-sidebar:not(:has(*)) { flex: 0 0 0; }
 .app-main { flex: 1 1 auto; min-width: 0; max-width: 1400px; }
 
 .site-header {
@@ -163,6 +202,20 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .status-dot.online { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
 .status-dot.offline { background: #ff4444; box-shadow: 0 0 6px #ff4444; }
 
+.sub-nav {
+  display: flex;
+  gap: 1.25rem;
+  padding: 0.4rem 1.5rem;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+.sub-nav a { color: var(--text-dim); }
+.sub-nav a:hover { color: var(--text); text-decoration: none; }
+.sub-nav a.active { color: var(--accent-cyan); text-shadow: 0 0 4px var(--accent-cyan); }
+.breadcrumb-current { color: var(--text); }
+
 .browse-shell { display: flex; gap: 1.5rem; align-items: flex-start; }
 .browse-tree { flex: 0 0 22rem; max-height: 80vh; overflow-y: auto; }
 .browse-tree details { margin-left: 0.25rem; }
@@ -172,5 +225,48 @@ tbody tr:nth-child(even) { background: var(--bg-panel); }
 .browse-doc-wrap { flex: 1 1 auto; min-width: 0; }
 .browse-error { color: #a00; }
 .browse-placeholder { color: #777; font-style: italic; }
+.browse-unreadable { margin-left: 0.25rem; color: #ff5f5f; font-style: italic; cursor: not-allowed; }
+.browse-broken { margin-left: 1.25rem; color: #ff5f5f; font-style: italic; }
 .htmx-indicator { opacity: 0; }
 .htmx-request.htmx-indicator, .htmx-request .htmx-indicator { opacity: 1; }
+
+.htmx-error-banner {
+  margin: 0 2rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ff5f5f;
+  border-radius: 0.25rem;
+  background: color-mix(in srgb, #ff5f5f 15%, transparent);
+  color: #ff5f5f;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+
+.project-meta { color: var(--text-dim); font-family: var(--font-mono); font-size: 0.9rem; }
+.project-rollup { margin: 1.5rem 0; }
+.project-rollup .status { margin-right: 0.5rem; }
+.project-next-action { margin-top: 0.75rem; }
+
+.status-strip {
+  display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;
+  margin: 0.25rem 0 1rem;
+  font-family: var(--font-mono); font-size: 0.9rem; color: var(--text-dim);
+}
+.override-record {
+  color: var(--accent-amber); font-size: 0.9rem; margin: 0 0 1rem;
+}
+
+.turn-complete {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--accent-green);
+  border-radius: 0.25rem;
+  background: color-mix(in srgb, var(--accent-green) 12%, transparent);
+  color: var(--accent-green);
+  font-size: 0.9rem;
+}
+.turn-status { color: var(--accent-amber); font-family: var(--font-mono); }
+
+.status-critical { background: color-mix(in srgb, #ff5f5f 35%, transparent); color: #fff; border-color: #ff5f5f; }
+.status-warning { background: color-mix(in srgb, var(--accent-amber) 25%, transparent); color: var(--accent-amber); border-color: var(--accent-amber); }
+.status-info { background: color-mix(in srgb, var(--text-dim) 20%, transparent); color: var(--text-dim); border-color: var(--border); }
+.event-detail { color: var(--text-dim); font-family: var(--font-mono); font-size: 0.8rem; }

@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,17 @@ from pipeline_app import artifacts, db as db_mod
 from pipeline_app.grounding_service import write_pointer
 from pipeline_app.main import create_app
 from pipeline_app.state_machine import StageStatus
+
+_TEXTAREA_RE = re.compile(r"<textarea[^>]*>.*?</textarea>", re.DOTALL)
+
+
+def _without_textareas(html: str) -> str:
+    """T22 added an edit-output `<textarea>` that legitimately holds the raw,
+    unrendered artifact body so it can be edited -- a plain `<textarea>` is
+    inert markup in a browser (its contents render as literal text, never as
+    HTML), so raw source text sitting inside one is not a sanitizer gap. Tests
+    asserting "no raw source anywhere on the page" must look outside it."""
+    return _TEXTAREA_RE.sub("", html)
 
 
 def _scaffold_skills_and_templates(tmp_path: Path, stage_skills: dict[str, str]) -> None:
@@ -809,8 +821,9 @@ def test_a_style_block_cannot_leak_raw_markup_past_the_sanitizer(client):
 
     page = test_client.get(f"/projects/{project_id}/stages/ideation")
     assert page.status_code == 200
-    assert "<img" not in page.text.lower()
-    assert "onerror" not in page.text.lower()
+    rendered = _without_textareas(page.text).lower()
+    assert "<img" not in rendered
+    assert "onerror" not in rendered
 
 
 def test_stage_page_renders_gate_results_and_override_field(tmp_path: Path, monkeypatch):
@@ -993,7 +1006,7 @@ def test_stage_page_renders_markdown_as_html_not_raw_text(client):
     assert page.status_code == 200
     assert "<h2>Concept Brief</h2>" in page.text
     assert "<li>angle: contrarian</li>" in page.text
-    assert "## Concept Brief" not in page.text
+    assert "## Concept Brief" not in _without_textareas(page.text)
 
 
 def test_a_gate_block_re_renders_the_stage_page_with_a_banner(two_stage_client):
@@ -1022,7 +1035,7 @@ def test_a_gate_block_re_renders_the_stage_page_with_a_banner(two_stage_client):
     assert resp.headers["content-type"].startswith("text/html")
     assert "gate_d_script_language" in resp.text        # the page, not a text file
     assert 'name="override_reason"' in resp.text        # a way forward from here
-    assert "error-banner" in resp.text
+    assert 'class="approval-error"' in resp.text
 
 
 def test_a_locked_stage_edit_re_renders_with_a_banner(two_stage_client):
@@ -1037,7 +1050,7 @@ def test_a_locked_stage_edit_re_renders_with_a_banner(two_stage_client):
     )
     assert resp.status_code == 409
     assert resp.headers["content-type"].startswith("text/html")
-    assert "error-banner" in resp.text
+    assert 'class="approval-error"' in resp.text
     assert "locked" in resp.text
 
 
@@ -1054,7 +1067,7 @@ def test_the_grounding_edit_refusal_keeps_its_message(client):
     )
     assert resp.status_code == 409
     assert resp.headers["content-type"].startswith("text/html")
-    assert "error-banner" in resp.text
+    assert 'class="approval-error"' in resp.text
     assert "rgs-briefs" in resp.text
 
 
@@ -1249,7 +1262,13 @@ def test_a_malformed_gates_value_shows_a_sensible_notice_not_garbage(two_stage_c
     assert page.status_code == 200
     assert "malformed" in page.text
     assert 'class="status "' not in page.text
-    assert page.text.count('status-') < 5
+    assert "None:" not in page.text
+    # Threshold raised from 5 to 9 by T8 (status strip): the strip adds two
+    # legitimate page-wide "status-" occurrences ("status-strip" and
+    # "status-{stage_status}") that have nothing to do with the malformed-gate
+    # regression this assertion guards against. "not-a-list" is 10 characters,
+    # so the old char-iteration bug would still produce far more than 9.
+    assert page.text.count('status-') < 9
 
 
 def test_a_missing_dependency_names_the_stage_id_and_says_missing(two_stage_client):
@@ -1265,4 +1284,6 @@ def test_a_missing_dependency_names_the_stage_id_and_says_missing(two_stage_clie
     page = test_client.get(f"/projects/{project_id}/stages/scripting")
     assert page.status_code == 200
     assert "ideation" in page.text
-    assert "no input yet from ideation" in page.text
+    assert 'class="input-card input-card-missing"' in page.text
+    assert "no artifact for it" in page.text
+    assert "was found" in page.text

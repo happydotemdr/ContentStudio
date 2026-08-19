@@ -1,0 +1,66 @@
+{# Rendered from `gate_view`, which P3 builds from GATE_REGISTRY unioned with
+   the artifact's recorded results -- NOT from the frontmatter alone. Reading
+   only the frontmatter made an absent `gates` key indistinguishable from a
+   clean run, which is exactly the silent pass of an unknown result that
+   approval_service was written to refuse (E-02).
+
+   Every one of P3's states gets an explicit arm. `unknown` is the state for
+   a recorded result whose `status` string matches no known verdict -- a
+   typo'd or future gate status -- and it must read as "we cannot tell", never
+   fall through to something that looks benign. `status_raw` is rendered beside
+   it so the unrecognised string is visible rather than swallowed. `malformed`
+   is a distinct state from `unknown`: it means the artifact's `gates:`
+   frontmatter value itself isn't a list (so there is no per-gate result to
+   even try to interpret), not that one gate's status string didn't parse. #}
+{% set _labels = {
+     "passed": "passed", "failed": "failed", "errored": "errored",
+     "never_ran": "never ran", "unknown": "unrecognised result",
+     "malformed": "malformed",
+   } %}
+<div class="gates-panel">
+  <h3>Gates</h3>
+  {% if not gate_view %}
+  <p class="gate-none">No gate is registered for this stage.</p>
+  {% endif %}
+  {% for gate in gate_view %}
+  <div class="gate-result">
+    <span class="status status-{{ gate.state }}">
+      {{ gate.name or "unknown gate" }}: {{ _labels.get(gate.state, gate.state) }}
+    </span>
+    {% if gate.blocking %}<span class="gate-blocking-tag">blocks approval</span>{% endif %}
+    {% if gate.state == "never_ran" %}
+    <p class="gate-explainer">
+      This gate is registered for the stage but the artifact records no result for it —
+      it was never run. That is not a pass. Regenerate the stage to run it, or approve
+      with an override reason below.
+    </p>
+    {% elif gate.state == "unknown" %}
+    <p class="gate-explainer">
+      The artifact records this gate's status as <code>{{ gate.status_raw }}</code>, which is
+      not a verdict this app recognises. Treat it as unverified, not as a pass.
+    </p>
+    {% elif gate.state == "malformed" %}
+    <p class="gate-explainer">
+      This artifact's <code>gates:</code> frontmatter itself is not a list, so no individual
+      gate result could be read -- this is not one gate's verdict, the whole gates block is
+      broken. Fix the frontmatter and regenerate, or approve with an override reason below.
+    </p>
+    {% endif %}
+    {% if gate.findings %}
+    <ul class="gate-findings">
+      {% for finding in gate.findings %}
+      {# non_blocking_kinds is gates._NON_BLOCKING_KINDS, passed through by
+         routes/stages.py -- the ONE closed vocabulary of non-blocking finding
+         kinds (currently "skipped" and "info"). Read from context rather than
+         hardcoded here so this template can't silently drift from that set. #}
+      {% if finding.kind in non_blocking_kinds %}
+      <li class="gate-finding gate-finding-skipped">[{{ finding.kind }}] {{ finding.check }}{% if finding.beat %} ({{ finding.beat }}){% endif %}: {{ finding.message }}</li>
+      {% else %}
+      <li class="gate-finding gate-finding-blocking">[{{ finding.check }}]{% if finding.beat %} ({{ finding.beat }}){% endif %}: {{ finding.message }}</li>
+      {% endif %}
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>

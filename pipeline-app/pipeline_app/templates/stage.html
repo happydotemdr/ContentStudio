@@ -2,27 +2,76 @@
 {% block content %}
 <h1>{{ project.run_id }} — {{ stage_id }}</h1>
 
-{% if error_banner %}<div class="error-banner">{{ error_banner.message }}</div>{% endif %}
+{# The page never stated its own status, and version / created_at /
+   finalized_at were parsed into output_meta and then thrown away, so an
+   operator could not tell whether the body on screen was v1 or v7 (E-06). #}
+<div class="status-strip">
+  <span class="status status-{{ stage_status }}">{{ stage_status }}</span>
+  {% if artifact_version %}<span class="strip-item">artifact v{{ artifact_version }}</span>{% endif %}
+  {% if artifact_created_at %}<span class="strip-item">generated {{ artifact_created_at }}</span>{% endif %}
+  {% if artifact_finalized_at %}<span class="strip-item">finalized {{ artifact_finalized_at }}</span>{% endif %}
+</div>
+{% if gate_override %}
+<p class="override-record">
+  Approved over a gate{% if gate_override.at %} on {{ gate_override.at }}{% endif %}.
+  Reason on record: {{ gate_override.reason }}
+</p>
+{% endif %}
+
+{# `error_banner` is P3's ONE error channel for this page -- gate blocks, stage
+   locked, another turn running, edit refusals all arrive here, distinguished by
+   `kind`. Before this every one of them was a bare PlainTextResponse: an
+   unstyled text document with no header, no nav and no form to retry from
+   (E-04, P3's), reached by a POST the operator could only escape with
+   browser-back. #}
+{% if error_banner %}
+<p class="approval-error" role="alert" data-error-kind="{{ error_banner.kind }}">
+  {{ error_banner.message }}
+</p>
+{% endif %}
 
 <section class="input-panel">
   <h2>Input</h2>
   {% if grounding_input_html %}
-  <h3>Grounding companion</h3>
-  <div class="rendered-markdown">{{ grounding_input_html | safe }}</div>
+  <div class="input-card">
+    <h3>Grounding companion</h3>
+    <div class="rendered-markdown">{{ grounding_input_html | safe }}</div>
+  </div>
   {% endif %}
-  {% if inputs %}
-  {% for input in inputs %}
-  <h3>From {{ input.stage_id }}</h3>
-  {% if input.present and not input.malformed %}
-  <div class="rendered-markdown">{{ input.html | safe }}</div>
-  {% elif input.malformed %}
-  <p class="input-malformed">malformed -- could not read {{ input.artifact }}</p>
-  {% else %}
-  <p class="input-missing">no input yet from {{ input.stage_id }}</p>
-  {% endif %}
+  {# One card per DECLARED dependency, present or not. Concatenating only the
+     ones that resolved meant a missing upstream left no gap on the page -- and
+     the same partial context was what the turn was actually given. #}
+  {% for up in inputs %}
+  <div class="input-card{% if not up.present %} input-card-missing{% endif %}">
+    <h3>
+      From {{ up.stage_id }}
+      {% if up.present and not up.malformed %}
+      <span class="strip-item">{{ up.artifact }}</span>
+      {% elif up.malformed %}
+      <span class="status status-error">malformed</span>
+      {% else %}
+      <span class="status status-no_artifact">missing</span>
+      {% endif %}
+    </h3>
+    {% if up.present and not up.malformed %}
+    <div class="rendered-markdown">{{ up.html | safe }}</div>
+    {% elif up.malformed %}
+    <p class="gate-explainer">
+      <code>{{ up.artifact }}</code> from <code>{{ up.stage_id }}</code> could not be read. The
+      turn was given whatever partial context that produced.
+    </p>
+    {% else %}
+    <p class="gate-explainer">
+      This stage declares <code>{{ up.stage_id }}</code> as a dependency and no artifact for it
+      was found. The turn was given this same partial context.
+    </p>
+    {% endif %}
+  </div>
   {% endfor %}
-  {% elif not grounding_input_html %}
-  <p>No upstream input.</p>
+  {% if not inputs and not grounding_input_html %}
+  <div class="input-card">
+    <p>This stage has no upstream dependencies.</p>
+  </div>
   {% endif %}
 </section>
 
@@ -33,6 +82,15 @@
     <p><strong>{{ message.type }}:</strong> {{ message.text }}</p>
     {% endfor %}
   </div>
+  {# Server-rendered and hidden rather than built in JS, so the affordance is
+     assertable from a template test. Before this, a completed turn removed the
+     "running…" line and left Output and Gates showing the PREVIOUS state with
+     no cue to reload -- the natural read being that the turn produced nothing
+     (E-01). #}
+  <p id="turn-complete" class="turn-complete" hidden>
+    Turn complete. Output and Gates below are from before this turn.
+    <button type="button" id="turn-complete-reload">Reload to see the new output</button>
+  </p>
   <!-- Not a plain htmx hx-post/hx-swap form: htmx's default swap fires once,
        after the whole response completes, and would inject raw `data: {...}`
        SSE lines as text rather than streaming them live. Task 14 adds a small
@@ -46,37 +104,49 @@
 
 <section class="output-panel">
   <h2>Output</h2>
+  {% include "partials/gate_strip.html" %}
   {% if output_html %}<div class="rendered-markdown">{{ output_html | safe }}</div>{% else %}<p>No output yet.</p>{% endif %}
-  {% if gate_view %}
-  <div class="gates-panel">
-    <h3>Gates</h3>
-    {% for gate in gate_view %}
-    <div class="gate-result">
-      <span class="status {{ 'status-blocking' if gate.blocking else 'status-ok' }}">{{ gate.name or "unknown gate" }}: {{ gate.state }}{% if gate.status_raw and gate.status_raw != gate.state %} ({{ gate.status_raw }}){% endif %}</span>
-      {% if gate.findings %}
-      <ul class="gate-findings">
-        {% for finding in gate.findings %}
-        {% if finding.kind in non_blocking_kinds %}
-        <li class="gate-finding gate-finding-skipped">[{{ finding.kind }}] {{ finding.check }}{% if finding.beat %} ({{ finding.beat }}){% endif %}: {{ finding.message }}</li>
-        {% else %}
-        <li class="gate-finding gate-finding-blocking">[{{ finding.check }}]{% if finding.beat %} ({{ finding.beat }}){% endif %}: {{ finding.message }}</li>
-        {% endif %}
-        {% endfor %}
-      </ul>
-      {% endif %}
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
   {% if stage_status == "stale" %}
   <p class="stale-override-note">This stage is stale (built on a since-changed upstream input). Approving now will override the staleness cascade instead of regenerating.</p>
   {% endif %}
   <form method="post" action="/projects/{{ project.id }}/stages/{{ stage_id }}/approve">
     {% if has_blocking_gate %}
-    <label for="override_reason">Override reason (a gate above is failing/erroring)</label>
-    <input type="text" id="override_reason" name="override_reason" placeholder="e.g. dash is inside a verbatim 1886 quote">
+    {# `has_failing_gate` used to be "any recorded fail/error", strictly
+       narrower than what approval_service actually blocks on. A never-ran
+       gate therefore rendered a form WITHOUT this field, the POST 409'd into
+       a bare text page, and back-navigation returned to the same field-less
+       form -- no way to finish the approval from the UI at all (E-03).
+       `has_blocking_gate` is computed by the route from the same condition
+       it raises on, so the two cannot drift again. The reason list below is
+       built from `gate_view` (P3's ONE gate classifier, also driving the
+       gate strip above) rather than a separately-computed list, so the two
+       surfaces can't say different things about why approval is blocked. #}
+    <p id="approve-blocked-reason" class="approve-blocked-reason">
+      Approval is blocked:
+      {% set blocking_gates = gate_view | selectattr("blocking") | list %}
+      {% for gate in blocking_gates %}{{ gate.name or "unknown gate" }} ({{ gate.state.replace("_", " ") }}){% if not loop.last %}; {% endif %}{% endfor %}.
+      Fix the findings and regenerate, or record a reason below to approve anyway.
+    </p>
+    <label for="override_reason">Override reason (required to approve past the block)</label>
+    <input type="text" id="override_reason" name="override_reason" required
+           placeholder="e.g. dash is inside a verbatim 1886 quote">
     {% endif %}
     <button type="submit">Mark Approved</button>
   </form>
+  {# 60 lines of carefully-reasoned re-gating behaviour that no template posted
+     to. Without this the only way to fix a typo in an output is to re-run a
+     whole turn or edit the file on disk, which bypasses exactly the re-gating
+     the route exists to guarantee. #}
+  {% if edit_allowed %}
+  <details class="edit-output">
+    <summary>Edit output</summary>
+    <form method="post" action="{{ edit_action }}">
+      <textarea name="{{ edit_field }}" rows="20">{{ output_body }}</textarea>
+      <button type="submit">Save as a new version and re-run gates</button>
+    </form>
+  </details>
+  {% elif edit_blocked_reason %}
+  <p class="browse-placeholder">Editing is unavailable: {{ edit_blocked_reason }}</p>
+  {% endif %}
 </section>
 {% endblock %}

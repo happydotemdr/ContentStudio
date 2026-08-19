@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Discovery: Handles</h1>
+<h1>Sources</h1>
 {% if handles %}
 <table>
   <thead>
@@ -22,7 +22,18 @@
           <button type="submit">Save</button>
         </form>
       </td>
-      <td><span class="status" data-handle-status="{{ h.id }}">{{ h.status }}</span></td>
+      <td>
+        <span class="status status-{{ h.status }}" data-handle-status="{{ h.id }}">{{ h.status }}</span>
+        {% if h.status == "invalid" %}
+        {# `handles` has no error column, so an invalid handle could never say
+           WHY -- the operator saw a word and had no recourse (E-12). Persisting
+           a reason is P8/P1 territory; saying out loud that none was recorded is
+           this package's half, and it is strictly better than silence. #}
+        <div class="gate-finding-blocking">
+          {{ h.error_message if h.error_message is defined and h.error_message else "no reason recorded" }}
+        </div>
+        {% endif %}
+      </td>
       <td>
         <form method="post" action="/discovery/handles/{{ h.id }}/toggle">
           <button type="submit">{{ "Exclude" if h.included else "Include" }}</button>
@@ -68,7 +79,7 @@
   <button type="submit">Run Now (backfill)</button>
 </form>
 
-<h2>Schedule</h2>
+<h2 id="schedule">Schedule</h2>
 <p>Daily at {{ settings.time_of_day }} ({{ settings.timezone }})</p>
 <form method="post" action="/discovery/settings">
   <input type="time" name="time_of_day" value="{{ settings.time_of_day }}" required>
@@ -77,16 +88,36 @@
 </form>
 
 <script>
+  // The old loop had no res.ok check and no try/catch: one failed fetch left
+  // an unhandled rejection inside setInterval, the interval was never cleared,
+  // and the row said "pending" forever with nothing surfaced (E-12).
   document.querySelectorAll("[data-handle-status]").forEach((el) => {
     const status = el.textContent.trim();
     if (status !== "pending" && status !== "validating") return;
     const handleId = el.dataset.handleStatus;
+    let failures = 0;
+    const stall = (message) => {
+      clearInterval(poll);
+      el.textContent = message;
+      el.className = "status status-invalid";
+    };
     const poll = setInterval(async () => {
-      const res = await fetch(`/discovery/handles/${handleId}/status`);
-      const data = await res.json();
-      if (data.status !== "pending" && data.status !== "validating") {
-        clearInterval(poll);
-        window.location.reload();
+      try {
+        const res = await fetch(`/discovery/handles/${handleId}/status`);
+        if (!res.ok) {
+          stall(`status unknown — reload (HTTP ${res.status})`);
+          return;
+        }
+        const data = await res.json();
+        if (data.status !== "pending" && data.status !== "validating") {
+          clearInterval(poll);
+          window.location.reload();
+        }
+      } catch (err) {
+        failures += 1;
+        if (failures >= 3) {
+          stall("status unknown — reload (app unreachable)");
+        }
       }
     }, 3000);
   });

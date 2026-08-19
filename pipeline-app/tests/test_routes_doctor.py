@@ -55,6 +55,7 @@ brief text could not have known:
   branching logic -- correct scope for this finding, since that logic is
   `preflight.py`'s own behaviour to cover, not Doctor's.
 """
+import re
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -104,15 +105,25 @@ def test_doctor_reports_the_repo_root_the_app_is_actually_using(tmp_path, monkey
     # contains str(root) as a prefix too -- a bare `str(one) in resp.text`
     # would pass even if the repo_root context key itself were wrong, because
     # the db_path line would carry it instead.
-    assert f"Repo root: {one}" in resp.text
+    # T21 wraps the value in <code> so it reads unambiguously against
+    # surrounding prose; the expected substring now includes those tags.
+    assert f"Repo root: <code>{one}</code>" in resp.text
 
 
 def test_doctor_lists_exactly_the_skills_present_on_disk(tmp_path, monkeypatch):
+    """T21 removed Doctor's own skill listing -- it duplicated the /skills
+    page verbatim and told the operator nothing new (see test_header.py's
+    test_doctor_no_longer_duplicates_the_skill_list). Doctor now links to
+    /skills instead of re-rendering the list itself, so the "lists exactly
+    the skills present on disk" assertion belongs on /skills."""
     with _doctor_client(tmp_path, monkeypatch, skills=("shorts-ideation", "voiceover-brief")) as client:
-        text = client.get("/doctor").text
-    assert "shorts-ideation" in text
-    assert "voiceover-brief" in text
-    assert "music-brief" not in text
+        doctor_text = client.get("/doctor").text
+        skills_text = client.get("/skills").text
+    assert 'href="/skills"' in doctor_text
+    assert "shorts-ideation" not in doctor_text
+    assert "shorts-ideation" in skills_text
+    assert "voiceover-brief" in skills_text
+    assert "music-brief" not in skills_text
 
 
 def test_doctor_distinguishes_a_missing_cli_from_a_found_one(tmp_path, monkeypatch):
@@ -157,4 +168,8 @@ def test_doctor_reports_the_orphaned_turn_count_from_app_state(tmp_path, monkeyp
     # pass even when orphaned_count itself is wrong -- confirmed empirically,
     # this exact false positive fired on one run with orphaned_count
     # hardcoded to 0 in doctor.py.
-    assert "Orphaned turns reconciled at startup: 7" in text
+    # T21's <li> wraps the value across lines (a leading {% if %} for the
+    # None-vs-0 distinction), so the value no longer sits on the same line
+    # as the label -- match label and value as two separate substrings.
+    assert "Orphaned turns reconciled at startup:" in text
+    assert re.search(r"Orphaned turns reconciled at startup:\s*7\s*</li>", text)

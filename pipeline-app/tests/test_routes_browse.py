@@ -1,4 +1,5 @@
 # tests/test_routes_browse.py
+import os
 from pathlib import Path
 
 import pytest
@@ -54,7 +55,7 @@ def test_browse_tree_items_carry_htmx_attributes_not_ids(client):
     resp = test_client.get("/browse")
     assert resp.status_code == 200
     assert 'hx-get="/browse/tree?path=thinkers&root=output"' in resp.text
-    assert 'hx-trigger="toggle once from:closest details"' in resp.text
+    assert 'hx-trigger="toggle from:closest details"' in resp.text
     assert 'hx-target="this"' in resp.text
 
     tree_resp = test_client.get("/browse/tree", params={"path": "thinkers", "root": "output"})
@@ -73,7 +74,8 @@ def test_browse_root_marks_nav_link_active(client):
     test_client, _ = client
     resp = test_client.get("/browse")
     assert resp.status_code == 200
-    assert '<a href="/browse" class="active">Browse</a>' in resp.text
+    assert '<a href="/browse" class="active">Library</a>' in resp.text
+    assert '<a href="/browse" class="active">Files</a>' in resp.text
 
 
 def test_browse_root_cli_status_reflects_app_state_true(tmp_path: Path, monkeypatch):
@@ -423,7 +425,7 @@ def test_browse_file_pipeline_grounding_pointer_missing_target_shows_error(clien
         params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding/pointer.yaml"},
     )
     assert resp.status_code == 200
-    assert "Grounding pointer could not be resolved." in resp.text
+    assert "does not exist" in resp.text
 
 
 def test_browse_file_pipeline_grounding_pointer_outside_rgs_briefs_shows_error(client):
@@ -445,7 +447,7 @@ def test_browse_file_pipeline_grounding_pointer_outside_rgs_briefs_shows_error(c
         params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding/pointer.yaml"},
     )
     assert resp.status_code == 200
-    assert "Grounding pointer could not be resolved." in resp.text
+    assert "could not be parsed" in resp.text
     assert "Secret" not in resp.text
 
 
@@ -461,3 +463,114 @@ def test_browse_tree_unknown_root_returns_invalid_path(client):
     resp = test_client.get("/browse/tree", params={"root": "bogus", "path": ""})
     assert resp.status_code == 200
     assert "Invalid path." in resp.text
+
+
+def test_browse_page_carries_a_global_htmx_error_banner(client):
+    test_client, _ = client
+    resp = test_client.get("/browse")
+    assert 'id="htmx-error-banner"' in resp.text
+    assert 'role="alert"' in resp.text
+    assert "htmx:responseError" in resp.text
+    assert "htmx:sendError" in resp.text
+
+
+def test_browse_tree_expansion_can_be_retried_after_a_failure(client):
+    """`once` meant a subtree whose first fetch failed stayed empty forever."""
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "thinkers" / "plato.md")
+    resp = test_client.get("/browse")
+    assert 'hx-trigger="toggle from:closest details"' in resp.text
+    assert "toggle once" not in resp.text
+
+
+def test_browse_file_unexpected_exception_renders_an_error_not_a_500(client, monkeypatch):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "thinkers" / "plato.md", "---\na: 1\n---\n\nBody.\n")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr("pipeline_app.browse_service.render_md_file", _boom)
+    resp = test_client.get("/browse/file", params={"path": "thinkers/plato.md"})
+    assert resp.status_code == 200          # htmx only swaps 2xx
+    assert "Could not render this document" in resp.text
+    assert "kaboom" in resp.text
+
+
+def test_browse_file_render_failure_is_distinct_from_an_empty_document(client, monkeypatch):
+    test_client, tmp_path = client
+    _touch(tmp_path / "output" / "thinkers" / "empty.md", "---\na: 1\n---\n")
+    ok = test_client.get("/browse/file", params={"path": "thinkers/empty.md"}).text
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr("pipeline_app.browse_service.render_md_file", _boom)
+    broken = test_client.get("/browse/file", params={"path": "thinkers/empty.md"}).text
+    assert broken != ok
+    assert "browse-error" in broken
+    assert "browse-error" not in ok
+
+
+def test_unreadable_folder_renders_as_a_disabled_row_with_a_reason(client, monkeypatch):
+    """SURFACING."""
+    test_client, tmp_path = client
+    unreadable = tmp_path / "output" / "locked"
+    unreadable.mkdir()
+    real_scandir = os.scandir
+
+    def _raise_for_locked(path, *args, **kwargs):
+        if Path(path) == unreadable:
+            raise OSError("permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", _raise_for_locked)
+    resp = test_client.get("/browse")
+    assert "locked" in resp.text
+    assert "browse-unreadable" in resp.text
+    assert "could not be read" in resp.text
+
+
+def test_broken_grounding_pointer_stays_reachable_through_the_tree(client):
+    """SURFACING. The route's 'Grounding pointer could not be resolved.'
+    message was unreachable: list_children skipped the entry, so there was
+    nothing left to click (E-14b)."""
+    test_client, tmp_path = client
+    grounding = tmp_path / "runs" / "my-run-20260728-120000" / "00-grounding"
+    grounding.mkdir(parents=True)
+    (grounding / "pointer.yaml").write_text("brief_path: [unclosed\n", encoding="utf-8")
+
+    project = test_client.get(
+        "/browse/tree", params={"root": "pipeline", "path": "my-run-20260728-120000"}
+    )
+    assert "00-grounding" in project.text            # the folder did not vanish
+
+    stage = test_client.get(
+        "/browse/tree",
+        params={"root": "pipeline", "path": "my-run-20260728-120000/00-grounding"},
+    )
+    assert "unresolvable" in stage.text
+    assert "browse-broken" in stage.text
+
+
+def test_an_empty_root_renders_an_explicit_empty_line_not_blank_space(client):
+    test_client, tmp_path = client
+    # output/ exists (the fixture makes it) and contains nothing at all.
+    resp = test_client.get("/browse")
+    assert resp.status_code == 200
+    assert "Nothing to show here yet." in resp.text
+
+
+def test_an_empty_root_is_distinguishable_from_an_unreadable_one(client, monkeypatch):
+    test_client, tmp_path = client
+    empty_page = test_client.get("/browse").text
+
+    import os as _os
+    def _raise(*args, **kwargs):
+        raise OSError("permission denied")
+    monkeypatch.setattr(_os, "scandir", _raise)
+    broken_page = test_client.get("/browse").text
+
+    assert empty_page != broken_page
+    assert "Nothing to show here yet." in empty_page
+    assert "Could not read folder:" in broken_page

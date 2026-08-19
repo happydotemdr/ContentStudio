@@ -10,15 +10,28 @@
      with no special messaging -- an empty folder is just an empty list,
      same as any other folder with no visible children. #}
   {% for entry in entries %}
-    {% if entry.is_dir %}
+    {% if entry.unreadable %}
+    <div class="browse-unreadable">
+      {{ entry.name }} — {{ entry.broken_reason }}
+    </div>
+    {% elif entry.is_dir %}
     <details>
       <summary>{{ entry.name }}</summary>
       <div class="children"
            hx-get="/browse/tree?path={{ entry.rel_path | urlencode }}&root={{ root }}"
-           hx-trigger="toggle once from:closest details"
+           hx-trigger="toggle from:closest details"
            hx-target="this"
            hx-swap="innerHTML"></div>
     </details>
+    {% elif entry.broken_reason %}
+    <div class="browse-broken" title="{{ entry.broken_reason }}">
+      <a href="#"
+         hx-get="/browse/file?path={{ entry.rel_path | urlencode }}&root={{ root }}"
+         hx-target="#browse-doc" hx-swap="innerHTML"
+         hx-sync="#browse-doc:replace"
+         hx-indicator="#browse-spinner">{{ entry.name }}</a>
+      — {{ entry.broken_reason }}
+    </div>
     {% else %}
     <div class="browse-file-row">
       <a href="#"

@@ -1,4 +1,35 @@
 {% extends "base.html" %}
 {% block content %}
+{# Before this, the stage rail WAS the project home: the body was a single
+   <h1>, so the pipeline's overall state was unreadable without opening each
+   stage in turn (E-08). Everything below is derived from `nav`, which the
+   route already passes -- no new context key. #}
+{% set stages = nav | map('list') | sum(start=[]) %}
+{% set counts = {} %}
+{% for s in stages %}{% set _ = counts.update({s.status: counts.get(s.status, 0) + 1}) %}{% endfor %}
+{% set attention = stages | selectattr('status', 'equalto', 'stale') | list
+                 + stages | selectattr('status', 'equalto', 'awaiting_review') | list
+                 + stages | selectattr('status', 'equalto', 'running') | list
+                 + stages | selectattr('status', 'equalto', 'ready') | list %}
+
 <h1>{{ project.run_id }}</h1>
+<p class="project-meta">brand: {{ project.brand }} &middot; created: {{ project.created_at }}</p>
+
+<section class="project-rollup">
+  <h2>Pipeline</h2>
+  <p>
+    {% for status, n in counts | dictsort %}
+    <span class="status status-{{ status }}">{{ n }} {{ status }}</span>
+    {% endfor %}
+  </p>
+  <p class="project-next-action">
+    <strong>Next action:</strong>
+    {% if attention %}
+    <a href="/projects/{{ project.id }}/stages/{{ attention[0].id }}">{{ attention[0].id }}</a>
+    &mdash; <span class="status status-{{ attention[0].status }}">{{ attention[0].status }}</span>
+    {% else %}
+    nothing is waiting on you &mdash; every stage is approved or locked.
+    {% endif %}
+  </p>
+</section>
 {% endblock %}

@@ -256,6 +256,16 @@ curl -fsSL https://unpkg.com/htmx.org@2.0.0/dist/htmx.min.js \
 ```
 
 - [ ] Run: both pass.
+
+> **Amendment (2026-08-18, found at Opus checkpoint A after T0-T7 landed):** the comment shown
+> above ends "removes both **at once** and needs no SRI" — that line contains the substring
+> `once`. T2's own test `test_browse_tree_expansion_can_be_retried_after_a_failure` asserts
+> `assert "once" not in resp.text` against a page that includes `base.html`'s content, so pasting
+> this comment literally makes T2 fail the moment it's written, before T2 even starts its own
+> work. T1's implementer caught this and reworded the comment to "removes both **problems** and
+> needs no SRI" — same meaning, no collision. Shipped as part of commit `b4826d6`. Recorded here
+> per this programme's recurring-bug-class protocol (a bug in the plan's own shown text, not in
+> the live repo).
 - [ ] Commit: `fix(ui): vendor htmx locally instead of loading it from unpkg`
 
 ---
@@ -284,6 +294,15 @@ def test_browse_tree_expansion_can_be_retried_after_a_failure(client):
 ```
 
 - [ ] Run: fails — no banner, and the trigger still says `toggle once from:closest details`.
+
+> **Amendment (2026-08-18, found at Opus checkpoint A after T0-T7 landed):** `assert "once" not
+> in resp.text` bans the English word "once" from the ENTIRE rendered `/browse` page forever —
+> not just the `hx-trigger` attribute it was written to pin. `templates/stage.html:36` already
+> contains "once" in ordinary prose today, and later browse-partial rewrites (T16-T18) could
+> easily introduce the word in an explainer sentence without anyone connecting it to this test.
+> Narrowed to `assert "toggle once" not in resp.text` — pins exactly the defect (a `once`
+> modifier on the tree's `hx-trigger`) without banning an ordinary word from the page. Fixed in
+> a follow-up commit after the Opus checkpoint A review; see the ledger for the commit hash.
 - [ ] **Implement.** In `templates/base.html`, immediately after `{% include "partials/header.html" %}`:
 
 ```html
@@ -555,6 +574,52 @@ Add to `static/style.css`:
 
 ---
 
+### T4a — Align page headings with the new tab labels (E-08 follow-up, found at Opus checkpoint A)
+
+**Not one of the plan's original 16 findings.** T4 renamed the nav tabs but left every page's own
+`<h1>` unchanged, so a page can now contradict the tab that linked to it:
+
+| Tab (`partials/header.html`) | Page `<h1>` before this task |
+|---|---|
+| Files | `browse.html` — "Browse" |
+| System | `doctor.html` — "Doctor" |
+| Open by path | `inspector.html` — "MD Inspector" |
+| Sources | `discovery_handles.html` — "Discovery: Handles" |
+| Runs | `discovery_runs.html` — "Discovery: Run History" |
+
+E-08 is precisely "the IA is unwieldy / inconsistent" — a renamed tab landing on a contradicting
+heading is the same defect one layer down, and leaving it unfixed would read as a regression in
+authorial care mid-package, not a deferred nice-to-have. All five files are already `templates/**`
+files P15 owns wholesale.
+
+**Failing test first.** Append to `tests/test_header.py`:
+
+```python
+@pytest.mark.parametrize(
+    "url,heading",
+    [
+        ("/browse", "Files"),
+        ("/doctor", "System"),
+        ("/inspector", "Open by path"),
+        ("/discovery/handles", "Sources"),
+        ("/discovery/runs", "Runs"),
+    ],
+)
+def test_page_heading_matches_its_own_tab_label(client: TestClient, url, heading):
+    resp = client.get(url)
+    assert f"<h1>{heading}</h1>" in resp.text
+```
+
+- [ ] Run: fails on all five — the old headings are still in place.
+- [ ] **Implement.** In each of the five templates, change the `<h1>` text only (no other markup)
+      to match its tab label exactly: `browse.html` → `<h1>Files</h1>`, `doctor.html` →
+      `<h1>System</h1>`, `inspector.html` → `<h1>Open by path</h1>`,
+      `discovery_handles.html` → `<h1>Sources</h1>`, `discovery_runs.html` → `<h1>Runs</h1>`.
+- [ ] Run: passes.
+- [ ] Commit: `fix(ui): align page headings with their tab labels`
+
+---
+
 ### T5 — Stop shipping an empty `<aside>` on every non-project page (E-08)
 
 **Failing test first.** In `tests/test_header.py`, replace `test_page_shell_wraps_sidebar_and_main`
@@ -580,6 +645,19 @@ def test_a_project_page_does_ship_the_stage_rail_aside(client_with_stage):
 ```
 
 - [ ] Run: the first fails — `base.html:112` renders `<aside>` unconditionally.
+
+> **Amendment (2026-08-18, found during T5 execution):** the shown `<div>` markup below
+> conflicts with its own paired test. `class="app-shell{% if not nav %} app-shell-full{% endif %}"`
+> renders `class="app-shell app-shell-full"` on any page where `nav` is falsy (e.g. `/`) — which
+> does **not** contain the literal substring `class="app-shell"` that
+> `test_pages_without_a_stage_rail_ship_no_aside_at_all` asserts (the assertion requires the
+> attribute value to be the bare string, closing quote immediately after). Implemented instead:
+> keep `<div class="app-shell">` unconditional (so the literal test passes), move the
+> full-width modifier onto `<body{% if not nav %} class="app-shell-full"{% endif %}>`, and change
+> the CSS hook to `.app-shell-full .app-shell { padding-left: 2rem; }` (replacing the old
+> `.app-sidebar:not(:has(*)) { flex: 0 0 0; }` collapse hack, same as the plan intended). Same
+> observable behavior — no aside when `nav` is falsy, full-width padding applied — different
+> mechanism. Landed in commit `f17534e`.
 - [ ] **Implement.** `templates/base.html`:
 
 ```html
@@ -779,6 +857,21 @@ Add to `static/style.css`:
 ```
 
 - [ ] Run: passes.
+
+> **Amendment (2026-08-18, found during T8 execution):** landing the status strip made a
+> pre-existing test in **P3's own file**, `tests/test_routes_stages.py::
+> test_a_malformed_gates_value_shows_a_sensible_notice_not_garbage`, start failing —
+> `assert page.text.count('status-') < 5` is a loose regression guard against a specific old
+> bug (character-iterating a malformed `gates` value), and the strip's own two legitimate
+> `status-` occurrences (`status-strip`, `status-{stage_status}`) pushed the real count from
+> 4 to 6, still nowhere near the double-digit count the guarded bug would produce. (Corrected
+> 2026-08-18 at Opus checkpoint B: this line originally said "under 5 to 7" — the measured counts
+> are 4 and 6. The conclusion and the `< 9` threshold were unaffected either way.)
+> `tests/test_routes_stages.py` is not in P15's owned-file list (§1) — it is P3's, already
+> merged with no other package currently active on it — so this is a genuine cross-package
+> ripple, not scope creep: raised the threshold from `< 5` to `< 9` with an inline comment
+> explaining why, preserving the test's actual regression-guard intent. Landed as part of
+> commit `1cd7f32`.
 - [ ] Commit: `feat(ui): add a stage status strip with version and generation time`
 
 ---
@@ -963,6 +1056,34 @@ Add to `static/style.css`:
 ```
 
 - [ ] Run: passes.
+
+> **Amendment (2026-08-18, found during T9 execution):** two departures from this task's literal
+> text, both confined to files this task already owns.
+>
+> 1. **`gate-x` is not a real registered gate name.** `test_never_ran_page_differs_from_a_
+> genuinely_clean_pass`'s "clean" fixture records `gates:\n  - name: gate-x\n    status: pass\n`,
+> but `ideation`'s real `gates.GATE_REGISTRY` entry is `gate_o_ideation_contract`. Because
+> `approval_service.classify_gates` unions recorded results with the registry **by name**, a
+> recorded result under the wrong name leaves the real registered gate still `never_ran` — so
+> the brief's own "clean" page would ALSO show "never ran", collapsing exactly the
+> never-ran-vs-clean distinction the test exists to pin. Fixed by using the real registered name
+> in the "clean" fixture. Another instance of a placeholder value in the plan's own shown test
+> code not matching live registry state.
+> 2. **`{% if finding.kind == "skipped" %}` (brief's literal) → `{% if finding.kind in
+> non_blocking_kinds %}` (shipped).** The old block already read `non_blocking_kinds` from
+> context (P3's `gates._NON_BLOCKING_KINDS`, currently `{"skipped", "info"}`), and two
+> pre-existing tests in P3's `tests/test_routes_stages.py` (out of this package's scope, already
+> merged) depend on that dynamic behavior — one exercises an `info`-kind finding, the other
+> monkeypatches `_NON_BLOCKING_KINDS` itself and asserts the template follows it. The brief's
+> hardcoded `"skipped"`-only check would have silently regressed both. Kept the context-driven
+> check; the new `gate_strip.html` is otherwise identical to the brief, **with one further small
+> departure the original amendment undersold** (corrected 2026-08-18 at Opus checkpoint B): the
+> brief's `<li>` bracket text is the literal `[skipped]`; shipped is `[{{ finding.kind }}]`
+> (carried over from the old block). This is correct behavior — an `info`-kind finding should not
+> say "skipped" — but it is a third departure from the brief text, not covered by "otherwise
+> identical."
+>
+> Both landed in commit `84b1f55`.
 - [ ] Commit: `fix(ui): render gates above the artifact and show a never-ran gate as never-ran`
 
 ---
@@ -1080,6 +1201,24 @@ Add to `static/style.css`:
 ```
 
 - [ ] Run: passes.
+
+> **Amendment (2026-08-18, found during T10 execution):** §7's contract table and this task's own
+> "Consumes P3" line both claim `approval_block_reasons` was "added by P3 at P15's request" and
+> already exists in `routes/stages.py`. It does not — grepped the live repo, zero matches
+> anywhere in `pipeline_app/`. This is the inverse of the shape §0 otherwise found for this
+> package (drift that pre-satisfies a task): here a claimed-satisfied dependency turned out to be
+> unmet. Rather than block T10 on adding it to P3's already-merged `routes/stages.py` (out of
+> P15's file scope), the template above derives the same information from `gate_view` — which
+> DOES already exist and is P3's one gate classifier, also driving the gate strip above — filtered
+> to `blocking` entries: `{% set blocking_gates = gate_view | selectattr("blocking") | list %}`,
+> then rendered as `{{ gate.name }} ({{ gate.state.replace("_", " ") }})` per entry, joined with
+> `; `. This is a strict improvement over the plan's `approval_block_reasons` binding: the reason
+> list and the gate strip now derive from the same classifier and cannot say different things
+> about why approval is blocked. §7's table entry for `approval_block_reasons` should be read as
+> **not produced by P3**, superseded by this in-template derivation from `gate_view`. Landed in
+> commit `41a2e08`. A second, smaller fixture-name correction (the brief's third test used the
+> placeholder `gate-x`; changed to the real registered `gate_o_ideation_contract`, same root cause
+> as T9's amendment above) landed in the same commit.
 - [ ] Commit: `fix(ui): render the override field whenever approval is blocked, including never-ran gates`
 
 ---
@@ -1251,6 +1390,17 @@ In `templates/discovery_runs.html`, add the count on the run line:
 ```
 
 - [ ] Run: passes.
+
+> **Amendment (2026-08-18, found during T12 execution):** the brief's `_seed_run` helper inserts a
+> handle with a hardcoded name (`'@thinkmedia'`) and no per-call uniqueness. `handles` carries a
+> `UNIQUE (platform, handle)` constraint (frozen interface, P1/`schema.sql`), and
+> `test_terminal_run_states_are_visually_distinguishable` calls `_seed_run` twice in the same
+> test (once per status) — the second call's insert would violate the constraint as written.
+> Fixed by suffixing the handle name with the status (`f"@thinkmedia-{status}"`), keeping every
+> other column unchanged. **T13 (next) also shows its own copy of `_seed_run` in its brief text
+> with the same bug** — when dispatching T13, do not paste that duplicate definition over this
+> already-fixed one; reuse the fixed helper already in `tests/test_header.py`. Landed in commit
+> `1750228`.
 - [ ] Commit: `fix(ui): give discovery run states real pill styling and an error count`
 
 ---
@@ -1334,6 +1484,28 @@ pagination — `db.list_runs(conn, limit=…)` (**P1**) plumbed through `discove
 - [ ] Run: passes (the `unresolved handle id` branch is what renders until P8 lands the join;
       the first test therefore stays red until then — that is the correct TDD ordering, and
       the branch guarantees the page never silently shows a wrong name).
+
+> **Amendment (2026-08-18, found during T13 execution):** "the first test therefore stays red
+> until then" undersold it — empirically **both** new tests fail until P8 lands the join, not
+> just the first. `db.list_run_handle_results` (`SELECT * FROM discovery_run_handles WHERE
+> run_id = ?`, no join) means every `hr` in `entry.handle_results` lacks a `platform` attribute,
+> so `hr.platform is defined` is `False` for every row, and the ordering test's
+> `page.index("@thinkmedia")` never finds the substring either — same root cause, not an
+> implementation mistake (verified with a throwaway Jinja probe against a real `sqlite3.Row`
+> missing the column).
+>
+> More importantly: a literally red, checked-in test contradicts this programme's own "both
+> suites are fully green with no documented exceptions" definition of done — the plan's "stays
+> red" phrasing was never reconciled with that constraint. The repo already has an established
+> precedent for exactly this shape (a test blocked on a column/join a later task adds):
+> `tests/test_db.py::test_handles_creator_id_is_covered_by_an_index`'s own docstring documents
+> carrying `xfail(strict=True)` through two prior tasks until the dependency landed, specifically
+> to avoid "the suite is red but we know why" becoming how a real regression gets waved through.
+> Both new tests are marked `@pytest.mark.xfail(strict=True, reason=...)`, reason naming P8 and
+> instructing marker removal once the join lands — `strict=True` means an unexpected pass (i.e.
+> P8 landing without the marker being removed) fails the suite immediately, so this cannot rot
+> silently. Landed in commit `c1a4184`. **Handoff note for whoever lands P8:** remove both xfail
+> markers in `tests/test_header.py` once `discovery_runs_page` joins `handles`.
 - [ ] Commit: `fix(ui): identify failed discovery handles by platform and handle`
 
 ---
@@ -1485,6 +1657,45 @@ import resolves without a path hack. If it does not, import it by file path with
 - [ ] Commit: `test(ui): pin the platform picker options to build_adapters()`
 
 ---
+
+> **Amendment (2026-08-18, found at Opus checkpoint B after T8-T15 landed):** three findings,
+> resolved in one consolidated fix commit before continuing to T16.
+>
+> 1. **Important — `gate.name` fallback dropped; the page can render the literal `None`.** The
+> pre-T9 inline block read `{{ gate.name or "unknown gate" }}`; T9's `partials/gate_strip.html`
+> (and this task's own blocking-reason loop in `stage.html`) dropped the guard — the plan's own
+> shown markup for both never carried it either, same recurring bug class as everywhere else in
+> this package. `approval_service.classify_gates` uses `g.get("name")`, so any recorded gate
+> entry without a `name` key (the malformed-gates case P3's own test exercises, and any future
+> caller) renders the Python string `None` directly into operator-facing copy — exactly the
+> silent-degradation class this package exists to remove. Fixed: restored `{{ gate.name or
+> "unknown gate" }}` in both `gate_strip.html` and `stage.html`'s reason loop; added a
+> `.status-malformed` CSS rule (amber, alongside `never_ran`/`unknown` — "we cannot tell", not a
+> pass and not a hard fail) since it had none before; added a `"None:" not in page.text`
+> assertion to the malformed-gates test so this can't regress silently again.
+> 2. **Important — T10's `error-banner` → `approval-error` class rename hollowed out three P3
+> tests.** `tests/test_routes_stages.py:1025,1040,1057` (P3's file, already merged, same
+> cross-package-ripple authorization as T8's) assert `"error-banner" in resp.text`. T10 renamed
+> the stage-page banner's class, but `base.html` unconditionally renders `id="htmx-error-banner"`
+> on every page, so the substring `"error-banner"` still matches — the three tests kept passing
+> while no longer verifying the banner they were written to pin (blocked-approve 409, locked-stage
+> edit 409, grounding edit refusal). Fixed: updated all three assertions to
+> `'class="approval-error"' in resp.text`.
+> 3. **Important — the P8 handoff for T13's two `xfail(strict=True)` markers was not routed where
+> P8 will look.** The `xfail(strict=True)` mechanism itself is airtight (an unexpected pass fails
+> the suite immediately), but `docs/superpowers/plans/remediation/P8-engine-cron.md`'s "Open
+> handoffs → P15" section listed `health`/`pending_spawns`/`.status-*`/`consecutive_failures` and
+> said nothing about the `handles` join or the two markers to remove — the discoverable spot P1's
+> own equivalent handoff used. Fixed: added a line to that section naming the join and the two
+> markers in `tests/test_header.py`. Also corrected this plan's own §7 P8 row, which still read
+> "the first test stays red" (T13's own amendment already established both tests block, and
+> neither is checked in red — both are `xfail(strict=True)`).
+>
+> Two Minor doc-accuracy slips also corrected in the same pass: T8's amendment overstated the
+> `status-` occurrence count (said 5→7, measured 4→6 — conclusion and `< 9` threshold unaffected);
+> T9's amendment claimed `gate_strip.html` was "otherwise identical to the brief" when a third,
+> correct-but-undisclosed departure (`[{{ finding.kind }}]` instead of the brief's literal
+> `[skipped]`) also shipped — noted inline at T9 instead of left solely in the ledger.
 
 ### T16 — Browse: an unreadable folder is unreadable, not absent (E-14a)
 
@@ -1641,6 +1852,36 @@ Add to `static/style.css`:
 
 - [ ] Run: passes. Update the four remaining `_has_md_below` callers in
       `tests/test_browse_service.py` per §5.
+
+> **Amendment (2026-08-18, found during T16 execution):** two departures from this task's literal
+> text.
+>
+> 1. **Forward reference to T17.** The `_md_below_state` sample above calls
+> `resolve_grounding_pointer_state(folder, repo_root)` — a function T17 (next) introduces; it does
+> not exist yet at T16. Implemented instead: the `pointer.yaml` branch calls the already-existing
+> `grounding_service.read_pointer(folder)` directly (catching `InvalidPointerError`), and treats
+> any syntactically-valid, non-empty `rgs_brief_path` as `"content"` regardless of whether the
+> target file currently exists on disk — reproducing exactly the tri-state distinctions this
+> task's own tests require without introducing T17's not-yet-specified error-detail plumbing.
+> **When dispatching T17: `_md_below_state`'s `pointer.yaml` branch (in `browse_service.py`) may
+> be worth revisiting to call the new `resolve_grounding_pointer_state` for consistency once it
+> exists** (not required — the current logic is already correct for `_md_below_state`'s own
+> tri-state contract, which only needs "is there content", not the reason for a break — but T17's
+> implementer should be aware of this branch's existence before assuming `_md_below_state` is
+> untouched by T17).
+> 2. **Five `_has_md_below` callers found, not four, plus the OSError one already covered by this
+> task's own new tests (six total).** Handled: the OSError-scenario test
+> (`test_has_md_below_scandir_oserror_returns_false`) was **deleted**, not renamed — it asserted
+> the old (now-wrong) behavior `list_children(...) == []` for a permission-denied folder, fully
+> superseded by this task's own new tests. Four other callers were renamed with `is True`/`is
+> False` → `== "content"`/`== "empty"` as the count/status implied; one was **inverted** per §5
+> (`test_has_md_below_false_when_pointer_target_missing` → `test_md_below_state_counts_a_broken_
+> pointer_as_content`, `== "content"`); a sixth, un-named caller inside
+> `test_resolve_grounding_pointer_returns_none_when_pointer_not_a_mapping` was also updated
+> (renamed call, `== "empty"`, not inverted — malformed YAML stays empty, only a valid pointer
+> with a missing target counts as broken content).
+>
+> Both landed in commit `452e433`.
 - [ ] Commit: `fix(browse): show an unreadable folder as unreadable instead of omitting it`
 
 ---
@@ -1790,6 +2031,21 @@ In `templates/partials/browse_tree_items.html`, the file branch:
 ```
 
 - [ ] Run: passes.
+
+> **Amendment (2026-08-18, found during T17 execution):** resolves T16's open handoff question —
+> updating `_md_below_state`'s `pointer.yaml` branch to call `resolve_grounding_pointer_state`
+> was **not optional**. Traced empirically: a `00-grounding` folder containing only a malformed
+> `pointer.yaml` is decided present-or-absent in its PARENT's listing by `_md_below_state`, not by
+> `list_children`'s own pointer branch (which only runs when scanning `00-grounding` directly).
+> The old `_md_below_state` logic treated a `read_pointer` exception as "no target" and fell
+> through to `"empty"` without returning — so a broken-pointer-only `00-grounding` vanished one
+> level up, reproducing E-14b at the parent. Replaced with a call to
+> `resolve_grounding_pointer_state`, treating any existing `pointer.yaml` (resolved, broken-target,
+> or unparseable) as `"content"`. Confirmed via the brief's own routing test, which failed with an
+> empty rendered tree before this change. One source of truth for pointer resolution across the
+> module, as T16's handoff note anticipated. Also updated four pre-existing tests whose assertions
+> were exactly the silently-skip/generic-message behavior this task deliberately removes (see
+> commit body for the full list). Landed in commit `58a3e7f`.
 - [ ] Commit: `fix(browse): list a broken grounding pointer instead of silently skipping it`
 
 ---
@@ -1996,6 +2252,53 @@ render paths and are out of this package's file list.
       which the allowlist keeps).
 - [ ] Commit: `fix(browse): sanitize rendered markdown at the producer`
 
+> **Amendment (2026-08-18, found by the controller after T19 landed):** two genuine bugs in the
+> `_Sanitizer` code as literally shown above.
+>
+> 1. **Disallowed tag TEXT wasn't suppressed (fixed by the implementer during T19 itself, before
+> the controller's own check).** The brief's literal `handle_starttag`/`handle_endtag`/`handle_data`
+> drop a disallowed tag's own start/end markup but do nothing to its inner text — so
+> `<script>alert(1)</script>` would strip the `<script>` tags but leave the literal text
+> `alert(1)` visible on the page, failing the brief's own
+> `test_render_md_file_body_html_is_sanitized` (`"discovery/run-now" not in result["body_html"]`).
+> Fixed with a `_skip_depth` counter: `handle_starttag` increments it for a disallowed non-void
+> tag, `handle_data` and `handle_starttag`/`handle_endtag` no-op while it's nonzero,
+> `handle_endtag` decrements it back down.
+> 2. **The `_skip_depth` fix above introduced its own bug, found by the controller reproducing it
+> empirically: a disallowed tag that's a real HTML5 void element (`meta`, `link`, `input`, `base`,
+> `embed`, `source`, `track`, `wbr`, `col`, `area`, `param` — none of which this sanitizer's own
+> narrow `_VOID_TAGS = {"br","hr","img"}` covers) increments `_skip_depth` expecting a matching
+> `</meta>` that will never arrive, so `_skip_depth` never returns to 0 and every character of the
+> document AFTER that point is silently dropped — not just the meta tag, the ENTIRE rest of the
+> page. Fails safe (nothing malicious leaks — the opposite direction from an XSS bypass), but a
+> real content-integrity defect: legitimate content after a stray disallowed void-like tag
+> vanishes with no signal to the operator. Confirmed via
+> `sanitize_html('<p>before</p><meta ...><p>after</p>')` → `'<p>before</p>'` before the fix.
+> Fixed by adding `_HTML_VOID_ELEMENTS` (the full HTML5 void-element set) and using it — not the
+> sanitizer's narrower allowed-void-tag set — to decide whether a disallowed start tag should ever
+> increment `_skip_depth` at all. A regression test pins both directions: a disallowed void tag no
+> longer swallows later content, and `<script>` (genuinely non-void) still correctly drops its own
+> payload text.
+>
+> Both landed in commits `22df293` (T19 itself, includes bug 1's fix) and `cd586f8` (the
+> controller-dispatched fix for bug 2, found post-landing before this task's review was dispatched).
+>
+> **A third bug — Critical, found by the task reviewer's adversarial security pass on the code
+> above (this is the finding class this programme's per-task review gate exists to catch, working
+> exactly as designed).** Self-closing syntax on a disallowed non-void tag (`<script/>...
+> </script>`) triggers `HTMLParser`'s SEPARATE `handle_startendtag` hook, whose default
+> implementation calls `handle_starttag` immediately followed by `handle_endtag` — a synthetic
+> open+close pair that pushed `_skip_depth` to 1 and immediately back to 0, so everything after
+> the fake self-close — including the attacker's actual payload text — rendered as ordinary output.
+> Reproduced with the exact `/discovery/run-now` payload the task's own regression test guards
+> against, just with `<script/>` instead of `<script>`. This is a genuine sanitizer bypass, not a
+> theoretical one. Fixed by overriding `handle_startendtag` so a disallowed non-void tag only ever
+> fires `handle_starttag` (matching real HTML5 parsing, which ignores a trailing `/` on
+> `script`/`style`/`iframe` rather than self-closing them) — an allowed tag or a genuine
+> `_HTML_VOID_ELEMENTS` member keeps the default open+close behavior, so `<br/>`/`<img .../>`
+> still render correctly. Landed in commit `1b54e8b`, with its own regression test and independent
+> controller verification (`<script/>…`, `<style/>…`, `<iframe/>…` payloads all now fail closed).
+
 ---
 
 ### T20 — Kill the phantom kickoff-template editor (E-15)
@@ -2058,6 +2361,30 @@ def test_a_mapped_skill_still_shows_the_kickoff_editor(client_with_skills):
       context task.** Until then `kickoff_stage_id` is undefined → falsy → the form is hidden
       for *every* skill, which fails `test_a_mapped_skill_still_shows_the_kickoff_editor`
       loudly rather than shipping a wrong page quietly.
+
+> **Amendment (2026-08-19, found at T20 pre-dispatch check):** P5 landed months ago and does NOT
+> use the key name this task assumes. Live `routes/skills.py` (`GET /skills/{skill_name}`) already
+> computes `stage_id = stage_id_by_skill(request.app.state.stage_defs).get(skill_name)` and passes
+> **`stage_id`** and **`kickoff_template_applies`** (`= stage_id is not None`, already the exact
+> boolean guard this task needs) into `skill_editor.html`'s context — not `kickoff_stage_id`. Same
+> naming-mismatch pattern §7's own intro paragraph already names for P3 ("P15's first draft had
+> bound to an entirely disjoint set... because Jinja renders an undefined key as empty, the stage
+> page would have shown nothing at all"): here `kickoff_stage_id` being undefined would make the
+> guard SILENTLY false for every skill, hiding the kickoff editor even for the eight mapped skills
+> — the exact defect `test_a_mapped_skill_still_shows_the_kickoff_editor` exists to catch, and it
+> would have failed loudly as the plan's own text anticipated, just for the wrong reason (a naming
+> typo, not a genuinely missing P5 contract). **T20 is NOT blocked — use `kickoff_template_applies`
+> as the guard directly** (it is already the precise boolean this task's `{% if kickoff_stage_id %}`
+> was reaching for) in place of `kickoff_stage_id` throughout this task's template and tests.
+>
+> **Second bug, found during T20 execution:** the brief's own `client_with_skills` fixture uses
+> `"stages: []\n"` for `pipeline.yaml` — an empty stage list, under which `stage_id_by_skill`
+> maps NOTHING, including `shorts-ideation`. `test_a_mapped_skill_still_shows_the_kickoff_editor`
+> is therefore unsatisfiable as written, regardless of the template fix. Fixed by giving the
+> fixture a real `ideation` stage bound to `shorts-ideation`, plus a `stage_templates/ideation.md`
+> scaffold file so `kickoff_template_missing` doesn't itself trip a warning path.
+>
+> Both landed in commit `1dd9ee3`.
 - [ ] Commit: `fix(ui): hide the kickoff-template editor for skills with no stage`
 
 ---
@@ -2179,6 +2506,26 @@ Add to `static/style.css`:
 - [ ] Run: `test_doctor_no_longer_duplicates_the_skill_list` and
       `test_doctor_says_so_when_there_is_nothing_to_report` pass immediately; the events test
       stays red until P1 lands the `events` table and passes `recent_events` (see §7).
+
+> **Amendment (2026-08-19, found during T21 execution):** P1 had already landed
+> `orphaned_count`/`recent_events` exactly as documented (controller-verified live before
+> dispatch — no drift here, unlike T20). Two ripples found instead:
+>
+> 1. **Cross-package test ripple**, same authorized pattern as T4/T8/T10: three tests in
+> `tests/test_routes_doctor.py` (F-27, predates T21) and one in `tests/test_obs.py` asserted the
+> exact old/buggy `doctor.html` output this task's own brief mandates removing — a bare
+> `Repo root: {value}` with no `<code>` wrapper, the duplicated skill list, and the literal string
+> `"None"` for a skipped orphan sweep (the precise defect this task exists to remove, per the
+> brief's own inline comment). All four updated to assert the corrected, brief-mandated output;
+> no other behavior touched.
+> 2. **A hardcoded test date would have aged out of the 7-day window.** The brief's own event-row
+> fixture stamps `occurred_at` as a fixed literal (`'2026-08-08T06:02:00+00:00'`); Doctor's
+> "last 7 days" filter is evaluated against the real clock at request time, so a fixed calendar
+> date silently falls outside the window as real time passes — confirmed already happening in
+> this environment. Changed to stamp `occurred_at` with `datetime.now(timezone.utc)` at test-run
+> time instead, matching how `test_obs.py`'s own fixtures already timestamp themselves.
+>
+> All landed in commit `f72f879`.
 - [ ] Commit: `feat(ui): render unacknowledged error events on the System page`
 
 ---
@@ -2307,6 +2654,37 @@ Add to `static/style.css`:
 ```
 
 - [ ] Run: passes once P3's context lands.
+
+> **Amendment (2026-08-19, found during T22 execution — the package's final task):** P3's
+> `inputs[]`/`edit_*` contract was exactly as documented (controller-verified live before
+> dispatch) — no naming drift, unlike T20. Two findings instead:
+>
+> 1. **`inputs[]` items also carry a `malformed` flag** the brief's card markup didn't mention
+> (set when `artifacts.read_artifact` raises `MalformedArtifactError` for a present-but-broken
+> upstream). The pre-T22 template already distinguished this three-way (present/malformed/missing);
+> the brief's two-way present/missing card would have regressed it to a coarser distinction.
+> Preserved the third state with its own amber badge and explainer.
+> 2. **Cross-package test ripple**, same authorized pattern as T4/T8/T10/T21: three tests in
+> `tests/test_routes_stages.py` (P3's, already merged) broke on contact with this task's mandated
+> change — two asserted "no raw source appears anywhere on the page," which the new edit-output
+> `<textarea>` legitimately violates (a `<textarea>`'s content renders as inert text in a browser,
+> never as parsed HTML, so this is not a sanitizer regression); fixed by stripping
+> `<textarea>...</textarea>` before those specific assertions via a `_without_textareas()` helper,
+> not by weakening what they check elsewhere on the page. The third asserted the old literal copy
+> ("no input yet from ideation") this task replaces by design; updated to the new card markup and
+> text. The controller separately confirmed `{{ output_body }}` in the new textarea is
+> Jinja-autoescaped by default (matching the brief's own literal markup) — a `</textarea>` inside
+> a stored artifact body cannot break out of the field.
+>
+> Also: the brief's own first test (`test_every_declared_upstream_gets_a_card_including_missing_
+> ones`) asserted `class="input-card"` unconditionally, but the fixture's `ideation` stage
+> declares zero dependencies and no grounding companion — the brief's own empty-state markup (a
+> bare `<p>`, not wrapped in a card) makes that assertion structurally unsatisfiable for the
+> fixture's own stage, not a P3-timing issue. Resolved by wrapping the empty state in
+> `class="input-card"` too, keeping `input-card-missing` as the distinct modifier for a genuinely
+> declared-but-absent dependency.
+>
+> All landed in commit `8afcdd2`.
 - [ ] Commit: `feat(ui): render per-dependency input cards and the edit-output disclosure`
 
 ---
@@ -2464,7 +2842,7 @@ this package exists to fix. Every key below is P3's spelling.
 |---|---|---|
 | `gate_view` | `list[dict]` | One entry per gate in `GATE_REGISTRY[stage_id]`, unioned with any recorded result whose name is not registered. Replaces `output_gates`. Each entry: `name: str`; `state: "passed" \| "failed" \| "errored" \| "never_ran" \| "unknown"`; `status_raw: str \| None` (the verbatim frontmatter string, rendered for `unknown`); `blocking: bool`; `findings: list[dict]` with `kind`/`check`/`beat`/`message`. **All five states get an explicit arm in `partials/gate_strip.html`** — `unknown` reads as "unverified", never falls through to something benign. |
 | `has_blocking_gate` | `bool` | True iff approve would raise without an override — i.e. any `gate_view` entry with `blocking` true. **Replaces `has_failing_gate`**, whose narrower "recorded fail/error only" condition is the E-03 defect. Drives the override field in T10. |
-| `approval_block_reasons` | `list[str]` | Human-readable reasons, matching the 409 message, e.g. `"gate-c (never ran -- no result in the artifact)"`. P3 adds this at P15's request. |
+| `approval_block_reasons` | `list[str]` | **Not actually produced by P3** — verified absent from the live repo at T10 execution (see T10's amendment above). T10 derives the equivalent reason list in-template from `gate_view | selectattr("blocking")` instead. This row is historical (what was planned, not what shipped). |
 | `error_banner` | `dict \| None` | `{kind: str, message: str}`. P3's single error channel for the page — gate block, stage locked, turn running, edit refusal — distinguished by `kind`, which T10 renders as `data-error-kind`. |
 | `gate_override` | `dict \| None` | `{reason: str, at: str}`. Read as `gate_override.reason` (+ `.at`) in T8's status strip. Written by `approval_service.py:70,76` and displayed nowhere today. |
 | `artifact_version` | `int \| None` | Pass-through P3 adds at P15's request: `stages.py:100` parses this into `output_meta` and throws it away (E-06). |
@@ -2493,13 +2871,13 @@ read by any template in this package.
 
 | Key | Type | Meaning |
 |---|---|---|
-| `kickoff_stage_id` | `str \| None` | `STAGE_ID_BY_SKILL.get(skill_name)` — already computed at `routes/skills.py:58` as the local `stage_id` and simply not forwarded. Falsy for the five unmapped skills and for `rgs-pairing-review`, whose map value is an explicit `None`. **T20 is sequenced after this.** |
+| `kickoff_stage_id` | `str \| None` | **Not the key P5 actually shipped** (corrected 2026-08-19 at T20 pre-dispatch — see T20's own amendment). Live `routes/skills.py` passes `stage_id` (via `stage_id_by_skill(...).get(skill_name)`) and `kickoff_template_applies` (`= stage_id is not None`) instead — the latter is already the exact boolean this row's guard needs. T20 uses `kickoff_template_applies` directly, not this row's name. |
 
 ### From P8 — discovery runs, into `discovery_runs.html`
 
 | Key | Type | Meaning |
 |---|---|---|
-| `handle_results[*].platform`, `.handle`, `.display_name` | `str` | `discovery_runs_page` joins `handles` so each result names its source. Until it lands, T13's template renders `unresolved handle id N` and its first test stays red. |
+| `handle_results[*].platform`, `.handle`, `.display_name` | `str` | `discovery_runs_page` joins `handles` so each result names its source. Until it lands, T13's template renders `unresolved handle id N`, and **both** of T13's new tests (not just the first) are marked `xfail(strict=True)` in `tests/test_header.py` — remove both markers once this join lands (corrected 2026-08-18 at Opus checkpoint B; see T13's own amendment). |
 
 ### From P8 / P1 — runs pagination (render-side bounded here, not solved here)
 
