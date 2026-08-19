@@ -1477,6 +1477,28 @@ pagination — `db.list_runs(conn, limit=…)` (**P1**) plumbed through `discove
 - [ ] Run: passes (the `unresolved handle id` branch is what renders until P8 lands the join;
       the first test therefore stays red until then — that is the correct TDD ordering, and
       the branch guarantees the page never silently shows a wrong name).
+
+> **Amendment (2026-08-18, found during T13 execution):** "the first test therefore stays red
+> until then" undersold it — empirically **both** new tests fail until P8 lands the join, not
+> just the first. `db.list_run_handle_results` (`SELECT * FROM discovery_run_handles WHERE
+> run_id = ?`, no join) means every `hr` in `entry.handle_results` lacks a `platform` attribute,
+> so `hr.platform is defined` is `False` for every row, and the ordering test's
+> `page.index("@thinkmedia")` never finds the substring either — same root cause, not an
+> implementation mistake (verified with a throwaway Jinja probe against a real `sqlite3.Row`
+> missing the column).
+>
+> More importantly: a literally red, checked-in test contradicts this programme's own "both
+> suites are fully green with no documented exceptions" definition of done — the plan's "stays
+> red" phrasing was never reconciled with that constraint. The repo already has an established
+> precedent for exactly this shape (a test blocked on a column/join a later task adds):
+> `tests/test_db.py::test_handles_creator_id_is_covered_by_an_index`'s own docstring documents
+> carrying `xfail(strict=True)` through two prior tasks until the dependency landed, specifically
+> to avoid "the suite is red but we know why" becoming how a real regression gets waved through.
+> Both new tests are marked `@pytest.mark.xfail(strict=True, reason=...)`, reason naming P8 and
+> instructing marker removal once the join lands — `strict=True` means an unexpected pass (i.e.
+> P8 landing without the marker being removed) fails the suite immediately, so this cannot rot
+> silently. Landed in commit `c1a4184`. **Handoff note for whoever lands P8:** remove both xfail
+> markers in `tests/test_header.py` once `discovery_runs_page` joins `handles`.
 - [ ] Commit: `fix(ui): identify failed discovery handles by platform and handle`
 
 ---
