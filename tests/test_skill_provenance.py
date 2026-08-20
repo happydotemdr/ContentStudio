@@ -1,9 +1,21 @@
-"""Guards CLAUDE.md's anti-generic guarantee at the two places it was actually broken.
+"""Conformance suite for the ContentStudio skill set.
 
-The register system is `shorts-styleboard`'s own operational design `[I]`, not a corpus
-finding. A design document in this repo once claimed it was `[C]`-cited and moved "with
-its citations intact" -- there are no citations to keep. These tests make that class of
-claim fail loudly rather than survive review.
+Four properties, asserted over all 13 skills and all 64 reference files under
+`.claude/skills/`:
+
+  1. Handoff  — every output section one skill consumes by name is declared by the
+                skill that produces it (audit C-01, C-04, C-16, C-18, C-21, C-25).
+  2. Citation — a bare `references/x.md` citation resolves inside the citing skill;
+                a cross-skill citation is skill-qualified; a `§N` anchor exists in the
+                file it points at (audit C-12, C-40, C-41, C-55).
+  3. Vocabulary — one canonical stage-id / `--kind` / `stage:` registry, agreed across
+                every SKILL.md (audit C-22, C-23).
+  4. Provenance — every normative block carries `[C]`/`[I]`/`[T]`/`[P]`/`[T-unverified]`,
+                an alternative-vocabulary marker its skill declares, or an entry in the
+                explicit triage ledger below (audit C-42, C-43, C-48, C-54, F-22).
+
+The narrow regression guards at the bottom of the file predate the suite and are kept
+verbatim: they pin the two places the anti-generic guarantee was actually broken.
 """
 
 import re
@@ -13,7 +25,7 @@ REPO = Path(__file__).resolve().parents[1]
 SKILLS = REPO / ".claude" / "skills"
 
 REGISTERS = SKILLS / "shorts-styleboard" / "references" / "visual-registers.md"
-MARKER_RE = re.compile(r"\[(?:C|I|T|T-unverified)\]")
+MARKER_RE = re.compile(r"\[(?:C|I|T|P|T-unverified)\]")
 
 # The brief's original pattern (`corpus (has nothing|says nothing|is thin)`) requires the
 # phrase to sit *immediately* next to the word "corpus". The file's real wording never does
@@ -34,6 +46,64 @@ REGISTER_SPECIFIC_GAP_RE = re.compile(
     r"\bsays nothing about register systems\b",
     re.IGNORECASE,
 )
+
+PIPELINE_SKILLS = (
+    "shorts-ideation", "shorts-scripting", "shorts-styleboard", "voiceover-brief",
+    "visual-prompts", "music-brief", "shorts-assembly", "social-repurpose",
+)
+SPECIALIST_SKILLS = ("elevenlabs-audio", "elevenlabs-music", "midjourney-prompting")
+RGS_SKILLS = ("rgs-grounding", "rgs-pairing-review")
+ALL_SKILLS = PIPELINE_SKILLS + SPECIALIST_SKILLS + RGS_SKILLS
+
+
+def skill_dir(name: str) -> Path:
+    return SKILLS / name
+
+
+def skill_md(name: str) -> Path:
+    return SKILLS / name / "SKILL.md"
+
+
+def reference_files(name: str) -> list[Path]:
+    return sorted((SKILLS / name / "references").glob("*.md"))
+
+
+def every_markdown_file() -> list[Path]:
+    return sorted(SKILLS.rglob("*.md"))
+
+
+def strip_fences(text: str) -> list[tuple[int, str]]:
+    """(1-based line number, line) for every line outside a ``` fence."""
+    out, in_fence = [], False
+    for n, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            out.append((n, line))
+    return out
+
+
+def fenced_block(text: str, info: str) -> str | None:
+    """The body of the first ```<info> fence in `text`, or None."""
+    lines, body, capturing = text.splitlines(), [], False
+    for line in lines:
+        if not capturing and line.strip() == f"```{info}":
+            capturing = True
+            continue
+        if capturing and line.strip().startswith("```"):
+            return "\n".join(body)
+        if capturing:
+            body.append(line)
+    return None
+
+
+def test_marker_re_accepts_the_project_decision_marker():
+    """`[P]` is a valid marker (CLAUDE.md's fourth marker). MARKER_RE once omitted it,
+    so a correctly-`[P]`-marked bullet inside a guarded slice failed as unmarked."""
+    assert MARKER_RE.search("- **Use the pinned narrator voice.** `[P]`")
+    assert MARKER_RE.search("- **Draft is half the cost of SD.** `[T-unverified]`")
+    assert not MARKER_RE.search("- **Cut every three seconds.**")
 
 
 def test_the_register_system_still_lives_with_styleboard():
@@ -89,3 +159,13 @@ def test_register_contract_bullets_all_carry_a_marker():
 def test_styleboard_skill_does_not_claim_corpus_backing_for_the_register_system():
     text = (SKILLS / "shorts-styleboard" / "SKILL.md").read_text(encoding="utf-8")
     assert "own operational design `[I]`" in text
+
+
+def test_every_skill_directory_is_classified():
+    """A new skill must be added to one of the three registries, or the suite silently
+    stops covering it — which is exactly how C-48 happened."""
+    on_disk = {p.parent.name for p in SKILLS.glob("*/SKILL.md")}
+    assert on_disk == set(ALL_SKILLS), (
+        f"unclassified: {sorted(on_disk - set(ALL_SKILLS))}; "
+        f"missing from disk: {sorted(set(ALL_SKILLS) - on_disk)}"
+    )
