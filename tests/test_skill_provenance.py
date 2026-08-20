@@ -434,11 +434,11 @@ WORKED_EXAMPLE_DISCLAIMER = (
 # Format: relative posix path -> (unmarked block count at triage time, note)
 TIER_1_PENDING: dict[str, tuple[int, str]] = {
     ".claude/skills/rgs-grounding/references/pairing-map.md": (95, "category-3 file per brief, but its field-label bullets (Work/anchor, Quotability, Pairs with, Why it links, Visual motif cue) carry no [THINKER:]/[RESEARCH:]/[REF]/[B] token, so the vocabulary regex does not actually reach them (brief's own expectation was stale); explicitly out of scope to edit this dispatch (do-not-touch), flagged not fixed"),
-    ".claude/skills/midjourney-prompting/references/v82-model-delta.md": (5, "remaining lines are Omni-Reference/Draft-Mode/--q vendor facts (compatibility lists, the literalism-claim refutation); needs [T]/[T-unverified] re-verification against docs.midjourney.com, not attempted this dispatch"),
+    ".claude/skills/midjourney-prompting/references/v82-model-delta.md": (6, "remaining lines are Omni-Reference/Draft-Mode/--q vendor facts (compatibility lists, the literalism-claim refutation, and the quality-buzzwords-degrade-output unverified claim); needs [T]/[T-unverified] re-verification against docs.midjourney.com, not attempted this dispatch"),
     ".claude/skills/rgs-grounding/references/safety-sensitive-handling.md": (5, "RGS operational-design bullets, but RGS's declared vocabulary has no [I]-equivalent token for this skill's own design (only citation tokens); using bare [I]/[C]/[T] here would fail the stray-marker test. Needs a P14 decision on an RGS-side design marker, not attempted this dispatch"),
     ".claude/skills/midjourney-prompting/references/style-systems.md": (3, "Omni Reference vendor facts (image-count limit, GPU-time multiplier, incompatibility list); needs [T] verification against docs.midjourney.com, not attempted this dispatch"),
     ".claude/skills/rgs-grounding/references/brand-voice-and-tone.md": (3, "brand-voice bullets distilled from an operator source document, not this skill's design and not the 14-channel corpus; RGS's declared vocabulary has no token for this provenance class, needs a P14 decision, not attempted this dispatch"),
-    ".claude/skills/rgs-grounding/references/scripting-beat-mapping.md": (3, "the three fixed-mapping bullets (Hook->Hook, Turn->Setup+early-Build, Reframe->split) are this skill's own design, but RGS's declared vocabulary has no [I]-equivalent design token (see safety-sensitive-handling.md note); needs a P14 decision, not attempted this dispatch"),
+    ".claude/skills/rgs-grounding/references/scripting-beat-mapping.md": (4, "the four fixed-mapping bullets (Hook->Hook, Turn->Setup+early-Build, Payoff->proof beat or Payoff, Reframe->split) are this skill's own design, but RGS's declared vocabulary has no [I]-equivalent design token (see safety-sensitive-handling.md note); needs a P14 decision, not attempted this dispatch"),
     ".claude/skills/rgs-pairing-review/SKILL.md": (3, "the diff-check taxonomy (new/changed thinker and research definitions) is this skill's own operational design, but RGS's declared vocabulary has no [I]-equivalent design token (see rgs-grounding/references/safety-sensitive-handling.md note), needs a P14 decision, not attempted this dispatch"),
     ".claude/skills/elevenlabs-audio/references/directorial-prompting.md": (2, "eleven_v3 text-to-dialogue vendor facts (model requirement, the <=2,000-char cap); needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
     ".claude/skills/elevenlabs-audio/references/voice-profiles.md": (1, "the `use_pvc_as_ivc` request-parameter vendor fact (name, default, effect); needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
@@ -508,7 +508,7 @@ def test_rgs_skills_do_not_carry_stray_corpus_markers(skill):
         # the disclaimer that *names* the corpus markers, and cross-references to another
         # skill's marked rule, are legitimate. Everything else is a leak.
         ".claude/skills/rgs-grounding/SKILL.md": {39},
-        ".claude/skills/rgs-grounding/references/scripting-beat-mapping.md": {17, 18, 19},
+        ".claude/skills/rgs-grounding/references/scripting-beat-mapping.md": {18, 19},
         # the mandatory, verbatim C-54 worked-example disclaimer (added by T15) names `[I]`
         # as prose, same as the citation-markers disclaimer above.
         ".claude/skills/rgs-grounding/references/worked-example.md": {5},

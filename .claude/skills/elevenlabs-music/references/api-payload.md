@@ -145,7 +145,7 @@ curl -X POST "https://api.elevenlabs.io/v1/music/plan" \
 - **Assume every compose call is billed** `[I]`. The credit rate per generation is
   **`[T-unverified]`** — not found in the docs on 2026-08-06. Never quote a specific credit number
   as fact; state the estimate and its unverified status together, every time.
-- **Seed re-rolls: same seed + same params → more consistent results; exact reproducibility is `[T]`
+- **`[T]` Seed re-rolls: same seed + same params → more consistent results; exact reproducibility is
   not guaranteed and output may change across system updates** `[T]` — this is the runbook's
   verbatim disclaimer (§5). Never promise a re-render matches a prior one, even with the same
   seed.

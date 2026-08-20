@@ -7,7 +7,7 @@ portion of the beat model, plus the Loop/CTA beat's job of closing the circle.
 
 ## Re-hook on a timer — the core retention mechanic
 
-- **Re-hook on a timer; open the next loop before the last closes — strongly- `[C]`
+- **`[C]` Re-hook on a timer; open the next loop before the last closes — strongly-
   supported.** The "tension engine" / hook-deliver cycle: open a curiosity loop,
   add value, resolve it, immediately open another — every 20–30 seconds on
   short-form `[C] (Make Money Matt, xZfM93XGy0g; Kallaway, pcnrzBwoVUk; Nate
@@ -15,7 +15,7 @@ portion of the beat model, plus the Loop/CTA beat's job of closing the circle.
   Person Business, eVePkmCQV5c)`. Stacking open loops keeps the viewer always
   one unanswered question ahead so there's nowhere to drift `[C] (vidIQ,
   DiZnbihU4NM)`.
-- **Pair every resolution with a new hook — re-hook repeatedly, not only at the `[C]`
+- **`[C]` Pair every resolution with a new hook — re-hook repeatedly, not only at the
   intro.** `[C] (Nate Black, c6X-Ywy3yVU)` On a Short this concretely means a
   second curiosity beat around the **~15s mark**, right when the opening loop
   starts to feel answered — that specific placement is an inference from the
@@ -40,10 +40,10 @@ portion of the beat model, plus the Loop/CTA beat's job of closing the circle.
 
 ## Building the value beat
 
-- **The biggest mid-video drop is caused by front-loaded setup and context, not `[C]`
+- **`[C]` The biggest mid-video drop is caused by front-loaded setup and context, not
   too much detail** `[C] (vidIQ, DiZnbihU4NM)` — get to the actual value fast;
   don't let Setup run long trying to be thorough.
-- **Keep constant forward motion — rapid segment-to-segment transitions, no `[C]`
+- **`[C]` Keep constant forward motion — rapid segment-to-segment transitions, no
   dead air** `[C] (Jenny Hoyos, oVKBAMEqsPI)` — medium confidence — **but do
   not chase wall-to-wall stimulation and constant jump cuts to fake retention**
   `[C] (vidIQ, DiZnbihU4NM)`. These two sit in tension; resolve it by keeping the
@@ -86,7 +86,7 @@ portion of the beat model, plus the Loop/CTA beat's job of closing the circle.
 
 ## The seamless loop-to-start (Shorts-specific payoff mechanic)
 
-- **Mirror the opening hook question in the closing line so the video forms a `[C]`
+- **`[C]` Mirror the opening hook question in the closing line so the video forms a
   satisfying loop** `[C] (Jenny Hoyos, mhVDcqnxxaY)` — medium confidence. On
   Shorts this makes the replay seamless: the Loop/CTA beat should echo the
   Hook's exact framing or key phrase, not just gesture at the topic.
@@ -106,7 +106,7 @@ portion of the beat model, plus the Loop/CTA beat's job of closing the circle.
 - **Judge enjoyment by average percentage viewed, not average view duration** `[C]`
   `[C] (Nate Black, IHDJkJpYC90)` — write for a complete, satisfying loop
   rather than for maximum raw seconds.
-- **Nate Black: when reviving a dead/random channel, err toward shorter, `[C]`
+- **`[C]` Nate Black: when reviving a dead/random channel, err toward shorter,
   punchier videos** `[C] (Nate Black, wqjiXKKqek4)` — a usable default when a
   concept brief doesn't specify a target length: prefer the 20–30s punchy band
   over the 35–45s standard band unless the premise genuinely needs the room.

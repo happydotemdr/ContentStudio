@@ -162,7 +162,7 @@ test it.
   describes V8.2 as *more* creative, bold, and edgy — which if anything cuts the other way. The
   literalism claim is the runbook's central thesis and it is **unverified**. The documented lever for
   literalism is `--raw`, plus low `--stylize`.
-- **"Quality buzzwords (photorealistic, 8k, masterpiece, ultra-detailed) actively degrade V8.2 output."** `[I]`
+- **"Quality buzzwords (photorealistic, 8k, masterpiece, ultra-detailed) actively degrade V8.2 output."**
   Not documented. *Prefer concrete physical description anyway* — that is defensible as `[I]` craft and
   is corroborated by the corpus's own "describe the picture's content fully"
   `[C] (Future Tech Pilot, wEwYSBj0qBo)` — but do **not** claim the model penalizes buzzwords.

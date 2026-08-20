@@ -10,7 +10,7 @@ rationale, so it checks the artifact rather than rubber-stamping the reasoning.
   both artifacts exist.
 - **A gate returning findings blocks emission** `[I]` until each finding is resolved or the user explicitly
   overrides it.
-- **Never report a gate as passed without running it.** `[C]` Report results verbatim in the spec's
+- **Never report a gate as passed without running it.** `[I]` Report results verbatim in the spec's
   VALIDATION GATES section.
 - Paste the artifact **into the prompt**. The agent must not have to go looking for it, and must not
   be told why any choice was made.

@@ -6,20 +6,20 @@ Distilled from `docs/headless-youtube-audit.md` §4 ("Hooks & openings") and
 
 ## The window is brutal, and it is 0–3s, not 0–15s
 
-- **On Shorts specifically, 50–60% of viewers who leave do so within the first 3 `[C]`
+- **`[C]` On Shorts specifically, 50–60% of viewers who leave do so within the first 3
   seconds** `[C] (vidIQ, UCrC5B3Soyc)`. The long-form "you have ~15 seconds" rule
   does not transfer — on a Short you are fighting the swipe in the first three.
-- **Cut the intro entirely; deliver value in the first seconds — strongly-supported `[C]`
+- **`[C]` Cut the intro entirely; deliver value in the first seconds — strongly-supported
   (6 channels).** No "hey guys, welcome back," no logo, no "in this video I'm going
   to show you," no backstory `[C] (Dan the creator, 1_9Xq0QnDAw; Kallaway,
   i7upRL4H1FM; Nick Nimmin, 2vkX1X1K3WM; Nick Nimmin, LAzYEKltBwA; One Person
   Business, 84bavOadYCI; Roberto Blake, q64Iczdhb-Y; vidIQ, UCrC5B3Soyc)`.
-- **Never open with "in this video I'm going to show you" or treat the top as an `[C]`
+- **`[C]` Never open with "in this video I'm going to show you" or treat the top as an
   intro/summary** `[C] (vidIQ, UCrC5B3Soyc; Nick Nimmin, 2vkX1X1K3WM)`.
 
 ## The hook must pay off the packaging promise
 
-- **The first seconds must deliver on the title/thumbnail promise — strongly- `[C]`
+- **`[C]` The first seconds must deliver on the title/thumbnail promise — strongly-
   supported.** A mismatch between packaging and the opening (the "promise
   breaker") makes viewers bounce and the algorithm reads it as the video not
   delivering `[C] (Dan the creator, 1_9Xq0QnDAw; One Person Business,
@@ -46,14 +46,14 @@ Distilled from `docs/headless-youtube-audit.md` §4 ("Hooks & openings") and
 
 ## The muted-autoplay hook (visual + text + spoken must align)
 
-- **Make the first frame a visual hook that raises a question before a word is `[C]`
+- **`[C]` Make the first frame a visual hook that raises a question before a word is
   spoken** — Shorts autoplay muted `[C] (vidIQ, DiZnbihU4NM)`. For a faceless
   channel you are *always* opening on B-roll/AI visual, so that first frame has
   to carry the question on its own `[C] (Nick Nimmin, kcSOFqJhR9I — adapted:
   Nimmin's point is "if on-camera retention drops, open on B-roll instead"; for
   a faceless Short there is no on-camera option, so this is load-bearing from
   frame one)`.
-- **Align the three hook layers — what's shown, what's written on screen, what's `[C]`
+- **`[C]` Align the three hook layers — what's shown, what's written on screen, what's
   said** — misalignment makes the viewer unsure where to focus and they bounce
   `[C] (Kallaway, i7upRL4H1FM)`.
 - **A slow push-in of a few percent on the open signals "something's coming"** `[C]`
@@ -73,7 +73,7 @@ corpus-stated Shorts technique:
 
 - **Kallaway's intro formula: context → relevance → contrast → proof → plan** `[C]`
   `[C] (Kallaway, z8j3PupS5gc)`.
-- **One Person Business's four-part intro: click confirmation → common belief → `[C]`
+- **`[C]` One Person Business's four-part intro: click confirmation → common belief →
   contrarian take → proof/plan** `[C] (One Person Business, eVePkmCQV5c)`.
 - **Introduce any new claim relative to something the viewer already knows** `[C]` —
   e.g. "hotter than the surface of the sun," not "hotter than asphalt" `[C]
@@ -93,7 +93,7 @@ don't present it with the same confidence as a stated, multi-channel rule:
   fKoAOWQHP0o)` — medium confidence.
 - **Self-deprecating underdog admission** to lower the viewer's guard `[C]
   (Jenny Hoyos, xndW0kxLV6g)` — medium confidence.
-- **Anchor the whole Short on a single clear premise plus one explicit `[C]`
+- **`[C]` Anchor the whole Short on a single clear premise plus one explicit
   constraint or deadline**, stated in the opening seconds `[C] (Jenny Hoyos,
   rGdOljEhqBc)` — medium confidence. This is the source of this skill's
   "single premise + constraint" field in the output template.

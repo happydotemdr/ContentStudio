@@ -296,7 +296,7 @@ writes: docs/style-library.md
 - **Image-to-video, motion, or i2v prompts** `[I]` — `visual-prompts`
   (`.claude/skills/visual-prompts/references/image-to-video.md`).
 - **Decide how many stills a Short beat needs, or the ~3s cadence** `[I]` — `visual-prompts`.
-- **Captions, overlay text, or the edit** `[C]` — `shorts-assembly`. Midjourney can't render legible text
+- **Captions, overlay text, or the edit** `[I]` — `shorts-assembly`. Midjourney can't render legible text
   anyway `[C] (Tokenized AI, qFYJb0zYztY)`.
 - **Voice or audio** `[I]` — `voiceover-brief`, then `elevenlabs-audio`.
 

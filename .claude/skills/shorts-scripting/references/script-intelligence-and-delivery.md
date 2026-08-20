@@ -16,7 +16,7 @@ AI slop or get suppressed as a duplicate."
   writing the script, check what the top competing Shorts on this exact
   premise already say, and make sure the single premise adds something they
   don't cover.
-- **Seed the script with the exact recognized terms for the topic's "semantic `[C]`
+- **`[C]` Seed the script with the exact recognized terms for the topic's "semantic
   ID"** (proper nouns, named concepts) rather than vague paraphrases `[C]
   (Romayroh, mPHdSkvoN10)`.
 - **Pack the script with citable specifics** `[C]` — exact numbers, full names,
@@ -32,7 +32,7 @@ AI slop or get suppressed as a duplicate."
 
 ## Humanize the script — don't let it read as AI-written
 
-- **Humanize AI scripts: perplexity, burstiness, complexity — strongly- `[C]`
+- **`[C]` Humanize AI scripts: perplexity, burstiness, complexity — strongly-
   supported.** Use surprising specifics (dates, events, opinions), varied
   sentence length instead of uniform AI-typical sentences, and vivid concrete
   vocabulary. Predictable scripts get flagged as reused/AI and lower trust
@@ -46,7 +46,7 @@ AI slop or get suppressed as a duplicate."
   9CCmMypN8PM; Romayroh, _mKpc4-_on8; One Person Business, s2knfD7QuCM)`. In
   practice for this skill: draft, then run a deliberate humanize pass — don't
   ship the first-draft phrasing.
-- **Fact-check any claim in the script with the strongest available model `[C]`
+- **`[C]` Fact-check any claim in the script with the strongest available model
   before treating the script as final** `[C] (One Person Business,
   s2knfD7QuCM)` — especially any specific number, date, or name pulled in
   during the net-information-gain pass above.
@@ -73,9 +73,9 @@ AI slop or get suppressed as a duplicate."
   *see* the number, not just hear it `[C] (vidIQ, i5bZ-Be9cAQ)` — flag any beat
   with a spoken statistic so the visual-prompts skill knows to render it as
   on-screen text/graphic, not just B-roll.
-- **Positive emotions perform best; a belonging/familiarity feeling in the `[C]`
+- **`[C]` Positive emotions perform best; a belonging/familiarity feeling in the
   first moments drives repeat viewership** `[C] (Nate Black, acOx8xUNXyQ)`.
-- **Build the outline around one of five audience modes — solve, journey, `[C]`
+- **`[C]` Build the outline around one of five audience modes — solve, journey,
   belong, expand, feel** `[C] (Nate Black, lRLwjsyAOi4)` — useful as a
   one-word check on what kind of premise this Short actually is, which should
   already be legible from the upstream concept brief's angle.
