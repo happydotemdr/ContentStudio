@@ -27,6 +27,43 @@ model — write (and reformat) for the ear.
   and lets you **re-roll a single bad read cheaply** — the same logic human narrators use when
   they record each line 2–3 times to have options in the edit `(Nick Nimmin, IF-PD6XMjYY)`.
 
+## Numbers: always spell them out, considering how they're meant to be vocalized `[P]`
+
+**Every number in a TTS script should be respelled as words in the source text — never left as digits for the
+model's own normalizer to interpret.** This is a project decision, recorded after a real, measured failure:
+ElevenLabs' `apply_text_normalization: "auto"` produced an audible stutter on "2,556" (a repeated-adjacent-digit
+number) — character-level `/with-timestamps` alignment showed individual digits rendering at 3-4x their normal
+duration (441-603ms vs. a ~150-175ms baseline), while the visually similar "2,300" elsewhere in the identical
+take rendered cleanly. Respelling fixed it completely (verified: zero anomalous character durations across the
+full respelled take) `[P]` (`docs/superpowers/plans/2026-08-20-dual-pipeline-vo-music-test-RESULTS.md`).
+
+**How to respell, by number type** `[I]` — this project's own extrapolation from the fix above, not a
+separately corpus- or vendor-documented rule. The specific ElevenLabs rendering behaviors below (comma-as-pause,
+year cadence, compound-adjective misparsing) were **not independently measured** — only the fix for "2,556" and
+"2026" was actually tested. Treat these as this skill's best-guess taxonomy, not verified facts:
+
+- **Counts/quantities:** full cardinal words — `2,556` → "two thousand, five hundred fifty-six".
+- **Years:** the natural two-digit-pair spoken form, not a cardinal count — `2026` → "twenty twenty-six", not
+  "two thousand twenty-six" (untested hypothesis for *why* — the tested fact is only that the cardinal-count
+  form for this specific year showed a smaller, milder version of the same digit-elongation artifact).
+- **Compound adjectives** (a number modifying a noun with hyphens, e.g. "2,300-year-old"): hyphenate the whole
+  spelled-out phrase — "two-thousand-three-hundred-year-old", not "two thousand three hundred year old"
+  (untested hypothesis for why the unhyphenated form would misread).
+- **Break-tag attribute values are exempt** — `<break time="0.9s" />`'s `"0.9s"` is SSML syntax, never spoken
+  text, and must stay numeric. Only respell text the model will actually vocalize.
+
+Flag any number this taxonomy doesn't cleanly cover (currency, phone-number-style digit strings, decimals) in
+the brief rather than guessing — those weren't tested in the finding above.
+
+**This respelling applies to the TTS payload text only — never to on-screen caption/overlay text `[P]`.**
+Operator decision, 2026-08-20: captions and overlay cards must display numbers as numerals ("2,300 years old.",
+not "two thousand three hundred years old."), even though the VO payload sent to ElevenLabs spells them out.
+The two text tracks are allowed to diverge — a script's *spoken* form and its *written/displayed* form serve
+different readability needs, and this is standard captioning practice, not unique to this pipeline. **Concrete
+consequence for whoever builds the caption/overlay text:** derive it from the original numeral-form script (or
+hand-write it with numerals directly), never by copy-pasting the respelled TTS payload text. See
+`caption-overlay-system.md`'s matching note.
+
 ## Before generating: does the script sound like a person?
 
 A subtle but real corpus point, independent of any TTS setting: **lines the writer doesn't
