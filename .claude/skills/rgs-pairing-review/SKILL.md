@@ -58,10 +58,9 @@ Resolve each topic-slug to its **latest version only** before grepping — a sup
 version of a brief that already got its gap-fill flag reviewed must not be re-surfaced as if it
 were new. `scripts/resolve_brief_version.py --slug <topic-slug> --kind grounding` returns the
 current version's path for a given topic-slug. **Briefs written before 2026-08-08 carry no
-`--kind` suffix** — if that prints `NONE`, fall back to the same call without `--kind` to find
-the pre-migration bare filename. Do not assume that file is version 1 because its filename has
-no `-vN` suffix — read its own `version:` frontmatter field, mirroring `rgs-grounding`'s own
-(corrected) fallback note `[I]`.
+`--kind` suffix** — if that prints `NONE`, fall back to the same call without `--kind`; the path
+it returns is the correct, current file to grep — no version-chain reasoning needed, this skill
+never writes a new version `[I]`.
 
 This skill itself sits outside the artifact vocabulary published elsewhere in the skill set —
 it is not in `KIND_REGISTRY` or `SPECIALIST_KINDS` because its proposal document is not a
