@@ -20,7 +20,7 @@ audio track first** to remove peaks and even out volume before final loudness no
 
 - **Docs/notes target −12 to −18 dB under the voice `[T]`.** The settings guide's cheat-sheet
   gives −16 dB as a safe default starting point.
-- **Corpus creators run noticeably lower — around −21 to −22 dB** — and call loud music the
+- **Corpus creators run noticeably lower — around −21 to −22 dB** `[C]` — and call loud music the
   **most common cause of low average view duration (AVD)** that beginners underestimate
   `(Romayroh, Wox4Jt_2t6w)` `(Roberto Blake, iaTavrWIGDM)`.
 - Where the notes and the corpus disagree on exact depth, give both in the brief rather than

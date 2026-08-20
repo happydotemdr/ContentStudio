@@ -6,11 +6,11 @@ model — write (and reformat) for the ear.
 
 ## Formatting moves
 
-- **Break into short sentences.** Long clauses run the model out of breath and blur the
+- **Break into short sentences.** `[C]` Long clauses run the model out of breath and blur the
   meaning — this mirrors human delivery advice that the final words in a line carry the
   meaning, so don't let energy (or, here, the model's phrasing) trail off at the end of a
   clause `(Kallaway, ZM3elcBE48I)`.
-- **Use punctuation as pacing.** Commas, ellipses (`…`), and line breaks place breaths and
+- **Use punctuation as pacing.** `[T]` Commas, ellipses (`…`), and line breaks place breaths and
   beats `[T]`. A period is a full stop; an ellipsis is a held pause. Add these deliberately when
   reformatting a script that was written for reading rather than speaking.
 - **Use v3 audio tags for emotion, not capitals `[T]`.** In Eleven v3, add emotion inline —
@@ -19,7 +19,7 @@ model — write (and reformat) for the ear.
   reliable lever `[T]`.
 - **Respell tricky words phonetically `[T]`.** Brand names, acronyms, and unusual terms
   mispronounce often — respell them the way they sound (e.g., `nginx` → `engine-x`).
-- **End declarative lines on a downward inflection, not upspeak.** Upspeak reads as
+- **End declarative lines on a downward inflection, not upspeak.** `[C]` Upspeak reads as
   uncertainty; keep the CTA and any confident claims phrased so the natural TTS read lands
   down, not up, at the line's end `(Kallaway, ZM3elcBE48I)`.
 - **Section the script instead of one giant block `[T]`.** Generate section-by-section (hook /

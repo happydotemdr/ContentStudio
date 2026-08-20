@@ -103,13 +103,13 @@ Three real consequences of the PVC path, not housekeeping.
 
 **This pins the narrator, and only the narrator.** Two limits:
 
-- **Non-narrator casting is decided per-Short and this pin does not override it.** Where a Short
+- **Non-narrator casting is decided per-Short and this pin does not override it.** `[P]` Where a Short
   casts a second voice, that casting runs the full `voice-selection.md` process on its own
   terms and is bound by whatever constraints its script carries. The worked case:
   `rgs-briefs/2026-07-28-nobody-asked-the-kid-voiceover-brief.md` casts a composite child under
   an absolute "no real child's voice, ever — not filmed, not sampled, not cloned" rule, and
   reaches ElevenLabs Voice Design as the one path that satisfies it structurally. **A pinned
   narrator is never licence to voice a second character with it.**
-- **An explicit user override still wins.** If the user names a different `voice_id` for a
+- **An explicit user override still wins.** `[I]` If the user names a different `voice_id` for a
   specific job, use it — and say plainly in the brief that the channel pin was overridden, so
   the inconsistency is a recorded choice rather than a silent drift `[I]`.

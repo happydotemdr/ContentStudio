@@ -11,11 +11,11 @@ target for the mix. This is a stage of ContentStudio's eight-skill pipeline, run
 parallel with `visual-prompts` after `shorts-scripting`; `music-brief` runs after this skill
 and consumes its tone-per-beat call.
 
-- **Upstream input:** the shot-ready, timed script from `shorts-scripting`.
-- **Downstream:** feeds `shorts-assembly`, alongside `visual-prompts`'s prompt sheet, and its
+- **Upstream input:** `[I]` the shot-ready, timed script from `shorts-scripting`.
+- **Downstream:** `[I]` feeds `shorts-assembly`, alongside `visual-prompts`'s prompt sheet, and its
   tone-per-beat call feeds `music-brief`. This skill does not touch visuals — that's
   `visual-prompts`'s job, run in parallel.
-- **Downstream specialist:** `elevenlabs-audio`. This skill produces the *creative* brief — which
+- **Downstream specialist:** `[I]` `elevenlabs-audio`. This skill produces the *creative* brief — which
   voice and why, the tone per beat, the content type, and the −14 LUFS mix target. It stops at the
   brief. When the user needs the **executable ElevenLabs configuration** — model routing, the
   settings floats or v3 stability mode, tag syntax that actually renders, a PLS pronunciation
