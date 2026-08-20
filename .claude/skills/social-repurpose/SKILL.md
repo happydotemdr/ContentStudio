@@ -1,6 +1,6 @@
 ---
 name: social-repurpose
-description: Generate multi-surface post copy (YouTube title/description/hashtags plus cross-platform caption variants for TikTok/Instagram/X/Bluesky) from a finished faceless-YouTube-Short's script and packaging direction. This is the final stage of the ContentStudio eight-skill pipeline — use it after a Short has been assembled (script + voiceover brief + visual prompts + edit plan from shorts-assembly) and you need publish-ready copy for YouTube and repurposed captions elsewhere. Trigger this whenever the user asks to write a YouTube title, description, or hashtags for a Short; asks to "repurpose," "cross-post," or write captions for TikTok/Instagram/X/Bluesky/Threads from a video; or wants the final post-copy package for a produced Short. Every normative line traces to the ContentStudio corpus (docs/headless-youtube-audit.md) with [C]/[I]/[T] provenance markers — do not invent generic social-media best practices.
+description: Generate multi-surface post copy (YouTube title/description/hashtags plus cross-platform caption variants for TikTok/Instagram/X/Bluesky) from a finished faceless-YouTube-Short's script and packaging direction. This is the final stage of the ContentStudio eight-skill pipeline — use it after a Short has been assembled, with exactly two inputs: the timed script (for hook language and any publish constraint) and shorts-assembly's edit plan and you need publish-ready copy for YouTube and repurposed captions elsewhere. Trigger this whenever the user asks to write a YouTube title, description, or hashtags for a Short; asks to "repurpose," "cross-post," or write captions for TikTok/Instagram/X/Bluesky/Threads from a video; or wants the final post-copy package for a produced Short. Every normative line traces to the ContentStudio corpus (docs/headless-youtube-audit.md) with [C]/[I]/[T] provenance markers — do not invent generic social-media best practices.
 ---
 
 # Social Repurpose
@@ -9,22 +9,42 @@ The final stage of ContentStudio's eight-skill pipeline, following `shorts-assem
 a **finished Short** into the **multi-surface post copy** that ships it. There is no
 downstream stage: this skill's output is the pipeline's final deliverable.
 
-**Upstream input** (from `shorts-assembly`): the finished Short's script, its packaging
-direction (working title/angle decided at `shorts-ideation`), and the edit/assembly plan.
-You need the script text (for AEO specifics and hook language) and whatever title/thumbnail
-direction earlier stages already committed to — this skill does not re-derive thumbnail
-design (that's `shorts-ideation`/`shorts-assembly` territory); it writes the **text** that
-accompanies the finished video. **If the script or assembly plan carries a "constraints that survive to publish" line** `[I]` (e.g. a mandatory safety-resource mention), honor it in the
-post copy you write — this skill doesn't need to know what produced the constraint, only that it's
-flagged.
+**Upstream input — two artifacts, no more.** The timed script from `shorts-scripting` (hook
+language, AEO specifics, and the `Delivery notes` constraint line) and the edit plan from
+`shorts-assembly` (which carries the packaging direction forward, plus its
+`## Constraints that survive to publish` section). Thumbnail *design* is not re-derived here —
+that is `shorts-ideation`/`shorts-assembly` territory; this skill writes the **text** that
+accompanies the finished video.
 
-**Output contract:**
-1. A **YouTube package** — title, description, hashtags, and a pinned-comment
-   suggestion — sized correctly for a Short (not the long-form AEO treatment; see
-   `references/youtube-description-hashtags.md`).
-2. **Cross-platform caption variants** for whichever other surfaces the user names
-   (TikTok, Instagram Reels, X, Bluesky, Threads, etc.), each one marked per the honest
-   corpus-coverage gap below.
+**Read `shorts-assembly`'s `## Constraints that survive to publish` section** `[I]`. It is never
+blank — it carries the literal word "none" when nothing applies. If it names a constraint (e.g. a
+mandatory safety-resource mention, or a quotability restriction), honor it in the post copy; this
+skill does not need to know what produced the constraint, only that it is flagged.
+
+## Output contract
+
+```
+## YouTube package
+[Title, description, hashtags, and a pinned-comment suggestion — sized correctly for a Short
+ (not the long-form AEO treatment; see references/youtube-description-hashtags.md).]
+
+## Cross-platform caption variants
+[For whichever other surfaces the user names (TikTok, Instagram Reels, X, Bluesky, Threads,
+ etc.), each one marked per the honest corpus-coverage gap below.]
+```
+
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: social-repurpose
+produces.stage: 05-repurpose
+produces.section: YouTube package
+produces.section: Cross-platform caption variants
+consumes: shorts-scripting#HOOK
+consumes: shorts-scripting#Delivery notes
+consumes: shorts-assembly#Constraints that survive to publish
+consumes: shorts-assembly#Shot table
+```
 
 ## Provenance discipline (read before writing anything)
 
@@ -127,8 +147,9 @@ to `rgs-briefs/` in this mode.
 
 1. Resolve the two upstream inputs: run `python scripts/resolve_brief_version.py --slug <slug>
    --kind script` and `... --kind assembly` from the repo root. Read each file the resolver
-   reports, and follow the script's `concept_brief:`/`grounding:` pointer fields if you need
-   packaging direction or citation constraints to carry forward.
+   reports.
+   Packaging direction and any publish constraint arrive through the edit plan's own sections —
+   do not chase the script's `concept_brief:`/`grounding:` pointers `[I]`.
    **Staleness check:** re-run both resolver calls again right before you finish — if a newer
    version now exists for either than the one you read, tell the user before proceeding.
 2. Before writing the social-repurpose file, run
