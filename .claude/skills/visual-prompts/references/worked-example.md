@@ -1,5 +1,9 @@
 # Worked example: a scripted Short → a dual-register Midjourney prompt sheet
 
+> This example illustrates rules already marked in this skill's other reference files and carries no independent normative weight. Where a line here restates a rule, the marker lives
+> on the rule, not on the illustration — do not copy an unmarked line out of this file into a
+> real brief as if it were sourced `[I]`.
+
 This walks a real `letkidsplay`-style RaisingGoodSports Short — a five-beat script pairing a
 present-day club-soccer claim with a Plutarch citation — through every step of `SKILL.md`'s
 workflow, in order, ending in a sheet that passes Gate C on this file's own first successful run

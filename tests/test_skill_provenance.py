@@ -408,3 +408,149 @@ def test_the_registry_matches_the_declared_stage_graph():
     assert set(ids) == set(KIND_REGISTRY), (
         f"pipeline.yaml stage ids {sorted(ids)} != registry {sorted(KIND_REGISTRY)}"
     )
+
+
+# --- Provenance triage (audit C-42/C-43/C-54) -------------------------------
+# Three categories, decided once, recorded here. Shrink TIER_1_PENDING; never grow it.
+
+ALTERNATIVE_VOCABULARY = {
+    # skill -> the marker tokens it declares in place of [C]/[I]/[T]
+    "rgs-grounding": (r"\[THINKER:", r"\[RESEARCH:", r"\[REF\]", r"\[B\]"),
+    "rgs-pairing-review": (r"\[THINKER:", r"\[RESEARCH:", r"\[REF\]", r"\[B\]"),
+    "social-repurpose": (r"\[C→I\]", r"\[gap\]"),
+}
+
+STRUCTURAL_SECTIONS = (
+    "reference files", "citation index", "pipeline position",
+    "file i/o contract", "handoff contract (machine-checked)", "reference map",
+)
+
+WORKED_EXAMPLE_DISCLAIMER = (
+    "This example illustrates rules already marked in this skill's other reference files "
+    "and carries no independent normative weight."
+)
+
+# Files whose tier-1 blocks are not yet marked. One line deleted per commit.
+# Format: relative posix path -> (unmarked block count at triage time, note)
+TIER_1_PENDING: dict[str, tuple[int, str]] = {
+    ".claude/skills/rgs-grounding/references/pairing-map.md": (95, "category-3 file per brief, but its field-label bullets (Work/anchor, Quotability, Pairs with, Why it links, Visual motif cue) carry no [THINKER:]/[RESEARCH:]/[REF]/[B] token, so the vocabulary regex does not actually reach them (brief's own expectation was stale); explicitly out of scope to edit this dispatch (do-not-touch), flagged not fixed"),
+    ".claude/skills/shorts-scripting/references/retention-loops-and-structure.md": (23, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/visual-prompts/references/visual-arc.md": (22, "mostly column/definition rows plus some modal corpus claims; needs a careful per-line pass against output/ for the modal lines, not attempted this dispatch"),
+    ".claude/skills/shorts-scripting/references/hooks-and-openings.md": (14, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/shorts-scripting/references/script-intelligence-and-delivery.md": (13, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/midjourney-prompting/references/v82-model-delta.md": (13, "vendor-fact deltas; needs [T]/[T-unverified] re-verification against docs.midjourney.com, not attempted this dispatch"),
+    ".claude/skills/elevenlabs-audio/SKILL.md": (11, "modal craft rules over ElevenLabs config; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
+    ".claude/skills/midjourney-prompting/SKILL.md": (11, "modal craft rules; needs [T]/[T-unverified] verification against docs.midjourney.com, not attempted this dispatch"),
+    ".claude/skills/visual-prompts/references/faceless-pacing-rules.md": (10, "corpus pacing claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/midjourney-prompting/references/style-systems.md": (10, "vendor-fact style-system rules; needs [T] verification against docs.midjourney.com, not attempted this dispatch"),
+    ".claude/skills/shorts-scripting/references/endings-and-ctas.md": (9, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/visual-prompts/references/prompt-sheet-format.md": (8, "field-list/format rows plus a few corpus-cadence claims; needs a careful per-line split, not attempted this dispatch"),
+    ".claude/skills/shorts-ideation/SKILL.md": (7, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/elevenlabs-music/references/api-payload.md": (6, "vendor payload-field facts; needs [T] verification against Eleven Music docs, not attempted this dispatch"),
+    ".claude/skills/shorts-scripting/SKILL.md": (5, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/visual-prompts/SKILL.md": (5, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/rgs-grounding/references/safety-sensitive-handling.md": (5, "RGS operational-design bullets, but RGS's declared vocabulary has no [I]-equivalent token for this skill's own design (only citation tokens); using bare [I]/[C]/[T] here would fail the stray-marker test. Needs a P14 decision on an RGS-side design marker, not attempted this dispatch"),
+    ".claude/skills/visual-prompts/references/image-to-video.md": (4, "corpus i2v-motion claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/elevenlabs-music/SKILL.md": (4, "vendor-fact rules; needs [T] verification against Eleven Music docs, not attempted this dispatch"),
+    ".claude/skills/rgs-grounding/references/scripting-beat-mapping.md": (4, "structural beat-mapping bullets are this skill's own design, but RGS's declared vocabulary has no [I]-equivalent design token (see safety-sensitive-handling.md note); needs a P14 decision, not attempted this dispatch"),
+    ".claude/skills/shorts-scripting/references/beat-timing-model.md": (3, "corpus timing claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/voiceover-brief/SKILL.md": (3, "corpus voice-selection claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/voiceover-brief/references/scripting-for-tts.md": (3, "corpus TTS-formatting claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/shorts-assembly/references/loudness-and-mix.md": (3, "corpus loudness/ducking claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/elevenlabs-audio/references/directorial-prompting.md": (3, "vendor-fact audio-tag rules; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
+    ".claude/skills/elevenlabs-audio/references/model-routing.md": (3, "vendor-fact model-routing rules; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
+    ".claude/skills/elevenlabs-audio/references/validation-gates.md": (3, "vendor-fact gate rules; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
+    ".claude/skills/elevenlabs-music/references/validation-gates.md": (3, "vendor-fact gate rules; needs [T] verification against Eleven Music docs, not attempted this dispatch"),
+    ".claude/skills/midjourney-prompting/references/render-economics.md": (3, "vendor-fact GPU/credit rules; needs [T] verification against docs.midjourney.com, not attempted this dispatch"),
+    ".claude/skills/rgs-grounding/references/brand-voice-and-tone.md": (3, "brand-voice bullets distilled from an operator source document, not this skill's design and not the 14-channel corpus; RGS's declared vocabulary has no token for this provenance class, needs a P14 decision, not attempted this dispatch"),
+    ".claude/skills/rgs-pairing-review/SKILL.md": (3, "RGS operational-design bullets; RGS's declared vocabulary has no [I]-equivalent design token (see rgs-grounding/references/safety-sensitive-handling.md note), needs a P14 decision, not attempted this dispatch"),
+    ".claude/skills/shorts-scripting/references/read-aloud-gates.md": (2, "corpus read-aloud-gate claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/voiceover-brief/references/channel-voice.md": (2, "pinned-voice-id operational bullets; already [P]-adjacent but the specific unmarked lines need a deliberate [P]/[I] call rather than a blind pass, not attempted this dispatch"),
+    ".claude/skills/elevenlabs-audio/references/voice-profiles.md": (2, "vendor-fact voice-profile rules; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
+    ".claude/skills/elevenlabs-music/references/composition-plans.md": (2, "vendor-fact composition-plan rules; needs [T] verification against Eleven Music docs, not attempted this dispatch"),
+    ".claude/skills/midjourney-prompting/references/validation-gates.md": (2, "vendor-fact gate rules; needs [T] verification against docs.midjourney.com, not attempted this dispatch"),
+    ".claude/skills/voiceover-brief/references/production-and-loudness.md": (1, "corpus loudness claim; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/shorts-assembly/references/caption-overlay-system.md": (1, "corpus caption/overlay claim; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/elevenlabs-audio/references/api-payload.md": (1, "vendor-fact payload rule; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
+    ".claude/skills/elevenlabs-audio/references/cost-and-credits.md": (1, "vendor-fact credit-cost rule; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
+    ".claude/skills/elevenlabs-audio/references/voice-settings.md": (1, "vendor-fact voice-settings rule; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
+    ".claude/skills/midjourney-prompting/references/prompt-architecture.md": (1, "vendor-fact prompt-architecture rule; needs [T] verification against docs.midjourney.com, not attempted this dispatch"),
+}
+
+
+def _vocabulary_re(skill: str) -> re.Pattern:
+    extra = ALTERNATIVE_VOCABULARY.get(skill, ())
+    return re.compile("|".join((MARKER_RE.pattern, *extra)))
+
+
+def normative_blocks(path: Path) -> list[tuple[int, str]]:
+    """A normative block is a `- **…` bullet outside a fence and outside a structural section."""
+    blocks, section = [], ""
+    for lineno, line in strip_fences(path.read_text(encoding="utf-8")):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            section = stripped.lstrip("#").strip().lower()
+            continue
+        if section in STRUCTURAL_SECTIONS:
+            continue
+        if stripped.startswith("- **"):
+            blocks.append((lineno, stripped))
+    return blocks
+
+
+@pytest.mark.parametrize("skill", ALL_SKILLS)
+def test_every_normative_block_carries_a_marker_or_a_recorded_exemption(skill):
+    """CLAUDE.md: 'a skill rule with no marker is a bug'. This test makes that true, or
+    makes the exemption explicit and countable."""
+    pattern = _vocabulary_re(skill)
+    failures = []
+    for path in [skill_md(skill), *reference_files(skill)]:
+        rel = path.relative_to(REPO).as_posix()
+        if path.name == "worked-example.md":
+            continue  # covered by the disclaimer test below
+        unmarked = [f"{rel}:{n}" for n, text in normative_blocks(path)
+                    if not pattern.search(text)]
+        if not unmarked:
+            assert rel not in TIER_1_PENDING, (
+                f"{rel} is clean — delete its TIER_1_PENDING entry"
+            )
+            continue
+        if rel in TIER_1_PENDING:
+            continue
+        failures.extend(unmarked)
+    assert failures == [], f"unmarked normative blocks with no recorded exemption: {failures}"
+
+
+@pytest.mark.parametrize("skill", ALL_SKILLS)
+def test_every_worked_example_states_its_normative_status(skill):
+    """C-54: shorts-assembly instructs copying the worked example's structure verbatim, so
+    an unmarked example is the template every emitted artifact inherits."""
+    example = SKILLS / skill / "references" / "worked-example.md"
+    if not example.exists():
+        return
+    assert WORKED_EXAMPLE_DISCLAIMER in example.read_text(encoding="utf-8"), (
+        f"{skill}/references/worked-example.md must carry the worked-example disclaimer verbatim"
+    )
+
+
+@pytest.mark.parametrize("skill", RGS_SKILLS)
+def test_rgs_skills_do_not_carry_stray_corpus_markers(skill):
+    """C-43: five stray [C]/[I]/[T] tokens survive inside skills that declare they use a
+    different vocabulary, so the boundary is not clean either."""
+    allowed_lines = {
+        # the disclaimer that *names* the corpus markers, and cross-references to another
+        # skill's marked rule, are legitimate. Everything else is a leak.
+        ".claude/skills/rgs-grounding/SKILL.md": {39},
+        ".claude/skills/rgs-grounding/references/scripting-beat-mapping.md": {18, 19},
+        # the mandatory, verbatim C-54 worked-example disclaimer (added by T15) names `[I]`
+        # as prose, same as the citation-markers disclaimer above.
+        ".claude/skills/rgs-grounding/references/worked-example.md": {5},
+    }
+    stray = []
+    for path in [skill_md(skill), *reference_files(skill)]:
+        rel = path.relative_to(REPO).as_posix()
+        ok = allowed_lines.get(rel, set())
+        for lineno, line in strip_fences(path.read_text(encoding="utf-8")):
+            if MARKER_RE.search(line) and lineno not in ok:
+                stray.append(f"{rel}:{lineno}")
+    assert stray == [], f"stray corpus markers in an alternative-vocabulary skill: {stray}"

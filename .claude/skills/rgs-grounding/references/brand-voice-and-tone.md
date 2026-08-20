@@ -4,7 +4,7 @@
 It was distilled by hand from `output/raisinggoodsports-brand-definition.md` on 2026-07-25 — a
 historical provenance note only. No script in this repo produces that path, `output/` is
 git-ignored, and a fresh checkout will not have it: do not read it, and do not treat its absence
-as a failure `[I]`.
+as a failure.
 
 ## Voice traits (binding)
 

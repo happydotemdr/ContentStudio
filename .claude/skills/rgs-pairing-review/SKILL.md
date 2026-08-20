@@ -60,11 +60,11 @@ were new. `scripts/resolve_brief_version.py --slug <topic-slug> --kind grounding
 current version's path for a given topic-slug. **Briefs written before 2026-08-08 carry no
 `--kind` suffix** — if that prints `NONE`, fall back to the same call without `--kind`; the path
 it returns is the correct, current file to grep — no version-chain reasoning needed, this skill
-never writes a new version `[I]`.
+never writes a new version.
 
 This skill itself sits outside the artifact vocabulary published elsewhere in the skill set —
 it is not in `KIND_REGISTRY` or `SPECIALIST_KINDS` because its proposal document is not a
-resolver-tracked artifact `[I]`.
+resolver-tracked artifact.
 
 ### 4. Verify and draft, or reject with a reason
 

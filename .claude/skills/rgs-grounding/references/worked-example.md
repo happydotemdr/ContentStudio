@@ -1,5 +1,9 @@
 # Worked Example: rgs-grounding
 
+> This example illustrates rules already marked in this skill's other reference files and carries no independent normative weight. Where a line here restates a rule, the marker lives
+> on the rule, not on the illustration — do not copy an unmarked line out of this file into a
+> real brief as if it were sourced `[I]`.
+
 A full run of `rgs-grounding` against the topic "why so many travel-sport kids quit around age
 13," from Pairing Slate through the saved Grounding Brief. Reproduced from an actual test
 invocation (see the implementation plan's Task 8) — not a hypothetical.

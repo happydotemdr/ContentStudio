@@ -1,5 +1,9 @@
 # Worked example — copper moka pot, e-commerce hero
 
+> This example illustrates rules already marked in this skill's other reference files and carries no independent normative weight. Where a line here restates a rule, the marker lives
+> on the rule, not on the illustration — do not copy an unmarked line out of this file into a
+> real brief as if it were sourced `[I]`.
+
 One job end to end: control surface → draft → lock → gates → production. **This is a real run.** The
 Gate B findings below are the actual output of a fresh agent dispatched with the verbatim prompt in
 `validation-gates.md` — including the parts where the first attempt was wrong. That is the point of

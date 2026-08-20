@@ -160,7 +160,7 @@ mandatory 988 Suicide & Crisis Lifeline line required in final captions/copy"]
 **Artifact vocabulary — one table, copied unchanged into every skill.** The resolver matches
 filenames literally, so a `--kind` guessed from a stage id or a skill name returns `NONE` and
 exit 1 — which this section documents as the benign "upstream hasn't run yet" case. Copy the
-literal string from this table; never infer it `[I]`.
+literal string from this table; never infer it.
 
 | Stage id (`pipeline.yaml`) | `--kind` | `stage:` frontmatter | Owning skill |
 |---|---|---|---|
@@ -199,7 +199,7 @@ cannot see it, so **do not trust the resolver's proposed version number in this 
 bare file's own `version:` frontmatter field, set the new brief's `version:` to one higher than
 that, add a `-v<N>` suffix to the filename matching it (the resolver's auto-generated filename
 omits the suffix for what it thinks is version 1 — override it by hand), and set `supersedes:`
-to the old bare file's path. Do not rename the old file `[I]`.
+to the old bare file's path. Do not rename the old file.
 
 ## Red flags — stop and re-verify
 

@@ -1,5 +1,9 @@
 # Worked example — one job end to end
 
+> This example illustrates rules already marked in this skill's other reference files and carries no independent normative weight. Where a line here restates a rule, the marker lives
+> on the rule, not on the illustration — do not copy an unmarked line out of this file into a
+> real brief as if it were sourced `[I]`.
+
 A standalone (non-Shorts) job, run through all four stages and all three gates. Read this to see how
 the pieces connect; do not copy the values — they are specific to this job.
 
