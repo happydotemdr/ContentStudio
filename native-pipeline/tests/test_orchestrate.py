@@ -9,6 +9,30 @@ from stitcher.vo_alignment import Segment
 
 from native_pipeline import orchestrate
 
+# Computed independently of native_pipeline.orchestrate's own _REPO_ROOT /
+# _ELEVENLABS_TOOLING_DIR / _STITCHER_DIR constants, so a regression in that
+# module's .parents[N] arithmetic (e.g. drifting to .parents[1] or
+# .parents[3]) can't produce a wrong value that still matches what the test
+# asserts against. tests/test_orchestrate.py sits at the same depth under the
+# repo root as native_pipeline/orchestrate.py (native-pipeline/tests/... vs.
+# native-pipeline/native_pipeline/...), so the same .parents[2] step lands on
+# the same repo root from either file.
+_REPO_ROOT_INDEPENDENT = Path(__file__).resolve().parents[2]
+_EXPECTED_ELEVENLABS_TOOLING_DIR = _REPO_ROOT_INDEPENDENT / "elevenlabs-tooling"
+_EXPECTED_STITCHER_DIR = _REPO_ROOT_INDEPENDENT / "stitcher"
+
+# Sanity-check the independently computed paths are real, correctly-named
+# package directories -- not just some arbitrary directory that happens to
+# exist. Failing here means the repo layout assumption itself is wrong,
+# which should surface as a clear collection-time error rather than a
+# confusing per-test failure below.
+assert (_EXPECTED_ELEVENLABS_TOOLING_DIR / "elevenlabs_tooling").is_dir(), (
+    f"expected {_EXPECTED_ELEVENLABS_TOOLING_DIR} to contain an elevenlabs_tooling/ package"
+)
+assert (_EXPECTED_STITCHER_DIR / "stitcher").is_dir(), (
+    f"expected {_EXPECTED_STITCHER_DIR} to contain a stitcher/ package"
+)
+
 
 class FakeCompletedProcess:
     def __init__(self):
@@ -47,7 +71,8 @@ def test_run_vo_stage_calls_generate_vo_and_derives_segments(tmp_path, monkeypat
 
     assert captured_cmd["cmd"][:4] == [sys.executable, "-m", "elevenlabs_tooling", "generate-vo"]
     assert "--force" in captured_cmd["cmd"]
-    assert captured_cmd["cwd"] == orchestrate._ELEVENLABS_TOOLING_DIR
+    assert captured_cmd["cwd"] == _EXPECTED_ELEVENLABS_TOOLING_DIR
+    assert (captured_cmd["cwd"] / "elevenlabs_tooling").is_dir()
     assert audio_output.read_bytes() == b"fake-audio"
     assert segments[0].name == "beat1"
 
@@ -110,7 +135,8 @@ def test_run_music_stage_writes_plan_and_calls_music_send(tmp_path, monkeypatch)
 
     assert captured_cmd["cmd"][:4] == [sys.executable, "-m", "elevenlabs_tooling", "music"]
     assert captured_cmd["cmd"][4] == "send"
-    assert captured_cmd["cwd"] == orchestrate._ELEVENLABS_TOOLING_DIR
+    assert captured_cmd["cwd"] == _EXPECTED_ELEVENLABS_TOOLING_DIR
+    assert (captured_cmd["cwd"] / "elevenlabs_tooling").is_dir()
     assert bed_path.read_bytes() == b"fake-bed"
 
 
@@ -130,4 +156,5 @@ def test_run_render_stage_invokes_stitcher_render(tmp_path, monkeypatch):
         sys.executable, "-m", "stitcher", "render", "test-slug",
         "--root", str(tmp_path), "--mode", "final", "--force",
     ]
-    assert captured_cmd["cwd"] == orchestrate._STITCHER_DIR
+    assert captured_cmd["cwd"] == _EXPECTED_STITCHER_DIR
+    assert (captured_cmd["cwd"] / "stitcher").is_dir()
