@@ -56,8 +56,14 @@ the map — add it to this review pass as a candidate, even if its thinker/resea
 already in the reviewed lists.
 Resolve each topic-slug to its **latest version only** before grepping — a superseded (older)
 version of a brief that already got its gap-fill flag reviewed must not be re-surfaced as if it
-were new. `scripts/resolve_brief_version.py --slug <topic-slug>` (no `--kind`) returns the
-current version's path for a given topic-slug.
+were new. `scripts/resolve_brief_version.py --slug <topic-slug> --kind grounding` returns the
+current version's path for a given topic-slug. **Briefs written before 2026-08-08 carry no
+`--kind` suffix** — if that prints `NONE`, fall back to the same call without `--kind` to find
+the pre-migration bare filename, mirroring `rgs-grounding`'s own fallback note `[I]`.
+
+This skill itself sits outside the artifact vocabulary published elsewhere in the skill set —
+it is not in `KIND_REGISTRY` or `SPECIALIST_KINDS` because its proposal document is not a
+resolver-tracked artifact `[I]`.
 
 ### 4. Verify and draft, or reject with a reason
 

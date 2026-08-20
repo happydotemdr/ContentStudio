@@ -57,6 +57,26 @@ SPECIALIST_SKILLS = ("elevenlabs-audio", "elevenlabs-music", "midjourney-prompti
 RGS_SKILLS = ("rgs-grounding", "rgs-pairing-review")
 ALL_SKILLS = PIPELINE_SKILLS + SPECIALIST_SKILLS + RGS_SKILLS
 
+# stage id (pipeline.yaml) -> (--kind string, `stage:` frontmatter value, owning skill)
+KIND_REGISTRY = {
+    "grounding": ("grounding", "00-grounding", "rgs-grounding"),
+    "ideation": ("concept-brief", "01-ideation", "shorts-ideation"),
+    "scripting": ("script", "02-scripting", "shorts-scripting"),
+    "styleboard": ("styleboard", "02b-styleboard", "shorts-styleboard"),
+    "voiceover": ("voiceover-brief", "03-voiceover", "voiceover-brief"),
+    "visual": ("visual-prompts", "03-visual", "visual-prompts"),
+    "music": ("music", "03-music", "music-brief"),
+    "assembly": ("assembly", "04-assembly", "shorts-assembly"),
+    "repurpose": ("social-repurpose", "05-repurpose", "social-repurpose"),
+}
+# specialists write beside a stage rather than owning one
+SPECIALIST_KINDS = {
+    "elevenlabs-audio": ("audio-spec", "03-voiceover"),
+    "elevenlabs-music": ("music-spec", "03-music"),
+    "midjourney-prompting": (None, None),
+}
+KIND_FLAG_RE = re.compile(r"--kind\s+([a-z][a-z0-9-]*)")
+
 
 def skill_dir(name: str) -> Path:
     return SKILLS / name
@@ -293,4 +313,36 @@ def test_every_skill_directory_is_classified():
     assert on_disk == set(ALL_SKILLS), (
         f"unclassified: {sorted(on_disk - set(ALL_SKILLS))}; "
         f"missing from disk: {sorted(set(ALL_SKILLS) - on_disk)}"
+    )
+
+
+def test_every_kind_flag_in_every_skill_is_in_the_registry():
+    """A `--kind` typo returns NONE/exit 1, which every File I/O section documents as the
+    benign 'upstream hasn't run yet' case. A vocabulary slip is therefore invisible."""
+    known = {k for k, _, _ in KIND_REGISTRY.values()}
+    known |= {k for k, _ in SPECIALIST_KINDS.values() if k}
+    bad = []
+    for path in every_markdown_file():
+        for lineno, line in strip_fences(path.read_text(encoding="utf-8")):
+            for m in KIND_FLAG_RE.finditer(line):
+                if m.group(1) not in known:
+                    bad.append(f"{path}:{lineno}: --kind {m.group(1)}")
+    assert bad == [], f"unregistered --kind values: {bad}"
+
+
+@pytest.mark.parametrize("stage,spec", sorted(KIND_REGISTRY.items()))
+def test_the_owning_skill_declares_the_registry_kind_and_stage(stage, spec):
+    kind, stage_value, skill = spec
+    block = handoff(skill)
+    assert block["produces.kind"] == [kind], f"{skill} must declare produces.kind: {kind}"
+    assert block["produces.stage"] == [stage_value], f"{skill} must declare produces.stage: {stage_value}"
+
+
+def test_the_registry_matches_the_declared_stage_graph():
+    """Cross-check against pipeline.yaml so the two cannot drift. Read-only: pipeline.yaml
+    belongs to P4."""
+    text = (REPO / "pipeline.yaml").read_text(encoding="utf-8")
+    ids = re.findall(r"^\s*-\s*id:\s*(\S+)\s*$", text, re.MULTILINE)
+    assert set(ids) == set(KIND_REGISTRY), (
+        f"pipeline.yaml stage ids {sorted(ids)} != registry {sorted(KIND_REGISTRY)}"
     )

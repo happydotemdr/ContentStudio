@@ -257,6 +257,26 @@ starting point, never a fact.
 
 ## File I/O contract
 
+**Artifact vocabulary — one table, copied unchanged into every skill.** The resolver matches
+filenames literally, so a `--kind` guessed from a stage id or a skill name returns `NONE` and
+exit 1 — which this section documents as the benign "upstream hasn't run yet" case. Copy the
+literal string from this table; never infer it `[I]`.
+
+| Stage id (`pipeline.yaml`) | `--kind` | `stage:` frontmatter | Owning skill |
+|---|---|---|---|
+| `grounding` | `grounding` | `00-grounding` | `rgs-grounding` |
+| `ideation` | `concept-brief` | `01-ideation` | `shorts-ideation` |
+| `scripting` | `script` | `02-scripting` | `shorts-scripting` |
+| `styleboard` | `styleboard` | `02b-styleboard` | `shorts-styleboard` |
+| `voiceover` | `voiceover-brief` | `03-voiceover` | `voiceover-brief` |
+| `visual` | `visual-prompts` | `03-visual` | `visual-prompts` |
+| `music` | `music` | `03-music` | `music-brief` |
+| `assembly` | `assembly` | `04-assembly` | `shorts-assembly` |
+| `repurpose` | `social-repurpose` | `05-repurpose` | `social-repurpose` |
+| — (specialist) | `audio-spec` | `03-voiceover` | `elevenlabs-audio` |
+| — (specialist) | `music-spec` | `03-music` | `elevenlabs-music` |
+| — (specialist) | *none — transcript-only* | — | `midjourney-prompting` |
+
 **App-driven** (a `pipeline-app` turn already told you an output path): follow that instruction
 exactly — write only to the named path, overwrite it each turn as instructed.
 

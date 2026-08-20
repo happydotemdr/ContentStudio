@@ -91,6 +91,9 @@ mandatory and does not get skipped for speed; see "Red flags" below.
 ```markdown
 ---
 date: [YYYY-MM-DD]
+kind: grounding
+slug: [topic-slug]
+stage: 00-grounding
 topic: "[topic]"
 thinker: "[Name]"
 concept: "[concept]"
@@ -154,12 +157,33 @@ mandatory 988 Suicide & Crisis Lifeline line required in final captions/copy"]
 
 ### 5. Save it
 
-First, run `python scripts/resolve_brief_version.py --slug <topic-slug>` (no `--kind` — grounding
-briefs don't have one) from the repo root. If it prints a path (not `NONE`), that's the current
-version being superseded — remember its printed path verbatim for the `supersedes:` field below;
-it's already `rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
+**Artifact vocabulary — one table, copied unchanged into every skill.** The resolver matches
+filenames literally, so a `--kind` guessed from a stage id or a skill name returns `NONE` and
+exit 1 — which this section documents as the benign "upstream hasn't run yet" case. Copy the
+literal string from this table; never infer it `[I]`.
 
-Then run `python scripts/resolve_brief_version.py --slug <topic-slug> --next --date <YYYY-MM-DD>`
+| Stage id (`pipeline.yaml`) | `--kind` | `stage:` frontmatter | Owning skill |
+|---|---|---|---|
+| `grounding` | `grounding` | `00-grounding` | `rgs-grounding` |
+| `ideation` | `concept-brief` | `01-ideation` | `shorts-ideation` |
+| `scripting` | `script` | `02-scripting` | `shorts-scripting` |
+| `styleboard` | `styleboard` | `02b-styleboard` | `shorts-styleboard` |
+| `voiceover` | `voiceover-brief` | `03-voiceover` | `voiceover-brief` |
+| `visual` | `visual-prompts` | `03-visual` | `visual-prompts` |
+| `music` | `music` | `03-music` | `music-brief` |
+| `assembly` | `assembly` | `04-assembly` | `shorts-assembly` |
+| `repurpose` | `social-repurpose` | `05-repurpose` | `social-repurpose` |
+| — (specialist) | `audio-spec` | `03-voiceover` | `elevenlabs-audio` |
+| — (specialist) | `music-spec` | `03-music` | `elevenlabs-music` |
+| — (specialist) | *none — transcript-only* | — | `midjourney-prompting` |
+
+First, run `python scripts/resolve_brief_version.py --slug <topic-slug> --kind grounding` from
+the repo root. If it prints a path (not `NONE`), that's the current version being superseded —
+remember its printed path verbatim for the `supersedes:` field below; it's already
+`rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
+
+Then run
+`python scripts/resolve_brief_version.py --slug <topic-slug> --kind grounding --next --date <YYYY-MM-DD>`
 to get the exact filename and version number to write (first-ever brief for this topic-slug:
 version 1, no `-v` suffix; a regrounding of an existing topic: the next version — this prints a
 bare filename, not a path, so `rgs-briefs/<that filename>` below is correct as written). Set the
@@ -168,6 +192,10 @@ add `supersedes: <the path the first resolve_brief_version.py call above printed
 brief to `rgs-briefs/<that filename>` (see `rgs-briefs/README.md` for the schema). Never edit an
 existing file in this directory — a `PreToolUse` hook blocks it. Confirm the file was written
 before ending the turn.
+
+**Briefs written before 2026-08-08 carry no `--kind` suffix.** If `--kind grounding` prints
+`NONE` but a bare `<date>-<slug>.md` exists, that is the prior version — name it in `supersedes:`
+and write the new one with the suffix. Do not rename the old file `[I]`.
 
 ## Red flags — stop and re-verify
 
