@@ -1,0 +1,125 @@
+import pytest
+
+from stitcher.vo_alignment import Segment, derive_segments
+
+
+def _build_case(beat_texts, break_seconds):
+    """Build (text, alignment) for beats joined by <break> tags, with a
+    synthetic alignment that mirrors ElevenLabs' real observed structure
+    (docs/superpowers/plans/2026-08-19-vo-architecture-test-plan.md §6c):
+    the entire pause duration lands on the space character immediately
+    before the <break> tag; the tag's own markup characters (and the space
+    after it) are zero-width at the instant the pause ends; the next real
+    character begins at that exact instant."""
+    CHAR_DUR = 0.1
+    chars, starts, ends = [], [], []
+    clock = 0.0
+
+    def emit_real(s):
+        nonlocal clock
+        for ch in s:
+            chars.append(ch)
+            starts.append(round(clock, 4))
+            clock = round(clock + CHAR_DUR, 4)
+            ends.append(clock)
+
+    def emit_gap_char(ch, gap):
+        nonlocal clock
+        chars.append(ch)
+        starts.append(round(clock, 4))
+        clock = round(clock + gap, 4)
+        ends.append(clock)
+
+    def emit_zero_width(s):
+        for ch in s:
+            chars.append(ch)
+            starts.append(clock)
+            ends.append(clock)
+
+    text_parts = [beat_texts[0]]
+    emit_real(beat_texts[0])
+    for beat, seconds in zip(beat_texts[1:], break_seconds):
+        tag = f'<break time="{seconds:.1f}s" />'
+        emit_gap_char(" ", seconds)
+        emit_zero_width(tag)
+        emit_zero_width(" ")
+        emit_real(beat)
+        text_parts.append(f' {tag} ')
+        text_parts.append(beat)
+
+    text = "".join(text_parts)
+    alignment = {
+        "characters": chars,
+        "character_start_times_seconds": starts,
+        "character_end_times_seconds": ends,
+    }
+    assert len(chars) == len(text)
+    return text, alignment
+
+
+def test_two_beats_one_break_recovers_correct_segment_boundaries():
+    beat1, beat2 = "Hi there.", "Bye now."
+    text, alignment = _build_case([beat1, beat2], [0.5])
+
+    segments = derive_segments(text, alignment)
+
+    assert len(segments) == 2
+    assert segments[0].name == "beat1"
+    assert segments[0].at == 0.0
+    assert segments[0].duration == pytest.approx(len(beat1) * 0.1)
+    assert segments[1].name == "beat2"
+    assert segments[1].at == pytest.approx(len(beat1) * 0.1 + 0.5)
+    assert segments[1].duration == pytest.approx(len(beat2) * 0.1)
+
+
+def test_three_beats_two_breaks_recovers_all_boundaries():
+    beat1, beat2, beat3 = "First one.", "Second one.", "Third one."
+    text, alignment = _build_case([beat1, beat2, beat3], [0.5, 0.3])
+
+    segments = derive_segments(text, alignment)
+
+    assert [s.name for s in segments] == ["beat1", "beat2", "beat3"]
+    b1_end = len(beat1) * 0.1
+    b2_at = b1_end + 0.5
+    b2_end = b2_at + len(beat2) * 0.1
+    b3_at = b2_end + 0.3
+    assert segments[0].at == 0.0
+    assert segments[0].duration == pytest.approx(len(beat1) * 0.1)
+    assert segments[1].at == pytest.approx(b2_at)
+    assert segments[1].duration == pytest.approx(len(beat2) * 0.1)
+    assert segments[2].at == pytest.approx(b3_at)
+    assert segments[2].duration == pytest.approx(len(beat3) * 0.1)
+
+
+def test_custom_names_are_used_in_order():
+    text, alignment = _build_case(["A beat.", "Another beat."], [0.4])
+    segments = derive_segments(text, alignment, names=["hook", "cta"])
+    assert [s.name for s in segments] == ["hook", "cta"]
+
+
+def test_single_beat_no_breaks_returns_one_segment_spanning_the_whole_text():
+    beat = "Just one beat here."
+    text, alignment = _build_case([beat], [])
+    segments = derive_segments(text, alignment)
+    assert len(segments) == 1
+    assert segments[0].at == 0.0
+    assert segments[0].duration == pytest.approx(len(beat) * 0.1)
+
+
+def test_mismatched_names_length_raises():
+    text, alignment = _build_case(["A.", "B."], [0.5])
+    with pytest.raises(ValueError, match="2 segments"):
+        derive_segments(text, alignment, names=["only_one"])
+
+
+def test_alignment_length_mismatch_raises():
+    text, alignment = _build_case(["A.", "B."], [0.5])
+    alignment["characters"] = alignment["characters"][:-1]
+    with pytest.raises(ValueError, match="mismatched lengths"):
+        derive_segments(text, alignment)
+
+
+def test_alignment_text_mismatch_raises():
+    text, alignment = _build_case(["A.", "B."], [0.5])
+    with pytest.raises(ValueError, match="do not reconstruct"):
+        derive_segments("Completely different text.", alignment)
