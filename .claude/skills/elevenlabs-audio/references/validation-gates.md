@@ -6,11 +6,11 @@ rationale, so it checks the artifact rather than rubber-stamping the reasoning.
 **Rules of use:**
 
 - Use the prompts below **as written**. Each already embeds the repo's sub-agent output contract.
-- **Gates 1 and 2 are independent — dispatch them in parallel** (one message, two tool calls) once
+- **Gates 1 and 2 are independent — dispatch them in parallel** `[I]` (one message, two tool calls) once
   both artifacts exist.
-- **A gate returning findings blocks emission** until each finding is resolved or the user explicitly
+- **A gate returning findings blocks emission** `[I]` until each finding is resolved or the user explicitly
   overrides it.
-- **Never report a gate as passed without running it.** Report results verbatim in the spec's
+- **Never report a gate as passed without running it.** `[C]` Report results verbatim in the spec's
   VALIDATION GATES section.
 - Paste the artifact **into the prompt**. The agent must not have to go looking for it, and must not
   be told why any choice was made.

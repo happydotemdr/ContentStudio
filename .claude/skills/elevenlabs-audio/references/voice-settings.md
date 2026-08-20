@@ -101,7 +101,7 @@ Both are free. Settings changes cost a render.
 - Fix `seed` while tuning so you're hearing the parameter change, not sampling variance `[T]`.
   Determinism is **best-effort** — it reduces variation, it doesn't eliminate it `[T]`.
 - Change **one parameter at a time** `[I]`.
-- **Tune sliders in the web UI if you want free re-rolls.** The two free regenerations are
+- **Tune sliders in the web UI if you want free re-rolls.** `[T]` The two free regenerations are
   website-only and **explicitly unavailable via the API** `[T]` — and they *do* survive slider
   changes on the website `[T]`. Settle the values there, then port them into the payload.
 

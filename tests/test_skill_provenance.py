@@ -434,43 +434,14 @@ WORKED_EXAMPLE_DISCLAIMER = (
 # Format: relative posix path -> (unmarked block count at triage time, note)
 TIER_1_PENDING: dict[str, tuple[int, str]] = {
     ".claude/skills/rgs-grounding/references/pairing-map.md": (95, "category-3 file per brief, but its field-label bullets (Work/anchor, Quotability, Pairs with, Why it links, Visual motif cue) carry no [THINKER:]/[RESEARCH:]/[REF]/[B] token, so the vocabulary regex does not actually reach them (brief's own expectation was stale); explicitly out of scope to edit this dispatch (do-not-touch), flagged not fixed"),
-    ".claude/skills/shorts-scripting/references/retention-loops-and-structure.md": (23, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/shorts-scripting/references/hooks-and-openings.md": (14, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/shorts-scripting/references/script-intelligence-and-delivery.md": (13, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/midjourney-prompting/references/v82-model-delta.md": (13, "vendor-fact deltas; needs [T]/[T-unverified] re-verification against docs.midjourney.com, not attempted this dispatch"),
-    ".claude/skills/elevenlabs-audio/SKILL.md": (11, "modal craft rules over ElevenLabs config; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
-    ".claude/skills/midjourney-prompting/SKILL.md": (11, "modal craft rules; needs [T]/[T-unverified] verification against docs.midjourney.com, not attempted this dispatch"),
-    ".claude/skills/visual-prompts/references/faceless-pacing-rules.md": (10, "corpus pacing claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/midjourney-prompting/references/style-systems.md": (10, "vendor-fact style-system rules; needs [T] verification against docs.midjourney.com, not attempted this dispatch"),
-    ".claude/skills/shorts-scripting/references/endings-and-ctas.md": (9, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/shorts-ideation/SKILL.md": (7, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/elevenlabs-music/references/api-payload.md": (6, "vendor payload-field facts; needs [T] verification against Eleven Music docs, not attempted this dispatch"),
-    ".claude/skills/shorts-scripting/SKILL.md": (5, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
+    ".claude/skills/midjourney-prompting/references/v82-model-delta.md": (5, "remaining lines are Omni-Reference/Draft-Mode/--q vendor facts (compatibility lists, the literalism-claim refutation); needs [T]/[T-unverified] re-verification against docs.midjourney.com, not attempted this dispatch"),
     ".claude/skills/rgs-grounding/references/safety-sensitive-handling.md": (5, "RGS operational-design bullets, but RGS's declared vocabulary has no [I]-equivalent token for this skill's own design (only citation tokens); using bare [I]/[C]/[T] here would fail the stray-marker test. Needs a P14 decision on an RGS-side design marker, not attempted this dispatch"),
-    ".claude/skills/elevenlabs-music/SKILL.md": (4, "vendor-fact rules; needs [T] verification against Eleven Music docs, not attempted this dispatch"),
-    ".claude/skills/rgs-grounding/references/scripting-beat-mapping.md": (4, "structural beat-mapping bullets are this skill's own design, but RGS's declared vocabulary has no [I]-equivalent design token (see safety-sensitive-handling.md note); needs a P14 decision, not attempted this dispatch"),
-    ".claude/skills/shorts-scripting/references/beat-timing-model.md": (3, "corpus timing claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/voiceover-brief/SKILL.md": (3, "corpus voice-selection claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/voiceover-brief/references/scripting-for-tts.md": (3, "corpus TTS-formatting claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/shorts-assembly/references/loudness-and-mix.md": (3, "corpus loudness/ducking claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/elevenlabs-audio/references/directorial-prompting.md": (3, "vendor-fact audio-tag rules; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
-    ".claude/skills/elevenlabs-audio/references/model-routing.md": (3, "vendor-fact model-routing rules; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
-    ".claude/skills/elevenlabs-audio/references/validation-gates.md": (3, "vendor-fact gate rules; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
-    ".claude/skills/elevenlabs-music/references/validation-gates.md": (3, "vendor-fact gate rules; needs [T] verification against Eleven Music docs, not attempted this dispatch"),
-    ".claude/skills/midjourney-prompting/references/render-economics.md": (3, "vendor-fact GPU/credit rules; needs [T] verification against docs.midjourney.com, not attempted this dispatch"),
+    ".claude/skills/midjourney-prompting/references/style-systems.md": (3, "Omni Reference vendor facts (image-count limit, GPU-time multiplier, incompatibility list); needs [T] verification against docs.midjourney.com, not attempted this dispatch"),
     ".claude/skills/rgs-grounding/references/brand-voice-and-tone.md": (3, "brand-voice bullets distilled from an operator source document, not this skill's design and not the 14-channel corpus; RGS's declared vocabulary has no token for this provenance class, needs a P14 decision, not attempted this dispatch"),
-    ".claude/skills/rgs-pairing-review/SKILL.md": (3, "RGS operational-design bullets; RGS's declared vocabulary has no [I]-equivalent design token (see rgs-grounding/references/safety-sensitive-handling.md note), needs a P14 decision, not attempted this dispatch"),
-    ".claude/skills/shorts-scripting/references/read-aloud-gates.md": (2, "corpus read-aloud-gate claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/voiceover-brief/references/channel-voice.md": (2, "pinned-voice-id operational bullets; already [P]-adjacent but the specific unmarked lines need a deliberate [P]/[I] call rather than a blind pass, not attempted this dispatch"),
-    ".claude/skills/elevenlabs-audio/references/voice-profiles.md": (2, "vendor-fact voice-profile rules; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
-    ".claude/skills/elevenlabs-music/references/composition-plans.md": (2, "vendor-fact composition-plan rules; needs [T] verification against Eleven Music docs, not attempted this dispatch"),
-    ".claude/skills/midjourney-prompting/references/validation-gates.md": (2, "vendor-fact gate rules; needs [T] verification against docs.midjourney.com, not attempted this dispatch"),
-    ".claude/skills/voiceover-brief/references/production-and-loudness.md": (1, "corpus loudness claim; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/shorts-assembly/references/caption-overlay-system.md": (1, "corpus caption/overlay claim; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/elevenlabs-audio/references/api-payload.md": (1, "vendor-fact payload rule; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
-    ".claude/skills/elevenlabs-audio/references/cost-and-credits.md": (1, "vendor-fact credit-cost rule; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
-    ".claude/skills/elevenlabs-audio/references/voice-settings.md": (1, "vendor-fact voice-settings rule; needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
-    ".claude/skills/midjourney-prompting/references/prompt-architecture.md": (1, "vendor-fact prompt-architecture rule; needs [T] verification against docs.midjourney.com, not attempted this dispatch"),
+    ".claude/skills/rgs-grounding/references/scripting-beat-mapping.md": (3, "the three fixed-mapping bullets (Hook->Hook, Turn->Setup+early-Build, Reframe->split) are this skill's own design, but RGS's declared vocabulary has no [I]-equivalent design token (see safety-sensitive-handling.md note); needs a P14 decision, not attempted this dispatch"),
+    ".claude/skills/rgs-pairing-review/SKILL.md": (3, "the diff-check taxonomy (new/changed thinker and research definitions) is this skill's own operational design, but RGS's declared vocabulary has no [I]-equivalent design token (see rgs-grounding/references/safety-sensitive-handling.md note), needs a P14 decision, not attempted this dispatch"),
+    ".claude/skills/elevenlabs-audio/references/directorial-prompting.md": (2, "eleven_v3 text-to-dialogue vendor facts (model requirement, the <=2,000-char cap); needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
+    ".claude/skills/elevenlabs-audio/references/voice-profiles.md": (1, "the `use_pvc_as_ivc` request-parameter vendor fact (name, default, effect); needs [T] verification against ElevenLabs docs, not attempted this dispatch"),
 }
 
 
@@ -537,7 +508,7 @@ def test_rgs_skills_do_not_carry_stray_corpus_markers(skill):
         # the disclaimer that *names* the corpus markers, and cross-references to another
         # skill's marked rule, are legitimate. Everything else is a leak.
         ".claude/skills/rgs-grounding/SKILL.md": {39},
-        ".claude/skills/rgs-grounding/references/scripting-beat-mapping.md": {18, 19},
+        ".claude/skills/rgs-grounding/references/scripting-beat-mapping.md": {17, 18, 19},
         # the mandatory, verbatim C-54 worked-example disclaimer (added by T15) names `[I]`
         # as prose, same as the citation-markers disclaimer above.
         ".claude/skills/rgs-grounding/references/worked-example.md": {5},

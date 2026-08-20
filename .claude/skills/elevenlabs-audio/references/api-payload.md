@@ -104,7 +104,7 @@ take can be re-rolled without re-rendering the whole job.
 
 - Fall back to `previous_text` / `next_text`
 - Accept weaker seams
-- **Say so explicitly in the output** rather than emitting a payload that silently degrades
+- **Say so explicitly in the output** `[I]` rather than emitting a payload that silently degrades
 
 This is Validation Gate 2's most important single check.
 

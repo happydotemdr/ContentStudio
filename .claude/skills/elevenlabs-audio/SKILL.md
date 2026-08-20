@@ -34,12 +34,12 @@ accept them blind** `[I]`. `voiceover-brief` step 2 names a model, step 4 sets t
 plus speaker boost, and step 5 places v3 audio tags and phonetic respellings. Treat each as an
 **upstream input under review**, not a decided call:
 
-- **Model.** If the named `model_id` cannot render a feature the brief also asks for (a v3-only
+- **Model.** `[I]` If the named `model_id` cannot render a feature the brief also asks for (a v3-only
   tag on a v2 model, a dictionary on an engine that ignores it), say so and route to the model
   that can. Name the override in `MODEL ROUTING`.
-- **Settings.** If a float is out of range for the routed model, or a stability *mode* is named
+- **Settings.** `[I]` If a float is out of range for the routed model, or a stability *mode* is named
   where the model takes a float (or vice versa), convert it and say what you converted.
-- **Tags.** If a placed tag is not in the routed model's tag catalog, replace it with the nearest
+- **Tags.** `[I]` If a placed tag is not in the routed model's tag catalog, replace it with the nearest
   supported tag or fold the intent into the settings, and say which.
 
 **Do not re-litigate the voice, the tone per beat, the content type, or the mix.** Those four
@@ -52,9 +52,9 @@ contradict them here. Downstream of both: `shorts-assembly`.
 
 Two sources, deliberately separate:
 
-- **`docs/elevenlabs-production-runbook.md`** — platform truth. Engines, parameters, tags,
+- **`docs/elevenlabs-production-runbook.md`** `[I]` — platform truth. Engines, parameters, tags,
   dictionaries, credits. Web-verified against live ElevenLabs docs **2026-07-26**.
-- **`docs/elevenlabs-voiceover-guide.md`** — the corpus view (24 findings). Thin, and honest about it.
+- **`docs/elevenlabs-voiceover-guide.md`** `[I]` — the corpus view (24 findings). Thin, and honest about it.
 
 Markers, copied verbatim wherever a rule is repeated:
 
@@ -266,12 +266,12 @@ consumes: voiceover-brief#Script, reformatted for TTS
 
 ## What this skill does NOT do
 
-- **Call the ElevenLabs API.** It emits payloads and curl commands; you run them. It never handles
+- **Call the ElevenLabs API.** `[I]` It emits payloads and curl commands; you run them. It never handles
   an API key, never renders audio, and never spends credits on its own.
-- **Loudness, ducking, or the music mix** — `voiceover-brief`.
-- **Decide a Short's voice character or creative tone** in pipeline mode — `voiceover-brief` already did.
-- **Write the script's content** — `shorts-scripting`.
-- **Visuals** — `visual-prompts`. **Edit/assembly** — `shorts-assembly`.
+- **Loudness, ducking, or the music mix** `[I]` — `voiceover-brief`.
+- **Decide a Short's voice character or creative tone** `[I]` in pipeline mode — `voiceover-brief` already did.
+- **Write the script's content** `[I]` — `shorts-scripting`.
+- **Visuals** `[I]` — `visual-prompts`. **Edit/assembly** — `shorts-assembly`.
 
 ## `[T]` facts most likely to be stale — re-verify before relying on them
 
@@ -280,7 +280,7 @@ These moved recently or are the kind that move often (`docs/elevenlabs-productio
 - Model IDs and character caps (5,000 / 10,000 / 40,000), and whether a newer flagship has shipped.
 - Pricing, the Flash/Turbo 50% discount, and the per-character rate.
 - The v3 stability mode names (Creative / Natural / Robust) — recently replaced a float slider.
-- **Phoneme-tag model support** — currently `eleven_v3` + `eleven_flash_v2` only, and the
+- **Phoneme-tag model support** `[T-unverified]` — currently `eleven_v3` + `eleven_flash_v2` only, and the
   runbook-sourced claim that Flash v2.5 supports them is **wrong**.
 - The free-regeneration policy — website-only, not API.
 - PVC-on-v3 optimization status, and whether `use_pvc_as_ivc` is still needed.

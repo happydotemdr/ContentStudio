@@ -107,7 +107,7 @@ inverts the runbook's advice and is the actual money-saving move.
 - Fixed `seed` (0–4,294,967,295) gives **best-effort** deterministic sampling `[T]` — it reduces
   variation across identical requests, it does not guarantee identical audio.
 - Use it to isolate the effect of one change. Do not promise reproducibility on it `[I]`.
-- **Name a re-roll budget** whenever you select v3 Creative mode — "prone to hallucinations" is
+- **Name a re-roll budget** `[T]` whenever you select v3 Creative mode — "prone to hallucinations" is
   documented behavior `[T]`, so re-rolls are an expected cost, not a failure.
 
 ## Chunking and cost `[I]`

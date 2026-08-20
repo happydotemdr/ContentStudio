@@ -120,7 +120,7 @@ Two fields carry most of the value on re-use:
 
 - **Known-good / known-bad tags.** Tag effectiveness is voice-specific `[T]` and cannot be looked
   up — it can only be observed. Recording it once turns an experiment into a fact about *this voice*.
-- **Locked settings + the model they were tuned against.** Settings do not transfer cleanly across
+- **Locked settings + the model they were tuned against.** `[T]` Settings do not transfer cleanly across
   models — a v3 stability *mode* has no float equivalent `[T]`. A card that names its model is
   reusable; one that doesn't is a trap.
 
