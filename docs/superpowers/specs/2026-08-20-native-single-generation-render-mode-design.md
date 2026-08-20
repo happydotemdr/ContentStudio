@@ -51,6 +51,10 @@ remains available — that:
 - Sub-beat cut timing (multiple shots inside one beat) — out of scope per the "one visual per beat" decision
   below; a future project could add it without touching this one.
 - Automatic correction of flagged loudness/peak outliers — flagging is read-only telemetry, never a fix.
+- Building the Eleven Music Python calling client itself is a dependency this design surfaces (see
+  Architecture) — whether it's implemented as part of this project's plan or as a short prerequisite task is
+  an implementation-plan decision, not settled here. What *is* settled here: wherever it lives, it must follow
+  the same "imports nothing from `stitcher`" boundary `elevenlabs_tooling` already follows.
 
 ## Decisions
 
@@ -89,30 +93,70 @@ them.
 
 ## Architecture
 
-A new module, `stitcher/stitcher/native_pipeline.py`, orchestrates this mode. It imports the existing
-`vo_alignment`, `vo_timing`, `spec`, and `ffmpeg` modules and calls the existing, unmodified render entry
-point at the end. It does **not** import `vo_split` or `precondition` — those modules remain used only by the
-existing stitched mode.
+**Corrected during a pipeline-conventions audit (post-Opus-review):** the original draft placed
+`native_pipeline.py` *inside* `stitcher/stitcher/` and had it directly call Eleven Music in-process. That
+violates this repo's actual, established boundary: per `docs/superpowers/specs/2026-08-18-elevenlabs-tooling-
+design.md` ("Architecture") and `stitcher/README.md:7-8`, `stitcher` "imports nothing from `pipeline_app`,
+reads no skill, and never opens the corpus," and `elevenlabs-tooling` likewise "imports nothing from
+`pipeline_app`... and knows nothing about... stitcher's asset-folder conventions." A grep across every `.py`
+file in the repo confirms the rule is followed in practice today: nothing under `stitcher/stitcher/` imports
+`elevenlabs_tooling`, and the two are only ever glued together by an external step that writes a file, then
+hands that file to the other package. `native_pipeline.py` calling Eleven Music from inside `stitcher` would
+be the first violation of that pattern in the codebase.
+
+**Fixed shape:** this mode is a new, standalone sibling package — `native-pipeline/` (kebab-case directory,
+`native_pipeline` Python package inside, mirroring `elevenlabs-tooling/`'s own layout) — not a module inside
+`stitcher/stitcher/`. It is the one place allowed to import both `stitcher` (for `vo_alignment.derive_segments`,
+the `spec` classes, and to invoke the existing render entry point) and `elevenlabs_tooling` (for VO
+generation) and a music-generation dependency (see below) — exactly the role a throwaway orchestration script
+already played for the Task 11 validation run, now formalized as a real, tested, committed package. Neither
+`stitcher` nor `elevenlabs_tooling` (nor the music dependency) imports `native_pipeline` or each other; the
+dependency arrows only ever point outward from `native_pipeline`.
+
+**Dependency this design surfaces but does not build:** no Python code for calling the Eleven Music API exists
+anywhere in this repo today — only prose in the `elevenlabs-music` skill's reference docs. `build_music_plan`
+needs one. Whether that lands as a new endpoint on `elevenlabs-tooling` itself (which the elevenlabs-tooling
+design doc already frames as "one generic mechanism") or a new sibling package is an implementation-plan
+decision, not this spec's — either way, it must follow the same "imports nothing from `stitcher`" rule and
+`elevenlabs-tooling`'s own structured-logging convention (see Logging below).
 
 ```
-ElevenLabs /with-timestamps  →  vo_alignment.derive_segments()          [reused, unmodified]
-                                          │
-                    ┌─────────────────────┼─────────────────────┐
-                    ▼                     ▼                     ▼
-        native_pipeline.build_shots   vo_timing.derive_captions   native_pipeline.build_music_plan
-        (NEW — one Shot per segment,  (reused, unmodified)        (NEW — one chunk per bed-arc
-        gap-absorbing end times)                                  movement, not per segment/gap)
-                    │                     │                     │
-                    │                     │           elevenlabs-music tooling call [existing, unmodified]
-                    │                     │                     │
-                    └─────────────────────┴─────────────────────┘
-                                          ▼
-                    native_pipeline.assemble_spec()  (NEW — builds RenderSpec)
+elevenlabs_tooling (existing, unmodified)         a new Eleven-Music-calling dependency (NEW, not yet built —
+  → single_take.{mp3,wav} + alignment.json          see above) → music_bed.wav, driven by a composition-plan
+                    │                                 file this design's build_music_plan() emits
+                    │                                                    │
+                    └──────────────────┬─────────────────────────────────┘
+                                        │  (native_pipeline package: the only place that imports
+                                        │   both stitcher and elevenlabs_tooling/music dependency)
+                                        ▼
+                    stitcher.vo_alignment.derive_segments()          [reused, unmodified — imported,
+                                        │                              never modified, by native_pipeline]
+                    ┌───────────────────┼───────────────────┐
+                    ▼                   ▼                   ▼
+        native_pipeline.build_shots  stitcher.vo_timing.   native_pipeline.build_music_plan
+        (NEW — gap-absorbing         derive_captions       (NEW — emits a composition-plan file;
+        end times)                   (reused, unmodified)   one chunk per bed-arc movement)
+                    │                   │                   │
+                    │                   │        (external call to the music dependency's CLI,
+                    │                   │         writing music_bed.wav — same external-call
+                    │                   │         pattern already used for VO generation)
+                    │                   │                   │
+                    └───────────────────┴───────────────────┘
+                                        ▼
+                    native_pipeline.assemble_spec()  (NEW — builds a stitcher.spec.RenderSpec)
                     - Stem(file=raw_take, at=0.0, duration_s=runtime)   ← whole take, unsplit
                     - Bed(file=generated_bed, gain_db=X, duck_db=X)     ← flat, envelope is a no-op
-                                          ▼
-                    stitcher's existing render entry point              [reused, unmodified]
+                                        ▼
+                    writes render-spec.json, then invokes stitcher's existing,
+                    unmodified `render` CLI entry point as a separate step (see CLI below)
 ```
+
+All functions below (`build_shots`, `build_music_plan`, `assemble_spec`, the outlier-flagging check, the
+bed-duration check) live in the new `native_pipeline` package, not inside `stitcher/stitcher/`. They import
+`stitcher.spec`, `stitcher.vo_alignment`, `stitcher.vo_timing`, `stitcher.verify`, and `stitcher.ffmpeg` as an
+external consumer of that package — which is allowed under the boundary rule (only `stitcher` importing
+*outward* to `elevenlabs_tooling`/the music dependency would violate it; `native_pipeline` importing
+`stitcher` does not, the same way the Task 11 validation harness already did this safely).
 
 ### `build_shots(segments, asset_manifest) -> list[Shot]`
 
@@ -152,6 +196,11 @@ closer to how a real composer would score a live narration anyway, and avoids ne
 - Validates: every chunk's `duration_ms` is ≥3,000ms (fails loud if a movement is shorter — merge with an
   adjacent movement rather than submit an invalid plan), total chunk count ≤30, total duration matches the
   take's runtime within rounding tolerance.
+
+`build_music_plan` itself only builds and validates the plan object (pure function, no network call). Turning
+it into `music_bed.wav` is a separate step in `native_pipeline`'s orchestration that calls out to the Eleven
+Music dependency — the same external-call shape `elevenlabs_tooling`'s own `send` CLI already uses for VO,
+not an in-process API call buried inside a pure-function step.
 
 ### Data contracts (added during Opus review)
 
@@ -241,7 +290,64 @@ is permitted:
 - Both attempts' settings diff and metrics diff are written to the render's log directory alongside the two
   candidate files, so the choice between them is auditable later.
 
+## Logging (added during pipeline-conventions audit)
+
+`stitcher` has one logging convention throughout: one timestamped log file per run
+(`Workspace.log_path(timestamp)`, `renders/<slug>/logs/<ts>_<mode>.log`), to which every `ffmpeg.run(cmd,
+log_path)` call appends its command line and stdout/stderr as plain text — no structured/JSON logging inside
+`stitcher` anywhere. `elevenlabs-tooling` has its own, different convention (structured JSON-line logging).
+`native_pipeline` sits across both, so it follows each dependency's own convention for the part it touches,
+rather than inventing a third:
+
+- Any ffmpeg-based work done inside `native_pipeline` (the bed-duration check, the outlier-flagging
+  measurements) writes to the same workspace log file `stitcher` already uses, via the same `ffmpeg.run`/
+  `log_path` pattern — not a new log file, not JSON.
+- The VO-generation and music-generation calls (external, to `elevenlabs_tooling`/the music dependency) use
+  whatever logging convention those packages already have — `native_pipeline` does not intercept or reformat
+  their logs.
+- `native_pipeline`'s own orchestration steps (which stage ran, the iteration/proof harness's settings-diff
+  and metrics-diff record, outlier flags) are written as one plain-text run log alongside the workspace log,
+  following `stitcher`'s plain-text convention rather than introducing JSON into a codebase that doesn't use
+  it elsewhere for this kind of record.
+
+## Error handling (added during pipeline-conventions audit)
+
+`stitcher` validates at load/measurement time and raises immediately with a descriptive message — never a
+bare `assert` in production code, never a shared exception base class. Each module defines its own narrow
+exception(s) at the point they're raised (`FFmpegError`, `LoudnormNotLinearError`, `SilentVoiceError`,
+`PreconditionError`, `TextOverflowError` — one or two per module, all subclassing a built-in). `native_pipeline`
+follows the same pattern rather than a shared "NativePipelineError" umbrella:
+
+- `ShotSegmentMismatchError(ValueError)` — segment/asset-manifest beat-name mismatch, or a `build_shots`
+  invariant violated (non-contiguous, doesn't start at 0, doesn't end at runtime).
+- `ChunkDurationTooShortError(ValueError)` — a bed-arc movement's span is under Eleven Music's 3,000ms floor
+  and no merge was specified.
+- `BedDurationMismatchError(RuntimeError)` — the generated bed's measured duration doesn't match the take's
+  runtime within tolerance (the fail-loud check under `assemble_spec`).
+- `IterationBudgetExceededError(RuntimeError)` — a third generation attempt is requested for a track after
+  its 2-attempt cap is already spent.
+
+All four are raised at the specific point of validation (mirroring `spec.py`'s validate-at-load-time,
+`audio.py`'s validate-at-measurement-time pattern), with a message naming the specific value that failed and
+why — not just "invalid input."
+
+## CLI / entrypoint (added during pipeline-conventions audit)
+
+`stitcher/stitcher/cli.py`'s existing `render <slug> --mode {final,draft}` selects a rendering-*quality*
+variant — `--mode` is threaded into cache keys, workspace paths, and quality behavior throughout `audio.py`/
+`shots.py`/`assemble.py`. This new mode is not a quality variant; it's an alternate *upstream construction
+path* that produces a `render-spec.json` before `stitcher`'s existing `render` command ever runs (the
+architecture diagram above ends with "invokes stitcher's existing `render` CLI entry point as a separate
+step"). It does not fit `--mode` and does not add a new value to it. Instead, `native_pipeline` gets its own
+entry point (`python -m native_pipeline render <slug> ...`), which emits `render-spec.json` (plus the raw take
+and generated bed as assets) and then invokes the existing, unmodified `stitcher render` command as a distinct
+second step — two separate CLI invocations, not one new flag on the existing one.
+
 ## Data flow summary
+
+This is a creative-input-to-final-video overview; it abstracts away the package boundaries detailed in
+Architecture above (which package calls what, and where the two CLI invocations split) in favor of showing
+the timing/data dependency chain end to end.
 
 ```
 script + voiceover-brief + music-brief + visual-prompts   (all existing skill outputs, unchanged)
@@ -268,13 +374,23 @@ captions (existing)     shots (NEW,           music composition plan (NEW,
 
 ## Testing
 
-- **Unit (no API calls):** `build_shots` against synthetic segment lists — shot count/contiguity/start-at-0/
-  ends-at-runtime invariants (per the revised gap-absorbing rule above). `build_music_plan` against a
-  synthetic `bed_arc_structured` — every chunk's `duration_ms` ≥3,000ms, total duration matches runtime,
-  30-chunk ceiling, correct sparse/full style selection per movement.
-- **Integration (one real end-to-end run, mirrors the Task 11 harness style):** real take + timestamps →
-  shots/captions/music-plan → real Eleven Music generation → assembled spec → existing render entry point.
-  Asserts, with concrete tolerances (clarified during Opus review):
+**Convention alignment (added during pipeline-conventions audit):** `stitcher`'s `vo_alignment`/`vo_split`/
+`vo_timing`/`vo_assemble` tests are plain pytest functions with descriptive `test_<behavior>_<expected>`
+names, `tmp_path`/`monkeypatch` fixtures only where needed, no custom markers, and no real API/subprocess
+calls. Real-cost tests use this repo's actual marker vocabulary — `stitcher/pytest.ini`'s `e2e` ("end-to-end
+render; needs a real ffmpeg on PATH") and the root `pytest.ini`'s `allow_network`/`allow_subprocess`
+("this test may make a real outbound request... justify in the docstring") — not invented marker names.
+`native_pipeline`'s tests follow the same style and use the same markers, not a new "integration" marker.
+
+- **Unit (no API calls, no markers):** `build_shots` against synthetic segment lists — shot count/contiguity/
+  start-at-0/ends-at-runtime invariants (per the revised gap-absorbing rule above). `build_music_plan` against
+  a synthetic `bed_arc_structured` — every chunk's `duration_ms` ≥3,000ms, total duration matches runtime,
+  30-chunk ceiling, correct sparse/full style selection per movement. Each new exception class gets a test
+  asserting it's raised with the specific invalid input that should trigger it, matching `stitcher`'s existing
+  validate-at-load-time test style.
+- **Real end-to-end run (marked `e2e` + `allow_network`, mirrors the Task 11 harness style, one test):** real
+  take + timestamps → shots/captions/music-plan → real Eleven Music generation → assembled spec → existing
+  render entry point. Asserts, with concrete tolerances (clarified during Opus review):
   - No exceptions raised.
   - `normalization_type == "linear"` — a documented hard failure (see the accepted-risk note under VO
     processing) is an acceptable *test* outcome for an atypically hot take, not a bug in the test itself.
