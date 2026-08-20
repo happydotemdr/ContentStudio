@@ -178,10 +178,10 @@ and re-editing the string here silently breaks that guarantee.
 
 Three things you still own at this step:
 
-- **On-screen text never enters the prompt.** Midjourney cannot reliably render legible text
+- **On-screen text never enters the prompt.** `[C]` Midjourney cannot reliably render legible text
   `[C] (Tokenized AI, qFYJb0zYztY)`, so a beat's hook card or caption copy passes through to
   `shorts-assembly` as overlay copy. Flag it in the handoff so `midjourney-prompting` appends `No Text.`
-- **Sheet-level coherence is Gate C's job, not a judgment call.** Whether the sheet reads as one Short
+- **Sheet-level coherence is Gate C's job, not a judgment call.** `[I]` Whether the sheet reads as one Short
   with real shot-to-shot variety is a mechanical question at emission — `scripts/lint_prompt_sheet.py`
   runs mandatorily at step 7 against the finished sheet, rather than eyeballing whether two adjacent
   beats "look related" `[I]`. Step 3b's by-eye check of the arc table exists to catch the same
@@ -189,7 +189,7 @@ Three things you still own at this step:
   tool run — the CLI itself only becomes runnable once the sheet has real shot headings and prompts
   (step 7). If Gate C fails at step 7, the fix is almost always the arc table's sequencing (revisit
   step 3b's rules), not individual prompt wording.
-- **Do not achieve consistency by repeating a shared style-vocabulary string across prompts.** Cloning a
+- **Do not achieve consistency by repeating a shared style-vocabulary string across prompts.** `[I]` Cloning a
   style phrase (or an entire prompt body with a noun swapped) into every prompt is exactly what produced
   six near-identical stills in a real production run — see `references/visual-arc.md` §1. Consistency
   lives in the register's style slot, not in the prompt body. Gate C's **C11** enforces this mechanically
@@ -231,7 +231,7 @@ Read the packaging direction handed down from `shorts-ideation` (focal point, do
 it shows). Two outcomes, and this skill must state which one applies rather than silently skip the
 decision:
 
-- **The packaging direction wants something distinct from the Hook beat's still** (a different angle,
+- **The packaging direction wants something distinct from the Hook beat's still** `[I]` (a different angle,
   a composed/staged shot built specifically to be a thumbnail rather than a video frame) → delegate a
   dedicated cover prompt to `midjourney-prompting`, handing down the guide's photoreal-thumbnail recipe
   (§13 recipe A) as the **subject/composition brief** `[I]` — close-up of the subject + defining
@@ -242,7 +242,7 @@ decision:
   to wherever the cover actually renders** (9:16 for a Shorts-feed thumbnail, 16:9 for a separate
   widescreen slot) — this adaptation is this skill's own judgment `[I]`, not a corpus claim, since the
   guide's recipe was written for long-form 16:9 thumbnails, not Shorts.
-- **The packaging direction is satisfied by the Hook beat's own still** → state this explicitly in the
+- **The packaging direction is satisfied by the Hook beat's own still** `[I]` → state this explicitly in the
   prompt sheet: "Cover = Hook still + `shorts-assembly`'s text overlay, no separate generation." Don't
   leave the decision implicit — an unstated cover is indistinguishable from a forgotten one.
 

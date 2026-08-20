@@ -446,7 +446,6 @@ TIER_1_PENDING: dict[str, tuple[int, str]] = {
     ".claude/skills/shorts-ideation/SKILL.md": (7, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
     ".claude/skills/elevenlabs-music/references/api-payload.md": (6, "vendor payload-field facts; needs [T] verification against Eleven Music docs, not attempted this dispatch"),
     ".claude/skills/shorts-scripting/SKILL.md": (5, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/visual-prompts/SKILL.md": (5, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
     ".claude/skills/rgs-grounding/references/safety-sensitive-handling.md": (5, "RGS operational-design bullets, but RGS's declared vocabulary has no [I]-equivalent token for this skill's own design (only citation tokens); using bare [I]/[C]/[T] here would fail the stray-marker test. Needs a P14 decision on an RGS-side design marker, not attempted this dispatch"),
     ".claude/skills/visual-prompts/references/image-to-video.md": (4, "corpus i2v-motion claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
     ".claude/skills/elevenlabs-music/SKILL.md": (4, "vendor-fact rules; needs [T] verification against Eleven Music docs, not attempted this dispatch"),
