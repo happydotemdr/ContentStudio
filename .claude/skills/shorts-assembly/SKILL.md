@@ -5,6 +5,10 @@ description: Turns a faceless-YouTube-Shorts script plus its voiceover brief and
 
 # Shorts Assembly
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against `docs/headless-shorts-production-playbook.md` and live tool-pricing pages
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Produces the **edit plan** for one Short: the stage of ContentStudio's eight-skill pipeline that follows `shorts-scripting`, `voiceover-brief`, `visual-prompts`, and `music-brief`, and precedes `social-repurpose`. It does not touch ideation, scripting, voice, or visual-asset generation — those are separate skills. It does not write post copy — that is `social-repurpose`, next.
 
 ## Pipeline position

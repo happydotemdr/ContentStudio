@@ -5,6 +5,11 @@ description: Use when producing RaisingGoodSports content and a Short's script, 
 
 # RGS Grounding
 
+> **This file does not itself carry tool/policy facts.** The bracket token named below is a
+> cross-reference to the unrelated 14-channel headless-YouTube corpus's marker vocabulary (see
+> `CLAUDE.md`), included only to explain why RGS does not use it — verified 2026-07-23, for
+> consistency with that referenced convention, not because this file asserts a vendor fact of its own.
+
 Turn a raw RaisingGoodSports topic into a **Grounding Brief**: one thinker citation and one
 research citation, verified against source text, structured around the brand's hook → turn →
 payoff → reframe spine. This is RaisingGoodSports's differentiator — "what a 100-year-old

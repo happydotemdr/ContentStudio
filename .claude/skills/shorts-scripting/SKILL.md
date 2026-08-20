@@ -5,6 +5,12 @@ description: Writes a shot-ready, beat-timed YouTube Shorts script (hook through
 
 # Shorts scripting
 
+> **This skill does not itself use `[T]`** — tool/policy facts for voiceover/visual/audio
+> tooling belong to `voiceover-brief`, `visual-prompts`, `elevenlabs-audio`, and
+> `midjourney-prompting` (see "Markers" below). This header is dated verified 2026-07-23 for
+> consistency with this project's `[T]` marker convention, not because this file asserts a
+> vendor fact of its own.
+
 Turns a validated Shorts **concept brief** into a **shot-ready, beat-timed
 script**: Hook → Setup → Build/Value (with a re-hook) → Payoff → Loop/CTA, each
 beat carrying a VO line, a timestamp range, a word count, and a one-line visual

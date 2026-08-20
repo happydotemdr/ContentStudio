@@ -5,6 +5,10 @@ description: Builds a complete, ready-to-run Eleven Music setup — a bed profil
 
 # ElevenLabs Music (composition plans, prompt craft & credit discipline)
 
+> **`[T]` facts in this file were web-verified 2026-08-06** against live ElevenLabs Music documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Turns a music job into an **executable Eleven Music setup**: the bed profile, the section map, the
 prompt, the composition plan, the payload, and what it will cost — validated by fresh agents before
 a single credit is spent.

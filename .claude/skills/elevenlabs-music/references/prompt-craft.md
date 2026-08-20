@@ -1,5 +1,9 @@
 # Prompt craft — the UI prompt, styles, the copyright guard, and arc translation
 
+> **`[T]` facts in this file were web-verified 2026-08-06** against live ElevenLabs Music documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-music-runbook.md` §1, §4.
 
 This is the reference for Stage C's **UI PROMPT** artifact — the prompt body pasted into the

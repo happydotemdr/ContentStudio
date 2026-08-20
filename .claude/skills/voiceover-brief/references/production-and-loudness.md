@@ -1,5 +1,9 @@
 # Production, mixing & loudness
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-voiceover-guide.md` §5 and §8, cross-checked against
 `docs/headless-youtube-audit.md` §5. `[T]` facts below (LUFS target, ducking-dB norms,
 disclosure policy) are web-verified as of **2026-07-23** — re-verify against

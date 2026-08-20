@@ -1,5 +1,9 @@
 # Validation gates
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live docs.midjourney.com documentation (the V8.2 delta)
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Two gates, deliberately asymmetric. Gate A is free and runs on every prompt. Gate B costs an agent
 round-trip and runs only when a render is about to get expensive.
 

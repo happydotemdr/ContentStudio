@@ -1,5 +1,9 @@
 # Caption & overlay system
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against `docs/headless-shorts-production-playbook.md` and live tool-pricing pages
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Provenance markers as in `pacing-and-editing.md`. Primary source: `docs/headless-shorts-production-playbook.md` §4 (`[I]` unless noted). Cross-checked against `docs/headless-youtube-audit.md` §6, which is `[C]` but pulls a different direction on caption density — both are given below rather than silently merged, per this project's anti-generic rule.
 
 ## Two overlay layers

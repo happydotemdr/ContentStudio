@@ -5,6 +5,10 @@ description: Locks a ContentStudio Short's two visual worlds before any prompt e
 
 # Shorts Styleboard (script → world lock + style bindings)
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live docs.midjourney.com documentation (Midjourney V8.2 parameter/GPU-cost facts cited from `midjourney-prompting`)
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 ## Pipeline position
 
 - **Upstream input:** the shot-ready timed script from `shorts-scripting`. Optionally a

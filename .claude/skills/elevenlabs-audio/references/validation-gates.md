@@ -1,5 +1,9 @@
 # Validation gates — fresh-agent dispatch prompts
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Three gates. Each dispatches a **fresh `general-purpose` agent** that has **not** seen the authoring
 rationale, so it checks the artifact rather than rubber-stamping the reasoning.
 

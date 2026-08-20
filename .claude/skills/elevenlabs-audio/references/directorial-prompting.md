@@ -1,5 +1,9 @@
 # Directorial prompting — the five layers, the tag catalog, and dialogue
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-production-runbook.md` §5.
 
 **Everything in this file applies to `eleven_v3` only.** Audio tags and inline IPA are v3

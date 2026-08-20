@@ -5,6 +5,10 @@ description: Turns a shot-ready faceless-YouTube-Shorts script into an ElevenLab
 
 # Voiceover Brief
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Produces an **ElevenLabs voiceover production brief** from a shot-ready script: which voice
 and why, the settings to dial in, how to reformat the script text for TTS, and the loudness
 target for the mix. This is a stage of ContentStudio's eight-skill pipeline, running in

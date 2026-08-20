@@ -1,5 +1,9 @@
 # Worked example — one job end to end
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 > This example illustrates rules already marked in this skill's other reference files and carries no independent normative weight. Where a line here restates a rule, the marker lives
 > on the rule, not on the illustration — do not copy an unmarked line out of this file into a
 > real brief as if it were sourced `[I]`.

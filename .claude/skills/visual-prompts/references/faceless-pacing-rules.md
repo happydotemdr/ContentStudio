@@ -1,5 +1,10 @@
 # Faceless-Short visual pacing — distilled from the audit's §6 (thin corpus, 27 findings)
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live web sources for the corpus's tool/policy sweep
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+> Midjourney V8.2-specific facts cited from `midjourney-prompting` carry their own more specific verification date (2026-07-26) inline — that date wins where the two differ.
+
 Distilled from `docs/headless-youtube-audit.md` §6 "Visuals & AI assets." The audit itself flags this
 as **another thin theme (27 findings)** — the corpus favors simple, high-value visuals over heavy AI
 production, and repeatedly warns that AI thumbnails/B-roll still hit the uncanny valley. Treat these as

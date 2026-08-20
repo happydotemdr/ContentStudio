@@ -1,5 +1,9 @@
 # Assembly tool stack — $0 build and paid build
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against `docs/headless-shorts-production-playbook.md` and live tool-pricing pages
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 All pricing/product facts below are `[T]`, web-verified **2026-07-23** — re-verify before relying on them; AI-tool pricing moves monthly. Source: `docs/headless-shorts-production-playbook.md` §3. This file covers only the **assembly-relevant** functions (captions, editing, loudness/export). This skill consumes the finished still and video-clip assets — plus their generation prompts, kept for reference/regeneration — from `visual-prompts`; it does not decide which image/video-gen tool to use or author the generation prompts (Kling/Seedance/Midjourney/etc. prompt authoring, including start/end-frame keyframing and motion notes, is `visual-prompts`'s job). Ideation/TTS tool choices likewise belong to the upstream skills, not here.
 
 ## Captions / text-overlay

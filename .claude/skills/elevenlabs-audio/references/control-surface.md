@@ -1,5 +1,9 @@
 # Control surface — the eight inputs and their deterministic mappings
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-production-runbook.md` §1, §3, §4, §8.
 
 The point of this file: **a user should be able to describe a job in eight short values and get a

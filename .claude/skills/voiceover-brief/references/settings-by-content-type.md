@@ -1,5 +1,9 @@
 # The four settings, by content type
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-voiceover-guide.md` §3 and §8 (cheat-sheet). All `[T]`
 web-verified, dated 2026-07-23 — re-verify against elevenlabs.io/docs before relying on exact
 numbers, since ElevenLabs tunes these ranges over time.

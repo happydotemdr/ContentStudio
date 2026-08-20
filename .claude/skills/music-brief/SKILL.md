@@ -5,6 +5,11 @@ description: Designs the background-music bed arc for a faceless YouTube Short �
 
 # Music Brief
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against the live web, per this project's `[T]` marker convention
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+> This skill's own body carries no specific tool/policy fact — the header exists so the provenance-key description above is dated like every other marker-carrying file.
+
 Produces the **Bed Arc** for one Short: the background-music bed's emotional shape mapped to the
 script's beat timings — which movement plays where, whether the bed holds out under the hook, and
 where a pause is a deliberate device. This is a stage of ContentStudio's eight-skill pipeline,

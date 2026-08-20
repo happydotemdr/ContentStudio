@@ -5,6 +5,10 @@ description: Builds a complete, ready-to-run ElevenLabs configuration — voice 
 
 # ElevenLabs Audio (configuration, prompting & credit discipline)
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Turns an audio job into an **executable ElevenLabs setup**: the model, the settings, the tagged
 script, the dictionary, the payload, and what it will cost — validated by fresh agents before a
 single credit is spent.

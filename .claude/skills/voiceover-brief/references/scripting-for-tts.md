@@ -1,5 +1,9 @@
 # Formatting the script for TTS
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-voiceover-guide.md` §4 and the delivery-mechanics findings in
 `docs/headless-youtube-audit.md` §5. A script written for the eye reads flat through a TTS
 model — write (and reformat) for the ear.

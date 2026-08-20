@@ -1,5 +1,9 @@
 # Single-take generation — the production default for this channel `[P]`
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Markers: `[C]` corpus-cited `(Channel, video_id)` · `[I]` industry practice · `[T]` web-verified
 tool/policy fact · **`[P]` project/operator decision** — a call made by this project's owner and
 recorded here. `[P]` states what was decided, never why it is correct — never cite it as corpus

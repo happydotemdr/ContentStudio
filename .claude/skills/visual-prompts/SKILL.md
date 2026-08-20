@@ -5,6 +5,11 @@ description: Storyboards a shot-ready ContentStudio Short script into a visual p
 
 # Visual Prompts (script beats → Midjourney prompt sheet)
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live web sources for the corpus's tool/policy sweep
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+> Midjourney V8.2-specific facts cited from `midjourney-prompting` carry their own more specific verification date (2026-07-26) inline — that date wins where the two differ.
+
 ## Pipeline position
 
 - **Upstream input:** the shot-ready, timed script from `shorts-scripting` — a beat-by-beat breakdown

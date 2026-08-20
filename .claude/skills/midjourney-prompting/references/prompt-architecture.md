@@ -1,5 +1,9 @@
 # Prompt architecture — the 9-layer build
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live docs.midjourney.com documentation (the V8.2 delta)
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 A Midjourney prompt is not a sentence, it is a stack. Build it in this order every time, then let Gate A
 check the result.
 
@@ -113,10 +117,10 @@ advice, but it was measured on general-purpose work, not split by intent. Split 
 | Look | `--raw` | `--s` | Reasoning |
 |---|---|---|---|
 | **Photographic** (product, architecture, documentary) | on | **80–120** | Near the documented default of 100 `[T] (verified 2026-07-26)`; lets optics and lighting lead |
-| **Balanced / editorial** | optional | **140–185** | The corpus sweet spot `[C]` |
-| **Stylized / branded** | off | **250–400** | Corpus: raise toward 300+ for a deliberately polished, branded look `[C]` |
+| **Balanced / editorial** | optional | **140–185** | The corpus sweet spot `[C] (Future Tech Pilot, Tv1dfGcOSnA / ioJ6istzwHw; Tokenized AI, 1GnipTgvLI0)` |
+| **Stylized / branded** | off | **250–400** | Corpus: raise toward 300+ for a deliberately polished, branded look `[C] (Future Tech Pilot, Tv1dfGcOSnA / ioJ6istzwHw; Tokenized AI, 1GnipTgvLI0)` |
 | **Fine art / illustrative** | off | **400–700** | Maximum interpretive freedom |
-| **A long, detailed prompt is being ignored** | on | **50–80** | Corpus's documented remedy `[C]` |
+| **A long, detailed prompt is being ignored** | on | **50–80** | Corpus's documented remedy `[C] (Future Tech Pilot, Tv1dfGcOSnA / ioJ6istzwHw; Tokenized AI, 1GnipTgvLI0)` |
 
 The lower photographic band is this skill's adaptation `[I]`, not a corpus finding — it follows from the
 documented meaning of `--stylize` (low = literal to the prompt `[T] (verified 2026-07-26)`) applied to a

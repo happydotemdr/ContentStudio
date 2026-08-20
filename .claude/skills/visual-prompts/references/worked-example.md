@@ -1,5 +1,10 @@
 # Worked example: a scripted Short → a dual-register Midjourney prompt sheet
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live web sources for the corpus's tool/policy sweep
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+> Midjourney V8.2-specific facts cited from `midjourney-prompting` carry their own more specific verification date (2026-07-26) inline — that date wins where the two differ.
+
 > This example illustrates rules already marked in this skill's other reference files and carries no independent normative weight. Where a line here restates a rule, the marker lives
 > on the rule, not on the illustration — do not copy an unmarked line out of this file into a
 > real brief as if it were sourced `[I]`.

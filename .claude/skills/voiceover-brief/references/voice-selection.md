@@ -1,5 +1,9 @@
 # Voice selection & cloning
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-voiceover-guide.md` §2 and `docs/headless-youtube-audit.md` §5.
 Markers: `[C]` corpus-cited `(Channel, video_id)` · `[I]` industry practice · `[T]` web-verified
 tool/policy fact, dated 2026-07-23 — re-verify before relying on it · `[P]` project/operator
@@ -8,7 +12,8 @@ decision.
 ## The one rule
 
 **Pick ONE voice and keep it consistent across every video on the channel.** That voice *is*
-the channel's identity `[T]` `[I]`. Switching voices between uploads reads as a different
+the channel's identity `[I]` — a branding judgment, not a platform fact; neither
+ElevenLabs nor YouTube publishes it. Switching voices between uploads reads as a different
 creator and breaks the consistency the algorithm and audience both reward.
 
 **That voice has been picked** — see `channel-voice.md` for the pinned `voice_id` and its

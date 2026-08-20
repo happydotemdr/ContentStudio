@@ -5,6 +5,10 @@ description: Writes best-in-class Midjourney V8.2 prompts and the parameter stac
 
 # Midjourney Prompting (V8.2 craft, parameters & GPU discipline)
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live docs.midjourney.com documentation (the V8.2 delta)
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Turns an image brief into an **executable Midjourney prompt**: the 9-layer body, the flag stack, the
 consistency mechanism, and the phase to run it in — linted every time, and adversarially reviewed
 before anything expensive renders.

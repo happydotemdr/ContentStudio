@@ -1,5 +1,9 @@
 # Voice profiles — exploration, cloning, and the reusable profile card
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-production-runbook.md` §2, and cross-read with
 `.claude/skills/voiceover-brief/references/voice-selection.md` for the corpus view.
 

@@ -1,5 +1,9 @@
 # Composition plans — shapes, beat mapping, and the instrumental technique
 
+> **`[T]` facts in this file were web-verified 2026-08-06** against live ElevenLabs Music documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-music-runbook.md` §2, §3.
 
 This is the reference for Stage B, **the stage that earns the whole skill**: turning a `music-brief`

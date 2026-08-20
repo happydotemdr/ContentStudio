@@ -5,6 +5,10 @@ description: Turns a raw faceless-YouTube-Shorts idea or topic into a validated 
 
 # Shorts Ideation
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against the live web, per this project's `[T]` marker convention
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Turn a raw idea/topic into a **validated concept brief**: a chosen angle/take, a hook
 concept, and a title/thumbnail packaging direction. Every normative rule this skill applies
 comes from the ContentStudio corpus's `docs/headless-youtube-audit.md` (the corpus audit),

@@ -5,6 +5,10 @@ description: Generate multi-surface post copy (YouTube title/description/hashtag
 
 # Social Repurpose
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against the live web, per this project's `[T]` marker convention
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 The final stage of ContentStudio's eight-skill pipeline, following `shorts-assembly`. Turns
 a **finished Short** into the **multi-surface post copy** that ships it. There is no
 downstream stage: this skill's output is the pipeline's final deliverable.
