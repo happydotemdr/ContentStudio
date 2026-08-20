@@ -110,9 +110,9 @@ python scripts/lint_script_language.py <path-to-script.md>
 
 Exit 0 = pass, 1 = findings, 2 = parse error.
 
-- **Standalone mode** (you have `Bash`): run the command and **record the real result** in the
+- **Standalone mode** `[I]` (you have `Bash`): run the command and **record the real result** in the
   output contract's `GATES` block `[I]`.
-- **Pipeline mode** (app-driven): `Bash` is denied on pipeline turns by design, so you cannot run
+- **Pipeline mode** `[I]` (app-driven): `Bash` is denied on pipeline turns by design, so you cannot run
   it. Record **`deferred — app-run`** `[I]`. The app runs the linter post-turn and folds the
   result into the artifact's frontmatter.
 

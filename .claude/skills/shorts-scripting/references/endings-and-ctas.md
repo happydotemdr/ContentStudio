@@ -6,24 +6,24 @@ covers the Payoff and Loop/CTA beats.
 
 ## Never signal "the video is over"
 
-- **Never end with "thanks for watching, like and subscribe" — bridge to a
+- **Never end with "thanks for watching, like and subscribe" — bridge to a `[C]`
   specific next video instead — strongly-supported.** The end viewer is your
   most engaged; with no next step they click someone else's video, so verbally
   set up a related video of your own `[C] (Dan the creator, SnrciZs-OmM; Jenny
   Hoyos, WZSPOUzn9SE)`.
-- **Don't use finalizing language** ("that's how you…", "to recap", "our last
+- **Don't use finalizing language** `[C]` ("that's how you…", "to recap", "our last
   one") **or cluster CTAs at the end** — both signal the content is over and
   cause a retention drop `[C] (Nick Nimmin, N42_LghZw8k)`. Say "next up," and if
   a mid-content CTA is warranted, work it in casually rather than saving every
   ask for the close.
-- **Ask a specific question to earn comments, instead of "leave a comment
+- **Ask a specific question to earn comments, instead of "leave a comment `[C]`
   below."** `[C] (Nick Nimmin, N42_LghZw8k)` — this is the direct source of the
   output template's "comment-bait question" field; write an actual question
   tied to the Short's premise, not a generic engagement prompt.
 
 ## Where a subscribe ask fits (if the concept brief calls for one)
 
-- **Ask the subscribe about one-third in, after delivering value, framed as a
+- **Ask the subscribe about one-third in, after delivering value, framed as a `[C]`
   benefit — not in the first 60 seconds.** `[C] (Roberto Blake, 7rqw6rVClWo;
   Dan the creator, Wx5gF0jkgZI; Nick Nimmin, 2vkX1X1K3WM)` `[I]` This timing was
   measured on long-form video; "first 60 seconds" doesn't map onto a 35–45s
@@ -34,26 +34,26 @@ covers the Payoff and Loop/CTA beats.
 
 ## The Payoff beat
 
-- **Resolve on a climactic reveal that directly answers the hook's question**
+- **Resolve on a climactic reveal that directly answers the hook's question** `[C]`
   `[C] (Jenny Hoyos, fukTZ82O4TU)` — medium confidence (Jenny Hoyos structural
   observation). The Payoff must close the *specific* loop the Hook opened —
   if the Hook asked "why does X happen," the Payoff has to answer that exact
   question, not a related one.
-- **Maintain proof density into the payoff** — land the resolution with a
+- **Maintain proof density into the payoff** `[C]` — land the resolution with a
   concrete detail (a number, a named result), not just an assertion `[C] (One
   Person Business, eVePkmCQV5c)`.
 
 ## The Loop/CTA beat
 
-- **Mirror the opening hook question in the closing line so the video forms a
+- **Mirror the opening hook question in the closing line so the video forms a `[C]`
   satisfying loop** `[C] (Jenny Hoyos, mhVDcqnxxaY)` — medium confidence. This
   is the mechanical instruction behind the output template's "mirror the hook"
   requirement — reuse the Hook's key phrase or framing, don't just return to
   the topic in different words.
-- **Low unique-viewers-with-high-views signals the video is being rewatched
+- **Low unique-viewers-with-high-views signals the video is being rewatched `[C]`
   (looped)** — the outcome a mirrored ending is built to produce `[C] (Nate
   Black, IHDJkJpYC90)`.
-- **"Good abandonment" — a satisfied viewer who got the answer and left early
+- **"Good abandonment" — a satisfied viewer who got the answer and left early `[C]`
   still counts as a win**, not a failure `[C] (Romayroh, t2y9pxGggdQ)`. Don't
   pad the Loop/CTA beat trying to hold the viewer past a genuinely complete
   payoff.

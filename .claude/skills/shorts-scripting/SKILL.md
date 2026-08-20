@@ -61,7 +61,7 @@ Every reference file in `references/` marks each rule:
   (`references/read-aloud-gates.md`).
 - **`[T]`** — not used by this skill; tool/policy facts belong to
   `voiceover-brief` and `visual-prompts`.
-- **`[S]`** script-baseline — derived from an observed failure in this repo's
+- **`[S]`** `[I]` script-baseline — derived from an observed failure in this repo's
   own shipped output, cited by file and beat in
   `docs/script-language-baseline.md`. Used only by the read-aloud gates. **An
   `[S]` rule that cannot name a real shipped line violating it is a bug — mark
@@ -244,13 +244,13 @@ your first script if this is a new session.
 
 ## What this skill does NOT do
 
-- **Doesn't set ElevenLabs voice/model settings** (stability, similarity,
+- **Doesn't set ElevenLabs voice/model settings** `[I]` (stability, similarity,
   audio tags) — that's `voiceover-brief`. Hand it the VO lines and timing only.
-- **Doesn't write Midjourney/image-video prompts** — that's `visual-prompts`.
+- **Doesn't write Midjourney/image-video prompts** `[I]` — that's `visual-prompts`.
   Hand it the visual notes and timing only.
-- **Doesn't decide the concept, title, or thumbnail** — that's `shorts-
+- **Doesn't decide the concept, title, or thumbnail** `[I]` — that's `shorts-
   ideation`, upstream. If a concept brief is missing, ask for it.
-- **Doesn't invent packaging-adjacent SEO/AEO content** (descriptions,
+- **Doesn't invent packaging-adjacent SEO/AEO content** `[I]` (descriptions,
   hashtags, chapters) — those are long-form-specific corpus findings that
   belong to packaging/repurposing work, not the script itself.
 
