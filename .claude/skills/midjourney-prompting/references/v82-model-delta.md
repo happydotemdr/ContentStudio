@@ -21,7 +21,7 @@ wrong). Treat plausible-sounding Midjourney "facts" from memory with the same su
 
 ## The headline
 
-- **V8.2 released as the default version on 2026-07-24**, focused on aesthetics, image quality, and
+- **V8.2 released as the default version on 2026-07-24** `[T]`, focused on aesthetics, image quality, and
   Personalization. Midjourney's own words: V8.2 images are "more creative, bold, sophisticated, and
   edgy," and Personalization "understands your aesthetic tastes much better." Set explicitly with
   `--v 8.2` `[T] (verified 2026-07-26, docs.midjourney.com "Version")`.
@@ -64,7 +64,7 @@ Verified `--oref` facts `[T] (verified 2026-07-26)`:
 - **One image only** per Omni Reference.
 - **Incompatible with:** Draft Mode, Conversational Mode, **Fast Mode**, **`--q 4`**, inpainting/
   outpainting, Vary Region, Pan, Zoom Out. *(The runbook missed Fast Mode and `--q 4`.)*
-- **Compatible with:** Personalization, Moodboards, `--stylize`, Style References.
+- **Compatible with:** `[T]` Personalization, Moodboards, `--stylize`, Style References.
 - Higher `--stylize` or `--exp` values compete with `--ow` for influence — raise `--ow` to compensate.
 
 The same V7-fallback trap applies to the **Style Creator**: "Images generated in the Style Creator use
@@ -125,23 +125,23 @@ punctuation after a parameter value; prompt text placed after the parameters. Ga
 
 ## Style systems — verified behavior
 
-- **`--sref random`** converts to a concrete style code on submission. With a **permutation, `--repeat`,
+- **`--sref random`** `[T]` converts to a concrete style code on submission. With a **permutation, `--repeat`,
   or Draft Mode** prompt, **each image gets a different code** — this is exactly what makes the
   cheap style-sweep work, and it is officially supported, not a community trick
   `[T] (verified 2026-07-26)`.
-- **You cannot create a style code from an uploaded image.** An uploaded image can be *used* as a Style
+- **You cannot create a style code from an uploaded image.** `[T]` An uploaded image can be *used* as a Style
   Reference, but it will not yield a reusable code `[T] (verified 2026-07-26)`. *(This narrows the
   corpus's `[I]` bootstrap step — passing an image URL as `--sref` works;
   "extract a style code from that generation" does not.)*
 - `--sref random` and style codes are **only compatible with `--sv 4` and `--sv 6`** `[T] (verified 2026-07-26)`.
-- **Style Creator** builds custom `--sref` codes from a pick-the-grid session; web-only; **previews
+- **Style Creator** `[T]` builds custom `--sref` codes from a pick-the-grid session; web-only; **previews
   consume your GPU time**, and Midjourney explicitly suggests adding **`--draft`** to keep that cheap.
   Entering it with an existing style code **stacks** a second code rather than merging — you must then
   carry *both* codes forward to reproduce what you saw `[T] (verified 2026-07-26)`.
-- **Personalization** requires unlocking the Global Profile first; `--p` errors otherwise. The **Global
+- **Personalization** `[T]` requires unlocking the Global Profile first; `--p` errors otherwise. The **Global
   V7 Profile works in V8.1 and V8.2**, additional V8 profiles can be created, and **there is currently
   no Global V8 Profile** `[T] (verified 2026-07-26)`.
-- **Profiles are trained by selecting images from a grid.** Midjourney's note: "Rating image pairs has
+- **Profiles are trained by selecting images from a grid.** `[T]` Midjourney's note: "Rating image pairs has
   been replaced with selecting images from a grid" `[T] (verified 2026-07-26)`. *(The supplied runbook
   described pairwise ranking — **refuted**, that flow no longer exists.)*
 - `--p mID` (moodboard) and `--p pID` (profile) both **auto-convert to `--p code`** on submission. A
@@ -162,7 +162,7 @@ test it.
   describes V8.2 as *more* creative, bold, and edgy — which if anything cuts the other way. The
   literalism claim is the runbook's central thesis and it is **unverified**. The documented lever for
   literalism is `--raw`, plus low `--stylize`.
-- **"Quality buzzwords (photorealistic, 8k, masterpiece, ultra-detailed) actively degrade V8.2 output."**
+- **"Quality buzzwords (photorealistic, 8k, masterpiece, ultra-detailed) actively degrade V8.2 output."** `[I]`
   Not documented. *Prefer concrete physical description anyway* — that is defensible as `[I]` craft and
   is corroborated by the corpus's own "describe the picture's content fully"
   `[C] (Future Tech Pilot, wEwYSBj0qBo)` — but do **not** claim the model penalizes buzzwords.

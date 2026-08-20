@@ -40,9 +40,9 @@ is stills-only. Downstream of both: `shorts-assembly`.
 
 Two sources, deliberately separate:
 
-- **`references/v82-model-delta.md`** — platform truth. Web-verified against live `docs.midjourney.com`
+- **`references/v82-model-delta.md`** `[I]` — platform truth. Web-verified against live `docs.midjourney.com`
   on **2026-07-26**, the day after V8.2 became default. **Read this first**; it is the tie-breaker.
-- **`docs/midjourney-prompting-guide.md`** — the corpus view. 384 findings across four dedicated
+- **`docs/midjourney-prompting-guide.md`** `[I]` — the corpus view. 384 findings across four dedicated
   Midjourney YouTube channels, snapshot 2026-07-23, documenting **V8.1**.
 
 Markers, copied verbatim wherever a rule is repeated:
@@ -111,14 +111,14 @@ Proceed without waiting for confirmation unless `format` is genuinely unknowable
 Read `references/prompt-architecture.md`. Order: medium → subject → action/pose/state → environment →
 composition/angle → optics/lens/depth-of-field → lighting mechanics → color/atmosphere → parameters.
 
-- **Front-load what matters** — Midjourney weights earlier words more heavily and words far back often
+- **Front-load what matters** `[C]` — Midjourney weights earlier words more heavily and words far back often
   fail to appear `[C] (Future Tech Pilot, ioJ6istzwHw)`.
 - **Short beats long, standalone** — length dilutes which words get weighted `[C] (Tokenized AI,
   vezJXJGQMoY)`. Nine layers is not nine mandatory clauses; drop a layer that adds nothing. **In
   pipeline mode this changes**: all nine layers are mandatory with concrete content, minimum 10
   clauses and 60 words, enforced by Gate C's C12 (`references/prompt-architecture.md`, "Density, not
   length — the pipeline exception `[I]`").
-- **No quality buzzwords** — `photorealistic`, `8k`, `masterpiece`, `ultra-detailed`, `trending on
+- **No quality buzzwords** `[T-unverified]` — `photorealistic`, `8k`, `masterpiece`, `ultra-detailed`, `trending on
   ArtStation`. Replace each with the concrete physical detail it was standing in for. *(That these
   actively degrade V8.2 is `[T-unverified]` — the ban stands on craft grounds, not model behavior.)*
 - End with `No Text.` if the brief involves on-screen copy `[C] (Tokenized AI, qFYJb0zYztY)`.
@@ -143,12 +143,12 @@ Never `--hd`, never `--q 2`+, never `--oref` here (`--oref` is Draft-incompatibl
 draft command and **stop for their pick**. What happens to that pick depends on
 which job this is `[I]`:
 
-- **Style discovery** (`stage: moodboard` / `explore`) — harvest the winning thumbnail's
+- **Style discovery** `[I]` (`stage: moodboard` / `explore`) — harvest the winning thumbnail's
   style code; it becomes a Style Library entry, and the ladder terminates here.
   **Record it in `docs/style-library.md` before the session closes, in that file's
   `Entry format` shape** `[I]` — a harvested code that lives only in a Midjourney session
   is not recoverable by anyone else, and the pipeline reads the Library, not the session.
-- **Asset rendering in the ContentStudio pipeline** — do *not* harvest. The style is
+- **Asset rendering in the ContentStudio pipeline** `[I]` — do *not* harvest. The style is
   already bound from the Library via the sheet's `{style:…}` slot and is present from the
   draft onward, so the pick chooses a *composition*, not a style. Drafting off-style would
   make the pick meaningless.
@@ -292,13 +292,13 @@ writes: docs/style-library.md
 
 ## What this skill does NOT do
 
-- **Render anything.** It emits prompt strings; you run them in Midjourney. It never spends GPU time.
-- **Image-to-video, motion, or i2v prompts** — `visual-prompts`
+- **Render anything.** `[I]` It emits prompt strings; you run them in Midjourney. It never spends GPU time.
+- **Image-to-video, motion, or i2v prompts** `[I]` — `visual-prompts`
   (`.claude/skills/visual-prompts/references/image-to-video.md`).
-- **Decide how many stills a Short beat needs, or the ~3s cadence** — `visual-prompts`.
-- **Captions, overlay text, or the edit** — `shorts-assembly`. Midjourney can't render legible text
+- **Decide how many stills a Short beat needs, or the ~3s cadence** `[I]` — `visual-prompts`.
+- **Captions, overlay text, or the edit** `[C]` — `shorts-assembly`. Midjourney can't render legible text
   anyway `[C] (Tokenized AI, qFYJb0zYztY)`.
-- **Voice or audio** — `voiceover-brief`, then `elevenlabs-audio`.
+- **Voice or audio** `[I]` — `voiceover-brief`, then `elevenlabs-audio`.
 
 ## `[T]` facts most likely to be stale — re-verify before relying on them
 

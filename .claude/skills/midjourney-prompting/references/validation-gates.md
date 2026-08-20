@@ -170,13 +170,13 @@ DO NOT:
 
 ### Handling the result
 
-- **Surface the findings to the user** alongside the revised prompt. Never auto-apply a rewrite
+- **Surface the findings to the user** `[I]` alongside the revised prompt. Never auto-apply a rewrite
   silently — the user may have wanted the thing the agent flagged.
 - If Gate B's rewrite changes parameters, **re-run Gate A** on it. An art-direction fix can easily
   introduce a syntax or compatibility failure.
 - If the user overrides a finding, note the override in the archive block so the next run doesn't
   re-litigate it.
-- **Never claim a gate passed without running it.**
+- **Never claim a gate passed without running it.** `[I]`
 
 ### When Gate B is skipped
 

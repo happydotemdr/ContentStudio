@@ -52,7 +52,7 @@ reason.
 - A prompt that names its lens, its light direction, its palette, and its background separation is
   **denser**, not more diluted. A prompt that says `beautiful, striking, cinematic` is padding, and
   remains banned.
-- **In pipeline mode all nine layers are mandatory** with concrete renderable content in each;
+- **In pipeline mode all nine layers are mandatory** `[C]` with concrete renderable content in each;
   minimum 10 clauses and 60 words, enforced by Gate C's C12 (`scripts/lint_prompt_sheet.py`).
 - Standalone mode is unchanged — the `[C]` default above still governs there.
 
