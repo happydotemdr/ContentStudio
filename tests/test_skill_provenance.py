@@ -606,3 +606,20 @@ def test_style_library_users_declare_it_in_their_handoff_block():
     assert "docs/style-library.md" in handoff("midjourney-prompting")["writes"], (
         "midjourney-prompting harvests codes into the Library and must declare the write"
     )
+
+
+NEGATIVE_SCOPE_RE = re.compile(
+    r"(do not use|don't use|does not|doesn't|not for|never use) ", re.IGNORECASE
+)
+
+
+@pytest.mark.parametrize("skill", ALL_SKILLS)
+def test_every_description_states_a_negative_scope(skill):
+    """Trigger text is what routing matches on, so a boundary stated only in the body is
+    invisible at selection time (audit C-29)."""
+    text = skill_md(skill).read_text(encoding="utf-8")
+    front = text.split("---")[1]
+    description = front.split("description:", 1)[1]
+    assert NEGATIVE_SCOPE_RE.search(description), (
+        f"{skill}'s description states no negative scope; its body already does"
+    )

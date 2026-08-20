@@ -1,6 +1,6 @@
 ---
 name: rgs-pairing-review
-description: Use when the thinkers corpus or RaisingGoodSports research corpus has been refreshed or expanded — new thinker works added to manifests/thinkers.json, or a research theme file re-split at a new edition — to detect what's new since the last pairing-map review and propose curated additions, or when asked to "review the pairing map," "check for new thinker or research content," or "expand the pairing map." Brand-specific to RaisingGoodSports; never runs on a schedule, only on request.
+description: Use when the thinkers corpus or RaisingGoodSports research corpus has been refreshed or expanded — new thinker works added to manifests/thinkers.json, or a research theme file re-split at a new edition — to detect what's new since the last pairing-map review and propose curated additions, or when asked to "review the pairing map," "check for new thinker or research content," or "expand the pairing map." Brand-specific to RaisingGoodSports; never runs on a schedule, only on request. Do not use this to produce a Grounding Brief for a Short — that is `rgs-grounding`; this skill only reviews the pairing map and proposes curated additions to it.
 ---
 
 # RGS Pairing Review
