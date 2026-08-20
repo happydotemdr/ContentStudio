@@ -352,6 +352,46 @@ This check, like the one above it, only covers drift inside P13's own scope plus
 plan explicitly reads — it is not a re-audit of the 77 unrelated commits themselves (they belong
 to no package in this remediation programme and were not reviewed for their own correctness here).
 
+**Addendum, found during T4's own task review (not a pre-flight pass — a gap T4's own fix
+created in a P13-owned file no task touches):** T4's C-16 fix changes `elevenlabs-music/SKILL.md`'s
+Gate 1 row to read `the Bed Arc's `## Tone-contradiction check` section is present and reports no
+unresolved MISMATCH`, and adds "**Gate 1 never re-runs `music-brief`'s tone call.**" directly
+beneath the gate table. `elevenlabs-music/references/validation-gates.md` (in §1's owned-file
+list, but not cited by any task T1-T18) is the actual fresh-agent prompt Gate 1 dispatches — and
+it still contradicts both new sentences:
+
+- `:39` still asks the operator to supply `VOICEOVER BRIEF TONE PER BEAT: <the tone call, beat by
+  beat, or "none supplied">` as a gate input — a raw upstream artifact Gate 1 no longer needs, per
+  the new SKILL.md framing.
+- `:69-74`, checklist Item 8 ("TONE CONTRADICTION"), still instructs the fresh agent to
+  independently "Compare each section's intended feeling against the voiceover brief's tone for
+  the same beat" and flag any undeclared contradiction as a FINDING — the fresh agent still
+  performs its own comparison for every beat the Bed Arc doesn't already flag, which is exactly
+  the re-derivation the new "Gate 1 never re-runs" sentence disclaims.
+
+**Task T4a (new, addendum-only — one file, `elevenlabs-music/references/validation-gates.md`):**
+
+- [ ] Delete the `VOICEOVER BRIEF TONE PER BEAT: <...>` line at `:39` — Gate 1 no longer takes the
+      raw tone-per-beat call as an input; `BED ARC TONE-CONTRADICTION CHECK` at `:40` (already
+      present) is the only tone-related field it needs.
+- [ ] Replace checklist Item 8 (`:69-74`) with:
+
+```
+8. TONE CONTRADICTION. This gate does not compare feelings itself — that call belongs to
+   `music-brief`, upstream. Confirm only: the Bed Arc's tone-contradiction check is present
+   (not "none declared"), and every row in it is either a stated non-contradiction or a declared
+   MISMATCH with a rationale. An **absent** tone-contradiction check, or a MISMATCH row with no
+   stated rationale, is a FINDING. Do not independently judge whether a section's feeling
+   contradicts the spoken tone — that re-derivation is exactly what the new Gate 1 semantics
+   retire.
+```
+
+- [ ] Commit: `fix(elevenlabs-music): retire Gate 1's own tone comparison to match the new
+      SKILL.md semantics`.
+
+This does not reopen T4 (already reviewed and approved for its own two-file scope) — it closes a
+gap T4's own fix exposed in a third, P13-owned file that no original task cited.
+
 ---
 
 ## 3. Tasks
