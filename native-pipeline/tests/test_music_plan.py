@@ -15,6 +15,9 @@ def test_build_music_plan_sets_duration_ms_from_movement_span():
     chunks = plan["composition_plan"]["chunks"]
     assert chunks[0]["duration_ms"] == 4000
     assert chunks[1]["duration_ms"] == 16000
+    # text is additive to the chunk shape, not a replacement of duration_ms
+    assert chunks[0]["text"]
+    assert chunks[1]["text"]
 
 
 def test_build_music_plan_uses_sparse_style_for_sparse_density():
@@ -23,6 +26,8 @@ def test_build_music_plan_uses_sparse_style_for_sparse_density():
 
     chunk = plan["composition_plan"]["chunks"][0]
     assert any("sparse" in style for style in chunk["positive_styles"])
+    # matches the elevenlabs-music skill's documented default negative_styles list
+    assert chunk["negative_styles"] == ["vocals", "singing", "spoken word", "lyrics"]
 
 
 def test_build_music_plan_folds_style_notes_into_positive_styles():
@@ -33,10 +38,32 @@ def test_build_music_plan_folds_style_notes_into_positive_styles():
     assert "brass hit on the key line" in chunk["positive_styles"]
 
 
-def test_build_music_plan_sets_force_instrumental():
+def test_build_music_plan_sets_text_from_movement_label():
+    bed_arc = [_movement("rising urgency", 0.0, 5.0, "full")]
+    plan = build_music_plan(bed_arc, runtime=5.0)
+
+    chunk = plan["composition_plan"]["chunks"][0]
+    assert isinstance(chunk["text"], str)
+    assert chunk["text"]
+    assert "rising urgency" in chunk["text"]
+
+
+def test_build_music_plan_folds_style_notes_into_text():
+    bed_arc = [_movement("hook", 0.0, 5.0, "full", style_notes="brass hit on the key line")]
+    plan = build_music_plan(bed_arc, runtime=5.0)
+
+    chunk = plan["composition_plan"]["chunks"][0]
+    assert "hook" in chunk["text"]
+    assert "brass hit on the key line" in chunk["text"]
+
+
+def test_build_music_plan_omits_top_level_force_instrumental():
+    # force_instrumental is prompt-only and has no effect on a composition_plan
+    # payload -- see .claude/skills/elevenlabs-music/references/composition-plans.md,
+    # "The instrumental technique". The real guard is negative_styles per chunk.
     bed_arc = [_movement("hook", 0.0, 5.0, "full")]
     plan = build_music_plan(bed_arc, runtime=5.0)
-    assert plan["force_instrumental"] is True
+    assert "force_instrumental" not in plan
 
 
 def test_build_music_plan_raises_on_movement_under_3000ms_floor():

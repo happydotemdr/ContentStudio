@@ -5,7 +5,15 @@ real segment/gap: Eleven Music bounds every chunk's duration_ms to
 3,000-120,000ms, and real inter-beat gaps (0.848-1.428s in the validated
 take) fall well under that floor. Fine-grained response to a specific pause
 or emphasis inside a movement is a style-prompt instruction (style_notes),
-not a hard chunk boundary."""
+not a hard chunk boundary.
+
+No top-level "force_instrumental" field is set on the returned payload:
+it is prompt-only and has no effect on a composition_plan/chunks payload
+(.claude/skills/elevenlabs-music/references/composition-plans.md, "The
+instrumental technique"). The actual (and only documented) instrumental
+guard for this payload shape is negative_styles carrying vocal terms on
+every chunk -- and even that guard is documented as confirmed
+insufficient by a live generation, not a guarantee."""
 
 from __future__ import annotations
 
@@ -16,10 +24,12 @@ MAX_CHUNK_MS = 120_000
 MAX_CHUNKS = 30
 TOTAL_DURATION_TOLERANCE_MS = 50
 
+NEGATIVE_STYLES_VOCAL_GUARD = ["vocals", "singing", "spoken word", "lyrics"]
+
 DENSITY_STYLES = {
-    "sparse": (["sparse pad, minimal percussion"], ["vocals", "lyrics"]),
-    "medium": (["moderate arrangement, gentle rhythm"], ["vocals", "lyrics"]),
-    "full": (["full arrangement, rhythmic emphasis"], ["vocals", "lyrics"]),
+    "sparse": (["sparse pad, minimal percussion"], NEGATIVE_STYLES_VOCAL_GUARD),
+    "medium": (["moderate arrangement, gentle rhythm"], NEGATIVE_STYLES_VOCAL_GUARD),
+    "full": (["full arrangement, rhythmic emphasis"], NEGATIVE_STYLES_VOCAL_GUARD),
 }
 
 
@@ -40,9 +50,18 @@ def build_music_plan(bed_arc: list[dict], runtime: float) -> dict:
             )
         positive, negative = DENSITY_STYLES[movement["density"]]
         positive = list(positive)
+        text = label
         if movement.get("style_notes"):
             positive.append(movement["style_notes"])
-        chunks.append({"duration_ms": duration_ms, "positive_styles": positive, "negative_styles": list(negative)})
+            text = f"{label} -- {movement['style_notes']}"
+        chunks.append(
+            {
+                "text": text,
+                "duration_ms": duration_ms,
+                "positive_styles": positive,
+                "negative_styles": list(negative),
+            }
+        )
 
     if len(chunks) > MAX_CHUNKS:
         raise ChunkDurationTooShortError(
@@ -57,4 +76,4 @@ def build_music_plan(bed_arc: list[dict], runtime: float) -> dict:
             f"(off by {abs(total_ms - expected_ms)}ms) -- bed_arc movements must cover the full take"
         )
 
-    return {"model_id": "music_v2", "force_instrumental": True, "composition_plan": {"chunks": chunks}}
+    return {"model_id": "music_v2", "composition_plan": {"chunks": chunks}}
