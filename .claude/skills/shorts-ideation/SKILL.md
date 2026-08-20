@@ -138,7 +138,7 @@ ship a brief that fails its own gate.
 
 Use the template below. Keep it tight — this is a brief, not a document.
 
-## Concept brief template
+## Output contract
 
 ```markdown
 # Concept Brief: [working title of the idea]
@@ -177,10 +177,23 @@ This brief feeds `shorts-scripting` next. Scripting owns the opening lines, rete
 structure, and pacing — not this brief.
 ```
 
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: concept-brief
+produces.stage: 01-ideation
+produces.section: Angle / take
+produces.section: Hook concept
+produces.section: Packaging direction
+produces.section: Validation
+produces.section: Grounding
+produces.section: Handoff
+```
+
 ## Worked example
 
-See `references/worked-example.md` for a full worked run — a raw idea taken through all
-five workflow steps to the finished concept brief handed off to `shorts-scripting`.
+See `references/worked-example.md` for a full worked run — a raw idea taken through all six
+workflow steps to the finished concept brief handed off to `shorts-scripting`.
 
 ## Citation index (what's grounded where)
 

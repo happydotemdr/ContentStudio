@@ -20,14 +20,22 @@ project-wide anti-generic guarantee this skill exists to enforce.
   this skill scripts a concept, it doesn't originate one. **Optionally**, a companion grounding
   artifact may also be handed to this skill directly, or reached via the concept brief's
   "Grounding" section — see "Optional input" below.
-- **Downstream output feeds two separate skills:**
-  - **`voiceover-brief`** — needs each beat's VO line, timestamp range, and
-    word count to build the ElevenLabs production brief.
-  - **`visual-prompts`** — needs each beat's timestamp range and visual note to
-    build the Midjourney prompt sheet.
-  Both are authored separately — this skill's job ends at a complete,
-  self-contained script; don't reach ahead into voice-setting or image-prompt
-  territory (see "What this skill does NOT do" below).
+- **Downstream output feeds six skills:**
+  - **`shorts-styleboard`** (**required next** — `visual-prompts` hard-stops without its
+    artifact) — needs the beat list and the claim each beat rests on, to lock the two registers.
+  - **`voiceover-brief`** (required) — needs each beat's VO line, timestamp range, and word
+    count to build the ElevenLabs production brief.
+  - **`visual-prompts`** (required, and requires the styleboard first) — needs each beat's
+    timestamp range and visual note to build the Midjourney prompt sheet.
+  - **`music-brief`** (optional, and runs *after* `voiceover-brief`) — needs the beat boundaries
+    in seconds; its tone input comes from the voiceover brief, not from here.
+  - **`shorts-assembly`** (required) — reads the script directly for its shot table and
+    Delivery-notes constraints, alongside the styleboard, voiceover brief and visual prompts.
+  - **`social-repurpose`** (required) — reads the script directly for hook language and any
+    publish constraint, alongside the edit plan.
+  All six are authored separately — this skill's job ends at a complete, self-contained script;
+  don't reach ahead into voice-setting or image-prompt territory (see "What this skill does NOT
+  do" below).
 
 ## Provenance discipline (read before writing a single line)
 
@@ -133,8 +141,9 @@ If no companion artifact is provided, this section doesn't apply — script norm
     on screen, not a rendered image/video prompt (that's `visual-prompts`'
     job). Flag any beat carrying a spoken statistic or list so it's rendered
     as on-screen text/graphic downstream.
-11. **Fill the output contract exactly** (below) and state the up/downstream
-    handoff explicitly at the end of the response.
+11. **Fill the output contract exactly** (below) and state the up/downstream handoff explicitly
+    at the end of the response, naming all six downstream consumers and which are required for
+    the next stage to run.
 
 ## Beat-timing model (standard 35–45s band)
 
@@ -200,6 +209,29 @@ Delivery notes: <muted-friendly check, medium-confidence flags used (if any),
   copied verbatim>
 ```
 
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: script
+produces.stage: 02-scripting
+produces.section: HOOK
+produces.section: SETUP
+produces.section: BUILD/VALUE
+produces.section: PAYOFF
+produces.section: LOOP/CTA
+produces.section: Comment-bait question
+produces.section: Next-video bridge
+produces.section: Total word count
+produces.section: GATES
+produces.section: Visual notes
+produces.section: Delivery notes
+consumes: shorts-ideation#Angle / take
+consumes: shorts-ideation#Hook concept
+consumes: shorts-ideation#Packaging direction
+consumes: rgs-grounding#Handoff
+consumes: rgs-grounding#Constraints that survive to publish
+```
+
 **Every `<…>` above is a slot, and the two `GATES` slots are the ones a gate
 checks: D6 rejects a `Gate E:` value still wrapped in `<…>` or `[…]`, or still
 carrying the template's `|` bars** `[I]`. Emitting the contract unfilled is a
@@ -259,7 +291,7 @@ to `rgs-briefs/` in this mode.
    `python scripts/resolve_brief_version.py --slug <slug> --kind concept-brief` from the repo
    root (you need the `slug` the concept brief's author stated — ask for it if you don't have
    it). This prints `<path>\t<version>` where `<path>` is already `rgs-briefs/`-relative (or, if
-   nothing is found yet, prints `NONE\t0` and exits 1 — that's the expected "no file yet, fall
+   nothing is found yet, prints `NONE\t0` and exits 3 — that's the expected "no file yet, fall
    back to chat-pasted input" case, not an error). Read the file it reports. If it points at a
    `grounding:` field, treat that as the companion grounding artifact per "Optional input" above.
    **Staleness check:** re-run `resolve_brief_version.py --slug <slug> --kind concept-brief`
