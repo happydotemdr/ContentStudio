@@ -442,6 +442,56 @@ consumes: voiceover-brief#Script, reformatted for TTS
 This does not reopen T11 (already reviewed and approved for its own four-file scope) — it closes
 a plan-coverage gap (a skill with zero handoff-block task, not a task that got its scope wrong).
 
+**Mid-wave checkpoint, after T12 (2026-08-20) — an Opus review of the whole T1-T12 arc, not a
+per-task review.** Full report on file; four findings on ALREADY-LANDED work that no task in
+T13-T18 will touch (verified against those tasks' own scope), batched into one addendum below.
+Several more findings concern T13/T14/T18's own shown text having drifted since authoring —
+those are NOT fixed here; they are recorded in this file's own §0 history for correction when
+each of those tasks is dispatched, per this programme's standing discipline (amend before
+dispatch, same as every task so far).
+
+**Task T12a (new, addendum-only — four files, batched per this programme's final-review
+convention of one fix dispatch for a findings list, not one per finding):**
+
+1. **`elevenlabs-audio/SKILL.md:33-34`** — stale step numbers, a T3/T11 interaction. T3
+   (`05328f1`) inserted a new step 3 into `voiceover-brief`'s workflow, pushing Settings to step
+   4 and TTS-reformat to step 5. T11 (`0b698fb`) then rewrote this exact sentence copying the
+   plan's own pre-T3 wording verbatim. Live text: "`voiceover-brief` step 2 names a model, step
+   **3** sets the four settings plus speaker boost, and step **4** places v3 audio tags and
+   phonetic respellings." Replace `step 3` → `step 4` and `step 4` → `step 5`.
+2. **`voiceover-brief/references/worked-example.md`** — the worked example has no `## Tone per
+   beat` section, even though T3 made that section a declared, three-consumer output that
+   `SKILL.md:78-82` calls "a missing row is a blocked downstream stage, not a defaulted one."
+   Add a `## Tone per beat` section to the worked example, in the same position T3 specified for
+   the real output contract (between `## Voice pick` and `## Settings`), filled in with a
+   plausible tone-per-beat row set for whatever script beats the existing worked example already
+   uses — matching the file's own established depth/style, not inventing new script content.
+3. **`shorts-assembly/SKILL.md:82`** — "Then produce the plan itself under these **six**
+   headings" undercounts; the fenced template immediately below has **seven** (T5's own C-21 fix
+   added a 7th, "Constraints that survive to publish," which the sentence never updated — flagged
+   as a deferred Minor at T5's own review, since re-escalated to Important because that 7th
+   section is exactly the one `social-repurpose` consumes by name, per this same sentence's own
+   "renaming one breaks `social-repurpose`" warning three lines later). Change `six` → `seven`.
+4. **`rgs-pairing-review/SKILL.md`'s T12-added `## Output format` block** — its fenced
+   restatement declares a `## Proposal` heading that the REAL artifact
+   (`output/pairing-proposals/YYYY-MM-DD-proposal.md`, per the file's own step-5 template) never
+   contains — that file opens `# Pairing Map Review Proposal — [date]` then `## New/changed since
+   last review`, `## Proposed additions`, `## Considered and rejected`, `## Re-verification
+   verdicts`. Nothing currently consumes `rgs-pairing-review#Proposal`, so blast radius is low,
+   but the declaration is fiction — precisely the defect class this whole package exists to
+   eliminate. Replace the `## Output format` block's fenced content so it names the artifact's
+   *real* four section headings (not a generic "Proposal" placeholder), and update the handoff
+   block's `produces.section: Proposal` line to match whichever of the four is the natural
+   "primary" section (or list more than one, if that's a better match for how this skill is
+   actually consumed — use judgment, there is no existing consumer to be strictly compatible
+   with).
+
+- [ ] Commit: `fix(checkpoint): reconcile four already-landed drifts found at the T1-T12 midwave review`.
+
+This does not reopen T3/T5/T6/T11/T12 (each already reviewed and approved for its own scope) —
+it closes four gaps only visible once the whole arc is read together, exactly the class of
+defect a per-task review cannot see.
+
 ---
 
 ## 3. Tasks
