@@ -41,10 +41,11 @@ instrumentation are `elevenlabs-music`'s vendor-grounded territory, not this cor
 
 ## Workflow
 
-1. **Read the timed script in full**, noting every beat boundary in seconds.
-2. **Read the voiceover brief's tone-per-beat call.** If it is missing, ask for it rather than
-   inferring tone from the script — inferring is exactly the tone contradiction this skill exists
-   to prevent.
+1. **Read the timed script's beat table** — beat name and boundary in seconds, nothing else.
+   The bed arc needs boundaries, not prose `[I]`.
+2. **Read the voiceover brief's `## Tone per beat` section** — that section by name, not the
+   whole brief. If the section is absent, stop and ask for it rather than inferring tone from
+   the script; inferring is exactly the tone contradiction this skill exists to prevent.
 3. **Derive the emotional arc:** name each movement, its beat range in seconds, and its intended
    feeling. Read `references/bed-arc.md`.
 4. **Decide the hook hold-out** — whether the bed is absent under the hook, and if so, the exact
@@ -83,6 +84,24 @@ Keep every claim in the brief traceable to a marker. If you had to extrapolate (
 boundary not directly named by a corpus finding), say so explicitly with `[I]` rather than
 presenting it as a corpus fact.
 
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: music
+produces.stage: 03-music
+produces.section: Bed arc
+produces.section: Hook hold-out
+produces.section: Tone-contradiction check
+produces.section: Deferred to elevenlabs-music
+produces.section: Downstream
+consumes: shorts-scripting#HOOK
+consumes: shorts-scripting#SETUP
+consumes: shorts-scripting#BUILD/VALUE
+consumes: shorts-scripting#PAYOFF
+consumes: shorts-scripting#LOOP/CTA
+consumes: voiceover-brief#Tone per beat
+```
+
 ## Reference files
 
 - `references/bed-arc.md` — the corpus's `[C]` findings on tone-matching, low-energy beds,
@@ -101,8 +120,9 @@ to `rgs-briefs/` in this mode.
 **Standalone** (no output path was given):
 
 1. Resolve the two upstream inputs: run `python scripts/resolve_brief_version.py --slug <slug>
-   --kind script` and `... --kind voiceover-brief` from the repo root. Read each file the resolver
-   reports.
+   --kind script` and `... --kind voiceover-brief` from the repo root. From the script read the
+   beat/timestamp table; from the voiceover brief read the `## Tone per beat` section. Nothing
+   else in either file is an input to this skill `[I]`.
    **Staleness check:** re-run both resolver calls again right before you finish — if a newer
    version now exists for either of them than the one you read, tell the user before proceeding.
 2. Before writing the brief, run

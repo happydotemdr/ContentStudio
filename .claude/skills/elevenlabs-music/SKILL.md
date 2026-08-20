@@ -80,7 +80,7 @@ don't re-derive what it already says `[I]`:
 |---|---|
 | `## Bed arc` | The movement names, their beat ranges (s), and intended feeling — the Bed Profile Card's movement names, and Stage B's beat→chunk mapping source table |
 | `## Hook hold-out` | The fade-in timestamp Stage B's chunk arithmetic starts from (`composition-plans.md`'s beat→chunk method) |
-| `## Tone-contradiction check` | The per-beat tone data Gate 1's arc-vs-voiceover-brief tone check reads |
+| `## Tone-contradiction check` | Gate 1's confirmation that the tone-contradiction call already resolved, with no unresolved MISMATCH |
 | `## Deferred to elevenlabs-music` | The gaps (BPM, key, genre, instrumentation) the corpus doesn't cover and this skill must fill itself, in `prompt-craft.md`'s arc-to-style-vocabulary translation |
 | `## Downstream` | Confirms this skill is the next stage — no data to extract, just the handoff pointer |
 
@@ -136,9 +136,14 @@ already embeds the repo's sub-agent output contract.
 
 | Gate | Fires | Checks |
 |---|---|---|
-| **1 — Section map** | after Stage B | durations sum to runtime; every chunk within 3,000–120,000 ms; ≤30 chunks; vocal guard present on every chunk; no lyric/vocal content in any `text`; no artist/band/track name in any style string; arc does not contradict the voiceover brief's tone-per-beat call |
+| **1 — Section map** | after Stage B | durations sum to runtime; every chunk within 3,000–120,000 ms; ≤30 chunks; vocal guard present on every chunk; no lyric/vocal content in any `text`; no artist/band/track name in any style string; the Bed Arc's `## Tone-contradiction check` section is present and reports no unresolved MISMATCH |
 | **2 — Payload** | after Stage C | `model_id` explicit and matching the plan shape; prompt XOR `composition_plan`; no `seed` with `prompt`; no `force_instrumental` with a plan; no `music_length_ms` with a plan; style arrays ≤50; `output_format` matches phase |
 | **3 — Pre-master spend** | before any master render | a draft was emitted and confirmed; cost stated as an estimate with its `[T-unverified]` status named; re-roll budget named; no reliance on unverified free-plan claims |
+
+**Gate 1 never re-runs `music-brief`'s tone call.** The boundary table above assigns the
+tone-contradiction call upstream; this gate only confirms that the upstream artifact carries the
+section and that it resolved. Reading the voiceover brief here would be re-litigating a decision
+this skill declared it accepts `[I]`.
 
 **Gates 1 and 2 are independent — dispatch them in parallel** (single message, two tool calls) once
 both artifacts exist. **A gate returning findings blocks emission** until resolved or explicitly
@@ -199,6 +204,29 @@ re-decide**, the duck depth and LUFS target inherited from `voiceover-brief`, pl
 `S<###>_music.mp3` filename, so `shorts-assembly` has everything without a lookup. If this section
 ever picks a *different* number from the one upstream chose, that is the drift the boundary exists
 to prevent.
+
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: none
+produces.stage: none
+produces.section: CONTROL SURFACE
+produces.section: BED PROFILE
+produces.section: SECTION MAP
+produces.section: UI PROMPT
+produces.section: COMPOSITION PLAN
+produces.section: REQUEST PAYLOAD
+produces.section: MIX HANDOFF
+produces.section: COST
+produces.section: QC CHECKLIST
+produces.section: VALIDATION GATES
+produces.section: NEXT
+consumes: music-brief#Bed arc
+consumes: music-brief#Hook hold-out
+consumes: music-brief#Tone-contradiction check
+consumes: music-brief#Deferred to elevenlabs-music
+consumes: voiceover-brief#Production & loudness
+```
 
 ## What this skill does NOT do
 
