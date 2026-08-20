@@ -283,6 +283,75 @@ explicitly flagged by a sibling package's plan; it cannot rule out a sibling pac
 drift the same way the P11/P12 handoffs above were caught by having been recorded somewhere. Full
 finding-by-finding re-verification of all 48 findings was not performed.
 
+**Update, 2026-08-20 — a second pre-flight pass, prompted by a large unrelated backlog landing on
+`origin/main` since the check above.** This worktree (`worktree-p15-docs-followup`, HEAD `dccfe11`)
+is 77 commits behind `origin/main` — an entire standalone `elevenlabs-tooling` package (PR #57),
+plus stitcher/native-pipeline/audio-preconditioning/single-take-VO-architecture work, none of it
+related to this remediation programme. **This time the claim "P13's own owned scope is untouched"
+no longer holds — it is now stale from the check above and must be re-run against `origin/main`
+before P13's Task 1 is dispatched from a fresh worktree, not just trusted from this entry.**
+
+`git diff dccfe11 origin/main -- .claude/skills/ tests/test_skill_provenance.py` shows exactly
+7 files changed, across 3 commits (`56523c0`, `55000b5`, `3a928c0`), all inside `voiceover-brief`
+and `elevenlabs-audio`/`elevenlabs-music` (the pinned narrator voice was re-cloned from IVC to
+PVC, and a channel-specific single-take VO architecture decision was recorded):
+
+- `.claude/skills/elevenlabs-audio/references/directorial-prompting.md` — new `[pause]`-vs-`<break>`
+  subsection appended near the end of the tag catalog. No P13 task cites this file by line or
+  quotes its text — unaffected.
+- `.claude/skills/elevenlabs-audio/references/model-routing.md` — new `<break>` feature-matrix row
+  and subsection appended before "## Routing decisions". No P13 task cites this file by line or
+  quotes its text — unaffected.
+- `.claude/skills/elevenlabs-audio/references/voice-profiles.md` — the IVC-specific caveat
+  paragraph was rewritten to describe the new PVC pin instead. No P13 task cites this file by line
+  or quotes its text — unaffected.
+- `.claude/skills/elevenlabs-music/references/composition-plans.md` — the `[T-unverified]` vocal-
+  guard caveat was strengthened to "confirmed insufficient by a live generation." No P13 task
+  cites this file by line or quotes its text — unaffected.
+- `.claude/skills/voiceover-brief/references/channel-voice.md` — `voice_id` changed
+  `5kVvcrJnhhULT5LdbshJ` → `eDwT8Vhp2yxJzAMmuuPA`, plus a new "Supersedes" paragraph inserted
+  after the line range **C-47 (T16)** cites. **Checked directly: C-47's citation
+  (`channel-voice.md:14-17`, the "That voice *is* the channel's identity" replacement) is
+  unaffected** — the insertion lands after line 17, not before it. `voice-selection.md` (T16's
+  other C-47 citation) is untouched entirely.
+- `.claude/skills/voiceover-brief/references/single-take-architecture.md` — **new file**, not in
+  §1's owned-file list because it didn't exist when this plan was authored. It is inside
+  `voiceover-brief/**`, which the owned-file list already covers as a directory glob, so no scope
+  amendment is needed — flagging only so nobody is surprised by an untracked-in-§1 file appearing
+  under a package's own owned directory.
+- `.claude/skills/voiceover-brief/SKILL.md` — **this one is load-bearing for T3.** Step 4
+  ("Reformat the script text for TTS") gained two sentences pointing at the new
+  `single-take-architecture.md` file, and the "## Reference files" list gained a new bullet for
+  it. Concrete impact on **T3**:
+  1. T3's citation `` (`:89-105`) `` for the Output format template is now stale — the live line
+     range on `origin/main` is **`:91-107`** (shifted +2 by step 4's growth).
+  2. T3's citation `` `:135-138` `` for the File I/O sentence is now stale — the live line range
+     is **`:140-143`** (shifted +5: +2 from step 4, +3 from the new Reference-files bullet).
+  3. **A genuine content bug, not just a line-number shift:** T3 inserts a new step 3 between the
+     current steps 2 and 3, renumbering the old steps 3-6 to 4-7. The old step 4 (TTS reformatting)
+     becomes step 5 after that renumbering — but its own newly-landed text ends "...read it before
+     applying this step here" (self-referencing "this step") and the new Reference-files bullet
+     says "which changes how step 4 below applies". Neither says "step 4" by number in the
+     self-reference (it says "this step"), but the **Reference-files bullet does**, and will read
+     wrong once renumbering makes TTS-reformatting step 5. T3's dispatch must update that bullet's
+     "step 4" to "step 5" as part of the same edit — otherwise it silently ships a wrong
+     cross-reference the moment T3 lands.
+
+  Both line-number fixes and the "step 4"→"step 5" bullet correction should be folded into T3's
+  own task text before dispatch, the same way the `pipeline.yaml` corrections above were folded
+  into T5/T7 — not fixed silently once T3 is underway.
+
+No other P13-owned or P13-adjacent file changed: `pipeline.yaml`, `docs/style-library.md`,
+`scripts/lint_prompt_sheet.py`, `scripts/resolve_brief_version.py`, `CLAUDE.md`, `docs/README.md`,
+`rgs-briefs/**`, `tests/test_skill_provenance.py`, and `tests/test_build_cowork_plugin.py` are all
+identical between `dccfe11` and `origin/main` — the two inbound cross-package handoffs recorded
+above (P11's banned-vocabulary mirror, P12's exit-code sentence) are unaffected and still current.
+`test_skill_provenance.py` still has exactly the 6 tests this plan's intro describes.
+
+This check, like the one above it, only covers drift inside P13's own scope plus the files this
+plan explicitly reads — it is not a re-audit of the 77 unrelated commits themselves (they belong
+to no package in this remediation programme and were not reviewed for their own correctness here).
+
 ---
 
 ## 3. Tasks
