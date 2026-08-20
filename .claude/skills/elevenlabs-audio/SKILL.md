@@ -242,6 +242,28 @@ NEXT
    it reads the DIRECTORIAL SCRIPT's chunk boundaries and the rendered asset filename.]
 ```
 
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: audio-spec
+produces.stage: 03-voiceover
+produces.section: CONTROL SURFACE
+produces.section: VOICE PROFILE
+produces.section: MODEL ROUTING
+produces.section: VOICE SETTINGS
+produces.section: DIRECTORIAL SCRIPT
+produces.section: PRONUNCIATION
+produces.section: REQUEST PAYLOAD
+produces.section: COST
+produces.section: QC CHECKLIST
+produces.section: VALIDATION GATES
+produces.section: NEXT
+consumes: voiceover-brief#Voice pick
+consumes: voiceover-brief#Tone per beat
+consumes: voiceover-brief#Settings
+consumes: voiceover-brief#Script, reformatted for TTS
+```
+
 ## What this skill does NOT do
 
 - **Call the ElevenLabs API.** It emits payloads and curl commands; you run them. It never handles
