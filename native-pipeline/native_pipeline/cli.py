@@ -22,12 +22,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from stitcher.naming import Workspace
 from stitcher.spec import Style
 
-from native_pipeline import orchestrate
+from native_pipeline import contracts, orchestrate
+
+# Distinct from the stage-related exit codes stitcher's own CLI uses
+# (EXIT_PREFLIGHT=1, EXIT_RENDER=2, ...) -- this one is native_pipeline's
+# own CLI reporting a bad *input* to itself, before any stage (and before
+# either billed API call) ever runs. Matches elevenlabs_tooling.cli's
+# EXIT_USAGE=2 convention for the same kind of failure.
+EXIT_USAGE = 2
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -38,16 +46,40 @@ def cmd_render(args: argparse.Namespace) -> int:
     beat_texts_path = Path(args.beat_texts).resolve()
     styles_path = Path(args.styles).resolve()
 
+    # Pure, structural input validation -- deliberately hoisted ahead of
+    # run_vo_stage/run_music_stage, which are real, billed API calls. A
+    # malformed --beat-texts/--styles file or an invalid --asset-manifest
+    # must be caught here, before either billed generation runs, not after.
+    # The beat-name-vs-segments cross-check inside build_shots still can't
+    # happen until real VO segments exist, so it stays where it is (inside
+    # run_assemble_stage); this only covers what's checkable from the raw
+    # input files alone.
+    try:
+        beat_texts = json.loads(beat_texts_path.read_text(encoding="utf-8"))
+        if not isinstance(beat_texts, list) or not all(isinstance(t, str) for t in beat_texts):
+            raise ValueError(f"--beat-texts must be a JSON list of strings: {beat_texts_path}")
+
+        raw_styles = json.loads(styles_path.read_text(encoding="utf-8"))
+        if not isinstance(raw_styles, dict):
+            raise ValueError(f"--styles must be a JSON object of name -> style fields: {styles_path}")
+        styles = {name: Style(**fields) for name, fields in raw_styles.items()}
+
+        # Validates the asset manifest's own structure (kind/motion/
+        # source_in_s/source_out_s requirements) independent of the real VO
+        # segments, which don't exist yet at this point. run_assemble_stage
+        # loads this same file again later (Task 9's existing code, left
+        # untouched) -- cheap, redundant JSON parsing, not a real cost.
+        contracts.load_asset_manifest(asset_manifest)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"native_pipeline: invalid input: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
     ws = Workspace(root=root, slug=args.slug, mode="final")
     ws.ensure_dirs()
     log_path = ws.log_path("native")
 
     voice_take, segments = orchestrate.run_vo_stage(ws, vo_payload, args.vo_url, log_path)
     music_bed = orchestrate.run_music_stage(segments, bed_arc, ws, args.music_url, log_path)
-
-    beat_texts = json.loads(beat_texts_path.read_text(encoding="utf-8"))
-    raw_styles = json.loads(styles_path.read_text(encoding="utf-8"))
-    styles = {name: Style(**fields) for name, fields in raw_styles.items()}
 
     orchestrate.run_assemble_stage(
         ws, segments, asset_manifest, beat_texts,
