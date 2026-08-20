@@ -277,6 +277,72 @@ def cmd_send(args: argparse.Namespace) -> int:
     return EXIT_SEND_FAILED
 
 
+def cmd_music_send(args: argparse.Namespace) -> int:
+    payload_path = Path(args.payload)
+    output_path = Path(args.output)
+
+    raw_bytes, payload, error_code = _load_payload(payload_path)
+    if error_code is not None:
+        return error_code
+
+    api_key = os.environ.get(API_KEY_ENV_VAR)
+    if not api_key:
+        print(f"elevenlabs_tooling: {API_KEY_ENV_VAR} is not set", file=sys.stderr)
+        log("music_send.aborted", level="warning", url=args.url, payload_path=str(payload_path),
+            reason="no_api_key")
+        return EXIT_NO_API_KEY
+
+    if output_path.exists() and not args.force:
+        print(f"elevenlabs_tooling: {output_path} already exists; pass --force to overwrite", file=sys.stderr)
+        log("music_send.aborted", level="warning", url=args.url, payload_path=str(payload_path),
+            output_path=str(output_path), reason="output_exists")
+        return EXIT_USAGE
+
+    if not output_path.parent.is_dir():
+        print(f"elevenlabs_tooling: output directory does not exist: {output_path.parent}", file=sys.stderr)
+        log("music_send.aborted", level="warning", url=args.url, payload_path=str(payload_path),
+            output_path=str(output_path), reason="output_parent_missing")
+        return EXIT_USAGE
+
+    payload_hash = hashlib.sha256(raw_bytes).hexdigest()
+    timeout = _resolve_timeout(args.timeout)
+    log("music_send.attempt", url=args.url, payload_path=str(payload_path), payload_sha256=payload_hash,
+        output_path=str(output_path), timeout=timeout)
+
+    try:
+        result = client_send(args.url, raw_bytes, api_key, timeout=timeout)
+    except Exception as exc:
+        print(f"elevenlabs_tooling: unexpected error sending the payload: {type(exc).__name__}", file=sys.stderr)
+        log("music_send.failed", level="error", url=args.url, error=type(exc).__name__)
+        return EXIT_SEND_FAILED
+
+    if result.ok:
+        try:
+            output_path.write_bytes(result.body)
+        except OSError as exc:
+            print(f"elevenlabs_tooling: send succeeded but writing {output_path} failed: {exc}", file=sys.stderr)
+            log("music_send.failed", level="error", url=args.url, status_code=result.status_code,
+                error=f"write failed after a successful API call: {exc}")
+            return EXIT_SEND_FAILED
+        log("music_send.success", url=args.url, output_path=str(output_path), status_code=result.status_code,
+            content_type=result.content_type, bytes_written=len(result.body))
+        return EXIT_PASS
+
+    if result.body is not None:
+        quarantine_path = output_path.with_name(output_path.name + ".unexpected")
+        try:
+            quarantine_path.write_bytes(result.body)
+            quarantine_note = f" (response body saved to {quarantine_path})"
+        except OSError as exc:
+            quarantine_note = f" (also failed to save the response body: {exc})"
+    else:
+        quarantine_note = ""
+    print(f"elevenlabs_tooling: music send failed: {result.error_message}{quarantine_note}", file=sys.stderr)
+    log("music_send.failed", level="error", url=args.url, status_code=result.status_code,
+        error=result.error_message)
+    return EXIT_SEND_FAILED
+
+
 def cmd_generate_vo(args: argparse.Namespace) -> int:
     payload_path = Path(args.payload)
     audio_output_path = Path(args.audio_output)
@@ -442,6 +508,16 @@ def build_parser() -> argparse.ArgumentParser:
     generate_vo_parser.add_argument("--timeout", type=float, default=None)
     generate_vo_parser.add_argument("--force", action="store_true")
     generate_vo_parser.set_defaults(func=cmd_generate_vo)
+
+    music_parser = subparsers.add_parser("music", help="Eleven Music operations")
+    music_subparsers = music_parser.add_subparsers(dest="music_command", required=True)
+    music_send_parser = music_subparsers.add_parser("send", help="Send a composition-plan payload, write the response body")
+    music_send_parser.add_argument("--payload", required=True)
+    music_send_parser.add_argument("--url", required=True)
+    music_send_parser.add_argument("--output", required=True)
+    music_send_parser.add_argument("--timeout", type=float, default=None)
+    music_send_parser.add_argument("--force", action="store_true")
+    music_send_parser.set_defaults(func=cmd_music_send)
 
     return parser
 
