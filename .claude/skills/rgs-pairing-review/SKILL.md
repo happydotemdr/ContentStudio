@@ -5,6 +5,10 @@ description: Use when the thinkers corpus or RaisingGoodSports research corpus h
 
 # RGS Pairing Review
 
+**Outside the staged pipeline.** Nothing in `pipeline.yaml` feeds this skill and it feeds no
+stage; it mutates `rgs-grounding/references/pairing-map.md` through a human-approved edit and
+nothing else. It is invoked on request only — never on a schedule, never as part of a Short's run.
+
 A thin maintenance skill, separate from `rgs-grounding`: disjoint trigger ("I refreshed the
 corpus, review the map") and disjoint output (a proposal document, not a Grounding Brief). Has
 no `references/` of its own — it reads `rgs-grounding`'s
@@ -28,7 +32,8 @@ Open `.claude/skills/rgs-grounding/references/pairing-map.md`'s front-matter:
 ### 2. Diff against current corpus state — three checks
 
 - **New thinker works:** every `slug` in `manifests/thinkers.json` tagged `parenting`, plus any
-  new work by one of the brand's 7 signature thinkers (per `output/raisinggoodsports-brand-definition.md`)
+  new work by one of the brand's 7 signature thinkers (per
+  `.claude/skills/rgs-grounding/references/brand-voice-and-tone.md`)
   regardless of its pillar tags, not present in `thinker_slugs_reviewed`. Don't diff against the
   full 53-slug manifest unscoped — most of it (Adam Smith, Barnum, etc.) is unrelated to this
   brand and would flood every review with irrelevant "new" items.
@@ -90,6 +95,29 @@ material, unlike the `pairing-map.md` it feeds):
 [For each existing row citing a changed code: still holds / needs revision / needs removal, with reasoning.]
 ```
 
+## Output format
+
+The proposal document from Step 5 above, restated as this skill's declared output shape:
+
+```markdown
+## Proposal
+
+### New/changed since last review ([last_review date])
+- Thinkers: [list, or "none"]
+- Research codes (new): [list, or "none"]
+- Research codes (edition-changed): [list with old→new edition, or "none"]
+- Gap-fill flags found in rgs-briefs/: [list with source brief filenames, or "none"]
+
+### Proposed additions
+[Each in pairing-map.md's exact row format, or "none proposed this review."]
+
+### Considered and rejected
+[One line each: what was checked, why it didn't earn a row.]
+
+### Re-verification verdicts (edition-changed codes only)
+[For each existing row citing a changed code: still holds / needs revision / needs removal, with reasoning.]
+```
+
 ### 6. Get human approval, then apply
 
 Present the proposal in conversation. On approval (whole or partial), edit the accepted rows
@@ -106,3 +134,12 @@ resulting `git diff` on `pairing-map.md` before it's committed — that diff is 
 - About to propose a row without having opened the actual source file this run → stop, open it.
 - Tempted to skip section 3 (the `rgs-briefs/` grep) because the diff in section 2 already found
   enough → don't skip it; organically-discovered gaps are a distinct signal from corpus growth.
+
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: none
+produces.stage: none
+produces.section: Proposal
+writes: .claude/skills/rgs-grounding/references/pairing-map.md
+```
