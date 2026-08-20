@@ -81,7 +81,7 @@ than inventing your own framing for that material:
   lands, whether its Payoff-equivalent content is the Build's proof beat or this script's own
   Payoff beat) — the fixed translation rule behind that judgment, if you need the full reasoning,
   is whatever reference file the artifact's producing skill documents (e.g. `rgs-grounding`'s
-  `references/scripting-beat-mapping.md`).
+  `.claude/skills/rgs-grounding/references/scripting-beat-mapping.md`).
 - Preserve any citation markers in the artifact's text verbatim (e.g. `[THINKER: ...]`,
   `[RESEARCH: ...]`) in this script's output — don't strip or paraphrase them away.
 - Restate any quotability constraint (e.g. quote-ok vs. paraphrase-caution) at every beat that

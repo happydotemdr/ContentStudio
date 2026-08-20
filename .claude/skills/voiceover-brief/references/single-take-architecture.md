@@ -9,7 +9,7 @@ or vendor support for anything.
 
 **Voiceover for this channel is generated as ONE continuous ElevenLabs call** — the full script,
 beats joined with `<break time="Xs" />` tags (`elevenlabs-audio` skill,
-`references/model-routing.md`) — rather than one call per beat. The resulting `/with-timestamps`
+`.claude/skills/elevenlabs-audio/references/model-routing.md`) — rather than one call per beat. The resulting `/with-timestamps`
 alignment (`docs/superpowers/plans/2026-08-19-single-take-vo-pipeline-implementation.md`) is the
 one source of truth for stem placement, ducking, captions, and shot timing on every render.
 

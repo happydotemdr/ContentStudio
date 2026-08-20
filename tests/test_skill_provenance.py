@@ -106,6 +106,68 @@ def strip_fences(text: str) -> list[tuple[int, str]]:
     return out
 
 
+CITE_RE = re.compile(
+    r"`(?:\.claude/skills/)?(?:(?P<skill>[a-z0-9-]+)/)?references/(?P<file>[a-z0-9.-]+\.md)`"
+    r"(?:\s*(?P<anchor>§[0-9]+(?:[–-]§?[0-9]+)?))?"
+)
+DUPLICATED_BASENAMES = {"worked-example.md", "validation-gates.md",
+                        "api-payload.md", "visual-registers.md"}
+
+
+def test_every_bare_reference_citation_resolves_inside_its_own_skill():
+    """A bare `references/x.md` can only mean 'in this skill' — that is the only path a
+    reader of that file can resolve (audit C-40, six broken; C-12, three of them)."""
+    broken = []
+    for path in every_markdown_file():
+        owner = path.relative_to(SKILLS).parts[0]
+        for lineno, line in strip_fences(path.read_text(encoding="utf-8")):
+            for m in CITE_RE.finditer(line):
+                if m.group("skill"):
+                    continue  # qualified: checked below
+                if not (SKILLS / owner / "references" / m.group("file")).exists():
+                    broken.append(f"{path}:{lineno}: references/{m.group('file')}")
+    assert broken == [], f"bare citations that do not resolve in their own skill: {broken}"
+
+
+def test_a_duplicated_reference_filename_is_never_cited_bare_across_skills():
+    """C-55: `worked-example.md` exists in 9 skills. A bare citation to a duplicated
+    basename always *looks* plausible — that is the mechanism behind C-41."""
+    offences = []
+    for path in every_markdown_file():
+        owner = path.relative_to(SKILLS).parts[0]
+        for lineno, line in strip_fences(path.read_text(encoding="utf-8")):
+            for m in CITE_RE.finditer(line):
+                name = m.group("file")
+                if m.group("skill") or name not in DUPLICATED_BASENAMES:
+                    continue
+                if not (SKILLS / owner / "references" / name).exists():
+                    offences.append(f"{path}:{lineno}: {name}")
+    assert offences == [], f"unqualified citation of a duplicated filename: {offences}"
+
+
+ANCHOR_HEADING_RE = re.compile(r"^##+\s*(?:§\s*)?(\d+)[.)]?\s", re.MULTILINE)
+
+
+def test_every_section_anchor_resolves_in_the_file_it_points_at():
+    """C-41: ten citations named §-anchors that existed only in the styleboard copy.
+    They *resolved* as files, so no existence check caught them."""
+    missing = []
+    for path in every_markdown_file():
+        owner = path.relative_to(SKILLS).parts[0]
+        for lineno, line in strip_fences(path.read_text(encoding="utf-8")):
+            for m in CITE_RE.finditer(line):
+                if not m.group("anchor"):
+                    continue
+                target = SKILLS / (m.group("skill") or owner) / "references" / m.group("file")
+                if not target.exists():
+                    continue  # reported by the tests above
+                have = set(ANCHOR_HEADING_RE.findall(target.read_text(encoding="utf-8")))
+                want = set(re.findall(r"\d+", m.group("anchor")))
+                if not want <= have:
+                    missing.append(f"{path}:{lineno}: {m.group('anchor')} not in {target.name}")
+    assert missing == [], f"section anchors that do not exist in their target: {missing}"
+
+
 def fenced_block(text: str, info: str) -> str | None:
     """The body of the first ```<info> fence in `text`, or None."""
     lines, body, capturing = text.splitlines(), [], False

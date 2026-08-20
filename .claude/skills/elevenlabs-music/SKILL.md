@@ -29,7 +29,7 @@ The boundary, stated once so neither skill drifts into the other:
 | The tone-contradiction call | `model_id`, plan shape, and the parameter conflicts |
 | Whether the Short gets a bed at all | The prompt, payload, and credit spend |
 
-**Loudness and ducking stay with `voiceover-brief`** (`references/production-and-loudness.md`) — do
+**Loudness and ducking stay with `voiceover-brief`** (`.claude/skills/voiceover-brief/references/production-and-loudness.md`) — do
 not duplicate or contradict them here. Downstream of both: `shorts-assembly`.
 
 ## Grounding — read before writing any rule

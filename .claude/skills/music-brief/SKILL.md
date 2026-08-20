@@ -22,7 +22,7 @@ outcome of this skill, so `assembly` does not hard-depend on it. **Downstream sp
 `elevenlabs-music`.
 
 **Deference, stated explicitly:** duck depth and the −14 LUFS target stay with `voiceover-brief`
-(`references/production-and-loudness.md`) — this skill does not duplicate or contradict them.
+(`.claude/skills/voiceover-brief/references/production-and-loudness.md`) — this skill does not duplicate or contradict them.
 Prompt wording, the composition plan, and the API payload belong to `elevenlabs-music` — this
 skill hands down the creative call (the arc) and does not write any of that executable output.
 

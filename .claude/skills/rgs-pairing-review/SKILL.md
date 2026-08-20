@@ -51,7 +51,7 @@ Open `.claude/skills/rgs-grounding/references/pairing-map.md`'s front-matter:
 ### 3. Secondary signal — organically-flagged gaps
 
 Grep `rgs-briefs/*.md` for the literal heading `## Gap-fill flag` (see `rgs-grounding`'s
-`references/thinker-corpus-protocol.md`). Each match is a pairing `rgs-grounding` used outside
+`.claude/skills/rgs-grounding/references/thinker-corpus-protocol.md`). Each match is a pairing `rgs-grounding` used outside
 the map — add it to this review pass as a candidate, even if its thinker/research slugs were
 already in the reviewed lists.
 Resolve each topic-slug to its **latest version only** before grepping — a superseded (older)

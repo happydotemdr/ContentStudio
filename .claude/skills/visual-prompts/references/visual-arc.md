@@ -1,6 +1,6 @@
 # Visual arc — plan the sequence before writing a single prompt
 
-This file assumes `visual-registers.md` (the dual-register contract: Register A/PRESENT,
+This file assumes `.claude/skills/shorts-styleboard/references/visual-registers.md` (the dual-register contract: Register A/PRESENT,
 Register B/SOURCE ERA, PLATE, shot classes, the world-lock block) is already read. It
 covers the *workflow discipline* that sits on top of that contract: build the whole shot
 sequence as a table first, rotate scale and camera height and optics across it, and know
@@ -47,7 +47,7 @@ One row per shot, columns in this exact order:
 
 - **#** — sheet order, matches the shot heading `Shot N` that Gate C's parser reads.
 - **Beat** — the script beat this shot serves.
-- **Register** — `A`, `B`, or `PLATE` (see `visual-registers.md` §3–§5).
+- **Register** — `A`, `B`, or `PLATE` (see `.claude/skills/shorts-styleboard/references/visual-registers.md` §3–§5).
 - **Shot class** — from the register's own taxonomy (`ESTABLISHING` / `ACTION-ADJACENT`
   / `DETAIL` / `HUMAN-COST` for Register A; `FIGURE` / `WORLD` / `ARTIFACT` for Register B).
 - **Scale** — one of the six values in §4.
@@ -117,7 +117,7 @@ starting ladder, tied to shot class so the choice isn't arbitrary per-shot:
 Treat this ladder as a starting point to rotate from, not a rule to apply identically on
 every Short — the point is that optics vary with shot class, not that these four exact
 pairings are mandatory. Register B carries no optics language at all (see
-`visual-registers.md` §2 and §4's banned-vocabulary list) — this ladder applies to
+`.claude/skills/shorts-styleboard/references/visual-registers.md` §2 and §4's banned-vocabulary list) — this ladder applies to
 Register A prompts only.
 
 ## 7. Pacing interaction `[C]`
@@ -161,7 +161,7 @@ tooling, not extracted from the corpus.
 | **C7** | Registers (A/B, PLATE excluded) alternate at least twice — bookending the source era at the open and close only does not count as an intercut rhythm. |
 | **C8** | Every Register A prompt names the world lock's `register_a_sport` and contains at least one of its `register_a_signature_objects`. |
 | **C9** | No Register A prompt contains a banned generic-venue string (`empty gym`, `empty youth gym`). |
-| **C10** | No Register B prompt contains banned photographic vocabulary (`DSLR`, `shot on 35mm film`, `documentary`, any `<n>mm` token, any `f/<n>` token) — this is the vocabulary-disjunction rule from `visual-registers.md` §2, enforced mechanically. |
+| **C10** | No Register B prompt contains banned photographic vocabulary (`DSLR`, `shot on 35mm film`, `documentary`, any `<n>mm` token, any `f/<n>` token) — this is the vocabulary-disjunction rule from `.claude/skills/shorts-styleboard/references/visual-registers.md` §2, enforced mechanically. |
 | **C11** | No two shots share more than 5 identical prompt-body clauses — consistency belongs in the register's style slot, not in a cloned prompt body. |
 | **C12** | Every prompt body has at least 10 clauses and at least 60 words — density enough that all layers carry concrete renderable content. |
 | **C13** | Copy-paste format: prompt is one contiguous line, `No Text.` appears immediately before the flags, a parameter block exists, `--ar` is present, and no stray punctuation (`,` `;` `.`) sits inside the parameter block. |

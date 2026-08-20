@@ -1,6 +1,6 @@
 # Prompt sheet format — the exact copy-paste output contract
 
-This file assumes `visual-registers.md` (the register contract and the world-lock keys)
+This file assumes `.claude/skills/shorts-styleboard/references/visual-registers.md` (the register contract and the world-lock keys)
 and `visual-arc.md` (the shot-sequence workflow) are already read. It documents the
 **literal, byte-level format** that `scripts/lint_prompt_sheet.py`'s parser
 (`parse_sheet`, `SHOT_HEADING_RE`, `WORLD_HEADING_RE`, `WORLD_ENTRY_RE`) accepts, so a
@@ -117,7 +117,7 @@ The prompt body must carry all 9 layers with concrete renderable content — **G
 C12** requires at least 10 comma-separated clauses and at least 60 words in the body.
 
 State the tension in full rather than quietly overriding it. `midjourney-prompting`'s
-own `references/prompt-architecture.md` carries:
+own `.claude/skills/midjourney-prompting/references/prompt-architecture.md` carries:
 
 > **Short usually beats long.** Long prompts dilute which words the model actually weights
 > `[C] (Tokenized AI, vezJXJGQMoY)`.
@@ -179,6 +179,6 @@ An i2v prompt inherits its source still's register and must not import the other
 register's vocabulary. A clip built from a Register A still stays photographic (camera
 optics, `documentary sports photography` medium) end to end; a clip built from a
 Register B still stays painterly (no camera/lens language, no `DSLR`) end to end — the
-same vocabulary-disjunction rule that governs still prompts (`visual-registers.md` §2)
+same vocabulary-disjunction rule that governs still prompts (`.claude/skills/shorts-styleboard/references/visual-registers.md` §2)
 still applies once motion is added, because the i2v tool is only ever transforming one
 register's still, never blending the two.

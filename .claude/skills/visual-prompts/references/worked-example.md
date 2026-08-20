@@ -3,7 +3,7 @@
 This walks a real `letkidsplay`-style RaisingGoodSports Short — a five-beat script pairing a
 present-day club-soccer claim with a Plutarch citation — through every step of `SKILL.md`'s
 workflow, in order, ending in a sheet that passes Gate C on this file's own first successful run
-(see §9). Read this after `references/visual-registers.md` and `references/visual-arc.md` — it
+(see §9). Read this after `.claude/skills/shorts-styleboard/references/visual-registers.md` and `references/visual-arc.md` — it
 assumes both are already understood and shows them applied, not re-explained.
 
 ## 1. Input (from the script)
@@ -62,7 +62,7 @@ DISCOVERY REQUESTS
   none
 ```
 
-Sport-choice check `shorts-styleboard` ran, in order (`references/visual-registers.md` §8): the
+Sport-choice check `shorts-styleboard` ran, in order (`.claude/skills/shorts-styleboard/references/visual-registers.md` §8): the
 incoming script doesn't name a sport, the concept brief doesn't either, but the grounding artifact's
 `[THINKER: Plutarch]` citation and its burnout research supply both the thinker and a clear economic
 parallel — club soccer's cost-and-time structure is what makes the $5,000/yr framing land, so it's
@@ -71,7 +71,7 @@ named here with that one-line rationale rather than picked for its visuals alone
 ## 4. Step 3a — reading the consistency situation
 
 Both registers are `style-lock`, resolved through the `slot_register_a` / `slot_register_b`
-bindings the styleboard declared above, per `references/visual-registers.md` §3–§4 — this skill
+bindings the styleboard declared above, per `.claude/skills/shorts-styleboard/references/visual-registers.md` §3–§4 — this skill
 reads that decision rather than harvesting codes itself `[I]`:
 
 - **Register A slot (`{style:register_a}`):** binds to `rgs-present-soccer-a`, harvested for this
@@ -113,7 +113,7 @@ By-eye check against `references/visual-arc.md` §4–§7 before a single prompt
   C6's minimums.
 - **The motif bridge:** the watering can appears exactly twice — Shot 4 (`ARTIFACT`, terracotta,
   Register B) and Shot 10 (`DETAIL`, modern plastic, Register A) — carrying the same idea across
-  both visual languages per `references/visual-registers.md` §6, without the two shots reading as
+  both visual languages per `.claude/skills/shorts-styleboard/references/visual-registers.md` §6, without the two shots reading as
   the same frame.
 
 This table is what made Gate C pass on the first run against the finished prompts (§9) — the
@@ -211,7 +211,7 @@ luminous oil painting on aged linen, a terracotta watering vessel resting empty 
 Running the decision table from `references/image-to-video.md` against each beat: every shot here
 is either an establishing/detail/artifact/figure frame that reads fully as a still, or a
 just-before-action beat (Shot 6) that deliberately sidesteps needing real motion in the first
-place (`references/visual-registers.md` §3's `ACTION-ADJACENT` class exists precisely to avoid the
+place (`.claude/skills/shorts-styleboard/references/visual-registers.md` §3's `ACTION-ADJACENT` class exists precisely to avoid the
 AI-video uncanny-valley problem `[C] (Nate Black, 9CCmMypN8PM)`). Nothing in this sheet needs a
 real animated clip — but the motif overflow originally planned for a coffee-Short i2v beat is kept
 here in updated form as a worked illustration of the i2v inheritance rule
@@ -235,7 +235,7 @@ I2V prompt text:      the terracotta vessel on the stone wall tips slightly furt
                       cuts; no subtitles and no music.
 ```
 
-Register B's vocabulary-disjunction rule (`references/visual-registers.md` §2) governs this i2v
+Register B's vocabulary-disjunction rule (`.claude/skills/shorts-styleboard/references/visual-registers.md` §2) governs this i2v
 prompt exactly as it governs the still: no camera/lens language, no `DSLR`, nothing that would pull
 the clip back toward Register A's photographic look.
 
