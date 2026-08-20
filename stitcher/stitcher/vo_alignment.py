@@ -59,6 +59,11 @@ def derive_segments(text: str, alignment: dict, names: list[str] | None = None) 
         j = i0 - 1
         while j >= 0 and text[j] == " ":
             j -= 1
+        if j < 0:
+            raise ValueError(
+                "a <break> tag cannot appear at the very start of the text — "
+                "no preceding spoken character to end a segment"
+            )
         pre_end = ends[j]
         k = i1
         while k < len(text) and text[k] == " ":

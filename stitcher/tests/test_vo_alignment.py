@@ -123,3 +123,43 @@ def test_alignment_text_mismatch_raises():
     text, alignment = _build_case(["A.", "B."], [0.5])
     with pytest.raises(ValueError, match="do not reconstruct"):
         derive_segments("Completely different text.", alignment)
+
+
+def test_break_tag_at_text_start_raises():
+    """A <break> tag at position 0 (before any real text) is structurally
+    invalid and must raise a clear error, not silently corrupt segment
+    boundaries via negative indexing into the ends array."""
+    # Build alignment for a break tag followed by actual text
+    CHAR_DUR = 0.1
+    chars, starts, ends = [], [], []
+    clock = 0.0
+
+    # Emit zero-width break tag characters
+    tag = '<break time="0.5s" />'
+    for ch in tag:
+        chars.append(ch)
+        starts.append(clock)
+        ends.append(clock)
+
+    # Emit the space after the tag (also zero-width since break ends at time 0)
+    chars.append(" ")
+    starts.append(clock)
+    ends.append(clock)
+
+    # Emit actual spoken text
+    beat = "Now speaking."
+    for ch in beat:
+        chars.append(ch)
+        starts.append(round(clock, 4))
+        clock = round(clock + CHAR_DUR, 4)
+        ends.append(clock)
+
+    text = tag + " " + beat
+    alignment = {
+        "characters": chars,
+        "character_start_times_seconds": starts,
+        "character_end_times_seconds": ends,
+    }
+
+    with pytest.raises(ValueError, match="cannot appear at the very start"):
+        derive_segments(text, alignment)
