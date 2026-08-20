@@ -55,6 +55,10 @@ the whole token with the real flag(s) — `--sref <code>`, `--p <code>`, `--oref
 nothing at all for a personalization binding. Pasting the token as literal text renders the words
 "style register a" into the image instead of applying a look.
 
+**Resolve against the Library at paste time, not against a code copied into the styleboard**
+`[I]` — unless that styleboard's `BINDINGS` section explicitly pinned a code, in which case use
+the pinned code and say you did.
+
 **Optional: constraints that survive to publish.** `[I]` If the incoming script's Delivery notes field
 carries a "constraints that survive to publish" line (e.g. a quotability restriction on a
 citation, or a mandatory safety-resource line), honor it in the caption/overlay treatment below,

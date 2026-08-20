@@ -592,3 +592,17 @@ def test_rgs_skills_do_not_carry_stray_corpus_markers(skill):
             if MARKER_RE.search(line) and lineno not in ok:
                 stray.append(f"{rel}:{lineno}")
     assert stray == [], f"stray corpus markers in an alternative-vocabulary skill: {stray}"
+
+
+def test_style_library_users_declare_it_in_their_handoff_block():
+    """C-34: shorts-styleboard binds slots from it, shorts-assembly resolves slots against
+    it at paste time, and midjourney-prompting writes harvested codes into it — with no
+    declared owner in any I/O contract and no staleness rule."""
+    readers = {"shorts-styleboard", "shorts-assembly", "midjourney-prompting"}
+    for skill in readers:
+        assert "docs/style-library.md" in handoff(skill)["reads"], (
+            f"{skill} reads docs/style-library.md and must declare it"
+        )
+    assert "docs/style-library.md" in handoff("midjourney-prompting")["writes"], (
+        "midjourney-prompting harvests codes into the Library and must declare the write"
+    )

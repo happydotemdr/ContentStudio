@@ -116,6 +116,13 @@ under `DISCOVERY REQUESTS` rather than inventing a code — an invented `--sref`
 exact defect this stage exists to eliminate `[I]`. A discovery request raised without reading
 `docs/style-library.md` first is a guess, not a finding: the world may already be covered `[I]`.
 
+**The binding is a label, not a code, and it re-resolves at paste time** `[I]`. A styleboard
+records `slot_register_a: <Library entry label>`; `shorts-assembly` looks that label up in
+`docs/style-library.md`'s `Entries` section when the prompt is actually pasted. That means a code
+harvested *after* this styleboard was approved will be the one that renders. If a Short must pin
+the exact code it was approved against, say so explicitly under `BINDINGS` and record the code
+there — otherwise the Library is the live authority and the styleboard defers to it.
+
 ### 4. Emit the styleboard artifact
 
 Per `references/styleboard-format.md`.
