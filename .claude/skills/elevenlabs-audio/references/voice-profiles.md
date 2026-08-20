@@ -14,9 +14,13 @@ No setting fixes a voice that cannot perform what the script asks for. That make
 **upstream of tag choice**, not a parallel decision — pick the voice, then write to what it can do.
 
 For IVC voices destined for `eleven_v3`, prefer a reference recording with **broad emotional
-range** `[T]` — v3 can only perform emotions the source demonstrates. This bites on the pinned
-ContentStudio narrator, which is an IVC: its card's known-good/known-bad tag rows are still
-empty, so confirm tag behavior with one short v3 probe before a first master render.
+range** `[T]` — v3 can only perform emotions the source demonstrates. The pinned ContentStudio
+narrator (`voiceover-brief/references/channel-voice.md`) is a **PVC** as of 2026-08-18 (30+
+minutes of reference audio), not an IVC — see "IVC vs. PVC" and "PVC on v3" below for what
+changes: the emotional-range caveat above is the IVC-specific risk, while the PVC narrator's
+open item is the v3 fidelity trade-off (`use_pvc_as_ivc`), not reference-recording breadth. Its
+card's known-good/known-bad tag rows are still empty either way, so confirm tag behavior with
+one short v3 probe before a first master render.
 
 ## Exploration workflow (`voice: explore`)
 

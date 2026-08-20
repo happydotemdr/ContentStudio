@@ -11,10 +11,14 @@ is correct. Never cite a `[P]` line as corpus or vendor support for anything.
 
 ## The rule `[P]`
 
-**`5kVvcrJnhhULT5LdbshJ` is the narrator voice for every ContentStudio Short, across all
+**`eDwT8Vhp2yxJzAMmuuPA` is the narrator voice for every ContentStudio Short, across all
 brands.** Do not audition, do not re-derive it from `voice-selection.md`'s doctrine, do not
 substitute a "better fit" for a particular script. The voice is the channel's identity `[T]` `[I]`
 and consistency across uploads is the point.
+
+**Supersedes `5kVvcrJnhhULT5LdbshJ`** (the previous IVC pin, retired 2026-08-18 in favor of a
+higher-fidelity PVC trained on the same operator's voice — see "The card" below). Any prior
+render referencing the old `voice_id` was produced under that earlier pin; do not backfill it.
 
 Two things this rule does **not** do — see "Scope boundary" below before treating it as absolute.
 
@@ -23,9 +27,9 @@ Two things this rule does **not** do — see "Scope boundary" below before treat
 ```
 === VOICE PROFILE CARD — CHANNEL NARRATOR (pinned) ===
 Name:            TBD — label the voice in the ElevenLabs dashboard and record it here
-voice_id:        5kVvcrJnhhULT5LdbshJ
-Source:          IVC — a clone of the operator's own voice [P]
-Reference audio: TBD — record duration + quality notes (see Open action 2)
+voice_id:        eDwT8Vhp2yxJzAMmuuPA
+Source:          PVC — a Professional Voice Clone of the operator's own voice [P]
+Reference audio: 30+ minutes [P] — meets the PVC minimum; quality notes still TBD (see Open action 2)
 Persona:         TBD — describe what the voice actually delivers (age/texture/register/energy),
                  not what it was intended to deliver
 
@@ -41,8 +45,11 @@ Locked settings: PENDING AUDITION — no master render has been made against thi
 Known-good tags:   PENDING — requires a v3 probe (see Open action 1)
 Known-bad tags:    PENDING — requires a v3 probe (see Open action 1)
 Dictionaries:      none
-Caveats:           IVC, not PVC — the v3 PVC caveat and `use_pvc_as_ivc` do not apply [T]
-Verified on:       2026-08-08 — voice_id recorded; audition not yet run
+Caveats:           PVC on v3 is not fully optimized [T] — the three-way trade-off (run PVC as-is /
+                   `use_pvc_as_ivc: true` / fall back to eleven_multilingual_v2) is not yet decided
+                   for this voice (see Open action 3;
+                   `.claude/skills/elevenlabs-audio/references/voice-profiles.md` "PVC on v3")
+Verified on:       2026-08-18 — voice_id recorded; audition not yet run
 ```
 
 **Until the settings block is filled, briefs still derive settings per-script** from
@@ -72,20 +79,25 @@ reader may otherwise expect the pin to be conceding something.
 
 ## Open actions
 
-Both are real consequences of the IVC path, not housekeeping.
+Three real consequences of the PVC path, not housekeeping.
 
 1. **Run one short v3 probe and fill the tag rows.** Tag effectiveness is bounded by the voice's
    training data `[T]` — "don't expect a whispering voice to suddenly shout with a `[shout]`
-   tag" — and for an IVC destined for `eleven_v3`, the clone can only perform emotions the
-   reference recording demonstrates `[T]`
-   (`.claude/skills/elevenlabs-audio/references/voice-profiles.md`). If the reference is
+   tag" `[T]` (`.claude/skills/elevenlabs-audio/references/voice-profiles.md`). If the reference is
    emotionally narrow, v3 tags **underperform silently**: they do not error, the audio just comes
    back flat. Probe before a first master, and record what landed and what did not.
-2. **Record the reference audio's condition.** IVC quality is bounded by reference quality —
-   "clean, no reverb, no background noise" is a hard requirement, not a preference `[T]`. This
-   connects to a settings symptom worth knowing in advance: noise in the reference is exactly
-   what a high `similarity_boost` reproduces faithfully. If the render sounds noisy, fix the
-   reference rather than tuning `similarity_boost` down around it `[I]`.
+2. **Record the reference audio's condition.** Reference-audio quality still matters for a PVC,
+   even though the failure mode is less acute than IVC's — "clean, no reverb, no background
+   noise" `[T]`. This connects to a settings symptom worth knowing in advance: noise in the
+   reference is exactly what a high `similarity_boost` reproduces faithfully. If the render
+   sounds noisy, fix the reference rather than tuning `similarity_boost` down around it `[I]`.
+3. **Decide the PVC-on-v3 trade-off.** PVC voices are not fully optimized for `eleven_v3` `[T]`.
+   Before the first master, pick one of three options and record the choice on the card: run the
+   PVC on v3 as-is (tags work, fidelity not fully optimized), set `use_pvc_as_ivc: true` (lower
+   latency, IVC-grade fidelity, deliberate), or route to `eleven_multilingual_v2` (full PVC
+   fidelity, no audio tags) `[T]`
+   (`.claude/skills/elevenlabs-audio/references/voice-profiles.md` "PVC on v3"). This is a
+   fidelity-vs-expressiveness trade that belongs to the user, not a silent default.
 
 ## Scope boundary
 

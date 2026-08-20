@@ -124,10 +124,14 @@ names without guessing which beats got folded together.
 > **`negative_styles` carrying vocal terms is the documented plan-mode instrumental technique**
 > `[T]` (2026-08-06) — `force_instrumental` is prompt-only and does not apply to plans, and
 > `music_v2` chunks have no `lines` field at all. **Every chunk this skill emits carries
-> `["vocals", "singing", "spoken word", "lyrics"]` in `negative_styles`** `[I]`. **Whether that
-> guard is sufficient in practice is `[T-unverified]`** — it has not been confirmed by a live
-> generation (`docs/elevenlabs-music-runbook.md` §7). Say so out loud when you emit a plan, and
-> tell the user to listen to the first render specifically for vocalise or humming.
+> `["vocals", "singing", "spoken word", "lyrics"]` in `negative_styles`** `[I]`. **Confirmed
+> insufficient by a live generation 2026-08-19** (`docs/elevenlabs-music-runbook.md` §3): a real
+> two-bed `composition_plan`/`chunks` generation, vocal guard present on every chunk, came back
+> with audible words bleeding into the mix, not just vocalise/humming. **Do not offer
+> `composition_plan`/`chunks` as sufficient on its own when the bed must guarantee no vocal
+> content — route that case to `prompt` mode + `force_instrumental: true` instead** (accepting the
+> loss of precise per-chunk duration locking), and say so out loud when a script's bed sits under
+> continuous narration, where leaked words are actively harmful, not just a stray artifact.
 
 Two things this corrects from the design brief that seeded this skill, both confirmed today via the
 composition-plans how-to guide's own chunk examples `[T]`:

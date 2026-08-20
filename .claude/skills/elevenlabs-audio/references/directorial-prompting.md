@@ -69,6 +69,16 @@ fixes it**. Check the Voice Profile Card's known-good/known-bad tags before writ
 - Tags are square-bracketed and can be **stacked**: `[confident][British accent]` `[I]`.
 - Place an acoustic-event tag **where the event happens**, mid-sentence if that's where it belongs `[I]`.
 
+### `[pause]` (a v3 audio tag) is not the only pause mechanism — and often not the right one `[T]`
+
+This file's tag catalog above includes `[pause]` as a documented delivery-control audio tag —
+correct, but **`eleven_v3`-only**, like every other tag on this page. For `eleven_multilingual_v2`
+or Flash (where audio tags render nothing at all — see `model-routing.md`'s feature matrix), the
+actual pause mechanism is the SSML `<break time="Xs" />` tag, a completely different syntax
+documented in `model-routing.md`'s "`<break>` is NOT a `eleven_v3` feature" section. Route to
+whichever matches the chosen model — don't reach for `[pause]` on a non-v3 job; it will be
+silently dropped, not converted.
+
 ### Tags vs. the stability mode — the contradiction to catch `[T]`
 
 On v3, **Robust mode is "less responsive to directional prompts."** Docs recommend **Creative or
