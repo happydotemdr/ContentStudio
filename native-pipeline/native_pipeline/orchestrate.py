@@ -83,7 +83,7 @@ def run_music_stage(segments: list[Segment], bed_arc_path: Path, ws: Workspace, 
     plan_path = ws.asset("composition_plan.json")
     plan_path.write_text(json.dumps(plan), encoding="utf-8")
 
-    bed_output = ws.asset("music_bed.wav")
+    bed_output = ws.asset("music_bed.mp3")
     subprocess.run(
         [sys.executable, "-m", "elevenlabs_tooling", "music", "send",
          "--payload", str(plan_path), "--url", url, "--output", str(bed_output), "--force"],
