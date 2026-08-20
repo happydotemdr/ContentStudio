@@ -443,7 +443,6 @@ TIER_1_PENDING: dict[str, tuple[int, str]] = {
     ".claude/skills/visual-prompts/references/faceless-pacing-rules.md": (10, "corpus pacing claims; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
     ".claude/skills/midjourney-prompting/references/style-systems.md": (10, "vendor-fact style-system rules; needs [T] verification against docs.midjourney.com, not attempted this dispatch"),
     ".claude/skills/shorts-scripting/references/endings-and-ctas.md": (9, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/visual-prompts/references/prompt-sheet-format.md": (8, "field-list/format rows plus a few corpus-cadence claims; needs a careful per-line split, not attempted this dispatch"),
     ".claude/skills/shorts-ideation/SKILL.md": (7, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
     ".claude/skills/elevenlabs-music/references/api-payload.md": (6, "vendor payload-field facts; needs [T] verification against Eleven Music docs, not attempted this dispatch"),
     ".claude/skills/shorts-scripting/SKILL.md": (5, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
