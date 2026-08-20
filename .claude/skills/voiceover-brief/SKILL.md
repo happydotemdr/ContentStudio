@@ -115,9 +115,9 @@ it as a corpus or tool fact.
 
 - `references/channel-voice.md` — **the pinned channel narrator voice.** Read this before
   `voice-selection.md`; the casting call is already made.
-- `references/single-take-architecture.md` — **the pinned production-pipeline architecture.**
-  Read this alongside `channel-voice.md` — it decides whether the VO is generated per-beat or as
-  a single continuous take, which changes how step 4 below applies to this channel.
+- `references/single-take-architecture.md` — the production-pipeline architecture for
+  single-take generation. Per-beat sectioning is the standing default (step 4); read this file
+  only when the user explicitly requests single-take generation for this channel.
 - `references/voice-selection.md` — voice/cloning choice, the default-voice warning, model pick.
   Applies to non-narrator casting and to overrides — see `channel-voice.md`.
 - `references/settings-by-content-type.md` — stability/similarity/style/speed, preset table,
