@@ -392,6 +392,56 @@ it still contradicts both new sentences:
 This does not reopen T4 (already reviewed and approved for its own two-file scope) — it closes a
 gap T4's own fix exposed in a third, P13-owned file that no original task cited.
 
+**Addendum, found during T11's own dispatch prep (not a review finding — a coverage gap in the
+plan's own 18-task list, discovered while verifying T11's citations before dispatch):**
+`elevenlabs-audio/SKILL.md` never receives a `## Handoff contract (machine-checked)` block from
+any of T1-T18 — confirmed by grepping the whole plan file for "elevenlabs-audio" near "handoff":
+zero matches. `elevenlabs-music` (T4, `produces.kind`/`stage` filled in by T11) and
+`midjourney-prompting` (T10) both got one; `elevenlabs-audio` — one of the same three tool
+specialists T11 itself is titled after — never does. Since T2's two parametrized tests run over
+`ALL_SKILLS` (which includes `elevenlabs-audio`), both permanently fail unless a block is added:
+confirmed live, `python -m pytest tests/test_skill_provenance.py -q -k elevenlabs-audio` fails 2
+of 2 with `elevenlabs-audio/SKILL.md has no \`\`\`handoff block`. This breaks the plan's own
+stated goal ("T3–T12 close them skill by skill" — all 26 red cases from T2, not 24 of 26).
+
+**Task T11a (new, addendum-only — one file, `elevenlabs-audio/SKILL.md`):** add a handoff block
+matching the file's actual `## Output contract` sections (`CONTROL SURFACE`, `VOICE PROFILE`,
+`MODEL ROUTING`, `VOICE SETTINGS`, `DIRECTORIAL SCRIPT`, `PRONUNCIATION`, `REQUEST PAYLOAD`,
+`COST`, `QC CHECKLIST`, `VALIDATION GATES`, `NEXT` — confirmed live) and the three upstream
+fields C-13's boundary table (landed in T11) says this skill compatibility-checks against
+`voiceover-brief`'s brief (model/voice, settings, tag placement) plus the voice pick itself:
+
+- [ ] Add, immediately after `## Output contract`'s fenced template:
+
+```markdown
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: audio-spec
+produces.stage: 03-voiceover
+produces.section: CONTROL SURFACE
+produces.section: VOICE PROFILE
+produces.section: MODEL ROUTING
+produces.section: VOICE SETTINGS
+produces.section: DIRECTORIAL SCRIPT
+produces.section: PRONUNCIATION
+produces.section: REQUEST PAYLOAD
+produces.section: COST
+produces.section: QC CHECKLIST
+produces.section: VALIDATION GATES
+produces.section: NEXT
+consumes: voiceover-brief#Voice pick
+consumes: voiceover-brief#Tone per beat
+consumes: voiceover-brief#Settings
+consumes: voiceover-brief#Script, reformatted for TTS
+```
+```
+
+- [ ] Commit: `fix(elevenlabs-audio): add the handoff block the other two specialists already have`.
+
+This does not reopen T11 (already reviewed and approved for its own four-file scope) — it closes
+a plan-coverage gap (a skill with zero handoff-block task, not a task that got its scope wrong).
+
 ---
 
 ## 3. Tasks
