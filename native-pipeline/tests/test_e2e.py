@@ -87,7 +87,10 @@ def test_native_pipeline_end_to_end(workspace, tmp_path):
 
     # Criterion: the envelope math the flat bed produces is genuinely flat
     # across the take, not just equal at the two input fields.
-    spans = stem_spans(spec.audio.stems, runtime)
+    # stem_spans wants a real-file-duration map (stitcher/stitcher/envelope.py:39-45);
+    # an empty dict falls back to each stem's own duration_s, which assemble_spec
+    # already set to `runtime` -- exactly what this criterion needs.
+    spans = stem_spans(spec.audio.stems, {})
     breakpoints = build_breakpoints(spec.audio.bed, spans, runtime)
     sampled_levels = {level_at(breakpoints, t) for t in [0.5, runtime / 2, runtime - 0.5]}
     assert len(sampled_levels) == 1, f"envelope is not flat: {sampled_levels}"
@@ -113,7 +116,9 @@ def test_native_pipeline_end_to_end(workspace, tmp_path):
     # -- by that command's existing, unmodified behavior -- already implies
     # normalization_type == "linear"; a non-linear result raises there before
     # ever reaching this point.)
-    final_mix = workspace.deliverable(".mp4", version=1)
+    # Real promoted-master filename is `{slug}_v{NN}_1080x1920.mp4`
+    # (stitcher/stitcher/naming.py:149-150's out_master, not a bare .mp4 suffix).
+    final_mix = workspace.out_master(1)
     assert final_mix.exists()
 
     # Criterion: no unexpected outlier flags for this normal, short synthetic

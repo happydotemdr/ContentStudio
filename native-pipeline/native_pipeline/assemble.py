@@ -20,7 +20,13 @@ from stitcher.spec import Audio, Bed, Canvas, Caption, Loudness, RenderSpec, Saf
 from native_pipeline.errors import BedDurationMismatchError
 
 BED_RELATIVE_OFFSET_DB = -17.0
-BED_DURATION_TOLERANCE_S = 0.05
+# Widened from the plan's original 0.05s during Task 11's real e2e validation: a real
+# Eleven Music generation measured 52ms off a 6.548s take (0.05s tolerance rejected it by
+# just 2ms). Eleven Music does not render to the exact requested duration_ms sum -- some
+# jitter is expected -- so 0.05s was too tight against real-world precision. 0.1s still
+# catches a genuinely wrong bed (seconds off from a bad duration_ms sum or corrupt
+# generation) while tolerating normal jitter.
+BED_DURATION_TOLERANCE_S = 0.1
 DELIVERY_LUFS = -14.0
 DELIVERY_TP_DBTP = -1.0
 
