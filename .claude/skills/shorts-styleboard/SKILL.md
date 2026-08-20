@@ -14,6 +14,15 @@ description: Locks a ContentStudio Short's two visual worlds before any prompt e
   Library entry each register binds to. Nothing about individual shots.
 - **Downstream:** `visual-prompts` reads this artifact and storyboards against it.
 
+## Optional input: a companion grounding artifact `[I]`
+
+If a grounding artifact was produced for this Short (`rgs-grounding`), its thinker/source and its
+motif populate the `register_b_thinker`, `register_b_era_place`, `register_b_locations`,
+`register_b_artifacts`, `register_b_figure_archetype` and `motif` keys **directly** — they are
+inherited, never invented here. Its topic and claim also constrain the Register A sport (step 1).
+If no companion artifact was provided, this section doesn't apply — lock the world from the script
+alone.
+
 ## Why this is grounded, not generic
 
 The register system, its shot-class taxonomy, and the world-lock block are **this
@@ -28,8 +37,10 @@ plainly if asked how solid these rules are.
 ### 1. Lock the world
 
 Before any per-beat decision or prompt exists, emit the `WORLD LOCK` block per
-`references/visual-registers.md` §7 — the twelve-key (11 real keys plus the `WORLD LOCK` heading)
-`register_a_*` / `register_b_*` / `motif` block that every downstream prompt inherits from `[I]`:
+`references/visual-registers.md` §7 — **thirteen keys** (5 `register_a_*`, 5 `register_b_*`,
+`motif`, `slot_register_a`, `slot_register_b`) under the `WORLD LOCK` heading, the block every
+downstream prompt inherits from `[I]`. The block below is the contract; the count is stated only
+so a truncated emission is visible:
 
 ```
 WORLD LOCK
@@ -51,8 +62,11 @@ WORLD LOCK
 **The sport is chosen here, with a stated rationale, only if nothing upstream names one.** Check three
 places in order — the incoming script, the concept brief, the grounding artifact — before picking a
 sport yourself; the sport is part of the argument, not a free aesthetic choice, so `register_a_rationale`
-must tie it to the claim's evidence `[I]` (`references/visual-registers.md` §8). Name the choice at the
-top of the prompt sheet, not buried in the world-lock block alone. If a grounding artifact was handed to
+must tie it to the claim's evidence `[I]` (`references/visual-registers.md` §8). State the rationale
+under this artifact's own `BINDINGS` section as well as in `register_a_rationale`, so a reader sees
+the sport choice without parsing the world-lock block `[I]`. **Do not write into the prompt sheet**
+— that artifact belongs to `visual-prompts`, is byte-level linted by Gate C, and its own rule is "do
+not re-emit the WORLD LOCK block — one home, no sync rule needed." If a grounding artifact was handed to
 this skill (see "Optional input" above), its thinker/source and motif populate the `register_b_*` keys
 and `motif` directly rather than being invented here `[I]`.
 
@@ -102,6 +116,21 @@ exact defect this stage exists to eliminate `[I]`. A discovery request raised wi
 
 Per `references/styleboard-format.md`.
 
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: styleboard
+produces.stage: 02b-styleboard
+produces.section: WORLD LOCK
+produces.section: BINDINGS
+produces.section: DISCOVERY REQUESTS
+consumes: shorts-scripting#HOOK
+consumes: shorts-scripting#Visual notes
+consumes: shorts-ideation#Angle / take
+consumes: rgs-grounding#Handoff
+reads: docs/style-library.md
+```
+
 ## File I/O contract
 
 This skill participates in ContentStudio's file-based pipeline handoff (see
@@ -116,6 +145,13 @@ to `rgs-briefs/` in this mode.
 1. Resolve the upstream script: run
    `python scripts/resolve_brief_version.py --slug <slug> --kind script` from the repo root. Read
    the file it reports.
+   **Then resolve the two other sources step 1 of the workflow requires you to check before
+   picking a sport yourself** `[I]`:
+   - the concept brief — `python scripts/resolve_brief_version.py --slug <slug> --kind concept-brief`;
+   - the grounding brief — `python scripts/resolve_brief_version.py --slug <slug> --kind grounding`,
+     or the path in the script's `grounding:` frontmatter if present.
+   `NONE` from either is a legitimate "not produced for this Short" and is not an error — but a
+   sport picked without running both resolves is a guess presented as a check.
    **Staleness check:** re-run the resolver for `--kind script` again right before you finish —
    if a newer version now exists than the one you read, tell the user before proceeding.
 2. Before writing the styleboard, run

@@ -123,14 +123,15 @@ def handoff(skill: str) -> dict[str, list[str]]:
 
 
 OUTPUT_HEADING_RE = re.compile(r"^##+\s+Output (format|contract)\s*$", re.IGNORECASE)
+EXACT_SHAPE_HEADING_RE = re.compile(r"^##+\s+Exact shape\s*$", re.IGNORECASE)
 
 
-def output_template(skill: str) -> list[str]:
-    """Every line of the first fenced block after the skill's Output format/contract heading."""
-    text = skill_md(skill).read_text(encoding="utf-8")
-    lines = text.splitlines()
-    start = next((i for i, ln in enumerate(lines) if OUTPUT_HEADING_RE.match(ln.strip())), None)
-    assert start is not None, f"{skill}/SKILL.md has no '## Output format' heading"
+def _fenced_block_after_heading(lines: list[str], heading_re: re.Pattern) -> list[str] | None:
+    """Every line of the first fenced block after the first line matching `heading_re`,
+    or None if no such heading, or no fence follows it."""
+    start = next((i for i, ln in enumerate(lines) if heading_re.match(ln.strip())), None)
+    if start is None:
+        return None
     body, in_fence = [], False
     for ln in lines[start + 1:]:
         if ln.lstrip().startswith("```"):
@@ -140,8 +141,37 @@ def output_template(skill: str) -> list[str]:
             continue
         if in_fence:
             body.append(ln)
-    assert body, f"{skill}/SKILL.md's Output format heading is not followed by a fenced template"
-    return body
+    return body or None
+
+
+def output_template(skill: str) -> list[str]:
+    """Every line of the first fenced block after the skill's Output format/contract
+    heading in its own SKILL.md.
+
+    Not every skill's output template lives in SKILL.md itself -- shorts-styleboard's
+    WORLD LOCK block lives under an '## Exact shape' heading in
+    references/styleboard-format.md instead. If SKILL.md has no Output format/contract
+    heading, fall back to the first fenced block under an '## Exact shape' heading in
+    the skill's references/*-format.md file.
+    """
+    text = skill_md(skill).read_text(encoding="utf-8")
+    body = _fenced_block_after_heading(text.splitlines(), OUTPUT_HEADING_RE)
+    if body is not None:
+        return body
+
+    format_files = sorted((SKILLS / skill / "references").glob("*-format.md"))
+    for format_file in format_files:
+        ref_body = _fenced_block_after_heading(
+            format_file.read_text(encoding="utf-8").splitlines(), EXACT_SHAPE_HEADING_RE
+        )
+        if ref_body is not None:
+            return ref_body
+
+    assert False, (
+        f"{skill}/SKILL.md has no '## Output format' heading, and no "
+        f"references/*-format.md file has a fenced block under an '## Exact shape' "
+        f"heading to fall back to (checked: {[f.name for f in format_files]})"
+    )
 
 
 def section_resolves(skill: str, section: str) -> bool:
@@ -186,6 +216,19 @@ def test_marker_re_accepts_the_project_decision_marker():
     assert MARKER_RE.search("- **Use the pinned narrator voice.** `[P]`")
     assert MARKER_RE.search("- **Draft is half the cost of SD.** `[T-unverified]`")
     assert not MARKER_RE.search("- **Cut every three seconds.**")
+
+
+def test_output_template_falls_back_to_the_reference_format_files_exact_shape():
+    """shorts-styleboard's WORLD LOCK template lives under an '## Exact shape'
+    heading in references/styleboard-format.md, not under an
+    '## Output format'/'## Output contract' heading in its own SKILL.md (it has
+    neither). output_template() must fall back to the reference file's fenced
+    block instead of raising 'no Output format heading'."""
+    body = output_template("shorts-styleboard")
+    text = "\n".join(body)
+    assert "WORLD LOCK" in text
+    assert "slot_register_a" in text
+    assert "slot_register_b" in text
 
 
 def test_the_register_system_still_lives_with_styleboard():
