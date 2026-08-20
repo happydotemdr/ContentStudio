@@ -28,6 +28,16 @@ def shipped_skills(repo: Path) -> list[str]:
 
 
 def compute_stamp(repo: Path) -> dict:
+    """Content hash of the shipped skills tree.
+
+    Normalizes CRLF to LF before hashing. Without this, the stamp is
+    checkout-environment-dependent: this repo has no .gitattributes, so
+    whether a file lands on disk as LF or CRLF depends on the checking-out
+    machine's core.autocrlf, and raw path.read_bytes() would hash that
+    incidental difference as if it were real content drift -- producing a
+    false "stale" failure (or a false pass) purely from which machine last
+    ran the build, not from any actual change under .claude/skills/.
+    """
     root = repo / ".claude" / "skills"
     digest = hashlib.sha256()
     for name in shipped_skills(repo):
@@ -36,7 +46,7 @@ def compute_stamp(repo: Path) -> dict:
                 continue
             digest.update(path.relative_to(root).as_posix().encode("utf-8"))
             digest.update(b"\0")
-            digest.update(path.read_bytes())
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
             digest.update(b"\0")
     return {
         "skills": shipped_skills(repo),

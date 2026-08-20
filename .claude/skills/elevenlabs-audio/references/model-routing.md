@@ -33,6 +33,7 @@ the most common and most expensive silent failure on the platform.
 | Feature | `eleven_v3` | `eleven_multilingual_v2` | `eleven_flash_v2_5` | `eleven_flash_v2` |
 |---|---|---|---|---|
 | Audio tags `[whispers]` etc. | **yes** | no | no | no |
+| SSML `<break time="Xs" />` | no — use audio tags/punctuation instead | **yes** | **yes** | **yes** |
 | PLS `<phoneme>` | **yes** | no — alias only | **no** — alias only | **yes** (English) |
 | PLS `<alias>` | yes | yes | yes | yes |
 | Inline IPA `/ˌkuːbərˈnɛtɪs/` | **yes** | no | no | no |
@@ -48,6 +49,22 @@ draft and real-time workhorse, and it cannot do phonemes. Phoneme tags are also 
 default** — for IPA or CMU in another language you must be on `eleven_v3` `[T]`.
 
 **`eleven_multilingual_v2` ignores `language_code`** `[T]`. The parameter is accepted and dropped.
+
+### A third row, easy to miss the other direction: `<break>` is NOT a `eleven_v3` feature `[T]`
+
+Unlike every other row in this matrix, `<break time="Xs" />` runs backwards from the rest of the
+table: it works on `eleven_multilingual_v2`, `eleven_flash_v2`, and `eleven_flash_v2_5`, and does
+**not** work on `eleven_v3` (v3 replaces it with bracketed audio tags and punctuation-based
+pacing instead — a different, incompatible mechanism). Verified against ElevenLabs' own
+help-center docs, 2026-08-19: max ~3s per break; a large number of breaks in one generation risks
+documented instability (speech speeding up, added noise) — not observed at 7 breaks across ~950
+characters in practice (`docs/superpowers/plans/2026-08-19-vo-architecture-test-plan.md` §6c).
+
+No duration guarantee is documented, and none should be assumed: real measurement (same doc,
+`/with-timestamps` ground truth) shows every break running long by roughly 50-210ms versus the
+requested value, consistently in one direction. Confirm actual timing via `/with-timestamps`
+rather than trusting the requested duration for anything timing-sensitive (shot cuts, caption
+sync).
 
 ## Routing decisions
 

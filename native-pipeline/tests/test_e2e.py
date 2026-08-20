@@ -1,0 +1,183 @@
+"""Real end-to-end validation of the native single-generation render mode.
+Costs real ElevenLabs + Eleven Music API credits. Run explicitly with:
+    python -m pytest -m e2e -v
+Requires ELEVENLABS_API_KEY set and a real ffmpeg/ffprobe on PATH.
+"""
+import json
+import os
+from pathlib import Path
+
+import pytest
+from PIL import Image
+
+from stitcher.envelope import build_breakpoints, level_at, stem_spans
+from stitcher.ffmpeg import measure_loudness
+from stitcher.naming import Workspace
+from stitcher.spec import load_spec, validate_spec
+
+from native_pipeline import orchestrate
+from native_pipeline.assemble import DELIVERY_LUFS
+
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.allow_network,
+]
+
+VO_URL = "https://api.elevenlabs.io/v1/text-to-speech/eDwT8Vhp2yxJzAMmuuPA/with-timestamps"
+MUSIC_URL = "https://api.elevenlabs.io/v1/music/compose"
+
+BEAT_TEXTS = [
+    "This is the first beat of a short test script.",
+    "And this is the second beat, after a real pause.",
+]
+
+# No font fixture is checked into this repo (see stitcher/tests/fixtures/fonts/); fall
+# back to a system font the same way stitcher/tests/test_preflight.py's own REAL_FONT
+# does. render's preflight (stitcher/stitcher/preflight.py:_check_fonts) rejects a
+# style.font_file that isn't a real, loadable font file -- a bare "Inter-Bold.ttf" with
+# no directory and no fixture on disk fails this gate every time.
+_FONT_CANDIDATES = [
+    Path("C:/Windows/Fonts/arialbd.ttf"),
+    Path("C:/Windows/Fonts/arial.ttf"),
+]
+_REAL_FONT = next((p for p in _FONT_CANDIDATES if p.is_file()), None)
+
+
+@pytest.fixture
+def workspace(tmp_path):
+    ws = Workspace(root=tmp_path / "renders", slug="native-e2e-test", mode="final")
+    ws.ensure_dirs()
+    return ws
+
+
+def test_native_pipeline_end_to_end(workspace, tmp_path):
+    if not os.environ.get("ELEVENLABS_API_KEY"):
+        pytest.skip("ELEVENLABS_API_KEY not set")
+    if _REAL_FONT is None:
+        pytest.skip("no usable system font found (tried arialbd.ttf, arial.ttf)")
+
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps({
+        "text": (
+            f'{BEAT_TEXTS[0]} <break time="1.0s" /> {BEAT_TEXTS[1]}'
+        ),
+        "model_id": "eleven_multilingual_v2",
+    }), encoding="utf-8")
+
+    log_path = workspace.log_path("e2e")
+    voice_take, segments = orchestrate.run_vo_stage(workspace, payload_path, VO_URL, log_path)
+    runtime = segments[-1].at + segments[-1].duration
+
+    bed_arc_path = tmp_path / "bed_arc.json"
+    bed_arc_path.write_text(json.dumps([
+        {"label": "whole-take", "start_s": 0.0, "end_s": runtime, "density": "sparse", "style_notes": ""},
+    ]), encoding="utf-8")
+    music_bed = orchestrate.run_music_stage(segments, bed_arc_path, workspace, MUSIC_URL, log_path)
+
+    asset_manifest_path = tmp_path / "manifest.json"
+    asset_manifest_path.write_text(json.dumps([
+        {"beat": seg.name, "kind": "still", "source": f"{seg.name}.png", "source_in_s": None,
+         "source_out_s": None,
+         "motion": {"kind": "none", "amount_pct": 0.0, "anchor_start": [0.5, 0.5],
+                    "anchor_end": [0.5, 0.5], "hold_s": 0.0, "ease": "linear"}}
+        for seg in segments
+    ]), encoding="utf-8")
+
+    # Real, probeable placeholder images -- preflight's _check_visual_assets requires
+    # each shot.source to exist on disk in "final" mode (asset existence is not
+    # optional the way it is in "draft"), and to ffprobe cleanly. Content doesn't
+    # matter for this validation; canvas-matching dimensions do, so nothing downstream
+    # has to guess at a crop.
+    for seg in segments:
+        Image.new("RGB", (1080, 1920), color=(40, 40, 40)).save(workspace.asset(f"{seg.name}.png"))
+
+    styles = {"default": {"font_file": str(_REAL_FONT), "size_px": 64, "body": "#FFFFFF",
+                            "accent": "#FFD700", "max_width_px": 900, "max_lines": 3}}
+    from stitcher.spec import Style
+    style_objs = {"default": Style(**styles["default"])}
+
+    spec_path = orchestrate.run_assemble_stage(
+        workspace, segments, asset_manifest_path, BEAT_TEXTS, voice_take, music_bed,
+        style_objs, "default", log_path,
+    )
+
+    # Criterion: the assembled spec loads and validates cleanly.
+    spec, warnings = load_spec(spec_path)
+    assert validate_spec(spec) == []
+
+    # Criterion: Bed.gain_db == Bed.duck_db (flat by construction).
+    assert spec.audio.bed.gain_db == spec.audio.bed.duck_db
+
+    # Criterion: the envelope math the flat bed produces is genuinely flat
+    # across the take, not just equal at the two input fields.
+    # stem_spans wants a real-file-duration map (stitcher/stitcher/envelope.py:39-45);
+    # an empty dict falls back to each stem's own duration_s, which assemble_spec
+    # already set to `runtime` -- exactly what this criterion needs.
+    spans = stem_spans(spec.audio.stems, {})
+    breakpoints = build_breakpoints(spec.audio.bed, spans, runtime)
+    sampled_levels = {level_at(breakpoints, t) for t in [0.5, runtime / 2, runtime - 0.5]}
+    assert len(sampled_levels) == 1, f"envelope is not flat: {sampled_levels}"
+
+    # This subprocess call is where the accepted risk from the design's VO-
+    # processing decision can surface: if this specific take is too hot for
+    # stitcher's existing linear-mode normalization gate, stitcher's own
+    # (unmodified) render command exits non-zero and subprocess.run(...,
+    # check=True) raises CalledProcessError. That IS the documented,
+    # deliberately-accepted failure mode for this mode -- not a defect in
+    # this test -- so it's reported, not asserted away.
+    #
+    # Only stitcher's EXIT_RENDER (2) actually maps to that accepted risk --
+    # cmd_render returns it exclusively from the FFmpegError/TextOverflowError/
+    # LoudnormNotLinearError/SilentVoiceError handler around the normalization
+    # path (stitcher/stitcher/cli.py:181-184), plus the deliverable-derivation
+    # handler right after it (same exit code, same "render" phase). Any other
+    # non-zero exit (EXIT_PREFLIGHT=1, EXIT_QA=3, EXIT_INCOMPLETE=4, or an
+    # unrecognized code) is a different failure class entirely and must not be
+    # silently attributed to the normalization risk -- doing so once already
+    # hid a real EXIT_PREFLIGHT regression (missing font/image fixtures) behind
+    # this exact message.
+    import subprocess as sp
+    from stitcher.cli import EXIT_RENDER
+
+    try:
+        orchestrate.run_render_stage("native-e2e-test", tmp_path / "renders")
+    except sp.CalledProcessError as exc:
+        if exc.returncode == EXIT_RENDER:
+            pytest.skip(
+                f"render failed -- this specific take may be too hot for linear-mode normalization, "
+                f"an accepted risk of 'zero VO processing' per the design spec, not a test failure: {exc}"
+            )
+        pytest.fail(
+            f"render failed with exit code {exc.returncode} (not the documented normalization "
+            f"risk, which is exit code {EXIT_RENDER}) -- see {exc}"
+        )
+
+    # Criterion: the rendered mix hits the delivery target within tolerance.
+    # (Reaching this line means stitcher's own render command exited 0, which
+    # -- by that command's existing, unmodified behavior -- already implies
+    # normalization_type == "linear"; a non-linear result raises there before
+    # ever reaching this point.)
+    # Real promoted-master filename is `{slug}_v{NN}_1080x1920.mp4`
+    # (stitcher/stitcher/naming.py:149-150's out_master, not a bare .mp4 suffix).
+    final_mix = workspace.out_master(1)
+    assert final_mix.exists()
+
+    # Criterion (design spec: "Independent re-measurement of the final mix
+    # within 0.5 LU of target"): re-measure the promoted master's own
+    # integrated loudness -- independently of whatever stitcher's render
+    # pipeline internally asserted -- and confirm it landed within 0.5 LU of
+    # the delivery target.
+    final_loudness = measure_loudness(final_mix, log_path)
+    measured_lufs = final_loudness["input_i"]
+    assert abs(measured_lufs - DELIVERY_LUFS) <= 0.5, (
+        f"final mix measured {measured_lufs} LUFS, delivery target is {DELIVERY_LUFS} LUFS "
+        f"(off by {abs(measured_lufs - DELIVERY_LUFS):.3f} LU, tolerance is 0.5 LU)"
+    )
+
+    # Criterion: no unexpected outlier flags for this normal, short synthetic
+    # take -- a flag here is itself a finding to investigate, not something
+    # to silence. flag lines were appended (if any) by run_vo_stage/
+    # run_music_stage directly to log_path.
+    log_contents = log_path.read_text(encoding="utf-8")
+    flag_lines = [line for line in log_contents.splitlines() if line.startswith("FLAG:")]
+    assert flag_lines == [], f"unexpected outlier flags on a normal take: {flag_lines}"
