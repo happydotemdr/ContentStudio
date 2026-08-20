@@ -21,6 +21,8 @@ verbatim: they pin the two places the anti-generic guarantee was actually broken
 import re
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 SKILLS = REPO / ".claude" / "skills"
 
@@ -96,6 +98,86 @@ def fenced_block(text: str, info: str) -> str | None:
         if capturing:
             body.append(line)
     return None
+
+
+HANDOFF_KEYS = {"produces.kind", "produces.stage", "produces.section",
+                "consumes", "reads", "writes"}
+
+
+def handoff(skill: str) -> dict[str, list[str]]:
+    body = fenced_block(skill_md(skill).read_text(encoding="utf-8"), "handoff")
+    assert body is not None, (
+        f"{skill}/SKILL.md has no ```handoff block; every skill declares its contract"
+    )
+    parsed: dict[str, list[str]] = {k: [] for k in HANDOFF_KEYS}
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, _, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        assert key in HANDOFF_KEYS, f"{skill}: unknown handoff key {key!r}"
+        assert value, f"{skill}: handoff key {key!r} has no value"
+        parsed[key].append(value)
+    return parsed
+
+
+OUTPUT_HEADING_RE = re.compile(r"^##+\s+Output (format|contract)\s*$", re.IGNORECASE)
+
+
+def output_template(skill: str) -> list[str]:
+    """Every line of the first fenced block after the skill's Output format/contract heading."""
+    text = skill_md(skill).read_text(encoding="utf-8")
+    lines = text.splitlines()
+    start = next((i for i, ln in enumerate(lines) if OUTPUT_HEADING_RE.match(ln.strip())), None)
+    assert start is not None, f"{skill}/SKILL.md has no '## Output format' heading"
+    body, in_fence = [], False
+    for ln in lines[start + 1:]:
+        if ln.lstrip().startswith("```"):
+            if in_fence:
+                break
+            in_fence = True
+            continue
+        if in_fence:
+            body.append(ln)
+    assert body, f"{skill}/SKILL.md's Output format heading is not followed by a fenced template"
+    return body
+
+
+def section_resolves(skill: str, section: str) -> bool:
+    for line in output_template(skill):
+        head = line.strip().lstrip("#").strip()
+        if not head.startswith(section):
+            continue
+        rest = head[len(section):]
+        if rest == "" or rest[0] in ":( \t":
+            return True
+    return False
+
+
+@pytest.mark.parametrize("skill", ALL_SKILLS)
+def test_declared_output_sections_appear_in_the_output_template(skill):
+    """A skill may not advertise a section its own output template does not contain."""
+    missing = [s for s in handoff(skill)["produces.section"] if not section_resolves(skill, s)]
+    assert missing == [], f"{skill} declares sections absent from its output template: {missing}"
+
+
+@pytest.mark.parametrize("skill", ALL_SKILLS)
+def test_every_consumed_section_resolves_to_a_declared_producer_section(skill):
+    """C-01: `music-brief`, `elevenlabs-audio` and `elevenlabs-music` all consumed
+    'the tone-per-beat call' by name from a skill that never declared it."""
+    problems = []
+    for edge in handoff(skill)["consumes"]:
+        producer, _, section = edge.partition("#")
+        if producer not in ALL_SKILLS:
+            problems.append(f"{edge}: no such skill")
+            continue
+        if not section:
+            problems.append(f"{edge}: no '#<section>' named")
+            continue
+        if section not in handoff(producer)["produces.section"]:
+            problems.append(f"{edge}: {producer} does not declare that section")
+    assert problems == [], f"{skill} consumes undeclared fields: {problems}"
 
 
 def test_marker_re_accepts_the_project_decision_marker():
