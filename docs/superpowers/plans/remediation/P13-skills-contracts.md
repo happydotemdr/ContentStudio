@@ -2557,6 +2557,22 @@ as ~0 under `docs/README.md`, and neither reading is true.
 (C-48 proposed it), so `CLAUDE.md:236-241`'s "the linters and skill provenance" phrasing stays
 correct — and becomes true rather than aspirational once T15 lands.
 
+**Addendum, from the final whole-branch review (2026-08-20).** Two more items for P14's queue,
+found reading the finished branch as a whole rather than any single task:
+
+4. **A fourth alternative-vocabulary token is undeclared.** `shorts-scripting/SKILL.md:70`
+   declares and uses a `[S]` marker (17 occurrences) that is not in `ALTERNATIVE_VOCABULARY`,
+   not in this §6.1 list above, and not covered by any test — it happens to always co-occur with
+   a real `[I]`/`[C]` on the same bullet today, so nothing fails, but the registry P14 is being
+   handed to publish is incomplete without it. Add `[S]` to whatever list item 2 above becomes.
+5. **`docs/style-library.md:198`** still instructs a future editor to update
+   `visual-prompts/references/visual-registers.md` §2 — a file T14 deleted as a tombstone.
+   `docs/style-library.md` is P11-owned, not P13's or P14's, but the instruction is now a live
+   forward-looking pointer at a file that no longer exists, not a historical record (unlike the
+   two dated `rgs-briefs/` references to the same old path, which are fine as-is). Whoever picks
+   up `docs/style-library.md` next should retarget it to
+   `shorts-styleboard/references/visual-registers.md`.
+
 ### 6.2 Contract for P4 — the stage graph binds to the handoff block
 
 P4 owns `pipeline.yaml` and the stage graph, and may need SKILL.md input/output declarations to
@@ -2575,11 +2591,37 @@ change so the declared graph matches the reachable one. P13 makes that machine-c
   literally and ~40 artifacts already exist under the current names). If P4 concludes the
   vocabulary must be unified on stage ids, that is a filename migration of `rgs-briefs/` — P14's
   files — and needs its own task in P4's plan, not a P13 edit.
-- **One open item P4 must decide (C-03):** `assembly` is `depends_on: [voiceover, visual]`, so the
-  script is not in `input_files`. T5 resolves it on the skill side by routing the script through
-  the voiceover brief's `script:` pointer. If P4 instead adds `scripting` to `assembly`'s
-  `depends_on`, T5's "Input 2 in app-driven mode" paragraph becomes wrong and must be simplified
-  to a direct read. P13 should be re-run on that one paragraph if P4 takes that route.
+- **C-03, resolved during execution, not left open.** At authoring time `assembly` was
+  `depends_on: [voiceover, visual]`, and this item asked P4 to decide whether to add `scripting`
+  directly. P4 did — `28d1862` added both `scripting` and `styleboard` to `assembly`'s
+  `depends_on` five days after this plan was authored, before P13's own Task 1 was ever
+  dispatched. T5 was executed against the corrected graph (a direct script read, no
+  pointer-chase), confirmed live at dispatch time. Nothing further needed here.
+
+**Addendum, from the final whole-branch review (2026-08-20).** Two edges in the live stage graph
+have no reciprocal `consumes:` declaration on the skill side — found by cross-checking every
+`pipeline.yaml` `depends_on` edge against its target skill's handoff block, something no single
+task's own review could see:
+
+1. **`assembly` `depends_on: [… styleboard …]`, but `shorts-assembly`'s handoff block declares
+   no `shorts-styleboard#…` edge.** The skill's own prose (`SKILL.md:51-53`) clearly reads the
+   styleboard's `BINDINGS` section at paste time — the edge is real, just undeclared. Two more of
+   the same shape on the same handoff block: `elevenlabs-audio#DIRECTORIAL SCRIPT` (`:27-29`) and
+   `elevenlabs-music#MIX HANDOFF` (`:31`), both prose-referenced but not declared. All three
+   resolve against their producers' actual declared sections — this is a completeness gap in
+   `shorts-assembly`'s own handoff block, not a stage-graph error, and P13 fixes it directly
+   (see the final-review fix wave) rather than handing it to P4.
+2. **`repurpose` `depends_on: [ideation, scripting, assembly]`, but T6's C-04 fix committed
+   `social-repurpose` to "exactly two inputs: the timed script … and shorts-assembly's edit
+   plan"** — `ideation` is in the stage graph's dependency list but is not one of the two inputs
+   the skill's own description/body/File-I/O now uniformly declare. `test_the_registry_matches_
+   the_declared_stage_graph` only compares stage *ids*, not per-edge reachability, so this
+   divergence is not machine-visible today. P4 should decide: is `ideation` a load-bearing input
+   `social-repurpose` should actually read (in which case P13's C-04 fix undercounts and needs a
+   follow-up task), or is it in `depends_on` only to guarantee ordering/availability without the
+   skill needing to *read* it (in which case `pipeline.yaml`'s dependency and the skill's actual
+   input list are both correct, just for different reasons, and nothing needs to change)? P13
+   cannot make this call — it owns the skill's declared inputs, not the stage graph's intent.
 
 ---
 
@@ -2596,8 +2638,16 @@ own §Verification explicitly warns against — worktrees are created and torn d
 that path is long gone. Run this from whatever worktree's repo root you're actually in.)
 
 1. `tests/test_skill_provenance.py` is parametrized over **13 skills** and sweeps **all 64
-   reference files** (63 after T14 deletes the tombstone) — verified by
-   `test_every_skill_directory_is_classified` and the citation tests' file sweep.
+   reference files** — verified by `test_every_skill_directory_is_classified` and the citation
+   tests' file sweep. **Corrected by the final whole-branch review (2026-08-20):** this line
+   originally said "63 after T14 deletes the tombstone," arithmetic that was wrong even at
+   authoring time — §1's owned-file manifest omitted
+   `voiceover-brief/references/single-take-architecture.md` (a file that already existed on disk
+   pre-P13, per the 77-commit backlog documented in this file's own §0), so §1 listed 64 files
+   while disk actually held 65. T14's tombstone deletion (65 → 64) offset that omission by
+   coincidence, and the count landed right for the wrong reason. Live count post-P13: **64**,
+   correct. No action needed — the suite already sweeps the real directory, not §1's manifest —
+   but do not trust this line's arithmetic as a derivation; it is a corrected observation.
 2. Every `SKILL.md` carries a ```` ```handoff ```` block, and both handoff tests are green for all
    13 skills.
 3. `grep -rn "references/production-and-loudness.md" .claude/skills/` returns only
@@ -2606,8 +2656,19 @@ that path is long gone. Run this from whatever worktree's repo root you're actua
    `grep -rn "visual-registers.md" .claude/skills/visual-prompts/` returns only qualified paths.
 5. `TIER_1_PENDING` and `C_CITATION_PENDING` are present, non-hidden, and strictly smaller than
    their seeded values; every entry that reaches zero unmarked blocks has been deleted (the test
-   fails if a clean file keeps its entry).
-6. `python scripts/lint_prompt_sheet.py` (P11) and `python scripts/lint_script_language.py` (P12)
-   still pass on the committed `rgs-briefs/` artifacts — no skill edit here changes a format either
-   linter parses.
+   fails if a clean file keeps its entry). **Correction, final review:** as originally specified,
+   only `TIER_1_PENDING` actually enforces "keeps its entry after going clean" and neither ledger
+   enforces "did not silently regress while still pending" (a suppressed file's real unmarked/
+   uncited count could grow past its recorded number with no test noticing). The final-review fix
+   wave adds the missing enforcement to both; see the branch's closing commits.
+6. **Corrected by the final whole-branch review (2026-08-20):** this item originally read
+   "`python scripts/lint_prompt_sheet.py` (P11) and `python scripts/lint_script_language.py`
+   (P12) still pass on the committed `rgs-briefs/` artifacts" as a completion bar for THIS
+   package. That was already false at P13's own base commit (`53a3553`) — several
+   `rgs-briefs/*-visual-prompts.md` and `*-script.md` artifacts fail one or both linters, and
+   P13 touches none of the files involved (no `rgs-briefs/`, no linter scripts, no
+   `docs/style-library.md`) — confirmed the linter output is byte-identical between base and
+   head. This is pre-existing artifact debt, not P13's to close, and stating it as P13's own
+   bar was a plan defect. Restated: **P13 introduces no *new* linter failures** on the committed
+   `rgs-briefs/` artifacts — verifiably true, and the correct form of this check.
 7. `bash scripts/build-cowork-plugin.sh` (P12) runs clean, since `.claude/skills/` is its input.
