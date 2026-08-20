@@ -8,15 +8,15 @@ themselves; nothing here handles a key, renders audio, or spends a credit on its
 
 ## The three endpoints `[T]`
 
-- **`POST /v1/music`** — the compose endpoint. Body takes `prompt` **XOR** `composition_plan`; the
+- **`POST /v1/music`** `[T]` — the compose endpoint. Body takes `prompt` **XOR** `composition_plan`; the
   two are mutually exclusive `[T]`. Query param `output_format`, default `auto`. Confirmed today
   via the GitHub skill reference, the fuller endpoint set is: `compose` (this one), `stream` (audio
   chunks during generation, **paid plans only**), `compose_detailed`, `compose_detailed_stream`
   (Server-Sent Events), `upload` (import audio for inpainting, **enterprise only**), and
   `video_to_music` (generate a bed from a video clip) `[T]`.
-- **`POST /v1/music/detailed`** — same body as compose, plus `with_timestamps`. Returns a
+- **`POST /v1/music/detailed`** `[T]` — same body as compose, plus `with_timestamps`. Returns a
   multipart response carrying the resolved plan and `song_metadata` alongside the audio `[T]`.
-- **Plan creation** — exposed in the SDK as
+- **Plan creation** `[T]` — exposed in the SDK as
   `music.composition_plan.create(prompt=…, music_length_ms=…, model_id=…)` `[T]`, confirmed today
   directly against the cookbook page, which documents **only the SDK call and shows no REST
   path**. **The REST path is `[T-unverified]`** — a supplied design brief asserted
@@ -145,15 +145,15 @@ curl -X POST "https://api.elevenlabs.io/v1/music/plan" \
 - **Assume every compose call is billed** `[I]`. The credit rate per generation is
   **`[T-unverified]`** — not found in the docs on 2026-08-06. Never quote a specific credit number
   as fact; state the estimate and its unverified status together, every time.
-- **Seed re-rolls: same seed + same params → more consistent results; exact reproducibility is
+- **Seed re-rolls: same seed + same params → more consistent results; exact reproducibility is `[T]`
   not guaranteed and output may change across system updates** `[T]` — this is the runbook's
   verbatim disclaimer (§5). Never promise a re-render matches a prior one, even with the same
   seed.
-- **Draft → master:** draft at a low `output_format` and a reduced chunk count covering only the
+- **Draft → master:** `[I]` draft at a low `output_format` and a reduced chunk count covering only the
   movements in question; master at full runtime, full chunk set, full-fidelity `output_format`
   `[I]`. This mirrors `elevenlabs-audio`'s draft/master discipline; nothing about it is Eleven
   Music-specific documentation.
-- **`bad_prompt` recovery:** catch the error and retry with the vendor's suggested replacement
+- **`bad_prompt` recovery:** `[T]` catch the error and retry with the vendor's suggested replacement
   prompt `[T]` — read from `detail.data.prompt_suggestion` `[T-unverified]` (the field path itself
   was not independently re-observed in today's fetches; see `prompt-craft.md` for the full
   recovery path and the field-path caveat).

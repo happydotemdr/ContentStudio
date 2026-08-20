@@ -230,11 +230,11 @@ consumes: voiceover-brief#Production & loudness
 
 ## What this skill does NOT do
 
-- **Call the Eleven Music API.** It emits payloads and curl commands; you run them. It never handles
+- **Call the Eleven Music API.** `[I]` It emits payloads and curl commands; you run them. It never handles
   an API key, never renders audio, and never spends credits on its own.
-- **Duck depth, LUFS, or the mix** — `voiceover-brief`.
-- **The bed arc, the hook hold-out, or whether the Short gets a bed at all** — `music-brief`.
-- **The edit plan** — `shorts-assembly`. **The script** — `shorts-scripting`.
+- **Duck depth, LUFS, or the mix** `[I]` — `voiceover-brief`.
+- **The bed arc, the hook hold-out, or whether the Short gets a bed at all** `[I]` — `music-brief`.
+- **The edit plan** `[I]` — `shorts-assembly`. **The script** — `shorts-scripting`.
 
 ## `[T]` facts most likely to be stale
 
