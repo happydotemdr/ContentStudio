@@ -33,6 +33,10 @@ worthless on a 0.4-minute draft grid where the whole purpose is to be wrong chea
 - [ ] `--sv` is **absent** unless the user explicitly asked for it (no documented V8 behavior)
 - [ ] `--sref random` / style codes are not paired with an `--sv` other than 4 or 6
 - [ ] No V6-era `--sref` code on a V7/V8 job `[C] (Wade McMaster, PEl1Rb9spsk)`
+- [ ] **Pipeline mode** — the consistency flag is an unresolved `{style:…}`/`{char:…}` slot handed
+      down by `visual-prompts`, never a literal code, and it sits **last in the flag block**, after
+      `--ar`/`--raw`/`--s` (Gate C's C16 rejects an invented code; C18 rejects a slot placed before
+      the first ` --`)
 
 ### A4. Prompt body
 
@@ -124,8 +128,8 @@ THE BRIEF (what the user actually wants):
 [one-paragraph statement of the brief, in the user's terms]
 
 CONTROL SURFACE:
-  subject / stage / look / format / consistency / literalism / variance / budget
-  [the eight resolved values]
+  subject / stage / look / format / consistency / literalism / variance / budget / register
+  [the nine resolved values]
 
 THE PROMPT:
 [full prompt string including all parameters]

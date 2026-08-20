@@ -91,7 +91,8 @@ Deterministic mappings — same inputs, same prompt, so a user can re-run and re
 | `variance: tight` | `--c 0` |
 | `variance: some` | `--c 3–9` `[C] (Future Tech Pilot, Tv1dfGcOSnA / fMEvMqvzUbc)` |
 | `variance: wild` | `--c 25–50` |
-| `consistency: style-lock` | `--sref <code>` + `--sw`, or moodboard `--p <code>` |
+| `consistency: style-lock` (standalone) | `--sref <code>` + `--sw`, or moodboard `--p <code>` |
+| `consistency: style-lock` (**pipeline mode**) | the inherited `{style:register_a}` / `{style:register_b}` / `{char:<name>}` slot token handed down by `visual-prompts`, placed **last in the flag block** — **never** a literal code. Gate C's C16 rejects an invented code and C18 rejects a slot placed before the first ` --` |
 | `consistency: subject-lock` | `--oref <url> --ow 50–150` — **and the V7 warning below** |
 | `budget: cheap` | `--relax`, stay in Draft/SD |
 | `budget: no limit` | `--q 2`+ at production |
@@ -102,8 +103,8 @@ Full reasoning in `references/prompt-architecture.md` and `references/parameters
 
 ### Step 0 — Resolve the control surface
 
-Infer the eight inputs. Echo them back in one compact block with every assumed default named. Proceed
-without waiting for confirmation unless `format` is genuinely unknowable.
+Infer the nine inputs. Echo them back in one compact block with every assumed default named.
+Proceed without waiting for confirmation unless `format` is genuinely unknowable.
 
 ### Step 1 — Build the 9-layer prompt body
 
@@ -189,7 +190,7 @@ Full checklists and the verbatim dispatch prompt are in `references/validation-g
 
 | Gate | Fires | Cost | Checks |
 |---|---|---|---|
-| **A — syntax & compatibility** | **every prompt, always** | free, inline | flags last / spacing / no punctuation; every value in range; `--oref` ✗ Draft·Fast·`--q 4`; moodboard ✗ `--sv`·`--sw`; `--ar` ≤ 4:1 under `--hd`; no buzzwords; **stage discipline** — no `--hd`/`--q 2`+/`--oref` in an exploratory stage; every line marked |
+| **A — syntax & compatibility** | **every prompt, always** | free, inline | flags last / spacing / no punctuation; every value in range; `--oref` ✗ Draft·Fast·`--q 4`; moodboard ✗ `--sv`·`--sw`; `--ar` ≤ 4:1 under `--hd`; no buzzwords; **stage discipline** — no `--hd`/`--q 2`+/`--oref` in an exploratory stage; every line marked; **pipeline mode** — the consistency flag is an unresolved `{style:…}`/`{char:…}` slot, not a literal code, and it sits after `--ar`/`--raw`/`--s` |
 | **B — adversarial art direction** | **`production` only** | one fresh agent | weakest of the 9 layers; where literal reading bites; what's buried too late to render; flag stack vs stated intent; one concrete rewrite |
 
 In pipeline mode, `visual-prompts` runs a third gate, **Gate C**, over the assembled prompt sheet
@@ -209,7 +210,7 @@ without running it**, and write `Gate B: n/a — [stage]` rather than omitting t
 === MIDJOURNEY PROMPT — [job name] — [STAGE] ===
 
 CONTROL SURFACE
-  subject / stage / look / format / consistency / literalism / variance / budget
+  subject / stage / look / format / consistency / literalism / variance / budget / register
   Assumed defaults: [every value chosen for the user, named]
 
 CONSISTENCY
@@ -242,6 +243,26 @@ NEXT
 
 In pipeline mode, collapse this to the prompt + parameters + one-line why — `visual-prompts` owns
 the sheet.
+
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: none
+produces.stage: none
+produces.section: CONTROL SURFACE
+produces.section: CONSISTENCY
+produces.section: PROMPT
+produces.section: LAYER BREAKDOWN
+produces.section: PARAMETERS
+produces.section: COST
+produces.section: VALIDATION
+produces.section: ARCHIVE
+produces.section: NEXT
+consumes: visual-prompts#WHOLE-SHORT SETUP
+consumes: shorts-styleboard#BINDINGS
+reads: docs/style-library.md
+writes: docs/style-library.md
+```
 
 ## What this skill does NOT do
 
