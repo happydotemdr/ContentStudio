@@ -435,7 +435,6 @@ WORKED_EXAMPLE_DISCLAIMER = (
 TIER_1_PENDING: dict[str, tuple[int, str]] = {
     ".claude/skills/rgs-grounding/references/pairing-map.md": (95, "category-3 file per brief, but its field-label bullets (Work/anchor, Quotability, Pairs with, Why it links, Visual motif cue) carry no [THINKER:]/[RESEARCH:]/[REF]/[B] token, so the vocabulary regex does not actually reach them (brief's own expectation was stale); explicitly out of scope to edit this dispatch (do-not-touch), flagged not fixed"),
     ".claude/skills/shorts-scripting/references/retention-loops-and-structure.md": (23, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
-    ".claude/skills/visual-prompts/references/visual-arc.md": (22, "mostly column/definition rows plus some modal corpus claims; needs a careful per-line pass against output/ for the modal lines, not attempted this dispatch"),
     ".claude/skills/shorts-scripting/references/hooks-and-openings.md": (14, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
     ".claude/skills/shorts-scripting/references/script-intelligence-and-delivery.md": (13, "corpus craft rules; needs [C] (Channel, video_id) sourcing from output/, absent in this worktree"),
     ".claude/skills/midjourney-prompting/references/v82-model-delta.md": (13, "vendor-fact deltas; needs [T]/[T-unverified] re-verification against docs.midjourney.com, not attempted this dispatch"),
