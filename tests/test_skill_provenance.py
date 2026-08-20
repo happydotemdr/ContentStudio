@@ -14,7 +14,7 @@ Four properties, asserted over all 13 skills and all 64 reference files under
                 an alternative-vocabulary marker its skill declares, or an entry in the
                 explicit triage ledger below (audit C-42, C-43, C-48, C-54, F-22).
 
-The narrow regression guards at the bottom of the file predate the suite and are kept
+The narrow regression guards in the middle of the file predate the suite and are kept
 verbatim: they pin the two places the anti-generic guarantee was actually broken.
 """
 
@@ -29,7 +29,6 @@ SKILLS = REPO / ".claude" / "skills"
 REGISTERS = SKILLS / "shorts-styleboard" / "references" / "visual-registers.md"
 MARKER_RE = re.compile(r"\[(?:C|I|T|P|T-unverified)\]")
 
-CORPUS_CITE_RE = re.compile(r"\(([^()]*?,\s*[A-Za-z0-9_-]{6,})\)")
 CHANNEL_CITE_RE = re.compile(r"\(\s*[A-Za-z][A-Za-z0-9 .&'-]+,\s*[A-Za-z0-9_-]{6,}")
 VERIFIED_HEADER_RE = re.compile(r"verified\s+20\d\d-\d\d-\d\d", re.IGNORECASE)
 
@@ -133,6 +132,20 @@ def test_every_bare_reference_citation_resolves_inside_its_own_skill():
     assert broken == [], f"bare citations that do not resolve in their own skill: {broken}"
 
 
+def test_every_qualified_reference_citation_resolves():
+    """The qualified counterpart to the bare-citation check above: a `skill/references/x.md`
+    citation must resolve to a real file inside the named skill, not just look plausible."""
+    broken = []
+    for path in every_markdown_file():
+        for lineno, line in strip_fences(path.read_text(encoding="utf-8")):
+            for m in CITE_RE.finditer(line):
+                if not m.group("skill"):
+                    continue  # bare: checked above
+                if not (SKILLS / m.group("skill") / "references" / m.group("file")).exists():
+                    broken.append(f"{path}:{lineno}: {m.group('skill')}/references/{m.group('file')}")
+    assert broken == [], f"qualified citations that do not resolve: {broken}"
+
+
 def test_a_duplicated_reference_filename_is_never_cited_bare_across_skills():
     """C-55: `worked-example.md` exists in 9 skills. A bare citation to a duplicated
     basename always *looks* plausible — that is the mechanism behind C-41."""
@@ -164,7 +177,10 @@ def test_every_section_anchor_resolves_in_the_file_it_points_at():
                     continue
                 target = SKILLS / (m.group("skill") or owner) / "references" / m.group("file")
                 if not target.exists():
-                    continue  # reported by the tests above
+                    # A missing target is reported by test_every_bare_reference_citation_
+                    # resolves_inside_its_own_skill (unqualified) or
+                    # test_every_qualified_reference_citation_resolves (qualified) above.
+                    continue
                 have = set(ANCHOR_HEADING_RE.findall(target.read_text(encoding="utf-8")))
                 want = set(re.findall(r"\d+", m.group("anchor")))
                 if not want <= have:
@@ -512,13 +528,20 @@ def test_every_corpus_marked_normative_block_carries_a_channel_and_video_id():
     bad = []
     for path in every_markdown_file():
         rel = path.relative_to(REPO).as_posix()
-        if rel in C_CITATION_PENDING:
+        uncited = [f"{rel}:{lineno}" for lineno, line in normative_blocks(path)
+                   if "[C]" in line and not CHANNEL_CITE_RE.search(line)]
+        if not uncited:
+            assert rel not in C_CITATION_PENDING, (
+                f"{rel} is clean — delete its C_CITATION_PENDING entry"
+            )
             continue
-        for lineno, line in normative_blocks(path):
-            if "[C]" not in line:
-                continue
-            if not CHANNEL_CITE_RE.search(line):
-                bad.append(f"{rel}:{lineno}")
+        if rel in C_CITATION_PENDING:
+            assert len(uncited) <= C_CITATION_PENDING[rel][0], (
+                f"{rel}: pending count {C_CITATION_PENDING[rel][0]} is stale, "
+                f"actual is {len(uncited)} -- update the ledger"
+            )
+            continue
+        bad.extend(uncited)
     assert bad == [], f"[C] blocks with no (Channel, video_id): {bad}"
 
 
@@ -554,6 +577,10 @@ def test_every_normative_block_carries_a_marker_or_a_recorded_exemption(skill):
             )
             continue
         if rel in TIER_1_PENDING:
+            assert len(unmarked) <= TIER_1_PENDING[rel][0], (
+                f"{rel}: pending count {TIER_1_PENDING[rel][0]} is stale, "
+                f"actual is {len(unmarked)} -- update the ledger"
+            )
             continue
         failures.extend(unmarked)
     assert failures == [], f"unmarked normative blocks with no recorded exemption: {failures}"

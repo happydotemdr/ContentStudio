@@ -5,10 +5,10 @@ description: Turns a raw faceless-YouTube-Shorts idea or topic into a validated 
 
 # Shorts Ideation
 
-> **`[T]` facts in this file were web-verified 2026-07-23** against the live web, per this project's `[T]` marker convention
-> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
-> parameter range, a model id, or a credit rate `[T]`.
-> This skill's own body carries no specific tool/policy fact — the header exists so the provenance-key description above is dated like every other marker-carrying file.
+> This skill's own body carries no specific `[T]` tool/policy fact of its own — it is entirely
+> `[C]` corpus-cited or `[I]` operational judgment, per this project's marker convention. The
+> project's `[T]` convention itself was last verified 2026-07-23 against the live web; this file
+> has nothing of that kind to re-check.
 
 Turn a raw idea/topic into a **validated concept brief**: a chosen angle/take, a hook
 concept, and a title/thumbnail packaging direction. Every normative rule this skill applies

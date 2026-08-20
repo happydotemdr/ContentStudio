@@ -66,7 +66,7 @@ and restate it verbatim in the delivered edit plan's own notes so it carries for
 this skill doesn't need to know what produced the constraint, only that it's flagged and must be
 respected.
 
-**Output:** a single edit plan covering six things, every one gated by a corpus rule, not convention:
+**Output:** a single edit plan covering seven things, every one gated by a corpus rule, not convention:
 1. Shot-by-shot pacing/cut timing
 2. Caption/overlay treatment
 3. Aspect ratio + safe-zone spec
@@ -145,6 +145,9 @@ consumes: visual-prompts#WHOLE-SHORT SETUP
 consumes: visual-prompts#COVER / THUMBNAIL
 consumes: music-brief#Bed arc
 consumes: music-brief#Hook hold-out
+consumes: shorts-styleboard#BINDINGS
+consumes: elevenlabs-audio#DIRECTORIAL SCRIPT
+consumes: elevenlabs-music#MIX HANDOFF
 reads: docs/style-library.md
 ```
 

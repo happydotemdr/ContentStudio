@@ -1,14 +1,14 @@
 ---
 name: social-repurpose
-description: Generate multi-surface post copy (YouTube title/description/hashtags plus cross-platform caption variants for TikTok/Instagram/X/Bluesky) from a finished faceless-YouTube-Short's script and packaging direction. This is the final stage of the ContentStudio eight-skill pipeline — use it after a Short has been assembled, with exactly two inputs: the timed script (for hook language and any publish constraint) and shorts-assembly's edit plan and you need publish-ready copy for YouTube and repurposed captions elsewhere. Trigger this whenever the user asks to write a YouTube title, description, or hashtags for a Short; asks to "repurpose," "cross-post," or write captions for TikTok/Instagram/X/Bluesky/Threads from a video; or wants the final post-copy package for a produced Short. Every normative line traces to the ContentStudio corpus (docs/headless-youtube-audit.md) with [C]/[I]/[T] provenance markers — do not invent generic social-media best practices. Do not use this to design a thumbnail or re-derive packaging (that is `shorts-ideation`/`shorts-assembly`), and do not fill the corpus's cross-platform gap with invented social-media best practices — mark it and say so.
+description: Generate multi-surface post copy (YouTube title/description/hashtags plus cross-platform caption variants for TikTok/Instagram/X/Bluesky) from a finished faceless-YouTube-Short's script and packaging direction. This is the final stage of the ContentStudio eight-skill pipeline — use it after a Short has been assembled, with exactly two inputs: the timed script (for hook language and any publish constraint) and shorts-assembly's edit plan, and you need publish-ready copy for YouTube and repurposed captions elsewhere. Trigger this whenever the user asks to write a YouTube title, description, or hashtags for a Short; asks to "repurpose," "cross-post," or write captions for TikTok/Instagram/X/Bluesky/Threads from a video; or wants the final post-copy package for a produced Short. Every normative line traces to the ContentStudio corpus (docs/headless-youtube-audit.md) with [C]/[I]/[T] provenance markers — do not invent generic social-media best practices. Do not use this to design a thumbnail or re-derive packaging (that is `shorts-ideation`/`shorts-assembly`), and do not fill the corpus's cross-platform gap with invented social-media best practices — mark it and say so.
 ---
 
 # Social Repurpose
 
-> **`[T]` facts in this file were web-verified 2026-07-23** against the live web, per this project's `[T]` marker convention
-> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
-> parameter range, a model id, or a credit rate `[T]`.
-> This skill's own body carries no specific tool/policy fact — the header exists so the provenance-key description above is dated like every other marker-carrying file.
+> This skill's own body carries no specific `[T]` tool/policy fact of its own — it is entirely
+> `[C]` corpus-cited or `[I]` operational judgment, per this project's marker convention. The
+> project's `[T]` convention itself was last verified 2026-07-23 against the live web; this file
+> has nothing of that kind to re-check.
 
 The final stage of ContentStudio's eight-skill pipeline, following `shorts-assembly`. Turns
 a **finished Short** into the **multi-surface post copy** that ships it. There is no
