@@ -14,7 +14,7 @@ mapping itself.
   `shorts-scripting`'s Setup (3–8s) and early Build/Value (8–~15s) this lands is a per-brief
   judgment call — state it explicitly in the brief's Handoff section (see "Per-brief judgment"
   below), don't leave it to `shorts-scripting` to guess.
-- **Payoff → the Build's required proof beat, or Payoff itself.** `shorts-scripting` requires at
+- **Payoff → the Build's required proof beat, or Payoff itself.** `[I]` `shorts-scripting` requires at
   least one concrete proof beat inside Build/Value (its `[I]`-marked proof-beat rule, called out
   in `shorts-scripting/SKILL.md`'s Provenance discipline `[I]` enumeration). A Grounding Brief's Payoff content — a research finding,
   ideally the source file's own Content Hook — is frequently *exactly* that proof beat. Whether
