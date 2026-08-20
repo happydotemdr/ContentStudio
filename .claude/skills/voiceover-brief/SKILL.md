@@ -55,33 +55,44 @@ instead of inventing a confident-sounding number.
 
 ## Workflow
 
-1. **Read the input script in full**, including any shot/timing markers from `shorts-scripting`.
-   Note where the tone shifts (hook vs. body vs. CTA) — this drives both the voice settings and
-   the TTS reformatting.
+1. **Read the script's beat table** — for each beat: the VO line, its timestamp range, and its
+   word count. That, plus the Delivery notes field, is everything this skill needs. Note where
+   the tone shifts (hook vs. body vs. CTA); it drives both step 3's tone call and step 4's
+   settings.
+
+   **Do not read further upstream.** The voice is already pinned (step 2), so neither the
+   concept brief nor the grounding brief informs any decision here `[I]`. Follow the script's
+   `grounding:` pointer **only** if its Delivery notes carry a "constraints that survive to
+   publish" line — then read that line alone, and carry it verbatim into the brief.
 2. **State the voice — it is already pinned.** Read `references/channel-voice.md` **first**.
    The channel narrator is a fixed `voice_id`; name it and carry the rationale recorded there
    (a cloned own voice, which is the corpus's top-ranked fix for the default-voice reach risk)
    rather than re-arguing the casting call or auditioning. Note what the card leaves pending —
-   settings are not locked yet, so derive them per-script in step 3.
+   settings are not locked yet, so derive them per-script in step 4.
    Fall through to `references/voice-selection.md`'s full selection doctrine **only** when
    casting a *non-narrator* voice for this Short, or when the user explicitly overrides the pin
    (say so in the brief if they do). Note the model (v3 vs. Multilingual v2 vs. Flash/Turbo)
    and why.
-3. **Set the four settings + speaker boost**, per section if the script mixes content types.
+3. **Call the tone per beat.** For every beat the script declares, name the tone and the
+   delivery intent in one line each. This is the section three downstream skills read by name
+   — `music-brief` designs its arc against it, `elevenlabs-music`'s Gate 1 checks the arc for
+   contradiction with it, and `elevenlabs-audio` converts each row into tag syntax. Emit a row
+   for **every** beat; a missing row is a blocked downstream stage, not a defaulted one `[I]`.
+4. **Set the four settings + speaker boost**, per section if the script mixes content types.
    Read `references/settings-by-content-type.md` for the preset table and the mixed-script
    extrapolation rule.
-4. **Reformat the script text for TTS.** Read `references/scripting-for-tts.md`: short
+5. **Reformat the script text for TTS.** Read `references/scripting-for-tts.md`: short
    sentences, punctuation-as-pacing, v3 audio tags placed inline, phonetic respellings for
    tricky words, and a check for lines that don't "sound like a person." Section the script
    into TTS generation units (hook / beat / CTA, or matching the upstream shot breaks) so bad
    takes can be re-rolled cheaply. For this channel specifically, `references/single-take-architecture.md` supersedes the
    per-beat sectioning above with a `[P]` decision to generate as one continuous take instead —
    read it before applying this step here.
-5. **State the production/loudness target.** Read `references/production-and-loudness.md`:
+6. **State the production/loudness target.** Read `references/production-and-loudness.md`:
    −14 LUFS on the voice track, music ducked to the corpus's practitioner depth
    (−21 to −22 dB) with the docs' −12 to −18 dB range given alongside it, and the
    consistency/re-roll notes.
-6. **Assemble the brief** using the output format below. See
+7. **Assemble the brief** using the output format below. See
    `references/worked-example.md` for a full script-to-brief example.
 
 ## Output format
@@ -91,6 +102,11 @@ Always structure the brief with these sections, in this order:
 ```
 ## Voice pick
 [Voice + model choice, with rationale citing the relevant rule/marker]
+
+## Tone per beat
+[One row per script beat: beat | timestamp range (s) | tone | delivery intent.
+ One row for every beat the script declares — never omit a beat. Read by name by
+ music-brief, elevenlabs-audio and elevenlabs-music.]
 
 ## Settings
 [Table: section/beat (if mixed) x stability, similarity, style, speed, speaker boost]
@@ -103,12 +119,33 @@ Always structure the brief with these sections, in this order:
 [-14 LUFS target; music-ducking depth; any music-matching or re-roll notes]
 
 ## Downstream
-[One line: feeds shorts-assembly alongside visual-prompts' output]
+[One line: feeds shorts-assembly alongside visual-prompts' output; the Tone per beat
+ section feeds music-brief, elevenlabs-audio and elevenlabs-music]
 ```
 
 Keep every claim in the brief traceable to a marker. If you had to extrapolate (e.g., a
 per-section split for a mixed-tone script), say so explicitly with `[I]` rather than presenting
 it as a corpus or tool fact.
+
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: voiceover-brief
+produces.stage: 03-voiceover
+produces.section: Voice pick
+produces.section: Tone per beat
+produces.section: Settings
+produces.section: Script, reformatted for TTS
+produces.section: Production & loudness
+produces.section: Downstream
+consumes: shorts-scripting#HOOK
+consumes: shorts-scripting#SETUP
+consumes: shorts-scripting#BUILD/VALUE
+consumes: shorts-scripting#PAYOFF
+consumes: shorts-scripting#LOOP/CTA
+consumes: shorts-scripting#Total word count
+consumes: shorts-scripting#Delivery notes
+```
 
 ## Reference files
 
@@ -116,7 +153,7 @@ it as a corpus or tool fact.
   `voice-selection.md`; the casting call is already made.
 - `references/single-take-architecture.md` — **the pinned production-pipeline architecture.**
   Read this alongside `channel-voice.md` — it decides whether the VO is generated per-beat or as
-  a single continuous take, which changes how step 4 below applies to this channel.
+  a single continuous take, which changes how step 5 below applies to this channel.
 - `references/voice-selection.md` — voice/cloning choice, the default-voice warning, model pick.
   Applies to non-narrator casting and to overrides — see `channel-voice.md`.
 - `references/settings-by-content-type.md` — stability/similarity/style/speed, preset table,
@@ -138,9 +175,9 @@ to `rgs-briefs/` in this mode.
 **Standalone** (no output path was given):
 
 1. Resolve the upstream script: run
-   `python scripts/resolve_brief_version.py --slug <slug> --kind script` from the repo root. Read
-   the file it reports, and follow its `concept_brief:`/`grounding:` pointer fields to resolve
-   anything further upstream.
+   `python scripts/resolve_brief_version.py --slug <slug> --kind script` from the repo root.
+   Read its beat table and its Delivery notes field — not the whole file, and not its
+   `concept_brief:`/`grounding:` chain (see workflow step 1).
    **Staleness check:** re-run the resolver for `--kind script` again right before you finish —
    if a newer version now exists than the one you read, tell the user before proceeding.
 2. Before writing the brief, run
