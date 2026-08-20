@@ -97,24 +97,22 @@ material, unlike the `pairing-map.md` it feeds):
 
 ## Output format
 
-The proposal document from Step 5 above, restated as this skill's declared output shape:
+The proposal document from Step 5 above, restated as this skill's declared output shape — the
+same four `##` sections the real template above opens with, each restated here by name only,
+not duplicated in full:
 
 ```markdown
-## Proposal
+## New/changed since last review ([last_review date])
+[Thinkers, new research codes, edition-changed research codes, and gap-fill flags found —
+ each "list, or 'none'"]
 
-### New/changed since last review ([last_review date])
-- Thinkers: [list, or "none"]
-- Research codes (new): [list, or "none"]
-- Research codes (edition-changed): [list with old→new edition, or "none"]
-- Gap-fill flags found in rgs-briefs/: [list with source brief filenames, or "none"]
-
-### Proposed additions
+## Proposed additions
 [Each in pairing-map.md's exact row format, or "none proposed this review."]
 
-### Considered and rejected
+## Considered and rejected
 [One line each: what was checked, why it didn't earn a row.]
 
-### Re-verification verdicts (edition-changed codes only)
+## Re-verification verdicts (edition-changed codes only)
 [For each existing row citing a changed code: still holds / needs revision / needs removal, with reasoning.]
 ```
 
@@ -140,6 +138,9 @@ resulting `git diff` on `pairing-map.md` before it's committed — that diff is 
 ```handoff
 produces.kind: none
 produces.stage: none
-produces.section: Proposal
+produces.section: New/changed since last review
+produces.section: Proposed additions
+produces.section: Considered and rejected
+produces.section: Re-verification verdicts
 writes: .claude/skills/rgs-grounding/references/pairing-map.md
 ```

@@ -79,7 +79,7 @@ Work through these four reference files in order — each is a distilled, cited 
 3. **`references/loudness-and-mix.md`** — the ducking chain (music ≈−22 dB under voice), the −14 LUFS target, voice-peak range, and the phone-speaker QA step.
 4. **`references/tool-stack.md`** — CapCut / Submagic / Descript / Premiere Pro, with a $0 stack and a paid stack, the asset-naming convention so the plan can reference the actual files from upstream, the publish sequence (upload unlisted → let it process → add metadata → schedule public), and the QA-gate + publish-gate checklist that must pass before scheduling.
 
-Then produce the plan itself under these six headings, in this order. `references/worked-example.md`
+Then produce the plan itself under these seven headings, in this order. `references/worked-example.md`
 (a full worked run using the corpus's own S042 "coffee trick" script) shows each heading filled in
 — copy the *content depth* from it, and the *headings* from here. A downstream skill parses these
 headings by name; renaming one breaks `social-repurpose` `[I]`.

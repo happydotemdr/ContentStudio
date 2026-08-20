@@ -30,8 +30,8 @@ The boundary, stated once so neither skill drifts into the other:
 | −14 LUFS target, music ducking, the mix | The request payload, dictionaries, chunking, credit spend |
 
 **Three of those rows arrive partly filled, and you must compatibility-check them rather than
-accept them blind** `[I]`. `voiceover-brief` step 2 names a model, step 3 sets the four settings
-plus speaker boost, and step 4 places v3 audio tags and phonetic respellings. Treat each as an
+accept them blind** `[I]`. `voiceover-brief` step 2 names a model, step 4 sets the four settings
+plus speaker boost, and step 5 places v3 audio tags and phonetic respellings. Treat each as an
 **upstream input under review**, not a decided call:
 
 - **Model.** If the named `model_id` cannot render a feature the brief also asks for (a v3-only
