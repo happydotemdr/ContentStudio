@@ -34,24 +34,24 @@ interface convention, not a corpus claim — that's why it's marked `[I]`.
 
 When a companion artifact is provided:
 
-- **Prefer an angle consistent with its archetype/angle hint.** Don't invent an angle the
+- **Prefer an angle consistent with its archetype/angle hint.** `[I]` Don't invent an angle the
   artifact's citations can't support.
-- **If no archetype-consistent angle passes this skill's own validation gate** (step 5 below —
+- **If no archetype-consistent angle passes this skill's own validation gate** `[I]` (step 5 below —
   net information gain, home-feed click test, packaging-compellingness, demonetization screen):
   do not stretch a citation to force a fit. Instead, pick from the artifact's own "alternates
   considered" list if it has one, or report back that the upstream brand skill needs to produce a
   different pairing. Never ship a brief built on an unsupported angle.
-- **Demonetization screen and safety-sensitive citations:** step 2's screen (below) flags
+- **Demonetization screen and safety-sensitive citations:** `[I]` step 2's screen (below) flags
   "sensitive medical/financial framing." A companion artifact's safety-sensitive citation passes
   this screen when it already carries a named source and non-sensational framing (the upstream
   brand skill's own protocol should guarantee this) — the screen's intent is to catch content
   presenting *as* a health/financial authority, and a properly-sourced citation is the opposite
   of that failure mode. Only an unsourced or sensationalized safety-sensitive claim fails the
   screen.
-- **Staleness check:** if the artifact's stated date predates the most recent refresh of
+- **Staleness check:** `[I]` if the artifact's stated date predates the most recent refresh of
   whatever corpus it cites, or its status field indicates it isn't in an active/consumable
   state, flag this before use rather than proceeding silently.
-- **Carry it forward, don't re-derive it.** The concept brief's "Grounding" section (see the
+- **Carry it forward, don't re-derive it.** `[I]` The concept brief's "Grounding" section (see the
   template below) points at the artifact rather than re-typing its citation text — the artifact
   remains the single source of truth for citation content.
 
@@ -59,10 +59,10 @@ When a companion artifact is provided:
 
 This skill produces a **concept**, not a script. Concretely:
 
-- **In scope:** which angle/take on the idea, which emotional trigger/title frame the hook
+- **In scope:** `[I]` which angle/take on the idea, which emotional trigger/title frame the hook
   concept uses, what promise the opening must keep, and the title/thumbnail packaging
   direction.
-- **Out of scope (belongs to `shorts-scripting`):** exact opening lines, in-medias-res
+- **Out of scope (belongs to `shorts-scripting`):** `[I]` exact opening lines, in-medias-res
   staging, re-hook cadence, contrast-word mechanics ("but/so"), the 2-1-3 point ordering,
   proof-density timing, or any other retention/scripting mechanic. Those come from the
   audit's §4 (Scripting, hooks, retention), which is `shorts-scripting`'s corpus — not
