@@ -244,6 +244,12 @@ NEXT
 In pipeline mode, collapse this to the prompt + parameters + one-line why — `visual-prompts` owns
 the sheet.
 
+**This skill writes no file, by design** `[I]`. In pipeline mode its output is absorbed into
+`visual-prompts`' prompt sheet, which is the durable artifact; in standalone mode the spec is
+transcript-only and must be pasted into whatever record the operator keeps. The one thing that
+**does** persist is a harvested style code — record it in `docs/style-library.md` before the
+session closes (step 3).
+
 ## Handoff contract (machine-checked)
 
 ```handoff

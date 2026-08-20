@@ -1,6 +1,6 @@
 ---
 name: voiceover-brief
-description: Turns a shot-ready faceless-YouTube-Shorts script into an ElevenLabs voiceover production brief — a voice pick with rationale, the four core settings (stability, similarity/clarity, style, speed) plus speaker boost by content type, TTS-formatting notes on the script text (audio tags, phonetic respellings, section breaks), and the -14 LUFS loudness/mix target. Use whenever the user has a finished or near-finished Shorts script and asks to turn it into a voiceover, pick or clone an ElevenLabs voice, set TTS/ElevenLabs settings, prep a script for text-to-speech generation, or figure out loudness/music-ducking for the voice track. Takes the shorts-scripting skill's timed script as input; its output feeds shorts-assembly next, alongside visual-prompts' prompt sheet. Do not use this for picking visuals/B-roll (visual-prompts) or for post-copy/captions (social-repurpose).
+description: Turns a shot-ready faceless-YouTube-Shorts script into an ElevenLabs voiceover production brief — a voice pick with rationale, the four core settings (stability, similarity/clarity, style, speed) plus speaker boost by content type, TTS-formatting notes on the script text (audio tags, phonetic respellings, section breaks), and the -14 LUFS loudness/mix target. Use whenever the user has a finished or near-finished Shorts script and asks to turn it into a voiceover, decide which voice a Short should use and why, call the tone per beat, or set the loudness and music-ducking target. Takes the shorts-scripting skill's timed script as input; its output feeds shorts-assembly next, alongside visual-prompts' prompt sheet. Do not use this for the executable ElevenLabs configuration — model routing, settings floats, tag syntax, pronunciation dictionaries, the JSON payload or a credit estimate are all `elevenlabs-audio`. Nor for visuals/B-roll (`visual-prompts`) or post copy (`social-repurpose`).
 ---
 
 # Voiceover Brief
@@ -20,8 +20,10 @@ and consumes its tone-per-beat call.
   brief. When the user needs the **executable ElevenLabs configuration** — model routing, the
   settings floats or v3 stability mode, tag syntax that actually renders, a PLS pronunciation
   dictionary, the JSON request payload, chunking/stitching, or a credit estimate — hand this brief
-  to `elevenlabs-audio` and let it own that layer. It accepts the voice and tone decided here
-  without re-litigating them, and it is grounded in web-verified vendor docs
+  to `elevenlabs-audio` and let it own that layer. It accepts the voice, the tone per beat, the
+  content type and the mix target without re-litigating them, and it **compatibility-checks** the
+  model, the settings floats and the tag placement this brief names — those three are inputs under
+  review there, not final calls `[I]`, and it is grounded in web-verified vendor docs
   (`docs/elevenlabs-production-runbook.md`) rather than this corpus.
 
   **Loudness, ducking, and the music mix stay here** — `elevenlabs-audio` explicitly defers to

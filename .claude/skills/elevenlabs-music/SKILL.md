@@ -208,8 +208,8 @@ to prevent.
 ## Handoff contract (machine-checked)
 
 ```handoff
-produces.kind: none
-produces.stage: none
+produces.kind: music-spec
+produces.stage: 03-music
 produces.section: CONTROL SURFACE
 produces.section: BED PROFILE
 produces.section: SECTION MAP
@@ -254,3 +254,31 @@ starting point, never a fact.
 - `references/api-payload.md` — the endpoint, full parameter surface, JSON/curl templates, and the
   cost section this skill's Stage D reads.
 - `references/validation-gates.md` — the three verbatim fresh-agent dispatch prompts.
+
+## File I/O contract
+
+**App-driven** (a `pipeline-app` turn already told you an output path): follow that instruction
+exactly — write only to the named path, overwrite it each turn as instructed.
+
+**Standalone** (no output path was given): run
+`python scripts/resolve_brief_version.py --slug <slug> --kind music-spec --next --date <YYYY-MM-DD>`
+and write the MUSIC PRODUCTION SPEC at `rgs-briefs/<filename>` with this frontmatter:
+
+```yaml
+---
+date: <YYYY-MM-DD>
+kind: music-spec
+slug: <slug>
+stage: 03-music
+version: <version from the resolver>
+supersedes: <path from the plain (non---next) resolver call — only if version > 1>
+music_brief: <the music brief's path, exactly as the resolver printed it>
+status: complete
+---
+```
+
+State the exact file path in your final chat response. **Outside a ContentStudio Short there is no
+slug and no `rgs-briefs/`** — emit the spec in chat and say so explicitly, so the operator knows
+it is transcript-only and must be pasted into whatever record they keep `[I]`.
+
+Never edit an existing `rgs-briefs/*.md` file — a `PreToolUse` hook enforces this.
