@@ -1,4 +1,4 @@
-"""CLI entry point: `python -m elevenlabs_tooling send|validate ...`"""
+"""CLI entry point: `python -m elevenlabs_tooling validate|send|generate-vo|music send ...`"""
 
 from __future__ import annotations
 
