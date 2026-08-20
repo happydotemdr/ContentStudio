@@ -16,7 +16,7 @@ from stitcher.naming import Workspace
 from stitcher.spec import load_spec, validate_spec
 
 from native_pipeline import orchestrate
-from native_pipeline.assemble import BED_RELATIVE_OFFSET_DB
+from native_pipeline.assemble import DELIVERY_LUFS
 
 pytestmark = [
     pytest.mark.e2e,
@@ -125,13 +125,31 @@ def test_native_pipeline_end_to_end(workspace, tmp_path):
     # check=True) raises CalledProcessError. That IS the documented,
     # deliberately-accepted failure mode for this mode -- not a defect in
     # this test -- so it's reported, not asserted away.
+    #
+    # Only stitcher's EXIT_RENDER (2) actually maps to that accepted risk --
+    # cmd_render returns it exclusively from the FFmpegError/TextOverflowError/
+    # LoudnormNotLinearError/SilentVoiceError handler around the normalization
+    # path (stitcher/stitcher/cli.py:181-184), plus the deliverable-derivation
+    # handler right after it (same exit code, same "render" phase). Any other
+    # non-zero exit (EXIT_PREFLIGHT=1, EXIT_QA=3, EXIT_INCOMPLETE=4, or an
+    # unrecognized code) is a different failure class entirely and must not be
+    # silently attributed to the normalization risk -- doing so once already
+    # hid a real EXIT_PREFLIGHT regression (missing font/image fixtures) behind
+    # this exact message.
     import subprocess as sp
+    from stitcher.cli import EXIT_RENDER
+
     try:
         orchestrate.run_render_stage("native-e2e-test", tmp_path / "renders")
     except sp.CalledProcessError as exc:
-        pytest.skip(
-            f"render failed -- this specific take may be too hot for linear-mode normalization, "
-            f"an accepted risk of 'zero VO processing' per the design spec, not a test failure: {exc}"
+        if exc.returncode == EXIT_RENDER:
+            pytest.skip(
+                f"render failed -- this specific take may be too hot for linear-mode normalization, "
+                f"an accepted risk of 'zero VO processing' per the design spec, not a test failure: {exc}"
+            )
+        pytest.fail(
+            f"render failed with exit code {exc.returncode} (not the documented normalization "
+            f"risk, which is exit code {EXIT_RENDER}) -- see {exc}"
         )
 
     # Criterion: the rendered mix hits the delivery target within tolerance.
@@ -143,6 +161,18 @@ def test_native_pipeline_end_to_end(workspace, tmp_path):
     # (stitcher/stitcher/naming.py:149-150's out_master, not a bare .mp4 suffix).
     final_mix = workspace.out_master(1)
     assert final_mix.exists()
+
+    # Criterion (design spec: "Independent re-measurement of the final mix
+    # within 0.5 LU of target"): re-measure the promoted master's own
+    # integrated loudness -- independently of whatever stitcher's render
+    # pipeline internally asserted -- and confirm it landed within 0.5 LU of
+    # the delivery target.
+    final_loudness = measure_loudness(final_mix, log_path)
+    measured_lufs = final_loudness["input_i"]
+    assert abs(measured_lufs - DELIVERY_LUFS) <= 0.5, (
+        f"final mix measured {measured_lufs} LUFS, delivery target is {DELIVERY_LUFS} LUFS "
+        f"(off by {abs(measured_lufs - DELIVERY_LUFS):.3f} LU, tolerance is 0.5 LU)"
+    )
 
     # Criterion: no unexpected outlier flags for this normal, short synthetic
     # take -- a flag here is itself a finding to investigate, not something
