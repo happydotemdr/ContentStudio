@@ -492,6 +492,44 @@ This does not reopen T3/T5/T6/T11/T12 (each already reviewed and approved for it
 it closes four gaps only visible once the whole arc is read together, exactly the class of
 defect a per-task review cannot see.
 
+**Addendum, found during T13's own task review (a defect in this plan's ORIGINAL text, not a
+controller amendment gone wrong — T13's implementation followed the plan's own migration-note
+prose verbatim; the prose itself is self-contradicting):** the migration note both files now
+carry —"If `--kind grounding` prints `NONE` but a bare `<date>-<slug>.md` exists, that is the
+prior version — name it in `supersedes:` and write the new one with the suffix"— collides with
+the resolver's own mechanics. A kindless-`_pattern` miss makes `--kind grounding --next` propose
+`best_version = 0` → `next_version = 1`, and this plan's own C-23 frontmatter template says
+"omit this line entirely if version is 1" for `supersedes:`. Following the note as written
+produces `<date>-<slug>-grounding.md` with `version: 1` **and** a `supersedes:` line — two live
+briefs for the same topic both claiming version 1, no descending chain, and `find_latest` can't
+even catch the collision (the two files match different kind-patterns). Confirmed live in both
+`rgs-grounding/SKILL.md` and `rgs-pairing-review/SKILL.md` (both got this note from T13).
+
+**Task T13a (new, addendum-only — two files, the same two T13 already touched for this note):**
+
+- [ ] In `rgs-grounding/SKILL.md`, replace the migration note (search for "Briefs written before
+      2026-08-08 carry no `--kind` suffix") with:
+
+```markdown
+**Briefs written before 2026-08-08 carry no `--kind` suffix.** If `--kind grounding` prints
+`NONE` but a bare `<date>-<slug>.md` exists, that is the prior version — the kindless lookup
+cannot see it, so **do not trust the resolver's proposed version number in this case**. Read the
+bare file's own `version:` frontmatter field, set the new brief's `version:` to one higher than
+that, add a `-v<N>` suffix to the filename matching it (the resolver's auto-generated filename
+omits the suffix for what it thinks is version 1 — override it by hand), and set `supersedes:`
+to the old bare file's path. Do not rename the old file `[I]`.
+```
+
+- [ ] Apply the same corrected note (adjusted for its own shorter fallback-sentence form) to
+      `rgs-pairing-review/SKILL.md`'s mirrored note, added by T13's amendment item 4 — same
+      contradiction, same fix: don't trust a proposed version 1 for a topic with an existing
+      kindless brief; read that brief's own version, continue the chain by hand.
+- [ ] Commit: `fix(rgs): stop the grounding-brief migration note from writing a broken version chain`.
+
+This does not reopen T13 (already reviewed and approved — it correctly transcribed the plan's
+own text) — it fixes a defect in the plan's original migration-note prose, found only once T13
+made that prose live and a reviewer traced its actual resolver interaction.
+
 ---
 
 ## 3. Tasks
