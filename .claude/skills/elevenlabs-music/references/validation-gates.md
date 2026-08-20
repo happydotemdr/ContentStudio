@@ -36,7 +36,6 @@ PLAN SHAPE: <sections | chunks>
 DECLARED AUDIO-EMITTING RUNTIME (seconds): <value — script end minus fade-in start; excludes
   any hold-out>
 HOLD-OUT (seconds, or "none"): <value>
-VOICEOVER BRIEF TONE PER BEAT: <the tone call, beat by beat, or "none supplied">
 BED ARC TONE-CONTRADICTION CHECK: <the Bed Arc's own declared MISMATCH rows with their stated
   rationale, beat by beat, or "none declared">
 
@@ -66,12 +65,13 @@ Check each item and report PASS or FINDING with the offending value quoted:
    Any occurrence is a FINDING.
 7. STYLE ARRAY CAPS. positive and negative style arrays are capped at 50 items each and are
    English-only. Exceeding either is a FINDING.
-8. TONE CONTRADICTION. Compare each section's intended feeling against the voiceover brief's
-   tone for the same beat. Any section whose feeling contradicts the spoken tone at that beat
-   is a FINDING — UNLESS the supplied Bed Arc's own tone-contradiction check already declares
-   that beat a MISMATCH with a stated rationale, in which case it is a declared, upstream-owned
-   call and is not a FINDING. An undeclared contradiction — one the Bed Arc's tone-contradiction
-   check is silent on — is still a FINDING.
+8. TONE CONTRADICTION. This gate does not compare feelings itself — that call belongs to
+   `music-brief`, upstream. Confirm only: the Bed Arc's tone-contradiction check is present
+   (not "none declared"), and every row in it is either a stated non-contradiction or a declared
+   MISMATCH with a rationale. An **absent** tone-contradiction check, or a MISMATCH row with no
+   stated rationale, is a FINDING. Do not independently judge whether a section's feeling
+   contradicts the spoken tone — that re-derivation is exactly what the new Gate 1 semantics
+   retire.
 9. COVERAGE. The declared hold-out plus the declared audio-emitting runtime must together
    account for every beat of the full script — each beat is covered by either a chunk or the
    stated hold-out, with no beat falling in neither. An unexplained gap is a FINDING.
