@@ -69,7 +69,7 @@ fixes it**. Check the Voice Profile Card's known-good/known-bad tags before writ
 - Tags are square-bracketed and can be **stacked**: `[confident][British accent]` `[I]`.
 - Place an acoustic-event tag **where the event happens**, mid-sentence if that's where it belongs `[I]`.
 
-### `[pause]` (a v3 audio tag) is not the only pause mechanism — and often not the right one
+### `[pause]` (a v3 audio tag) is not the only pause mechanism — and often not the right one `[T]`
 
 This file's tag catalog above includes `[pause]` as a documented delivery-control audio tag —
 correct, but **`eleven_v3`-only**, like every other tag on this page. For `eleven_multilingual_v2`
