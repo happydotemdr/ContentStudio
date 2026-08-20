@@ -57,3 +57,17 @@ This is a **channel production-pipeline** decision, not a `voice-selection.md` o
 unaffected. It is also not a blanket recommendation for every ElevenLabs job this skill might
 support in standalone mode (see `elevenlabs-audio`'s own scope note) — a one-off narration job
 with no re-roll history and no downstream timing-derivation pipeline has no reason to adopt this.
+
+## Default sectioning choice: multi-segment `[P]`
+
+**Confirmed 2026-08-20:** absent a specific request for single-take, `voiceover-brief` should default to
+multi-segment (per-beat) sectioning rather than reaching for this file's single-take architecture. This is the
+operator's explicit, standing preference after a real side-by-side render comparison — **it is not a technical
+finding against the architecture documented above**, which remains valid, unmodified, and already validated
+(`docs/superpowers/plans/2026-08-19-single-take-vo-pipeline-RESULTS.md`). The comparison that informed this
+preference actually tested a different, zero-VO-processing package (`native-pipeline`), not this file's
+pipeline — see `docs/superpowers/plans/2026-08-20-dual-pipeline-vo-music-test-RESULTS.md` for the full caveat.
+
+**When to still use this file's pipeline:** whenever the user explicitly asks for single-take generation, or
+asks to re-run the comparison against this specific (preconditioned) implementation rather than
+`native-pipeline`. Nothing about the rule above prevents that — it only changes the unrequested default.

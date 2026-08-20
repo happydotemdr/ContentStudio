@@ -419,6 +419,18 @@ render; needs a real ffmpeg on PATH") and the root `pytest.ini`'s `allow_network
   step gives visibility, not correction; a render failure gives an unambiguous stop signal. If either fires
   often in practice, that's a signal to revisit "zero processing," not something this design resolves in
   advance.
+- **2026-08-20 update: this risk has fired.** Three real end-to-end attempts on the same script/voice all hit
+  the accepted failure mode above — `input_tp` -1.21, -1.43, -2.08 dBTP, all requiring more loudness-matching
+  gain than the -1.0 dBTP delivery ceiling allows, `EXIT_RENDER=2` all three times
+  (`docs/superpowers/plans/2026-08-20-dual-pipeline-vo-music-test-RESULTS.md`). Two independent attempted
+  mitigations — relaxing the true-peak ceiling to -0.15 dBTP; retuning VO `stability`/`style` toward a flatter
+  delivery — both failed to meaningfully change the measured crest factor. Per this section's own stated bar
+  ("if either fires often in practice, that's a signal to revisit 'zero processing'"): 3/3 meets that bar.
+  **This is a `native-pipeline`-scoped finding only** — it says nothing about `stitcher`'s own preconditioned
+  single-take chain (`vo_split.py` → `precondition.condition_clip`), a different, working implementation
+  validated in `docs/superpowers/plans/2026-08-19-single-take-vo-pipeline-RESULTS.md`. Revisiting "zero
+  processing" for `native-pipeline` specifically (e.g. an opt-in precondition step) is a real design decision
+  for whoever picks this package back up — not something this note decides unilaterally.
 - **One visual per beat trades away the corpus's ~3s cut-cadence guidance** on long beats (two beats in the
   validated take run 11–14.5s on a single held image). Deliberately accepted per the brainstorming discussion;
   revisit if long holds read as visually static once actually watched.

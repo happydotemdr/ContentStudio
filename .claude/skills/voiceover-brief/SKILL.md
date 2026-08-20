@@ -74,9 +74,10 @@ instead of inventing a confident-sounding number.
    sentences, punctuation-as-pacing, v3 audio tags placed inline, phonetic respellings for
    tricky words, and respell every number as words (see scripting-for-tts.md), and a check for lines that don't "sound like a person." Section the script
    into TTS generation units (hook / beat / CTA, or matching the upstream shot breaks) so bad
-   takes can be re-rolled cheaply. For this channel specifically, `references/single-take-architecture.md` supersedes the
-   per-beat sectioning above with a `[P]` decision to generate as one continuous take instead —
-   read it before applying this step here.
+   takes can be re-rolled cheaply. Per-beat sectioning above is the standing default; read
+   `references/single-take-architecture.md` only when the user explicitly requests single-take
+   generation for this channel — its `[P]` decision to generate as one continuous take applies on
+   request, not by default.
 5. **State the production/loudness target.** Read `references/production-and-loudness.md`:
    −14 LUFS on the voice track, music ducked to the corpus's practitioner depth
    (−21 to −22 dB) with the docs' −12 to −18 dB range given alongside it, and the
