@@ -73,9 +73,9 @@ ckeY9tswmrM)`:
   otherwise-ignored camera moves actually happen `[C] (Future Tech Pilot, Dkj7Jqejfz0)`.
 - Phrase camera moves as *what the camera sees now → what it will see next* ("the camera zooms out to
   reveal...") `[C]`.
-- **Anchor** off-screen or currently-invisible details in words, so they stay consistent once a camera
+- **Anchor** `[C]` off-screen or currently-invisible details in words, so they stay consistent once a camera
   move reveals them `[C] (Tao Prompts, zzBmvzR-URg)`.
-- **Restate framing** even when the start frame already shows it ("start with a side profile of...")
+- **Restate framing** `[C]` even when the start frame already shows it ("start with a side profile of...")
   `[C] (Tao Prompts, M7p7HrJjcdA)`.
 - Say **"in a single shot, no cuts"** to stop a big move from being auto-split into multiple shots
   `[C] (Tao Prompts, ckeY9tswmrM)`.
@@ -108,12 +108,12 @@ mostly argues for **one clip per beat, not a chained extend sequence** — see b
 
 ## Multi-shot beats (rare for a single Short beat, but the corpus covers it) `[C]`
 
-- **Seedance 2.0 is the named best multi-shot model** (cuts between angles/dialogue from one prompt)
+- **Seedance 2.0 is the named best multi-shot model** `[C]` (cuts between angles/dialogue from one prompt)
   but the most expensive option `[C] (Tao Prompts, RUAuMD5hUBw)`.
 - Structure a multi-shot prompt with **explicit timestamps + referenced images**: "0-3s: wide tracking
   shot of [subject] (@image1); 3-6s: close-up ... (@image2)" — the `@image1`/`@image2` tags point each
   segment at the right labeled reference `[C] (Tao Prompts, UHv61jUBx7M; Wade McMaster, H29b2gjX6Kg)`.
-- **Multi-shot is still unreliable** — rendering separate single shots and editing them together in
+- **Multi-shot is still unreliable** `[C]` — rendering separate single shots and editing them together in
   the assembly stage yields higher quality `[C] (Wade McMaster, g1SRS7-Bqlk)`. Default to single-shot
   i2v prompts per beat unless the beat genuinely needs an in-clip cut.
 
