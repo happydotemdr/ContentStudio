@@ -72,7 +72,8 @@ instead of inventing a confident-sounding number.
    extrapolation rule.
 4. **Reformat the script text for TTS.** Read `references/scripting-for-tts.md`: short
    sentences, punctuation-as-pacing, v3 audio tags placed inline, phonetic respellings for
-   tricky words, and respell every number as words (see scripting-for-tts.md), and a check for lines that don't "sound like a person." Section the script
+   tricky words, spelled-out numbers, and a check for lines that don't "sound like a person."
+   Section the script
    into TTS generation units (hook / beat / CTA, or matching the upstream shot breaks) so bad
    takes can be re-rolled cheaply. Per-beat sectioning above is the standing default; read
    `references/single-take-architecture.md` only when the user explicitly requests single-take

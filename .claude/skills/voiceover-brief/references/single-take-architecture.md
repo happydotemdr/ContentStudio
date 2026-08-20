@@ -1,4 +1,4 @@
-# Single-take generation — the production default for this channel `[P]`
+# Single-take generation — the on-request production pipeline for this channel `[P]`
 
 Markers: `[C]` corpus-cited `(Channel, video_id)` · `[I]` industry practice · `[T]` web-verified
 tool/policy fact · **`[P]` project/operator decision** — a call made by this project's owner and
@@ -17,6 +17,10 @@ Decided 2026-08-19, after direct comparison: the operator listened to both a per
 mix and a single-take mix of the same script and judged the single-take version clearly better —
 not a measured quality claim, a listening judgment, recorded here as the reason this pipeline
 exists, not as its justification.
+
+**Superseded as the unrequested default 2026-08-20** — see "Default sectioning choice:
+multi-segment" at the end of this file. The rule above still governs whenever single-take is
+requested.
 
 ## What this trades away — stated plainly, not silently
 

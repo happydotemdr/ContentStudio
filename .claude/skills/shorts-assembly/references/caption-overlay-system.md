@@ -61,8 +61,8 @@ Vertical 1080×1920 canvas:
   documented hook range; wraps to 2 lines for this Short's actual hook text, which is within `max_lines: 3`
   and was checked, not assumed), loop line **70px** (wraps to 3 lines — at the `max_lines: 3` ceiling, flag
   for anyone extending the loop line's copy in future scripts), stat plates **62px** (accent stat **84px**),
-  source-citation plate **52px**. **The corpus's own genuine size tension, named at :20-21 above (small/
-  restrained vs. these larger values) still applies — this `[P]` overrides it for this channel on the
+  source-citation plate **52px**. **The corpus's own genuine size tension, named under "Caption
+  density — a genuine corpus tension" above (small/restrained vs. these larger values) still applies — this `[P]` overrides it for this channel on the
   operator's explicit ask, the same way `single-take-architecture.md`'s `[P]` overrides `(Nick Nimmin,
   IF-PD6XMjYY)`'s per-beat-generation guidance** — say so if a future brief questions the size.
   `captions` style itself: 78-90px is a reasonable sidecar default, but changing it has **no visible effect on
@@ -80,7 +80,7 @@ Vertical 1080×1920 canvas:
 
 ```
 Font:            Montserrat-Bold.ttf (plates) / Montserrat-ExtraBold.ttf (hook/re-hook/loop)
-Cap size:        hook/re-hook cards 130px | loop line 70px | stat plates 62px (accent 84px) | source 52px
+Font size (size_px): hook/re-hook cards 130px | loop line 70px | stat plates 62px (accent 84px) | source 52px
                  (captions sidecar 78-90px — no visible effect on the delivered .mp4, see note above)
 Fill / stroke:   ______ fill / ______ stroke ___px
 Highlight color: ______ (active-word karaoke)

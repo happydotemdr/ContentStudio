@@ -92,7 +92,9 @@ about `stitcher`'s own preconditioned single-take chain — see the next section
 Pass 1 runs without `linear=true` and reports `"normalization_type": "dynamic"` **by construction
 on every render, including passing ones** — verified directly: Track A's own passing render's
 `work/final/audio/loudnorm_pass1.json` also reads `"normalization_type": "dynamic"`
-(`input_i: -26.26`, `input_tp: -13.80`, `output_i: -14.15`, `output_tp: -1.64`), even though that
+(`input_i: -26.26`, `input_tp: -13.80`, `output_i: -14.15`, `output_tp: -1.64`) (as of the v02
+render; a later task in this plan re-rendered this workspace to v03, overwriting this file in
+place — the "dynamic" reading is unchanged), even though that
 render's pass-2 gate (per `stitcher/stitcher/audio.py:532`) is what actually determines pass/fail.
 Every number quoted in this doc for Track B failures is from `loudnorm_pass2.json`, never pass 1.
 
