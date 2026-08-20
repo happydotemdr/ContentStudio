@@ -10,6 +10,21 @@ Provenance markers as in `pacing-and-editing.md`. Primary source: `docs/headless
 ## Caption style `[I]`
 
 - Bold sans-serif, heavy weight (Montserrat ExtraBold, Poppins Bold, or CapCut default). White fill + thick black stroke (2–4px) or a semi-opaque box behind, so it reads on any background.
+  **This channel's concrete default, set 2026-08-20 `[P]`:** `Montserrat-Bold.ttf` for the four stat/source
+  plates, `Montserrat-ExtraBold.ttf` for the hook card, re-hook card, and loop line — both confirmed installed
+  system-wide at `C:/Windows/Fonts/`. Replaces the prior `arialbd.ttf` default, which was never actually
+  documented here — it was just what every render-spec happened to copy forward
+  (`docs/superpowers/plans/2026-08-20-dual-pipeline-vo-music-test-RESULTS.md`).
+  **The `captions` style entry (below) does not currently affect the delivered video** — `stitcher` only
+  burns in the `overlays[]` cards; `captions[]` drives `.srt`/`.ass` sidecars only. Operator decision,
+  2026-08-20: the sidecar files are the actual deliverable wanted here (not a burned-in captions feature) — no
+  new `stitcher` feature is in scope.
+  **Numbers display as numerals in captions and overlays, never as the spelled-out words the VO script uses
+  for TTS pronunciation `[P]`:** "2,300 years old.", not "two thousand three hundred years old." — the two
+  text tracks (spoken vs. displayed) are expected to diverge; see `scripting-for-tts.md`'s matching note for
+  the TTS-side half of this rule. Building `captions[]` text by copy-pasting the respelled VO payload is the
+  wrong source — pull from the original numeral-form script, or hand-write the caption text directly with
+  numerals.
 - **Karaoke word-highlight** (active word tinted a brand accent) is the modern default and boosts Shorts retention `[I]`; Submagic specializes in this `[T]`.
 - 1–3 words per on-screen chunk for karaoke captions; max ~1 short line (≤5–6 words) for a static caption.
 - **Don't overload frames with meme-style Impact-font text that just repeats the title** `[C] (vidIQ, g844t-iFzxA)`.
@@ -40,7 +55,19 @@ Vertical 1080×1920 canvas:
 ## Readability rules `[I]`
 
 - Never place text without a stroke, shadow, or box behind it. Test at phone size and arm's length.
-- Captions ~60–80px cap height; hook cards larger (90–120px).
+- Captions ~60–80px cap height; hook cards larger (90–120px). **This channel's concrete default, set
+  2026-08-20 `[P]`, verified against real cap-height measurements and real wrap behavior for this Short's
+  overlay text** (not just chosen and asserted): hook/re-hook cards **130px** (91px cap height, top of the
+  documented hook range; wraps to 2 lines for this Short's actual hook text, which is within `max_lines: 3`
+  and was checked, not assumed), loop line **70px** (wraps to 3 lines — at the `max_lines: 3` ceiling, flag
+  for anyone extending the loop line's copy in future scripts), stat plates **62px** (accent stat **84px**),
+  source-citation plate **52px**. **The corpus's own genuine size tension, named at :20-21 above (small/
+  restrained vs. these larger values) still applies — this `[P]` overrides it for this channel on the
+  operator's explicit ask, the same way `single-take-architecture.md`'s `[P]` overrides `(Nick Nimmin,
+  IF-PD6XMjYY)`'s per-beat-generation guidance** — say so if a future brief questions the size.
+  `captions` style itself: 78-90px is a reasonable sidecar default, but changing it has **no visible effect on
+  the delivered video today** — see the caveat above before treating this as having satisfied a "bigger
+  captions" ask.
 - One idea per card — don't stack two thoughts.
 - Motion: slow push-in of a few percent at the open; keyframe stills to scale 15–20% (see `pacing-and-editing.md`) `[C] (vidIQ, DiZnbihU4NM)`.
 
@@ -52,8 +79,9 @@ Vertical 1080×1920 canvas:
 ## Fill-in style spec (copy into the edit plan)
 
 ```
-Font:            ______________________ (bold sans)
-Cap size:        captions ___px | hook cards ___px
+Font:            Montserrat-Bold.ttf (plates) / Montserrat-ExtraBold.ttf (hook/re-hook/loop)
+Cap size:        hook/re-hook cards 130px | loop line 70px | stat plates 62px (accent 84px) | source 52px
+                 (captions sidecar 78-90px — no visible effect on the delivered .mp4, see note above)
 Fill / stroke:   ______ fill / ______ stroke ___px
 Highlight color: ______ (active-word karaoke)
 Position:        captions y=__% (safe band 45-65%) | hook card y=__%
