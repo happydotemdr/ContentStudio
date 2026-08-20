@@ -5,8 +5,10 @@ Requires ELEVENLABS_API_KEY set and a real ffmpeg/ffprobe on PATH.
 """
 import json
 import os
+from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from stitcher.envelope import build_breakpoints, level_at, stem_spans
 from stitcher.ffmpeg import measure_loudness
@@ -29,6 +31,17 @@ BEAT_TEXTS = [
     "And this is the second beat, after a real pause.",
 ]
 
+# No font fixture is checked into this repo (see stitcher/tests/fixtures/fonts/); fall
+# back to a system font the same way stitcher/tests/test_preflight.py's own REAL_FONT
+# does. render's preflight (stitcher/stitcher/preflight.py:_check_fonts) rejects a
+# style.font_file that isn't a real, loadable font file -- a bare "Inter-Bold.ttf" with
+# no directory and no fixture on disk fails this gate every time.
+_FONT_CANDIDATES = [
+    Path("C:/Windows/Fonts/arialbd.ttf"),
+    Path("C:/Windows/Fonts/arial.ttf"),
+]
+_REAL_FONT = next((p for p in _FONT_CANDIDATES if p.is_file()), None)
+
 
 @pytest.fixture
 def workspace(tmp_path):
@@ -40,6 +53,8 @@ def workspace(tmp_path):
 def test_native_pipeline_end_to_end(workspace, tmp_path):
     if not os.environ.get("ELEVENLABS_API_KEY"):
         pytest.skip("ELEVENLABS_API_KEY not set")
+    if _REAL_FONT is None:
+        pytest.skip("no usable system font found (tried arialbd.ttf, arial.ttf)")
 
     payload_path = tmp_path / "payload.json"
     payload_path.write_text(json.dumps({
@@ -68,7 +83,15 @@ def test_native_pipeline_end_to_end(workspace, tmp_path):
         for seg in segments
     ]), encoding="utf-8")
 
-    styles = {"default": {"font_file": "Inter-Bold.ttf", "size_px": 64, "body": "#FFFFFF",
+    # Real, probeable placeholder images -- preflight's _check_visual_assets requires
+    # each shot.source to exist on disk in "final" mode (asset existence is not
+    # optional the way it is in "draft"), and to ffprobe cleanly. Content doesn't
+    # matter for this validation; canvas-matching dimensions do, so nothing downstream
+    # has to guess at a crop.
+    for seg in segments:
+        Image.new("RGB", (1080, 1920), color=(40, 40, 40)).save(workspace.asset(f"{seg.name}.png"))
+
+    styles = {"default": {"font_file": str(_REAL_FONT), "size_px": 64, "body": "#FFFFFF",
                             "accent": "#FFD700", "max_width_px": 900, "max_lines": 3}}
     from stitcher.spec import Style
     style_objs = {"default": Style(**styles["default"])}
