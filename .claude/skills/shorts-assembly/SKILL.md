@@ -1,6 +1,6 @@
 ---
 name: shorts-assembly
-description: Turns a faceless-YouTube-Shorts script plus its voiceover brief and visual prompt sheet into a concrete assembly/edit plan — shot-by-shot pacing and cut cadence, caption/overlay treatment, aspect-ratio and safe-zone specs, loudness/ducking targets, and a $0-tool-stack vs. paid-tool-stack execution path. Use this whenever the user has a finished Short script (from shorts-scripting) and wants to know how to actually cut it together — "how do I edit this," "what's my caption style," "build me an edit plan," "what's my pacing/timing," "how should I duck the music," "what tools do I assemble this in." Every rule traces to the ContentStudio corpus (docs/headless-shorts-production-playbook.md, docs/headless-youtube-audit.md) with [C]/[I]/[T] provenance markers — do not answer from generic editing knowledge.
+description: Turns a faceless-YouTube-Shorts script plus its voiceover brief and visual prompt sheet into a concrete assembly/edit plan — shot-by-shot pacing and cut cadence, caption/overlay treatment, aspect-ratio and safe-zone specs, loudness/ducking targets, and a $0-tool-stack vs. paid-tool-stack execution path. Use this once three inputs exist — the timed script, the voiceover brief, and the visual prompt sheet — plus an optional fourth, the music-brief bed arc; it blocks rather than guesses if any of the three is missing — "how do I edit this," "what's my caption style," "build me an edit plan," "what's my pacing/timing," "how should I duck the music," "what tools do I assemble this in." Every rule traces to the ContentStudio corpus (docs/headless-shorts-production-playbook.md, docs/headless-youtube-audit.md) with [C]/[I]/[T] provenance markers — do not answer from generic editing knowledge.
 ---
 
 # Shorts Assembly
@@ -15,7 +15,14 @@ Produces the **edit plan** for one Short: the stage of ContentStudio's eight-ski
 
 **Inputs required to run this skill:**
 1. The shot-ready script with beat timing (Hook/Setup/Build/Payoff/Loop, seconds + word counts).
-2. The voiceover brief (voice pick, pacing wpm, take count) — or at minimum the VO's target wpm and total duration.
+2. The voiceover brief — its `## Voice pick`, `## Tone per beat`, `## Settings`,
+   `## Script, reformatted for TTS`, and `## Production & loudness` sections. It does **not**
+   carry pacing wpm or a take count: wpm and total runtime come from the script's
+   `Total word count: ~N words (150–170 wpm)` line, and no skill in the pipeline emits a take
+   count at all `[I]`.
+2b. **Optional — the `elevenlabs-audio` AUDIO PRODUCTION SPEC**, if the VO was rendered through
+   that specialist. Use its `DIRECTORIAL SCRIPT` chunk boundaries and its rendered-asset filename
+   in the shot table and the mix section. Absent, treat the VO as one continuous take `[I]`.
 3. The visual prompt sheet keyed to script beats (which shot uses which asset, generated vs. stock).
 4. **Optional — the music bed brief** (from `music-brief`, and its `elevenlabs-music` MIX HANDOFF
    if one exists). If present, use its bed arc, hook hold-out and asset filename in the loudness/mix
@@ -24,9 +31,14 @@ Produces the **edit plan** for one Short: the stage of ContentStudio's eight-ski
    and the corpus is explicit that no music beats the wrong music
    `[C] (Kallaway, i7upRL4H1FM)`.
 
-If any of the first three is missing, ask for it rather than inventing shot content — this skill
-assembles what upstream produced, it doesn't re-derive the script or the visuals. **The fourth is
-genuinely optional and its absence is never a blocker.**
+If input 1 or 3 is missing, ask for it rather than inventing shot content — this skill assembles
+what upstream produced, it doesn't re-derive the visuals. **The fourth is genuinely optional and
+its absence is never a blocker.**
+
+**Input 1 in app-driven mode.** The `scripting` stage is one of this stage's `depends_on`, so the
+script is directly among `input_files` — read its beat table and its `Total word count` line
+there, which is where wpm and runtime actually live `[I]`. No pointer-chase through the voiceover
+brief is needed; that workaround only applied when `scripting` wasn't a direct dependency.
 
 **Before pasting any prompt from input 3, resolve its slot token — this is a manual step until
 the render console exists `[I]`.** Every prompt in the sheet ends in an unresolved
@@ -46,7 +58,7 @@ and restate it verbatim in the delivered edit plan's own notes so it carries for
 this skill doesn't need to know what produced the constraint, only that it's flagged and must be
 respected.
 
-**Output:** a single edit plan covering five things, every one gated by a corpus rule, not convention:
+**Output:** a single edit plan covering six things, every one gated by a corpus rule, not convention:
 1. Shot-by-shot pacing/cut timing
 2. Caption/overlay treatment
 3. Aspect ratio + safe-zone spec
@@ -67,7 +79,66 @@ Work through these four reference files in order — each is a distilled, cited 
 3. **`references/loudness-and-mix.md`** — the ducking chain (music ≈−22 dB under voice), the −14 LUFS target, voice-peak range, and the phone-speaker QA step.
 4. **`references/tool-stack.md`** — CapCut / Submagic / Descript / Premiere Pro, with a $0 stack and a paid stack, the asset-naming convention so the plan can reference the actual files from upstream, the publish sequence (upload unlisted → let it process → add metadata → schedule public), and the QA-gate + publish-gate checklist that must pass before scheduling.
 
-Then produce the plan itself, structured the same way `references/worked-example.md` is (a full worked run using the corpus's own S042 "coffee trick" script) — copy that structure for the real script, don't reinvent the layout per request.
+Then produce the plan itself under these six headings, in this order. `references/worked-example.md`
+(a full worked run using the corpus's own S042 "coffee trick" script) shows each heading filled in
+— copy the *content depth* from it, and the *headings* from here. A downstream skill parses these
+headings by name; renaming one breaks `social-repurpose` `[I]`.
+
+## Output contract
+
+```
+## Shot table
+[One row per cut: # | beat | time range | visual source (sheet shot #) | on-screen text | duration]
+
+## Caption & overlay treatment
+[Caption style, hook/re-hook card timing, safe-zone map, and the explicit call on the
+ full-duration vs. front-loaded caption split with the reason]
+
+## Aspect ratio & safe zones
+[1080×1920, 9:16, plus the safe-zone insets and any runtime-eligibility caveat]
+
+## Loudness & mix
+[-14 LUFS integrated, ducking depth, voice-peak range, phone-speaker QA step, bed asset
+ filename if a music brief was supplied]
+
+## Tool stack
+[The $0 path and the paid path, each as concrete named steps ending in the publish sequence:
+ upload unlisted → let it process → add metadata → schedule public]
+
+## QA gate & publish gate
+[The checklist from tool-stack.md, every item marked pass/fail — never omitted]
+
+## Constraints that survive to publish
+[Any constraint line carried verbatim from the script's or grounding brief's Delivery notes,
+ or the literal word "none". Never blank — social-repurpose reads this section by name.]
+```
+
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: assembly
+produces.stage: 04-assembly
+produces.section: Shot table
+produces.section: Caption & overlay treatment
+produces.section: Aspect ratio & safe zones
+produces.section: Loudness & mix
+produces.section: Tool stack
+produces.section: QA gate & publish gate
+produces.section: Constraints that survive to publish
+consumes: shorts-scripting#Total word count
+consumes: shorts-scripting#Visual notes
+consumes: shorts-scripting#Delivery notes
+consumes: voiceover-brief#Voice pick
+consumes: voiceover-brief#Tone per beat
+consumes: voiceover-brief#Settings
+consumes: voiceover-brief#Script, reformatted for TTS
+consumes: voiceover-brief#Production & loudness
+consumes: visual-prompts#WHOLE-SHORT SETUP
+consumes: visual-prompts#COVER / THUMBNAIL
+consumes: music-brief#Bed arc
+consumes: music-brief#Hook hold-out
+reads: docs/style-library.md
+```
 
 ## Writing the plan for a real request
 
