@@ -23,6 +23,23 @@ audio track first** to remove peaks and even out volume before final loudness no
 - **Corpus creators run noticeably lower — around −21 to −22 dB** — and call loud music the
   **most common cause of low average view duration (AVD)** that beginners underestimate
   `(Romayroh, Wox4Jt_2t6w)` `(Roberto Blake, iaTavrWIGDM)`.
+- **Parameter-mapping correction, this project `[P]`:** this channel's render-spec implemented the corpus's
+  -21/-22dB "ducked under vocals" figure on the wrong key. `stitcher`'s `Bed.duck_db` — not `Bed.gain_db` — is
+  the level while the voice is present (`stitcher/audio.py`'s ducking envelope lands exactly on `duck_db`
+  relative to voice at a breakpoint); `gain_db` is the un-ducked baseline, which matters only during real
+  silence. The render-spec had `duck_db: -29.0` — 7-8dB below the corpus's own cited band — while `gain_db:
+  -22.0` incidentally sat near the band and drew the scrutiny instead. For a take that's speaking almost
+  continuously, `duck_db` is what an audience actually hears, so this mapping error is what produced direct
+  operator feedback that the bed was "totally washed out nearly inaudible"
+  (`docs/superpowers/plans/2026-08-20-dual-pipeline-vo-music-test-RESULTS.md`) even though the automated
+  duck-depth QA check passed (it only verifies the *swing* matches spec, not that the spec itself is audible).
+  **Corrected pair: `gain_db: -14.0 / duck_db: -21.0`** (same 7dB swing, both raised ~8dB) — this puts
+  `duck_db` exactly on the corpus's -21/-22dB band and matches this repo's own
+  `stitcher/renders/do-less-sold-as-win-more/render-spec.json`, an independent existing precedent, not a fresh
+  guess. `[I]`: `gain_db: -14.0` (the un-ducked baseline) sits a few dB above `loudness-and-mix.md`'s own "bed
+  sits ~15-20dB below the voice" figure — an acceptable, deliberate consequence of preserving the swing rather
+  than a contradiction, since that figure describes the ducked (in-narration) level, which this correction
+  targets via `duck_db` instead.
 - Where the notes and the corpus disagree on exact depth, give both in the brief rather than
   picking one silently — the corpus's practitioner number (−21 to −22 dB) is the one to lead
   with for a faceless-Shorts brief, since it's the number tied directly to an AVD complaint,
