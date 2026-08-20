@@ -194,8 +194,12 @@ existing file in this directory — a `PreToolUse` hook blocks it. Confirm the f
 before ending the turn.
 
 **Briefs written before 2026-08-08 carry no `--kind` suffix.** If `--kind grounding` prints
-`NONE` but a bare `<date>-<slug>.md` exists, that is the prior version — name it in `supersedes:`
-and write the new one with the suffix. Do not rename the old file `[I]`.
+`NONE` but a bare `<date>-<slug>.md` exists, that is the prior version — the kindless lookup
+cannot see it, so **do not trust the resolver's proposed version number in this case**. Read the
+bare file's own `version:` frontmatter field, set the new brief's `version:` to one higher than
+that, add a `-v<N>` suffix to the filename matching it (the resolver's auto-generated filename
+omits the suffix for what it thinks is version 1 — override it by hand), and set `supersedes:`
+to the old bare file's path. Do not rename the old file `[I]`.
 
 ## Red flags — stop and re-verify
 
