@@ -8,6 +8,7 @@ description: Generate multi-surface post copy (YouTube title/description/hashtag
 > **`[T]` facts in this file were web-verified 2026-07-23** against the live web, per this project's `[T]` marker convention
 > and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
 > parameter range, a model id, or a credit rate `[T]`.
+> This skill's own body carries no specific tool/policy fact — the header exists so the provenance-key description above is dated like every other marker-carrying file.
 
 The final stage of ContentStudio's eight-skill pipeline, following `shorts-assembly`. Turns
 a **finished Short** into the **multi-surface post copy** that ships it. There is no

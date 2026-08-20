@@ -30,7 +30,7 @@ REGISTERS = SKILLS / "shorts-styleboard" / "references" / "visual-registers.md"
 MARKER_RE = re.compile(r"\[(?:C|I|T|P|T-unverified)\]")
 
 CORPUS_CITE_RE = re.compile(r"\(([^()]*?,\s*[A-Za-z0-9_-]{6,})\)")
-CHANNEL_CITE_RE = re.compile(r"\(\s*[A-Z][A-Za-z0-9 .&'-]+,\s*[A-Za-z0-9_-]{6,}")
+CHANNEL_CITE_RE = re.compile(r"\(\s*[A-Za-z][A-Za-z0-9 .&'-]+,\s*[A-Za-z0-9_-]{6,}")
 VERIFIED_HEADER_RE = re.compile(r"verified\s+20\d\d-\d\d-\d\d", re.IGNORECASE)
 
 # The brief's original pattern (`corpus (has nothing|says nothing|is thin)`) requires the
@@ -440,34 +440,31 @@ WORKED_EXAMPLE_DISCLAIMER = (
 # Every entry below was verified by hand (each flagged line's full multi-line bullet was read,
 # not just the single line the test inspects) to confirm the block genuinely carries a
 # `(Channel, video_id)` citation — this ledger is not standing in for missing citations, it is
-# standing in for two mechanical blind spots in the verbatim T16 regex/line-scan:
-#   (a) "wrapped": the citation sits on the bullet's markdown continuation line, one or more
-#       physical lines below the `- **...**` line normative_blocks() actually inspects;
-#   (b) "lowercase channel": the citation is on the flagged line itself, but names a channel
-#       whose stylized name starts lowercase (e.g. `vidIQ`), which CHANNEL_CITE_RE's leading
-#       `[A-Z]` requirement rejects regardless of position.
-# Reformatting every wrapped bullet across the skill set, or loosening the shared channel regex,
-# is out of scope for T16 (which targets the specific C-44/C-45 items enumerated in the task
-# brief) — flagged here, not fixed, per this ledger's own precedent in TIER_1_PENDING above.
+# standing in for one remaining mechanical blind spot in the verbatim T16 line-scan: the
+# citation sits on the bullet's markdown continuation line, one or more physical lines below the
+# `- **...**` line normative_blocks() actually inspects. (CHANNEL_CITE_RE originally required an
+# uppercase-initial channel name too, which wrongly excluded same-line citations to stylized-
+# lowercase channels like `vidIQ` -- that regex bug is fixed above; every entry that was pending
+# ONLY for that reason, e.g. shorts-assembly's four reference files, has been removed from this
+# ledger since the fix. What remains below is genuinely wrapped, unaffected by the regex fix.)
+# Reformatting every wrapped bullet across the skill set is out of scope for T16 (which targets
+# the specific C-44/C-45 items enumerated in the task brief) — flagged here, not fixed, per this
+# ledger's own precedent in TIER_1_PENDING above.
 C_CITATION_PENDING: dict[str, tuple[int, str]] = {
     ".claude/skills/midjourney-prompting/SKILL.md": (2, "wrapped: both blocks' (Channel, video_id) citations sit on the bullet's continuation line, not the flagged `- **` line"),
-    ".claude/skills/shorts-assembly/references/caption-overlay-system.md": (2, "lowercase channel: both blocks cite `(vidIQ, video_id)` on the flagged line itself; CHANNEL_CITE_RE's leading [A-Z] rejects the stylized lowercase 'vidIQ'"),
-    ".claude/skills/shorts-assembly/references/loudness-and-mix.md": (1, "lowercase channel: the block cites `(vidIQ, video_id)` on the flagged line itself; CHANNEL_CITE_RE's leading [A-Z] rejects the stylized lowercase 'vidIQ'"),
-    ".claude/skills/shorts-assembly/references/pacing-and-editing.md": (4, "lowercase channel: all four blocks cite `(vidIQ, video_id)` on the flagged line itself; CHANNEL_CITE_RE's leading [A-Z] rejects the stylized lowercase 'vidIQ'"),
-    ".claude/skills/shorts-assembly/references/tool-stack.md": (1, "lowercase channel: the block cites `(vidIQ, video_id)` on the flagged line itself; CHANNEL_CITE_RE's leading [A-Z] rejects the stylized lowercase 'vidIQ'"),
-    ".claude/skills/shorts-ideation/references/angle-selection.md": (20, "18 wrapped (citation on a continuation line) + 2 lowercase channel (`vidIQ`) — all 20 verified cited on inspection"),
+    ".claude/skills/shorts-ideation/references/angle-selection.md": (20, "wrapped: all 20 blocks' (Channel, video_id) citations sit on the bullet's continuation line"),
     ".claude/skills/shorts-ideation/references/hook-concepts.md": (4, "wrapped: all four blocks' (Channel, video_id) citations sit on the bullet's continuation line"),
-    ".claude/skills/shorts-ideation/references/packaging-direction.md": (13, "12 wrapped (citation on a continuation line) + 1 lowercase channel (`vidIQ`) — all 13 verified cited on inspection"),
+    ".claude/skills/shorts-ideation/references/packaging-direction.md": (13, "wrapped: all 13 blocks' (Channel, video_id) citations sit on the bullet's continuation line"),
     ".claude/skills/shorts-ideation/references/validation-gate.md": (4, "wrapped: all four blocks' (Channel, video_id) citations sit on the bullet's continuation line"),
     ".claude/skills/shorts-scripting/references/endings-and-ctas.md": (9, "wrapped: all nine blocks' (Channel, video_id) citations sit on the bullet's continuation line"),
-    ".claude/skills/shorts-scripting/references/hooks-and-openings.md": (17, "13 wrapped (citation on a continuation line) + 4 lowercase channel (`vidIQ`) — all 17 verified cited on inspection"),
+    ".claude/skills/shorts-scripting/references/hooks-and-openings.md": (17, "wrapped: all 17 blocks' (Channel, video_id) citations sit on the bullet's continuation line"),
     ".claude/skills/shorts-scripting/references/read-aloud-gates.md": (1, "wrapped: the block's (Channel, video_id) citation sits on the bullet's continuation line"),
-    ".claude/skills/shorts-scripting/references/retention-loops-and-structure.md": (24, "22 wrapped (citation on a continuation line) + 2 lowercase channel (`vidIQ`) — all 24 verified cited on inspection"),
-    ".claude/skills/shorts-scripting/references/script-intelligence-and-delivery.md": (14, "13 wrapped (citation on a continuation line) + 1 lowercase channel (`vidIQ`) — all 14 verified cited on inspection"),
+    ".claude/skills/shorts-scripting/references/retention-loops-and-structure.md": (24, "wrapped: all 24 blocks' (Channel, video_id) citations sit on the bullet's continuation line"),
+    ".claude/skills/shorts-scripting/references/script-intelligence-and-delivery.md": (14, "wrapped: all 14 blocks' (Channel, video_id) citations sit on the bullet's continuation line"),
     ".claude/skills/social-repurpose/references/cross-platform-captions.md": (7, "wrapped: all seven blocks' (Channel, video_id) citations sit on the bullet's continuation line"),
     ".claude/skills/social-repurpose/references/youtube-description-hashtags.md": (9, "wrapped: all nine blocks' (Channel, video_id) citations sit on the bullet's continuation line"),
     ".claude/skills/visual-prompts/SKILL.md": (1, "wrapped: the block's (Channel, video_id) citation sits on the bullet's continuation line"),
-    ".claude/skills/visual-prompts/references/faceless-pacing-rules.md": (11, "9 wrapped (citation on a continuation line) + 2 lowercase channel (`vidIQ`) — all 11 verified cited on inspection"),
+    ".claude/skills/visual-prompts/references/faceless-pacing-rules.md": (9, "wrapped: all nine blocks' (Channel, video_id) citations sit on the bullet's continuation line (down from 11 -- two more resolved by the CHANNEL_CITE_RE lowercase-channel fix)"),
     ".claude/skills/visual-prompts/references/image-to-video.md": (4, "wrapped: the file's C-44/C-45 items (model-landscape table :96-103, bare `(Tao Prompts)` at :69/:85 pre-header-insertion) are resolved via in-repo cross-reference (docs/midjourney-prompting-guide.md, prompt-sheet-format.md:123) — see the fixed model-landscape table and the two [I]-downgraded lines above. The 4 remaining flagged blocks are a separate, pre-existing wrapped-citation artifact: each cites (Channel, video_id) on the bullet's continuation line"),
     ".claude/skills/voiceover-brief/references/production-and-loudness.md": (1, "wrapped: the block's (Channel, video_id) citation sits on the bullet's continuation line"),
     ".claude/skills/voiceover-brief/references/scripting-for-tts.md": (2, "wrapped: both blocks' (Channel, video_id) citations sit on the bullet's continuation line"),

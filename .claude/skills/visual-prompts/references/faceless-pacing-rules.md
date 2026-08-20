@@ -3,7 +3,10 @@
 > **`[T]` facts in this file were web-verified 2026-07-23** against live web sources for the corpus's tool/policy sweep
 > and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
 > parameter range, a model id, or a credit rate `[T]`.
-> Midjourney V8.2-specific facts cited from `midjourney-prompting` carry their own more specific verification date (2026-07-26) inline — that date wins where the two differ.
+> This file's own body carries no specific tool/policy fact of its own — it is entirely `[C]` corpus-cited
+> or `[I]` operational judgment. Its one `[T]` mention below ("lean on the tool notes") is a
+> cross-reference to the web-verified material in the Midjourney and ElevenLabs reference files, not a
+> local vendor fact; the header exists so this cross-reference is dated like every other marker-carrying file.
 
 Distilled from `docs/headless-youtube-audit.md` §6 "Visuals & AI assets." The audit itself flags this
 as **another thin theme (27 findings)** — the corpus favors simple, high-value visuals over heavy AI
