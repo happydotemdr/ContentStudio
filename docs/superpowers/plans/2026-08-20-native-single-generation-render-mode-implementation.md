@@ -34,8 +34,11 @@ audit already folded in).
   midpoint). `Bed.gain_db == Bed.duck_db` always, for every spec this pipeline assembles.
 - Eleven Music `music_v2` chunk bounds: `MIN_CHUNK_MS = 3_000`, `MAX_CHUNK_MS = 120_000`, `MAX_CHUNKS = 30`
   (`docs/elevenlabs-music-runbook.md` §2).
-- `BED_DURATION_TOLERANCE_S = 0.05` — the generated bed's measured duration must match the take's runtime
-  within this tolerance, checked before assembling the spec (see `assemble.check_bed_duration`).
+- `BED_DURATION_TOLERANCE_S = 0.1` — the generated bed's measured duration must match the take's runtime
+  within this tolerance, checked before assembling the spec (see `assemble.check_bed_duration`). Widened
+  from this plan's original `0.05` (50ms) during Task 11's real e2e validation (commit `46438dd`): a real
+  Eleven Music generation measured 52ms off, missing the original tolerance by just 2ms -- normal
+  real-world generation jitter the original value didn't account for. Human-approved.
 - `MIN_DUCK_WINDOW_S = 0.4` — reused from `stitcher.verify`; any beat/chunk span shorter than this is skipped
   for outlier flagging, never measured.
 - Outlier-flagging threshold: 3 LU / 3 dB deviation from a track's own median, a documented starting point.
@@ -1117,7 +1120,8 @@ git commit -m "feat(native-pipeline): add read-only outlier flagging"
   loudness)` `spec.py:156-160`; `Loudness(integrated_lufs, true_peak_dbtp)` `spec.py:151-153`;
   `RenderSpec(spec_version, slug, canvas, safe_zone, styles, shots, overlays=[], captions=[], captions_style,
   audio, cover=None, delivery=Delivery())` `spec.py:179-191`). `native_pipeline.errors.BedDurationMismatchError`
-  (Task 1). `BED_RELATIVE_OFFSET_DB = -17.0` and `BED_DURATION_TOLERANCE_S = 0.05` (Global Constraints).
+  (Task 1). `BED_RELATIVE_OFFSET_DB = -17.0` and `BED_DURATION_TOLERANCE_S = 0.1` (Global Constraints;
+  widened from `0.05` post-Task-11, see that section for why).
 - Produces: `assemble_spec(slug, shots, captions, voice_take, music_bed, runtime, voice_lufs, styles,
   captions_style) -> RenderSpec` and `check_bed_duration(bed_path: Path, runtime: float, log_path: Path) ->
   None` — both consumed by Task 9's `orchestrate.run_assemble_stage`.
@@ -1225,7 +1229,9 @@ from stitcher.spec import Audio, Bed, Canvas, Caption, Loudness, RenderSpec, Saf
 from native_pipeline.errors import BedDurationMismatchError
 
 BED_RELATIVE_OFFSET_DB = -17.0
-BED_DURATION_TOLERANCE_S = 0.05
+# 0.1s (100ms), widened post-Task-11 from this snippet's original 0.05s -- see the
+# Global Constraints section above for why (real e2e jitter, human-approved).
+BED_DURATION_TOLERANCE_S = 0.1
 DELIVERY_LUFS = -14.0
 DELIVERY_TP_DBTP = -1.0
 

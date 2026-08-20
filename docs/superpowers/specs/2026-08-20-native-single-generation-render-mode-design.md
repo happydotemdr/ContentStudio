@@ -241,7 +241,10 @@ Builds the final `RenderSpec` using only existing `spec.py` classes — no schem
   constant right matters more here than it did in the enveloped pipeline.
 - **Bed-duration fail-loud check (added during Opus review):** before handing the spec to the render entry
   point, `assemble_spec` independently measures the generated bed's duration and asserts it matches the
-  take's runtime within a tight tolerance (e.g. 50ms). This mode does not rely on `audio.py`'s existing
+  take's runtime within a tight tolerance (100ms — widened from an original 50ms during Task 11's real
+  e2e validation, after a real Eleven Music generation measured 52ms off, 2ms outside the original
+  tolerance; normal real-world generation jitter the original value didn't account for, human-approved).
+  This mode does not rely on `audio.py`'s existing
   `-stream_loop -1 -t runtime` bed-conforming step to mask a mismatch — a bed even slightly short would
   otherwise have its intro silently restart under the outro, and a bed too long would be silently truncated
   mid-arrangement, defeating the entire point of composing dynamics into the arrangement. A mismatch fails the
@@ -399,8 +402,9 @@ render; needs a real ffmpeg on PATH") and the root `pytest.ini`'s `allow_network
   - The bed envelope is genuinely flat in the *rendered* output — not merely that `Bed.gain_db == Bed.duck_db`
     on the input spec (a trivially-true check by construction) — verified by querying `envelope.level_at()` at
     several real sampled timestamps across the take and confirming they return the same value.
-  - Bed duration matches take runtime within 50ms (the fail-loud check from `assemble_spec`, independently
-    re-verified here).
+  - Bed duration matches take runtime within 100ms (the fail-loud check from `assemble_spec`, independently
+    re-verified here; widened from an original 50ms during Task 11's real e2e validation — see the
+    bed-duration fail-loud check note above for why).
   - No flags fire beyond any explicitly pre-documented expected case for that specific take (there are none
     expected for a normal take — any flag on a normal run is itself a finding to investigate, not an assertion
     failure to silence).
