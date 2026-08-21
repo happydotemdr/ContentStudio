@@ -221,11 +221,20 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
 ## Conventions
 
 - **Local only** in the sense that nothing here deploys, is hosted externally, or syncs to a
-  cloud — but **not** network-free. The repo makes **22** outbound call sites across **11**
-  destinations. The tables below are the complete roster;
+  cloud — but **not** network-free. The repo makes **24** outbound call sites across **13**
+  destinations. The tables below are the complete roster **for `pipeline-app/`, `coach-prep-app/`
+  and the download scripts**;
   `tests/test_doc_truth.py::test_claude_md_lists_every_outbound_call_site` fails if a call site
   exists in the code and not here, or here and not in the code, so this list cannot quietly rot
   the way its two-item predecessor did.
+
+  **One known gap, stated rather than implied.** `doc-ingest-app/` reaches Google Drive on every
+  ingest wake (`doc-ingest-app/doc_ingest/drive_client.py`, exporting Docs and Sheets) and firecrawl for every
+  conversion (`doc-ingest-app/doc_ingest/convert.py`). Neither appears below, because neither is caught by
+  `test_doc_truth.py`'s probes — a Drive call is `service.files().export(...).execute()` and a
+  firecrawl one is `client.parse(...)`, and no probe matches either shape. Adding that app to
+  `SCANNED` without adding the probes first would look like coverage while measuring nothing.
+  Closing this means writing the probes, then the rows, in one commit.
 
   **App runtime** — reached by running the app or letting the scheduled discovery run fire. No
   operator action required beyond starting it:
@@ -235,6 +244,8 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
   | Anthropic, via a `claude` subprocess | `pipeline_app/cli_runner.py:291` | **billed to your Claude plan** | Every pipeline stage turn: the rendered kickoff prompt, plus whatever the stage's allowed tools read from this repo. This call *is* the app. |
   | Anthropic, via a `claude -p` subprocess | `pipeline_app/comment_draft.py:353` | **billed** | Exception 2 below. |
   | `api.resend.com` | `pipeline_app/discovery_notify.py:114` | free tier | Exception 1 below. |
+  | Anthropic, via coach-prep-app's shared isolated turn | `coach-prep-app/coach_prep_app/cli_runner.py:103` | **billed** | Exception 3 below. One call site, three callers: `coach-prep-app/coach_prep_app/generate.py` (the prep doc), `coach-prep-app/coach_prep_app/select_frameworks.py` (which activities fit this session), and `coach-prep-app/scripts/build_framework_catalog.py` (indexing the framework corpus — operator-invoked, no client data). |
+  | `api.resend.com`, from coach-prep-app | `coach-prep-app/coach_prep_app/notify.py:47` | free tier | A review link and one subject line: the client's display name and the meeting date. Never the prep doc's contents — the draft stays in Drive and the email only points at it. |
   | `api.brightdata.com` | `pipeline_app/brightdata_job.py:348` (trigger), `:361` (poll), `:374` (fetch), `:408` (delete) | **billed per record — real money, per run** | The target handle or profile URL and the job parameters, for Instagram / LinkedIn / Facebook / X discovery. |
   | `www.googleapis.com/youtube/v3` | `pipeline_app/discovery_youtube_api.py:121` | quota-metered | Video ids and the API key. |
   | `public.api.bsky.app` | `pipeline_app/discovery_bluesky.py:35` | free | The handle being enumerated. |
@@ -251,8 +262,9 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
   | `www.youtube.com`, via `yt-dlp` / `youtube-transcript-api` | `download_brandintel.py:78`, `:87`, `:131`, `:154` | The handle or video id. |
   | arbitrary URL (per `manifests/brand_sources.json`'s `rss` entries) | `download_brandintel.py:336` | The feed URL configured in the roster; no other data — a plain HTTP GET. No feeds are configured today (the `rss` section holds only a `_comment`), but `--platforms` defaults to `youtube,bluesky,rss` and `do_rss` is wired into `main()`, so this destination is live and default-on the moment any feed is added. |
 
-  **Two of these carry corpus content rather than just an identifier.** Both are in the daily
-  discovery email path and both are deliberate; their contracts are unchanged:
+  **Three of these carry real content rather than just an identifier.** The first two are in the
+  daily discovery email path and their contracts are unchanged; the third is coach-prep-app, which
+  sends private client material and is by far the largest payload here. All three are deliberate:
 
   1. **Notification email, via Resend's HTTP API.** Sends the day's captured post titles, author
      display names (a handle appears only when no display name is configured for that author),
@@ -265,6 +277,20 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
      the spotlighted post's full text, or a YouTube transcript truncated to 12,000 characters, to
      Anthropic. One post per day, only the spotlighted one. The turn runs with every tool denied,
      zero MCP servers, and an empty scratch working directory.
+  3. **Coach-prep generation, via `coach-prep-app`'s shared isolated turn**
+     (`coach-prep-app/coach_prep_app/cli_runner.py:103`). This is the largest payload the repo sends anywhere.
+     Per upcoming session it makes two calls, each carrying one client's material: up to two
+     meeting-note transcripts in full, up to five emails Ryan sent that client over the trailing
+     fortnight in full, the Freedom2BeU program documents, and the full text of the framework
+     activities selected for that session. One client per call, never two. The same call site is
+     also used by `coach-prep-app/scripts/build_framework_catalog.py`, which sends corpus documents and no client
+     data at all, and is operator-invoked rather than scheduled.
+
+     Every turn runs with every tool denied, `--strict-mcp-config`, and an empty scratch working
+     directory —
+     `coach-prep-app/tests/test_cli_runner.py::test_no_module_spawns_claude_outside_run_isolated`
+     fails if any module under `coach_prep_app/` spawns a subprocess of its own, so that isolation
+     cannot be reimplemented per caller and quietly drift.
 
   See `docs/superpowers/specs/2026-08-01-discovery-email-summary-design.md` and
   `docs/superpowers/specs/2026-08-08-morning-email-social-expansion-design.md` for the full

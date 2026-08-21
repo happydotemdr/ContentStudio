@@ -45,7 +45,21 @@ SCANNED = [
     "pipeline-app/pipeline_app/templates/*.html",
     "pipeline-app/tools/*.py",    # post-F-64 rename of pipeline-app/scripts/
     "download_*.py",
+    # coach-prep-app, added 2026-08-21. It sends client material to Anthropic
+    # and mails Ryan a review link, and neither call site was in the roster
+    # CLAUDE.md calls complete -- the globs above covered pipeline-app alone.
+    "coach-prep-app/coach_prep_app/**/*.py",
+    "coach-prep-app/scripts/*.py",
 ]
+
+# NOT yet scanned, and named here so the gap is measured rather than implied:
+# doc-ingest-app reaches Google Drive (drive_client.py) and firecrawl
+# (convert.py) on every ingest wake. Neither is caught by the probes above --
+# a Drive call is `service.files().export(...).execute()` and a firecrawl one
+# is `client.parse(...)`, and no probe matches either shape. Adding the globs
+# without adding those probes would look like coverage while measuring
+# nothing, so the probes come first. Until then, CLAUDE.md's roster is
+# complete for pipeline-app, coach-prep-app and the download scripts only.
 
 # A table row cites one path and one or more line numbers:
 #   `pipeline_app/brightdata_job.py:64` (trigger), `:76` (poll), `:86` (fetch)
