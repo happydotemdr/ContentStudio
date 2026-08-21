@@ -39,6 +39,11 @@ Auth header: `xi-api-key`.
 | `apply_text_normalization` | `auto` \| `on` \| `off` | `auto` | Number/date/currency spell-out |
 | `apply_language_text_normalization` | boolean | `false` | **Japanese only**; significantly increases latency |
 
+**Correction, 2026-08-21** `[T]`: despite the "three discrete modes" framing in the
+`voice_settings.stability` row above, the live eleven_v3 request body does not accept a mode name
+(`"natural"`, etc.) as `voice_settings.stability` — it returns a 422. Send a float in [0, 1], same
+as every other model — see the "Live-API correction, 2026-08-21" callout in `voice-settings.md`.
+
 ## Query parameters `[T]`
 
 | Parameter | Values | Default | Notes |

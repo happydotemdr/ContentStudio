@@ -88,6 +88,13 @@ def cmd_render(args: argparse.Namespace) -> int:
         except (OSError, ValueError) as exc:
             print(f"native_pipeline: invalid input: {exc}", file=sys.stderr)
             return EXIT_USAGE
+        if len(vo_beat_texts) != len(beat_texts):
+            print(
+                f"native_pipeline: --vo-beat-texts has {len(vo_beat_texts)} entries but "
+                f"--beat-texts has {len(beat_texts)} -- these must correspond 1:1",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
 
     ws = Workspace(root=root, slug=args.slug, mode="final")
     ws.ensure_dirs()
@@ -122,7 +129,12 @@ def build_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--beat-texts", required=True)
     render_parser.add_argument("--styles", required=True)
     render_parser.add_argument("--captions-style", required=True)
-    render_parser.add_argument("--vo-mode", choices=["break", "v3_tags"], default="break")
+    render_parser.add_argument(
+        "--vo-mode", choices=["break", "v3_tags"], default="v3_tags",
+        help="eleven_v3 + bracket audio tags is the default VO approach as of "
+        "2026-08-21 (operator decision, channel-voice.md); pass --vo-mode break "
+        "to use the older eleven_multilingual_v2 + <break>-tag path instead.",
+    )
     render_parser.add_argument(
         "--vo-beat-texts",
         help="Path to a JSON list of the exact per-beat strings (tag prefix "
