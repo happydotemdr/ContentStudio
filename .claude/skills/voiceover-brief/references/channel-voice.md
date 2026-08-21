@@ -83,10 +83,10 @@ Caveats:           SUPERSEDED 2026-08-21 [P]: earlier the same day, Open
                       single-take generation has no request-level
                       stitching context to lose in the first place; this
                       is a non-issue for the single-continuous-take
-                      approach specifically.
+                      approach specifically. [T]
                    3. eleven_v3 has no <break> tag (already correctly
                       documented elsewhere in this skill) — bracket tags
-                      and punctuation carry pacing instead.
+                      and punctuation carry pacing instead. [T]
 Verified on:       2026-08-21 — voice_id and model routing recorded; audition not yet run
 ```
 

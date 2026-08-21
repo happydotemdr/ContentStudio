@@ -85,7 +85,7 @@ side is a sensible read.
 eleven_v3 currently rejects previous_text/next_text outright with a 400
 (verified live 2026-08-21) — this is moot for a single continuous
 generation, which has no chunk seams to stitch, but blocking if anyone
-still chunks a v3 script into multiple requests.
+still chunks a v3 script into multiple requests. [T]
 
 **Stronger — request stitching.** `previous_request_ids` / `next_request_ids` (**max 3 each**)
 reference actual prior generations `[T]`. Anchors to rendered audio rather than text. **Prefer this
