@@ -41,9 +41,19 @@ safety property, and an MCP-backed retrieval cannot be reached from inside it wi
 dismantling it.
 
 So retrieval happens *before* the call, in Python. The corpus is too big for one prompt
-but small enough that a distilled index of **all** of it fits in ~12K tokens: one terse
-line per activity. Selection therefore sees every option at once rather than whatever a
+but small enough that a distilled index of **all** of it fits in one: one terse line per
+activity. Selection therefore sees every option at once rather than whatever a
 similarity search surfaced, and the choice is auditable rather than probabilistic.
+
+**Measured, after the first real build:** 91 corpus files yield **496 entries** and an
+index of **~35,600 tokens**. This design was drafted around ~12K, on an estimate of
+150–200 entries — the corpus decomposes about three times more finely than assumed (one
+Jay Shetty module alone yields 36 entries). The approach still holds: the selection
+prompt is the index plus one client's two transcripts and fortnight of email, which sit
+comfortably inside a single context. But the headroom is smaller than claimed, so the
+budget is now asserted against the **committed catalog** rather than a synthetic one —
+`test_the_real_catalogs_index_fits_the_selection_prompt`. The earlier version of that
+test measured 200 fabricated entries and would never have noticed.
 
 Rejected: an Obsidian vault (a second source of truth, and unreachable from the
 isolated turn), embeddings (an 180K-token corpus does not justify the machinery), a
@@ -163,7 +173,8 @@ and lands it as a regression test observed failing first. The notable ones:
 |---|---|
 | Invented coaching tools reaching the doc as if corpus-grounded | `test_validate_picks_separates_ids_the_catalog_does_not_have` |
 | A rebuild reverting a hand correction | `test_merge_never_overwrites_a_curated_entry` |
-| The catalog index outgrowing the budget the design rests on | `test_render_index_of_the_whole_corpus_stays_within_prompt_budget` |
+| The catalog index outgrowing the budget the design rests on | `test_the_real_catalogs_index_fits_the_selection_prompt` |
+| A committed catalog that is malformed, partial, or has no live-ready entry | `test_the_committed_catalog_is_loadable_and_internally_consistent` |
 | The footer scanned as model output, or forgeable | `test_the_footer_is_appended_after_the_gates_have_run` |
 | A leaked draft published with an authoritative-looking manifest | `test_a_gate_failure_publishes_no_footer_and_no_document` |
 | Markdown that will not survive the Google Docs round trip | `test_markdown_that_will_not_survive_google_docs_fails_the_gate` |
@@ -188,3 +199,9 @@ parameter. Both now have contract tests.
   word-count parity, unbalanced code fences, one corrupt docx. They are absent from the
   catalog and nothing pretends otherwise.
 - **Part 3 and Part 5** of the house format are unimplemented by choice.
+- **The catalog is over-decomposed in places and its tag vocabulary is loose.** One
+  module yields 36 entries; 423 of 690 `use_when` tags are used exactly once, so they
+  read as prose hints to the selecting model rather than as a vocabulary anything can
+  group by. Neither breaks selection, and both are what the `curated: true` workflow
+  exists for — a human pass over the entries Ryan actually recognises will do more than
+  another build pass would.

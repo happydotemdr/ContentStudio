@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import yaml
@@ -220,21 +221,57 @@ def test_render_index_omits_absent_optional_fields():
     assert "when:" not in rendered
 
 
-def test_render_index_of_the_whole_corpus_stays_within_prompt_budget():
-    """The catalog exists so selection can see EVERY option at once. That only
-    holds while the index stays small -- roughly 12K tokens for ~200 entries.
-    If it outgrows that, the design needs revisiting, not a silent truncation."""
-    entries = [
-        _entry(
-            id=f"entry-{i}", framework=f"Framework {i % 8}",
-            use_when=("avoidance", "confidence", "boundaries"),
-            live_ready=True, duration_min=15,
-        )
-        for i in range(200)
+def test_the_real_catalogs_index_fits_the_selection_prompt():
+    """Measures the catalog actually committed to this repo, not a synthetic
+    one.
+
+    This test asserted against 200 fabricated entries until 2026-08-21 and
+    passed comfortably, while the first real build produced 513 entries and an
+    index of ~36,600 tokens -- three times the figure the design was written
+    around. A budget test that cannot see the real artifact measures nothing.
+
+    The ceiling below is generous because the index has room to grow: the
+    selection prompt is the index plus one client's two transcripts and
+    fortnight of email, which together run well inside a single context. What
+    it rules out is the index quietly becoming the dominant cost, at which
+    point "selection sees every option at once" stops being affordable and the
+    two-stage design needs revisiting rather than silently degrading."""
+    catalog_path = Path(__file__).resolve().parents[1] / "framework_catalog.yaml"
+    entries = fc.load_catalog(catalog_path)
+    assert entries, "the committed catalog is empty"
+
+    approx_tokens = len(fc.render_index(entries)) / 4
+    assert approx_tokens < 60_000, (
+        f"the catalog index is ~{approx_tokens:,.0f} tokens across {len(entries)} entries. "
+        f"Trim it, or reconsider whether selection can still see the whole corpus at once."
+    )
+
+
+def test_the_committed_catalog_is_loadable_and_internally_consistent():
+    """The catalog is a generated artifact committed as source. A malformed
+    one fails every client's run at the selection stage, and the failure would
+    otherwise only surface on a live wake."""
+    catalog_path = Path(__file__).resolve().parents[1] / "framework_catalog.yaml"
+    entries = fc.load_catalog(catalog_path)
+
+    assert len(entries) > 100, f"only {len(entries)} entries -- did a build write a partial catalog?"
+    assert len({e.id for e in entries}) == len(entries)
+    assert all(e.one_line.strip() for e in entries)
+    live = [e for e in entries if e.live_ready]
+    assert live, "no live-ready entry -- Part 4 has no practice to draw on"
+
+
+def test_the_committed_catalog_holds_no_reading_list_entries():
+    """The reading list reaches stage 2 by its own route, as bundle's
+    book_list. A book is not an activity Ryan runs, and resolve() embeds an
+    entry's whole source document -- so a pick of one would hand the drafting
+    prompt a table of titles and authors as that exercise's instructions."""
+    catalog_path = Path(__file__).resolve().parents[1] / "framework_catalog.yaml"
+    offenders = [
+        e.id for e in fc.load_catalog(catalog_path)
+        if "Coaching Book Recommendations" in e.rel_path
     ]
-    rendered = fc.render_index(entries)
-    approx_tokens = len(rendered) / 4
-    assert approx_tokens < 15000, f"catalog index is ~{approx_tokens:.0f} tokens"
+    assert offenders == [], offenders
 
 
 # --- id collisions across files ---------------------------------------------

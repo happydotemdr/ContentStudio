@@ -42,6 +42,15 @@ _EXCLUDED = {
     # Indexing both produced seven near-duplicate entries competing with the
     # real ones for a place in a budget-limited index.
     "Frameworks to consider/Sabatoures/F2BU_Module_00_The_Judge (1).docx.md",
+    # The reading list. It reaches stage 2 by its own route, as bundle's
+    # book_list, and a book is not an activity Ryan runs in a session. Left
+    # in, the first build turned it into 17 catalog entries -- and because
+    # select_frameworks.resolve embeds an entry's whole source document, a
+    # pick of one would have handed the drafting prompt a two-column table of
+    # titles and authors as that "exercise's" instructions, while spending one
+    # of the three-to-five picks on something Part 4 cannot run.
+    "Frameworks to consider/Books and research/Coaching Book Recommendations/"
+    "F2BU Coaching Book Recommendations.gsheet.md",
 }
 
 _PROMPT_TEMPLATE = """\
