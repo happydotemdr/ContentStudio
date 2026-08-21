@@ -182,11 +182,18 @@ make the landing order free. Three constraints bind it:
 | **B3** ✅ | **P4**, then **P5** — both merged | P4 adopts P2's + P3's APIs and fixes the stage graph; P5 swaps its private `stage_id_by_skill` copy for P4's at its T19. |
 | **B4** ✅ | **P6**, **P7**, **P8**, **P9** (parallel) — **all four merged** | Discovery. P8 consumes seams from P6 (`BlueskyFetchError` reaching the engine) and P7 (`drain_diagnostics`, `preflight`), so land P6 and P7 before P8; P9 is independent. P9 merged as PR #51 (`62e91d0`), closing 25 findings (24 original + B-113, discovered and folded in mid-package — see P9's plan §0/§8). |
 | **B5** ✅ | **P15** — merged | Binds to P3's gate context keys and P1's `recent_events`; both already merged (P3 in Wave B2, P1 in Wave A). **Pre-flight check done 2026-08-19** (before Wave B5 kickoff): all 16 of P15's own findings confirmed untouched by any package that has landed since this plan was written; P3's gate/approval/edit contract already supplied every key P15's templates were planned to consume, so T9/T10/T22's "Consumes P3" dependency was already satisfied with no wait — see P15's plan §0. P15 merged as PR #54 (`8893789`), closing all 16 findings; its final whole-branch review found and fixed two Important, security-relevant gaps beyond its own 16 — see P15's plan §8. |
-| **C** | **P13**, then **P14** — next, not started | Documentation describes the fixed code, or it is fiction again. P14 is last because six packages owe it contract decisions. |
+| **C** | **P13** ✅ merged — then **P14**, next, not started | Documentation describes the fixed code, or it is fiction again. P14 is last because six packages owe it contract decisions. |
 
-**Programme status as of 2026-08-19:** Waves A, B1, B2, B3, B4, B5 fully merged (14 of 16
-packages: P0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12, P15). Wave C (P13, then P14) is
-next — not started.
+**Programme status as of 2026-08-21:** Waves A, B1, B2, B3, B4, B5, and P13 (Wave C's first half)
+are fully merged (**15 of 16 packages**: P0, P1, P2, P3, P4, P5, P6, P7, P8, P9, P10, P11, P12,
+P15, P13). P13 merged as [PR #60](https://github.com/happydotemdr/ContentStudio/pull/60)
+(`b9479b8`, 2026-08-21), closing all 48 of its findings. A follow-up outside P13's own scope — the
+label-first sub-beat legality decision P13's T6 flagged as a genuine operator call rather than
+deciding unilaterally — landed immediately after as [PR #61](https://github.com/happydotemdr/ContentStudio/pull/61)
+(`9893072`). **P14 is the one package left.** It is unblocked by P13's merge but still has one
+open upstream input (I7, from P6+P9: whether the YouTube-shaped `upload_date` alias in
+`discovery_digest.py` is removed or kept) before all of its gated tasks can execute. See P13's own
+plan, `remediation/P13-skills-contracts.md`'s "Status" section, for full detail.
 
 ### Cross-package contracts (frozen during validation)
 
@@ -254,9 +261,20 @@ The remediation is complete when all of these hold:
 7. Gate C rejects a sheet with a malformed shot heading instead of printing `PASS`. ✅ Closed by P11 (Wave B2, Gate C's owning package), verified end to end.
 8. The operator-facing UI stops hiding or misrepresenting the signals the rest of this programme made trustworthy underneath: a gate that never ran reads as "never ran," not as a pass; an htmx request failure is visible, not silent; Browse shows what it can't read instead of omitting it; doctor.html stops printing the literal string `"None"`. ✅ Closed by P15 (PR #54), see its plan §8 for the full record, including the D-47 sanitizer's six independently-found-and-fixed security bugs.
 
-**Baselines, last verified 2026-08-19 at `8893789` (P15 merged):** root suite 445 passed/1
-skipped/0 failed; app suite 1954 passed/4 skipped/2 xfailed/0 failed (the 2 xfail are P15's T13,
-a deliberate, documented block on P8 landing a `handles` join — see P15's plan §8). CI green on
-all three jobs (`app-suite`/`root-suite`/`no-live-credentials`), across both triggered CI runs
-(branch push + PR event), on P15's merge commit. Re-verify at the start of each future session —
-this line is a snapshot, not a live status.
+**Baselines, last verified 2026-08-19 at `8893789` (P15 merged, i.e. `main`'s state):** root suite
+445 passed/1 skipped/0 failed; app suite 1954 passed/4 skipped/2 xfailed/0 failed (the 2 xfail are
+P15's T13, a deliberate, documented block on P8 landing a `handles` join — see P15's plan §8). CI
+green on all three jobs (`app-suite`/`root-suite`/`no-live-credentials`), across both triggered CI
+runs (branch push + PR event), on P15's merge commit. Re-verify at the start of each future
+session — this line is a snapshot, not a live status.
+
+**Baselines, last verified 2026-08-21 at `9893072` (`main`, P13 + its PR #61 follow-up both
+merged):** root suite 533 passed/0 failed; app suite 1954 passed/4 skipped/2 xfailed/0 failed
+(unchanged from P15's baseline — P13 and its follow-up touch no app-suite files). The root-suite
+count moved from 445 (P15's baseline) not because of P13's own tasks, but because of an unrelated
+77-commit backlog (elevenlabs-tooling, stitcher/native-pipeline, audio-preconditioning — none of
+it this programme's scope) that landed on `main` during P13's execution window. The cowork-plugin
+lock file (`scripts/cowork-plugin.lock.json`) needed a rebuild (`bash
+scripts/build-cowork-plugin.sh`) after merging — expected drift any time `.claude/skills/**`
+changes, not a regression. Re-verify at the start of each future session — this line is a
+snapshot, not a live status.
