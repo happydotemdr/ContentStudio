@@ -183,6 +183,18 @@ def _frameworks_block(bundle: dict) -> str:
             "general knowledge -- write Part 2's alternatives and Part 4's practice from the "
             "program material above, or say plainly that none was available."
         )
+    # Each activity's whole source document is embedded, so several activities
+    # from one file -- or an activity drawn from a file that is also a program
+    # source -- would send the same text repeatedly. Measured on a real
+    # selection: two of five picks resolved to the same 26,792-character
+    # program document, which was in the prompt a third time as a program
+    # source. Every activity still gets announced with its own reason; only
+    # the body is sent once.
+    # .get, not [] -- generate_draft's contract is that it never raises, and a
+    # program source without a rel_path must cost deduplication, not the run.
+    already_embedded = {
+        item.get("rel_path") for item in (bundle.get("program_sources") or [])
+    } - {None}
     blocks = []
     for item in chosen:
         header = (
@@ -191,15 +203,24 @@ def _frameworks_block(bundle: dict) -> str:
         )
         meta = []
         if item.get("anchor"):
-            meta.append(f"Found under the heading {item['anchor']!r} in the document below")
+            meta.append(f"Found under the heading {item['anchor']!r}")
         if item.get("live_ready"):
             meta.append(f"Can be run live in about {item.get('duration_min') or 10} minutes")
         if item.get("why"):
             meta.append(f"Chosen because: {item['why']}")
-        blocks.append(
-            header + "\n" + "\n".join(f"- {line}" for line in meta) + "\n\n"
-            + _scrub_delimiter(item["text"])
-        )
+
+        rel_path = item.get("rel_path")
+        if rel_path in already_embedded:
+            # A heading with nothing under it reads as a document that failed
+            # to load, so say where the text actually is.
+            body = (
+                f"(The full text of this activity's source document, "
+                f"`{item['source_label']}`, is already included above -- read it there.)"
+            )
+        else:
+            already_embedded.add(rel_path)
+            body = _scrub_delimiter(item["text"])
+        blocks.append(header + "\n" + "\n".join(f"- {line}" for line in meta) + "\n\n" + body)
     return "\n\n".join(blocks)
 
 

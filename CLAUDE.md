@@ -353,7 +353,7 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
   `python -m pytest tests/` at the repo root is the linter / doc-truth / skill-provenance suite (557 tests).
   `cd pipeline-app && python -m pytest` is the Shorts pipeline app suite (1960 tests).
   `cd doc-ingest-app && python -m pytest` is the Freedom2BeU corpus ingest suite (243 tests).
-  `cd coach-prep-app && python -m pytest` is the coach-prep generation suite (298 tests).
+  `cd coach-prep-app && python -m pytest` is the coach-prep generation suite (302 tests).
   **All four must be run; none is a superset of another.** This said "two suites" until
   2026-08-21, naming only the root and pipeline-app ones — the two Freedom2BeU apps had been
   there the whole time, and `test_documented_test_commands_collect_what_the_docs_claim` could

@@ -22,9 +22,14 @@ SAMPLE_BUNDLE = {
         {"source_label": "meeting-note-jul", "meeting_date": "2026-07-22",
          "text": "Named the goal once, in a moment of relief."},
     ],
+    # rel_path included because get_program_sources always returns it, and the
+    # framework block deduplicates against it -- a fixture missing it tests a
+    # shape the app never actually sees.
     "program_sources": [
-        {"source_label": "program-structure-v3", "text": "12-week arc, 4 pillars."},
-        {"source_label": "judge-module", "text": "The Judge saboteur worksheet."},
+        {"source_label": "program-structure-v3", "rel_path": "Offer/Structure_V3.gdoc.md",
+         "text": "12-week arc, 4 pillars."},
+        {"source_label": "judge-module", "rel_path": "Frameworks/Judge.docx.md",
+         "text": "The Judge saboteur worksheet."},
     ],
     "book_list": {"source_label": "f2bu-coaching-book-recommendations",
                   "text": "| Book Title | Author |" + chr(10) + "| Dare to Lead | Brene Brown |"},
@@ -324,3 +329,74 @@ def test_prompt_constrains_heading_depth_for_the_google_docs_round_trip():
     cron. Headings deeper than H3 do not survive that cleanly."""
     prompt = generate.build_prompt(SAMPLE_BUNDLE)
     assert "Never go deeper than `###`" in prompt
+
+
+# --- the same document reaching the prompt more than once -------------------
+#
+# Measured on Josh's real selection, 2026-08-21: two of five picks resolved to
+# Freedom2BeU_Program_Structure_V3 (26,792 chars), which is ALSO a program
+# source -- so one document was embedded three times, ~80,000 characters of
+# the drafting prompt spent re-sending text the model had already read.
+
+_SHARED = "Frameworks to consider/Offer/Program_Structure_V3.gdoc.md"
+
+
+def _bundle_with_repeats():
+    # A single unique sentinel, not a repeated phrase: str.count is
+    # non-overlapping, so counting a repeated phrase measures how the
+    # fixture was built rather than how many copies reached the prompt.
+    body = "SENTINEL_PROGRAM_BODY " + ("filler text " * 40)
+    return {
+        **SAMPLE_BUNDLE,
+        "program_sources": [
+            {"source_label": "program-structure-v3", "rel_path": _SHARED, "text": body},
+        ],
+        "selected_frameworks": [
+            {"id": "tiny-habits", "title": "Tiny Habits", "framework": "F2BU", "kind": "activity",
+             "anchor": "## Tiny Habits", "live_ready": True, "duration_min": 15,
+             "why": "one small kept promise", "source_label": "program-structure-v3",
+             "rel_path": _SHARED, "version": None, "text": body},
+            {"id": "the-chatter", "title": "The Chatter", "framework": "F2BU", "kind": "activity",
+             "anchor": "## The Chatter", "live_ready": True, "duration_min": 15,
+             "why": "his Judge", "source_label": "program-structure-v3",
+             "rel_path": _SHARED, "version": None, "text": body},
+        ],
+    }
+
+
+def test_a_document_is_embedded_once_however_many_activities_come_from_it():
+    prompt = generate.build_prompt(_bundle_with_repeats())
+    assert prompt.count("SENTINEL_PROGRAM_BODY") == 1
+
+
+def test_a_repeated_document_still_announces_each_activity():
+    """Deduplicating the BODY must not lose the activities. Ryan's doc offers
+    each as a separate way in, and each carries its own reason for fitting
+    this client."""
+    prompt = generate.build_prompt(_bundle_with_repeats())
+    for expected in ("Tiny Habits", "The Chatter", "one small kept promise", "his Judge",
+                     "## Tiny Habits", "## The Chatter"):
+        assert expected in prompt, expected
+
+
+def test_a_deduplicated_activity_says_where_its_text_is():
+    """A heading with no body under it reads as a document that failed to
+    load. It has to point at the copy that is present."""
+    prompt = generate.build_prompt(_bundle_with_repeats())
+    assert "already included above" in prompt
+
+
+def test_activities_from_different_documents_are_all_embedded():
+    bundle = {
+        **SAMPLE_BUNDLE,
+        "program_sources": [],
+        "selected_frameworks": [
+            {"id": "a", "title": "A", "framework": "F", "kind": "activity", "source_label": "a",
+             "rel_path": "a.md", "version": None, "text": "BODY OF A"},
+            {"id": "b", "title": "B", "framework": "F", "kind": "activity", "source_label": "b",
+             "rel_path": "b.md", "version": None, "text": "BODY OF B"},
+        ],
+    }
+    prompt = generate.build_prompt(bundle)
+    assert "BODY OF A" in prompt
+    assert "BODY OF B" in prompt
