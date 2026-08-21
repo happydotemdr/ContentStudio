@@ -184,8 +184,10 @@ Net-info-gain check: <what this says that the top existing Shorts don't> [C]
 
 HOOK        (0–3s  | N words): "<VO line>"
 SETUP       (3–8s  | N words): "<VO line>"
-BUILD/VALUE (8–28s | N words): "<VO line(s)>"
-  [re-hook beat @ ~15s]: "<VO line>"
+BUILD/VALUE (8–28s | N words):
+  (<start>–<end>s | N words): "<VO line>"
+  [re-hook beat @ ~15s] (<start>–<end>s | N words): "<VO line>"
+  (<start>–<end>s | N words): "<VO line>"
 PAYOFF      (28–38s | N words): "<VO line>"
 LOOP/CTA    (38–45s | N words, mirrors hook): "<VO line>"
 Comment-bait question: "<specific question>"
@@ -243,6 +245,26 @@ checks: D6 rejects a `Gate E:` value still wrapped in `<…>` or `[…]`, or sti
 carrying the template's `|` bars** `[I]`. Emitting the contract unfilled is a
 Gate D failure, not a report. **This still does not prove Gate E ran** `[I]` —
 nothing in Gate D can; see `references/read-aloud-gates.md` "Known limits".
+
+**A beat heading carries its own quoted VO line inline** — one range, one word
+count, one quote, all on the heading's own line, as shown above for Hook,
+Setup, Payoff, and Loop/CTA `[I]`. **A beat that needs more than one timed VO
+chunk — almost always Build/Value — declares only its own total range and word
+budget on the heading line, with no inline quote, and delegates to indented
+sub-beat lines beneath it**, each stating its own range and word count and
+carrying its own quote. A sub-beat line is legal in either of two shapes,
+interchangeably `[P]` (operator decision, 2026-08-20,
+`docs/superpowers/plans/remediation/P13-skills-contracts.md` T6's "NEW
+FINDING" block): **range-first** — the range opens the line, e.g.
+`(8–18s | 20 words): "<VO line>"` — or **label-first** — a short name opens
+the line, immediately followed by its range, e.g.
+`mechanism (18–28s | 11 words): "<VO line>"`, useful for naming what that
+sub-beat is doing. **There is no third shape.** In particular, a heading whose
+VO text sits on the *next* line with no range or label at all does not parse —
+Gate D (`scripts/lint_script_language.py`, `SUBRANGE_RE` /
+`LABEL_FIRST_SUBRANGE_RE`) enforces exactly these two shapes and nothing else;
+see `references/read-aloud-gates.md` for what it does when a line matches
+neither.
 
 A full worked example (concept brief → finished script, with citations
 annotating each choice) is in `references/worked-example.md` — read it before

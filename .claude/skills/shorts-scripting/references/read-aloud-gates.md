@@ -64,6 +64,25 @@ on-screen text plates legitimately use written punctuation and are never checked
 over the quoted spans of beat lines, which is also why the en-dash inside every `(0–3s | N words)`
 heading never fires D1.
 
+### Sub-beat lines — the only two legal shapes
+
+A beat that needs more than one timed VO chunk (almost always Build/Value) declares its own total
+range and word budget on the heading line, with no inline quote, and delegates to indented
+sub-beat lines beneath it. Each sub-beat line is legal in exactly one of two shapes `[P]` (operator
+decision, 2026-08-20, `docs/superpowers/plans/remediation/P13-skills-contracts.md` T6's "NEW
+FINDING" block, resolving C-88b):
+
+- **Range-first**: the range opens the line — `(8–18s | 20 words): "<VO line>"` `[P]`.
+- **Label-first**: a short name opens the line, immediately followed by its range — `mechanism (18–28s | 11 words): "<VO line>"` `[P]`.
+
+The parser (`scripts/lint_script_language.py`) recognises these via `SUBRANGE_RE` and
+`LABEL_FIRST_SUBRANGE_RE` respectively — both require the line's own `| N words` budget group,
+which is the author's assertion that the line is a beat line at all. **A line matching neither
+shape is refused loud, as a blocking PARSE finding naming the line, not silently dropped** `[I]`.
+The most common way to write a refused line by accident is a heading whose VO text sits on the
+*next* line with no range or label at all — that is not a third legal shape, however natural it
+reads; every sub-beat line must open with one of the two shapes above.
+
 ### The six checks
 
 | Check | Rule | Provenance |

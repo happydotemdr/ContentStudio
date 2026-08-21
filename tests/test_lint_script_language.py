@@ -145,35 +145,35 @@ def test_prose_that_merely_mentions_a_beat_label_is_not_a_disguised_heading():
     assert findings == []
 
 
-def test_a_label_first_sub_beat_is_a_blocking_parse_finding():
-    """C-88b fault test. `mechanism (18-28s | 19 words)` is a label-first
-    sub-beat: SUBRANGE_RE requires the range to start the line, so this line
-    falls through `_beat_name` unrecognised -- and unlike T1's disguised
-    top-level headings, it names no BEAT_LABEL either, so `_disguised_beat_label`
-    does not catch it. It carries its own `| N words` budget group, the
-    author's own assertion that this is a beat line -- so refusing it must be
-    a loud finding, not a silent deletion."""
+def test_a_label_first_sub_beat_parses_as_a_legal_sub_beat():
+    """Operator decision 2026-08-20 (P13-skills-contracts.md T6's NEW FINDING
+    block): label-first sub-beats are legal. `mechanism (18-28s | 11 words)`
+    opens with its own label instead of its range; LABEL_FIRST_SUBRANGE_RE
+    recognises it exactly like a range-first sub-beat, so a well-formed one
+    must produce no PARSE finding and its quoted span must become a VOLine
+    under the parent heading, range and all."""
     text = (
-        "BUILD/VALUE (8–28s | 20 words):\n"
+        "BUILD/VALUE (8–28s | 31 words):\n"
         '  (8–18s | 20 words): "A position stand reports that kids who sample many sports '
         'still tend to reach the elite level in the end."\n'
-        '  mechanism (18–28s | 19 words): "Kids hand over control and something shifts fast today for them."\n'
+        '  mechanism (18–28s | 11 words): "Kids hand over control and something shifts fast today for them."\n'
     )
-    _, findings = parse_script(text)
-    assert [(f.check, f.beat, f.kind) for f in findings] == [("PARSE", "BUILD/VALUE", "fail")]
-    assert "line 3" in findings[0].message
+    vo_lines, findings = parse_script(text)
+    assert findings == []
+    assert len(vo_lines) == 2
+    assert vo_lines[1].beat == "BUILD/VALUE"
+    assert (vo_lines[1].start_s, vo_lines[1].end_s) == (18, 28)
+    assert vo_lines[1].text == "Kids hand over control and something shifts fast today for them."
 
 
-def test_a_refused_sub_beat_is_distinguishable_from_a_beat_that_has_none():
-    """C-88b distinguishability test. Both scripts have a heading already
-    covered by a sibling sub-beat whose own declared/counted words match
-    exactly, so neither the coverage check nor the dropped-text check fires
-    either way -- isolating the one real difference: one script's second
-    sub-beat is label-first and silently refused ('the parser ate what the
-    author wrote'), the other simply has no second sub-beat at all ('the
-    author wrote nothing'). Those must not collapse into the same empty
-    finding list -- that collapse is the defect itself."""
-    with_refused = (
+def test_a_label_first_sub_beat_still_gets_its_own_dropped_text_check():
+    """Legalizing label-first sub-beats does not exempt them from T3's
+    per-line dropped-text check: a label-first line whose own `| N words`
+    declaration overstates its quoted span still produces a partial-parse
+    finding, distinguishing it from an otherwise-identical script where that
+    sub-beat is simply absent -- those two must not collapse into the same
+    empty finding list."""
+    with_shortfall = (
         "BUILD/VALUE (8–28s | 20 words):\n"
         '  (8–18s | 20 words): "A position stand reports that kids who sample many sports '
         'still tend to reach the elite level in the end."\n'
@@ -184,35 +184,32 @@ def test_a_refused_sub_beat_is_distinguishable_from_a_beat_that_has_none():
         '  (8–18s | 20 words): "A position stand reports that kids who sample many sports '
         'still tend to reach the elite level in the end."\n'
     )
-    _, refused_findings = parse_script(with_refused)
+    _, shortfall_findings = parse_script(with_shortfall)
     _, none_findings = parse_script(with_none)
-    assert refused_findings != none_findings
+    assert shortfall_findings != none_findings
     assert none_findings == []
+    assert shortfall_findings[0].kind == "partial-parse"
 
 
-def test_a_refused_sub_beat_reaches_the_shell_as_exit_1(tmp_path):
-    """C-88b surfacing test. The script's ONLY defect is the refused sub-beat:
-    the BUILD/VALUE parent carries a valid `| N words` budget that exactly
-    matches what its surviving sibling sub-beat provides (so neither T3's
-    missing-budget check nor the group-level dropped-text check has anything
-    to fire on), and all five top-level beats are present with clean,
-    in-tolerance lines (so T2's `check_beat_set` and every other D-check stay
-    silent too). The exit code must still be 1, proving the new sub-beat
-    detector fired on its own -- not some other check riding along. Verified
-    by hand: with `BUDGET_GROUP_RE` disabled, this script now exits 0."""
+def test_a_clean_script_with_a_label_first_sub_beat_reaches_the_shell_as_exit_0(tmp_path):
+    """End-to-end proof the legalization reaches the CLI, not just
+    `parse_script`. Every other beat is clean and in-range; the sole
+    label-first sub-beat ('mechanism …') is the only thing distinguishing
+    this script from an ordinary passing one, and `main()` must exit 0
+    through it."""
     text = (
         'HOOK (0–3s | 6 words): "Best part was the mud today."\n'
         'SETUP (3–8s | 6 words): "Kids do that every single time."\n'
-        "BUILD/VALUE (8–28s | 8 words):\n"
+        "BUILD/VALUE (8–28s | 15 words):\n"
         '  (11–18s | 8 words): "Kids hand over control and something shifts fast."\n'
-        '  mechanism (18–24s | 6 words): "Extra words that never surfaced today somehow."\n'
+        '  mechanism (18–24s | 7 words): "Extra words that never surfaced today somehow."\n'
         'PAYOFF (28–35s | 6 words): "His proof came from a trader."\n'
         'LOOP/CTA (38–45s | 6 words): "It won\'t set him back today."\n'
         "GATES\n  Gate E (fresh Opus critic): pass\n"
     )
-    path = tmp_path / "refused_subbeat.md"
+    path = tmp_path / "label_first_subbeat.md"
     path.write_text(text, encoding="utf-8")
-    assert main([str(path)]) == 1
+    assert main([str(path)]) == 0
 
 
 def test_a_visual_note_line_carrying_a_time_range_is_not_a_refused_sub_beat():
@@ -1067,21 +1064,6 @@ MUTATIONS = [
      'LOOP/CTA    (34–40s | 10 words, mirrors hook): "Ask what the best part was. Then believe it."\n',
      "", "PARSE"),
     ("C89-stripped-budget", "HOOK        (0–4s  | 9 words)", "HOOK        (0–4s)", "PARSE"),
-    # C88b (T1b, already merged): CLEAN_SCRIPT's BUILD/VALUE sub-beat is
-    # deliberately the BARE, parseable form (a parenthesis starting the
-    # line) so the control stays clean. This mutation adds a "mechanism "
-    # label prefix, which SUBRANGE_RE cannot match -- the exact refused-line
-    # shape T1b's detector exists to catch instead of silently deleting.
-    # The heading's own budget (18 words) exactly matches what the surviving
-    # first sub-beat alone provides, so refusing the second sub-beat below
-    # does not also trip the group-level dropped-text check or T2's
-    # check_beat_set -- isolating the row to the label-first sub-beat
-    # detector alone. Verified by hand: with `BUDGET_GROUP_RE` disabled, this
-    # mutation no longer fails the gate.
-    ("C88b-label-first-subbeat",
-     '  (20–24s | 4 words): "That part never airs."',
-     '  aside (20–24s | 4 words): "That part never airs."',
-     "PARSE"),
 ]
 
 
