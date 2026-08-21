@@ -149,10 +149,26 @@ def run_once(db_path: Path, cfg) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=None, help="path to a YAML config overriding defaults")
+    ap.add_argument(
+        "--retry-failed", metavar="LIKE_PATTERN", default=None,
+        help="clear failed-job rows for source files matching this SQL LIKE pattern "
+             "(e.g. '%%.gsheet') so this run re-attempts them, then run normally. "
+             "Use after fixing a converter or gauntlet bug -- enqueue_pending_jobs "
+             "otherwise never retries a file that already failed at this source version.",
+    )
     args = ap.parse_args(argv)
 
     cfg = load_config(Path(args.config) if args.config else None)
     db_path = HERE.parent / "doc_ingest.db"
+    if args.retry_failed:
+        conn = db.init_db(db_path)
+        try:
+            cleared = jobs.clear_failed_jobs(conn, args.retry_failed)
+        finally:
+            conn.close()
+        print(f"cleared {len(cleared)} failed job(s) for retry:")
+        for rel_path in cleared:
+            print(f"  {rel_path}")
     run_once(db_path, cfg)
     return 0
 

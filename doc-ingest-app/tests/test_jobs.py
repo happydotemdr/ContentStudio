@@ -355,3 +355,84 @@ def test_reclaim_does_not_reprocess_a_placing_job_whose_conversion_already_lande
     assert job_id not in reclaimed
     row = conn.execute("SELECT status FROM conversion_jobs WHERE id = ?", (job_id,)).fetchone()
     assert row[0] == "placing"
+
+
+# --- clear_failed_jobs: the operator escape hatch ---------------------------
+#
+# enqueue_pending_jobs suppresses a retry when a file already failed at
+# exactly this source version. The suppression key is the SOURCE version
+# alone, so nothing about it changes when the CONVERTER does -- a fixed
+# gauntlet can never reach a file that failed under the old one. Discovered
+# 2026-08-21: after fixing the gsheet gauntlet, a full ingest run enqueued 0
+# jobs and all six gsheets stayed failed.
+
+def _fail_job_for(conn, source_file_id, content_hash="hash1"):
+    now = "2026-08-13T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO conversion_jobs (source_file_id, status, source_hash_at_attempt, "
+        "failure_reason, created_at) VALUES (?, 'failed', ?, 'row_count_mismatch', ?)",
+        (source_file_id, content_hash, now),
+    )
+    conn.commit()
+
+
+def test_enqueue_does_not_retry_a_file_that_failed_at_this_same_version(conn):
+    """The behavior clear_failed_jobs exists to override -- pinned here so the
+    escape hatch below is testing against a real block, not a no-op."""
+    source_file_id = _seed_source_file(conn, "book-list.gsheet")
+    _fail_job_for(conn, source_file_id)
+    assert jobs.enqueue_pending_jobs(conn) == 0
+
+
+def test_clear_failed_jobs_lets_a_fixed_converter_retry(conn):
+    source_file_id = _seed_source_file(conn, "book-list.gsheet")
+    _fail_job_for(conn, source_file_id)
+
+    cleared = jobs.clear_failed_jobs(conn, "%.gsheet")
+
+    assert cleared == ["book-list.gsheet"]
+    assert jobs.enqueue_pending_jobs(conn) == 1
+
+
+def test_clear_failed_jobs_leaves_non_matching_paths_alone(conn):
+    """A targeted clear must not resurrect files that fail for unrelated
+    reasons -- clearing '%.gsheet' after a gsheet fix must not re-attempt the
+    docx files that still fail word-count parity."""
+    gsheet_id = _seed_source_file(conn, "book-list.gsheet")
+    docx_id = _seed_source_file(conn, "module.docx", content_hash="hash2")
+    _fail_job_for(conn, gsheet_id)
+    _fail_job_for(conn, docx_id, content_hash="hash2")
+
+    cleared = jobs.clear_failed_jobs(conn, "%.gsheet")
+
+    assert cleared == ["book-list.gsheet"]
+    assert jobs.enqueue_pending_jobs(conn) == 1
+    still_failed = conn.execute(
+        "SELECT sf.rel_path FROM conversion_jobs cj JOIN source_files sf ON sf.id = cj.source_file_id "
+        "WHERE cj.status = 'failed'"
+    ).fetchall()
+    assert still_failed == [("module.docx",)]
+
+
+def test_clear_failed_jobs_matching_nothing_is_a_no_op(conn):
+    source_file_id = _seed_source_file(conn, "book-list.gsheet")
+    _fail_job_for(conn, source_file_id)
+
+    assert jobs.clear_failed_jobs(conn, "%.xlsx") == []
+    assert jobs.enqueue_pending_jobs(conn) == 0
+
+
+def test_clear_failed_jobs_does_not_touch_complete_jobs(conn):
+    """Only failed rows are droppable -- a completed job is the record that a
+    conversion happened, and losing it would make the file look never-attempted."""
+    source_file_id = _seed_source_file(conn, "book-list.gsheet")
+    conn.execute(
+        "INSERT INTO conversion_jobs (source_file_id, status, created_at) "
+        "VALUES (?, 'complete', '2026-08-13T00:00:00+00:00')",
+        (source_file_id,),
+    )
+    conn.commit()
+
+    assert jobs.clear_failed_jobs(conn, "%.gsheet") == []
+    remaining = conn.execute("SELECT status FROM conversion_jobs").fetchall()
+    assert remaining == [("complete",)]
