@@ -49,10 +49,27 @@ paragraph's own already-declared taxonomy scope).
 
 **CI, verified 2026-08-20:** all 6 check rows pass — `app-suite`, `no-live-credentials`,
 `root-suite`, each across both triggered runs (branch-push event and PR event).
-`mergeStateStatus: CLEAN`, `mergeable: MERGEABLE`. Root suite 534 passed; app suite 1954
-passed/4 skipped/2 xfailed (the 2 xfail are P15's, unrelated to P13). **Not yet merged** — ready,
-awaiting an explicit merge decision (merging to `main` is a shared-state action, not taken
-unilaterally).
+`mergeStateStatus: CLEAN`, `mergeable: MERGEABLE`.
+
+**MERGED 2026-08-21T01:35:58Z**, merge commit `b9479b8`. P13 is closed: 48 findings
+(`B-84`, `C-01`–`C-35`, `C-40`–`C-48`, `C-54`, `C-55`, `F-22`) landed on `main`.
+
+**One follow-up landed separately, immediately after, as [PR #61](https://github.com/happydotemdr/ContentStudio/pull/61)
+(merge commit `9893072`):** the label-first sub-beat legality question this package's T6 flagged
+as a genuine operator decision (out of P13's own scope, filed as a tracked follow-up rather than
+decided unilaterally — see this file's T6 "NEW FINDING" block) resolved as **label-first
+sub-beats become legal** syntax (`mechanism (18–28s | 11 words): "..."`, alongside the existing
+range-first form). `scripts/lint_script_language.py`, `shorts-scripting/SKILL.md` and
+`references/{read-aloud-gates,worked-example}.md` were updated accordingly, and
+`worked-example.md`'s script body — which had a second, independent parse defect beyond
+label-first — was rewritten to parse cleanly (zero PARSE/D1–D5 findings). Not a P13 task; a
+downstream fix this package's own work surfaced and correctly routed around rather than through
+mid-package scope creep.
+
+**Post-merge baseline, re-verified 2026-08-21** (this branch merged with `origin/main`, which now
+includes both #60 and #61): root suite 533 passed; app suite 1954 passed/4 skipped/2 xfailed (the
+2 xfail are P15's, unrelated to P13). Cowork-plugin lock file rebuilt to match the post-#61 skill
+edits.
 
 ---
 
