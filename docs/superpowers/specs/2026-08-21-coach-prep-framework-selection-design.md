@@ -189,6 +189,24 @@ passing while `process_candidate` would have raised `KeyError` on the first real
 Five hand-written `generate_draft` lambdas broke the moment the real signature grew a
 parameter. Both now have contract tests.
 
+## Verified end to end
+
+Against the live corpus and the real Drive folder, 2026-08-21:
+
+- **Selection** on Josh's two real transcripts (140,665 chars) picked 5 activities from 4
+  different frameworks, 0 invented ids, each with a reason quoting his own words.
+- **The prep doc** for both Josh and Sean passed all three gates clean, and reads like the
+  Josh v3 gold standard — a *Why this direction* that argues against the obvious
+  alternative, bold framing to say verbatim, numbered live steps, a book recommended only
+  where apt, deeper work held in reserve with a stated condition.
+- **The Google Docs round trip.** One draft published to Pending Review came back as
+  `application/vnd.google-apps.document` with **12 of 12 headings intact** and 99.04%
+  word-level similarity. The only differences are Google escaping `~` and `[` as `\~` and
+  `\[` on export — standard markdown escaping, semantically identical, and it does not
+  reach the citation gate, which runs on the model's output before publishing. The
+  verification document was moved to Drive trash afterwards so it does not sit in Ryan's
+  review queue.
+
 ## Known gaps
 
 - **doc-ingest-app is absent from CLAUDE.md's network roster.** Its Drive and firecrawl
