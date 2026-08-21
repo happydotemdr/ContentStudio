@@ -17,4 +17,14 @@ grounding stage). Reachable only from `127.0.0.1` — never deploy this.
 
 ## Test
 
+Run from this directory. `python -m` is required, not optional — a bare `pytest` here fails
+collection on six test modules that import this app's local code by a bare module name
+(`tools.*` or `run_discovery_cron`), because the console-script entry point does not put the
+cwd on `sys.path`.
+
+    cd pipeline-app
     python -m pytest
+
+This is the app suite: `1960 tests`. It is **not** run by a `pytest` at the repo root, which is
+scoped by `testpaths` to a separate root suite of `543 tests`. Both must pass before anything
+here is called green.

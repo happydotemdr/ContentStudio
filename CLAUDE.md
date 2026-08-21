@@ -276,9 +276,35 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
   defects.
   `tests/test_doc_truth.py::test_every_audit_finding_is_claimed_by_exactly_one_remediation_plan`
   keeps the finding→plan mapping total, so the gap stays measured instead of being measured once.
-- **Tests live in two suites, each run from its own directory.** Repo root:
-  `python -m pytest tests/ -v` (the linters and skill provenance). App:
-  `cd pipeline-app && python -m pytest`. Run each from the directory named — `pipeline-app`
-  has its own `scripts/` package, and invoking its suite from the repo root shadows it with
-  the root `scripts/` and raises `ModuleNotFoundError`. A `pytest.ini` at each level pins the
-  rootdir so a bare `pytest` does the right thing in both places.
+- **Tests live in two suites, each run from its own directory, and `python -m pytest` is
+  mandatory — not a style preference.**
+
+      python -m pytest tests/
+
+      cd pipeline-app && python -m pytest
+
+  `python -m pytest tests/` at the repo root is the linter / doc-truth / skill-provenance suite (543 tests).
+  `cd pipeline-app && python -m pytest` is the app suite (1960 tests).
+  **Both must be run; neither is a superset of the other.** Three traps, all measured on 2026-08-20:
+
+  - **A bare `pytest` at the repo root is silently wrong.** `pytest.ini`'s `testpaths = tests`
+    scopes it to the root suite, so it prints a pass line and exits 0 while never running the app
+    suite — four fifths of the repo's tests. A green bare `pytest` is not evidence of anything.
+  - **A bare `pytest` inside `pipeline-app/` fails collection.** The console-script entry point
+    does not prepend the cwd to `sys.path`; `python -m` does. Without it, six test modules that
+    import this app's local code by a bare module name fail: `test_backfill_youtube_frontmatter.py`,
+    `test_migrate_handles.py`, `test_setup_discovery_task.py`, and `test_tag_handle_brands_2026_08.py`
+    each do `from tools import ...` and raise `ModuleNotFoundError: No module named 'tools'`;
+    `test_routes_discovery.py` and `test_run_discovery_cron.py` each do
+    `import run_discovery_cron as cron` and raise
+    `ModuleNotFoundError: No module named 'run_discovery_cron'`. `pipeline-app/scripts/` was
+    renamed `pipeline-app/tools/` on 2026-08-08 (finding F-64); this module list and error text
+    are re-measured as of 2026-08-20, not the F-64 snapshot — two of the six modules
+    (`test_routes_discovery.py`, `test_tag_handle_brands_2026_08.py`) were added after F-64 landed.
+  - **Running the app suite from the repo root is still wrong.** `pipeline-app` is not on
+    `sys.path` from there either, so the same six modules fail to import with the same two
+    `ModuleNotFoundError` shapes described above.
+
+  `tests/test_doc_truth.py::test_documented_test_commands_collect_what_the_docs_claim` executes
+  the two commands above exactly as written here and fails if either stops collecting the stated
+  count.

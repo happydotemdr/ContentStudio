@@ -249,3 +249,57 @@ def test_docs_readme_accounts_for_every_committed_doc():
     assert not unlisted, (
         f"docs/ holds committed documents docs/README.md never mentions: {unlisted}"
     )
+
+
+COMMAND_BLOCK_RE = re.compile(r"^\s{4,}(python -m pytest[^\n]*)$", re.MULTILINE)
+
+
+def _documented_commands(doc: Path) -> list[str]:
+    return [c.strip() for c in COMMAND_BLOCK_RE.findall(doc.read_text(encoding="utf-8"))]
+
+
+def _claimed_counts(doc: Path) -> dict[str, int]:
+    """Maps a documented command to the test count the same doc claims for it."""
+    text = doc.read_text(encoding="utf-8")
+    return {
+        cmd: int(n)
+        for cmd, n in re.findall(
+            r"`(python -m pytest[^`]*)`[^\n]*?\b([\d,]+) tests", text.replace(",", "")
+        )
+    }
+
+
+@pytest.mark.allow_subprocess
+@pytest.mark.parametrize("doc_name", ["CLAUDE.md", "pipeline-app/README.md"])
+def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
+    if os.environ.get("DOC_TRUTH_CHILD"):
+        pytest.skip("child collection run; do not recurse")
+    doc = REPO / doc_name
+    commands = _documented_commands(doc)
+    assert commands, f"{doc_name} must document its test invocation as an indented command block"
+    env = {**os.environ, "DOC_TRUTH_CHILD": "1"}
+    for command in commands:
+        cwd = REPO / "pipeline-app" if doc_name.startswith("pipeline-app") else REPO
+        argv = [sys.executable, "-m", "pytest", "--collect-only", "-q",
+                "-p", "no:cacheprovider", *command.split()[3:]]
+        proc = subprocess.run(argv, cwd=cwd, capture_output=True,
+                              encoding="utf-8", errors="replace", env=env)
+        assert proc.returncode == 0, (
+            f"{doc_name} documents `{command}`, which does not collect cleanly:\n{proc.stdout}\n{proc.stderr}"
+        )
+        collected = int(re.search(r"(\d+) tests? collected", proc.stdout).group(1))
+        claimed = _claimed_counts(doc).get(command)
+        if claimed is not None:
+            assert collected == claimed, (
+                f"{doc_name} claims `{command}` runs {claimed} tests; it collects {collected}"
+            )
+
+
+def test_no_doc_claims_a_bare_pytest_is_sufficient():
+    """F-62's exact sentence, pinned dead. Bare `pytest` in pipeline-app/ fails collection
+    on four files; at the repo root it silently omits 80% of the suite."""
+    for doc in (CLAUDE_MD, REPO / "pipeline-app" / "README.md", REPO / "README.md"):
+        text = doc.read_text(encoding="utf-8")
+        assert "does the right thing in both places" not in text, (
+            f"{doc.name} still carries the retracted bare-pytest claim (F-62)"
+        )
