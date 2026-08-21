@@ -397,11 +397,33 @@ considered and rejected.
   2026-08-08 baseline of 201 / 833 / 1,034 — every package added tests. Do not write a count you
   have not just observed.
 
+> **Amendment, 2026-08-21 (found by the T2 task reviewer, fixed before this task closes).** The
+> code below has been corrected from its first draft. The original `COMMAND_BLOCK_RE`/
+> `_claimed_counts` pair only ever recognised a command block whose captured text STARTS with
+> literal `python -m pytest` — but T2.3's own target prose documents the app suite as
+> `cd pipeline-app && python -m pytest` (a compound command, `cd` first). Against the corrected
+> CLAUDE.md text this meant: the app-suite command was never extracted at all (so never run, never
+> count-checked), and the per-doc `cwd` selection (based on `doc_name` alone) had no way to run a
+> `cd`-prefixed command from the right directory even if it had been extracted, since `CLAUDE.md`
+> documents commands for BOTH suites in one file. `pipeline-app/README.md`'s own command WAS
+> extracted and run (it's a bare `python -m pytest`, no `cd` prefix, preceded by a separate `cd
+> pipeline-app` line) — its collection success was checked, but its claimed count never was,
+> because its prose states the count in a separate sentence with no backtick-quoted command on the
+> same line, and the regex requires both on one line. Net effect: only the ROOT suite's count was
+> ever actually pinned by an equality assertion; the APP suite's count (in both files) was pure
+> prose nobody checked — precisely the class of defect this whole task exists to eliminate. Fixed
+> below by teaching the regex/test the compound-command shape, and (T2.4, below) rewording
+> `pipeline-app/README.md`'s prose to co-locate its command and count on one line, the same style
+> `T2.3`'s own target text already uses for the root suite. Verified end to end against the live
+> tree before this amendment landed: both files, both commands, both counts, all four checks green.
+
 - [ ] **T2.2 (test first).** Add the check that runs *the command the doc states*, not a copy of it.
   The doc is the input; that is the whole point.
 
 ```python
-COMMAND_BLOCK_RE = re.compile(r"^\s{4,}(python -m pytest[^\n]*)$", re.MULTILINE)
+COMMAND_BLOCK_RE = re.compile(
+    r"^\s{4,}((?:cd pipeline-app && )?python -m pytest[^\n]*)$", re.MULTILINE
+)
 
 
 def _documented_commands(doc: Path) -> list[str]:
@@ -414,7 +436,8 @@ def _claimed_counts(doc: Path) -> dict[str, int]:
     return {
         cmd: int(n)
         for cmd, n in re.findall(
-            r"`(python -m pytest[^`]*)`[^\n]*?\b([\d,]+) tests", text.replace(",", "")
+            r"`((?:cd pipeline-app && )?python -m pytest[^`]*)`[^\n]*?\b([\d,]+) tests",
+            text.replace(",", ""),
         )
     }
 
@@ -429,9 +452,15 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
     assert commands, f"{doc_name} must document its test invocation as an indented command block"
     env = {**os.environ, "DOC_TRUTH_CHILD": "1"}
     for command in commands:
-        cwd = REPO / "pipeline-app" if doc_name.startswith("pipeline-app") else REPO
+        prefix = "cd pipeline-app && "
+        if command.startswith(prefix):
+            cwd = REPO / "pipeline-app"
+            pytest_part = command[len(prefix):]
+        else:
+            cwd = REPO / "pipeline-app" if doc_name.startswith("pipeline-app") else REPO
+            pytest_part = command
         argv = [sys.executable, "-m", "pytest", "--collect-only", "-q",
-                "-p", "no:cacheprovider", *command.split()[3:]]
+                "-p", "no:cacheprovider", *pytest_part.split()[3:]]
         proc = subprocess.run(argv, cwd=cwd, capture_output=True,
                               encoding="utf-8", errors="replace", env=env)
         assert proc.returncode == 0, (
@@ -439,10 +468,14 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
         )
         collected = int(re.search(r"(\d+) tests? collected", proc.stdout).group(1))
         claimed = _claimed_counts(doc).get(command)
-        if claimed is not None:
-            assert collected == claimed, (
-                f"{doc_name} claims `{command}` runs {claimed} tests; it collects {collected}"
-            )
+        assert claimed is not None, (
+            f"{doc_name} documents `{command}` but never states its test count in the "
+            "`{command}` ... NNN tests` form on the same line -- an unchecked count is the "
+            "defect this test exists to catch"
+        )
+        assert collected == claimed, (
+            f"{doc_name} claims `{command}` runs {claimed} tests; it collects {collected}"
+        )
 
 
 def test_no_doc_claims_a_bare_pytest_is_sufficient():
@@ -538,16 +571,21 @@ def test_no_doc_claims_a_bare_pytest_is_sufficient():
 ## Test
 
 Run from this directory. `python -m` is required, not optional — a bare `pytest` here fails
-collection on the four modules that import the local `tools` package, because the console-script
+collection on the modules that import the local `tools` package, because the console-script
 entry point does not put the cwd on `sys.path`.
 
     cd pipeline-app
     python -m pytest
 
-This is the app suite: `NNN tests`. It is **not** run by a `pytest` at the repo root, which is
-scoped by `testpaths` to a separate root suite of `NNN tests`. Both must pass before anything here
-is called green.
+`python -m pytest` is the app suite (`NNN tests`). It is **not** run by a `pytest` at the repo
+root, which is scoped by `testpaths` to a separate root suite (`NNN tests`). Both must pass before
+anything here is called green.
 ```
+
+  Note the count and its command are on the same sentence — `test_documented_test_commands_collect_what_the_docs_claim`
+  requires the two co-located on one line to pin the claimed count against the measured one; two
+  separate sentences ("This is the app suite: `NNN tests`.") leave the count unchecked. Keep this
+  form.
 
 - [ ] **T2.5.** Re-run T2.2's checks. Green. Commit `docs: document the test invocation that actually works (F-30, F-62)`.
 
