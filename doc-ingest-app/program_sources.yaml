@@ -17,3 +17,8 @@ paths:
   # (Task 25 Step 3) -- all 8 files above are current, none are stale
   # drafts, and this is the correct Judge file to serve.
   - "Frameworks to consider/Sabatoures/F2BU_Module_00_The_Judge.docx.md"
+  # Ryan's curated reading list, 17 titles. Converted 2026-08-21 -- it had
+  # failed Gate 1 since ingest began, along with every other gsheet in the
+  # corpus, until the sheet/row counters were calibrated against real Drive
+  # exports. Feeds the prep doc's reading recommendations.
+  - "Frameworks to consider/Books and research/Coaching Book Recommendations/F2BU Coaching Book Recommendations.gsheet.md"
