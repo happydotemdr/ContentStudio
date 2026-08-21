@@ -132,3 +132,39 @@ def test_claude_md_network_counts_match_its_own_table():
     )
     rows = _documented_destinations()  # distinct values in the table's first column
     assert claimed_dests == len(rows), "CLAUDE.md's destination count disagrees with its own table"
+
+
+APPENDIX_F = REPO / "docs" / "audit" / "appendix-F-tests.md"
+COUNT_CLAIM_RE = re.compile(r"`(test_\w+\.py)`\s*\|\s*\*{0,2}(\d+)\*{0,2}\s*\|")
+
+
+def test_appendix_f_does_not_repeat_the_retracted_turn_service_count():
+    text = APPENDIX_F.read_text(encoding="utf-8")
+    stale = re.findall(r"\b2[- ]test\b[^\n]*turn_service", text)
+    assert not stale, f"appendix-F still asserts the retracted 2-test count (F-29): {stale}"
+
+
+@pytest.mark.allow_subprocess
+def test_appendix_f_test_counts_match_collection():
+    if os.environ.get("DOC_TRUTH_CHILD"):
+        pytest.skip("child collection run; do not recurse")
+    text = APPENDIX_F.read_text(encoding="utf-8")
+    env = {**os.environ, "DOC_TRUTH_CHILD": "1"}
+    wrong = []
+    for filename, claimed in COUNT_CLAIM_RE.findall(text):
+        for cwd, sub in ((REPO, "tests"), (REPO / "pipeline-app", "tests")):
+            target = cwd / sub / filename
+            if not target.exists():
+                continue
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", "--collect-only", "-q",
+                 "-p", "no:cacheprovider", f"{sub}/{filename}"],
+                cwd=cwd, capture_output=True, encoding="utf-8", errors="replace", env=env,
+            )
+            found = re.search(r"(\d+) tests? collected", proc.stdout)
+            if found and int(found.group(1)) != int(claimed):
+                wrong.append(f"{filename}: appendix says {claimed}, collects {found.group(1)}")
+    assert not wrong, (
+        "appendix-F test counts are stale -- `grep -c 'def test_'` is not a test count "
+        f"(F-29): {wrong}"
+    )
