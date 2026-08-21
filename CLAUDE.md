@@ -265,6 +265,17 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
   rejects a shot with no style mechanism at all. C20 resolves each slot's declared label
   against `docs/style-library.md`, read from the repo by default (`--style-library` overrides),
   so a label naming no entry fails the gate instead of failing at paste time.
+- **Every defect writeup names the assertion that would have caught it.** The 2026-08-08 audit
+  found 32 S0/S1 defects against a 1,034-test suite at 95% line coverage, and **zero** of them had
+  a test — not because they were untestable (29 were a single assertion away, 3 partially so, none
+  genuinely out of reach) but because nobody was ever required to ask. So: any finding recorded
+  under `docs/audit/` and any bug fixed anywhere in this repo carries a
+  *"which assertion would have failed?"* line, and the fix lands that assertion as a named
+  regression test that was observed failing first. A fix with no such test is not a fix; a
+  finding with no such line is not finished. Coverage is not the bar — 95% coexisted with 328
+  defects.
+  `tests/test_doc_truth.py::test_every_audit_finding_is_claimed_by_exactly_one_remediation_plan`
+  keeps the finding→plan mapping total, so the gap stays measured instead of being measured once.
 - **Tests live in two suites, each run from its own directory.** Repo root:
   `python -m pytest tests/ -v` (the linters and skill provenance). App:
   `cd pipeline-app && python -m pytest`. Run each from the directory named — `pipeline-app`

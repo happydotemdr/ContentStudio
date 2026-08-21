@@ -168,3 +168,72 @@ def test_appendix_f_test_counts_match_collection():
         "appendix-F test counts are stale -- `grep -c 'def test_'` is not a test count "
         f"(F-29): {wrong}"
     )
+
+
+AUDIT = REPO / "docs" / "audit"
+PLANS = REPO / "docs" / "superpowers" / "plans" / "remediation"
+FINDING_HEADING_RE = re.compile(r"^###\s+([A-F]-\d{2,3})\s+·", re.MULTILINE)
+FINDING_REF_RE = re.compile(r"\b([A-F]-\d{2,3})\b")
+TASK_MAP_HEADING_RE = re.compile(
+    r"^##\s+\d+\.\s*Finding\s*(?:→|->)\s*task map", re.MULTILINE | re.IGNORECASE
+)
+NEXT_H2_RE = re.compile(r"^##\s+\S", re.MULTILINE)
+
+# Verified by hand against the live tree (2026-08-21): the finding's real, sole
+# owner is the OTHER plan in the pair. The plan named here mentions the finding
+# only inside its own "Finding -> task map" section as a documented
+# cross-package dependency/handoff note (e.g. a "tracked separately" sub-table
+# naming the true owner in the same row), and that plan's own text disclaims
+# ownership. Shrink this dict as plans merge with cleaner cross-references;
+# never grow it without re-reading the disclaiming plan's own words.
+EXCLUDE_AS_MENTION = {
+    "B-01": "P8-engine-cron.md",
+    "B-06": "P8-engine-cron.md",
+    "B-21": "P8-engine-cron.md",
+    "B-72": "P10-roster.md",
+    "B-73": "P8-engine-cron.md",
+    "B-82": "P8-engine-cron.md",
+    "D-47": "P5-skills-editor.md",
+    "E-05": "P15-ui.md",
+    "E-07": "P15-ui.md",
+    "F-64": "P8-engine-cron.md",
+}
+# Verified by hand: genuinely split and closed by two real, separately-tasked
+# halves, each recorded as its own row in each plan's own task map (P1's T18,
+# P4's T19).
+KNOWN_SPLIT_FINDINGS = {"F-26"}
+
+
+def test_every_audit_finding_is_claimed_by_exactly_one_remediation_plan():
+    findings = set()
+    for appendix in AUDIT.glob("appendix-*.md"):
+        findings |= set(FINDING_HEADING_RE.findall(appendix.read_text(encoding="utf-8")))
+    assert findings, "no findings parsed -- the heading format changed"
+
+    claims: dict[str, list[str]] = {}
+    for plan in PLANS.glob("P*.md"):
+        text = plan.read_text(encoding="utf-8")
+        heading = TASK_MAP_HEADING_RE.search(text)
+        assert heading, f"{plan.name} has no '## N. Finding -> task map' section"
+        rest = text[heading.end():]
+        next_h2 = NEXT_H2_RE.search(rest)
+        scope = rest[: next_h2.start()] if next_h2 else rest
+        for fid in set(FINDING_REF_RE.findall(scope)) & findings:
+            if EXCLUDE_AS_MENTION.get(fid) == plan.name:
+                continue
+            claims.setdefault(fid, []).append(plan.name)
+
+    unclaimed = sorted(findings - claims.keys())
+    contested = sorted(
+        f for f, owners in claims.items()
+        if len(owners) > 1 and f not in KNOWN_SPLIT_FINDINGS
+    )
+    assert not unclaimed, f"audit findings no remediation plan claims: {unclaimed}"
+    assert not contested, f"audit findings claimed by more than one plan: {contested}"
+
+
+def test_claude_md_requires_a_failing_assertion_per_defect():
+    text = CLAUDE_MD.read_text(encoding="utf-8")
+    assert "which assertion would have failed" in text.lower(), (
+        "CLAUDE.md must carry the standing rule F-10 exists to install"
+    )
