@@ -481,10 +481,12 @@ def test_process_job_handles_a_gsheet_via_mocked_drive_export(conn, tmp_path):
         from doc_ingest.convert import ConversionResult
         assert staged_path.suffix == ".xlsx"
         assert source_type == "xlsx"  # exported bytes are converted as a real xlsx...
-        # One header + one separator + row_count data rows, so Gate 1's
-        # output-side counts (1 table block, row_count rows) match what
-        # read_xlsx_sheet_and_row_counts reports for the workbook above.
-        body = "| a | b |\n|---|---|\n" + "".join(f"| c{i} | d{i} |\n" for i in range(row_count))
+        # The workbook above has row_count non-empty rows, and a real
+        # export's FIRST row is the header -- so it carries row_count - 1
+        # DATA rows. Mirror that: one header, one separator, row_count - 1
+        # data rows. This emitted row_count data rows until 2026-08-21,
+        # modelling a headerless sheet no real Drive export produces.
+        body = "| a | b |\n|---|---|\n" + "".join(f"| c{i} | d{i} |\n" for i in range(row_count - 1))
         return ConversionResult(success=True, markdown_body=body, tool="firecrawl-parse", error=None)
 
     mock_service_factory = lambda cfg_arg: MagicMock()

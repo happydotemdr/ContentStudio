@@ -242,3 +242,53 @@ def test_run_once_respects_the_time_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(run_ingest_cron.worker, "process_job", _fake_process_job)
     run_ingest_cron.run_once(db_path, cfg)
     assert calls["count"] == 0  # budget already elapsed -- nothing claimed
+
+
+def test_main_retry_failed_clears_matching_jobs_before_running(tmp_path, monkeypatch, capsys):
+    """--retry-failed is the operator's way to make a converter or gauntlet
+    fix reach files that already failed under the old code. Without it,
+    enqueue_pending_jobs suppresses the retry forever (the source version
+    hasn't changed), and a full ingest run enqueues 0 jobs -- exactly what
+    happened after the 2026-08-21 gsheet gauntlet fix."""
+    sys.path.insert(0, str(HERE / "scripts"))
+    import importlib
+    import run_ingest_cron
+    importlib.reload(run_ingest_cron)
+    _stub_drive_service(monkeypatch, run_ingest_cron)
+
+    db_path = tmp_path / "doc_ingest.db"
+    monkeypatch.setattr(run_ingest_cron, "HERE", tmp_path / "scripts")
+
+    conn = run_ingest_cron.db.init_db(db_path)
+    now = "2026-08-13T00:00:00+00:00"
+    for rel_path, extension in (("books.gsheet", "gsheet"), ("module.docx", "docx")):
+        conn.execute(
+            "INSERT INTO source_files (rel_path, extension, classification, content_hash, "
+            "first_seen_at, last_seen_at) VALUES (?, ?, 'convertible', 'h', ?, ?)",
+            (rel_path, extension, now, now),
+        )
+        source_file_id = conn.execute(
+            "SELECT id FROM source_files WHERE rel_path = ?", (rel_path,)
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO conversion_jobs (source_file_id, status, source_hash_at_attempt, "
+            "created_at) VALUES (?, 'failed', 'h', ?)",
+            (source_file_id, now),
+        )
+    conn.commit()
+    conn.close()
+
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    cfg = run_ingest_cron.load_config(None)
+    monkeypatch.setattr(
+        run_ingest_cron, "load_config",
+        lambda path: type(cfg)(**{**cfg.__dict__, "input_root": input_root, "output_root": tmp_path / "out"}),
+    )
+
+    assert run_ingest_cron.main(["--retry-failed", "%.gsheet"]) == 0
+
+    out = capsys.readouterr().out
+    assert "cleared 1 failed job(s)" in out
+    assert "books.gsheet" in out
+    assert "module.docx" not in out

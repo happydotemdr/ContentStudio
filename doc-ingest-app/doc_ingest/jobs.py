@@ -84,6 +84,35 @@ def enqueue_pending_jobs(conn) -> int:
     return created
 
 
+def clear_failed_jobs(conn, path_pattern: str) -> list[str]:
+    """Drop the failed-job rows for source files matching a SQL LIKE pattern,
+    so the next enqueue_pending_jobs re-attempts them.
+
+    enqueue_pending_jobs suppresses a retry when a file already failed at
+    exactly this source version -- correct, since it stops the 30-minute cron
+    burning firecrawl credits on a permanently broken file every wake. But the
+    suppression key is the SOURCE version alone. Nothing about it changes when
+    the CONVERTER does, so a fixed gauntlet or a new conversion tool can never
+    reach a file that failed under the old one. This is the operator's escape
+    hatch for exactly that case, invoked by hand
+    (run_ingest_cron.py --retry-failed), never on a schedule.
+
+    Returns the rel_paths whose failed rows were cleared."""
+    with db.transaction(conn):
+        rows = conn.execute(
+            "SELECT DISTINCT sf.rel_path FROM conversion_jobs cj "
+            "JOIN source_files sf ON sf.id = cj.source_file_id "
+            "WHERE cj.status = 'failed' AND sf.rel_path LIKE ? ORDER BY sf.rel_path",
+            (path_pattern,),
+        ).fetchall()
+        conn.execute(
+            "DELETE FROM conversion_jobs WHERE status = 'failed' AND source_file_id IN "
+            "(SELECT id FROM source_files WHERE rel_path LIKE ?)",
+            (path_pattern,),
+        )
+    return [r[0] for r in rows]
+
+
 def claim_job(conn, worker_id: str) -> int | None:
     now = _now_iso()
     conn.execute("BEGIN IMMEDIATE")

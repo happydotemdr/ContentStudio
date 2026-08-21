@@ -101,16 +101,31 @@ def run_gate1(source_type: str, source_size_bytes: int, assembled_markdown: str,
 
     if source_type in ("xlsx", "gsheet"):
         source_sheets = independent_metadata.get("source_sheet_count")
+        output_tables = _count_output_table_blocks(body)
         if source_sheets is not None:
-            output_sheets = _count_output_table_blocks(body)
-            if abs(source_sheets - output_sheets) > cfg.sheet_count_tolerance:
+            # One sheet can render as SEVERAL markdown tables -- firecrawl
+            # starts a new table whenever the column structure changes, so a
+            # 3-sheet workbook was measured rendering as 6 tables. Only a
+            # SHORTFALL means data went missing; a surplus is normal output
+            # shape, not a defect. The old two-sided `abs(...) > tolerance`
+            # check rejected every real gsheet in the corpus for this reason.
+            if output_tables < source_sheets - cfg.sheet_count_tolerance:
                 return GauntletResult(False, "sheet_count_mismatch")
 
         source_rows = independent_metadata.get("source_row_count")
         if source_rows is not None:
+            # Compare DATA rows to DATA rows. metadata_readers counts every
+            # non-empty source row, header included; _count_output_table_rows
+            # already excludes each table's header, so subtract one header
+            # per source sheet to put the two sides in the same units.
+            # Without this the output was short by exactly one row per sheet
+            # on every real workbook -- reliably outside the 5% band on the
+            # small sheets this corpus is made of.
+            header_rows = source_sheets or 0
+            source_data_rows = max(source_rows - header_rows, 0)
             output_rows = _count_output_table_rows(body)
-            low = source_rows * (1 - cfg.row_count_tolerance_pct)
-            high = source_rows * (1 + cfg.row_count_tolerance_pct)
+            low = source_data_rows * (1 - cfg.row_count_tolerance_pct)
+            high = source_data_rows * (1 + cfg.row_count_tolerance_pct)
             if not (low <= output_rows <= high):
                 return GauntletResult(False, "row_count_mismatch")
 

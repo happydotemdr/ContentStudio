@@ -89,3 +89,51 @@ drafts to Drive successfully but never sends the review email (retried every
 failure — see `orchestrator.py`'s docstring), and `run_client_audit.py` now
 exits with status 1 and a clear stderr message rather than silently
 succeeding with no email sent.
+
+## 4. `framework_catalog.yaml` — required before generation can pick an activity
+
+The prep doc draws exercises from the whole `Frameworks to consider/` corpus, not just
+the handful of documents in `program_sources.yaml`. It reaches them through a catalog:
+one compact entry per usable activity, small enough that the whole corpus fits in a
+single selection prompt.
+
+The catalog is committed to the repo, so a fresh checkout already has one. Rebuild it
+only when the corpus changes:
+
+```bash
+cd coach-prep-app
+python scripts/build_framework_catalog.py --dry-run   # what would be re-indexed
+python scripts/build_framework_catalog.py             # do it
+```
+
+Each changed corpus file costs one isolated `claude -p` turn, **billed to your Claude
+plan**. Files whose doc-ingest version is unchanged are skipped, so a refresh after
+adding one document costs one turn, not ninety. `--only <substring>` narrows it further;
+`--rebuild-all` ignores versions entirely.
+
+**Correcting an entry.** The build pass gets some wrong — a `one_line` that describes
+the topic instead of what the exercise does to a client, a `use_when` tag that does not
+match how Ryan would search for it. Edit `framework_catalog.yaml` by hand and set
+`curated: true` on that entry. No rebuild will overwrite it. If its source document
+later changes, the build names it on stdout so you can re-check it rather than leaving
+a correction pinned to text that no longer exists.
+
+Without a catalog, generation stops at the selection stage and reports
+`selection_failed` — a transient status, retried on the next wake, so the run is not
+lost. It never falls back to recommending an exercise from general knowledge.
+
+## 5. Regenerating the corpus after a converter fix
+
+`doc-ingest-app` will not retry a file that already failed at its current source
+version — correct, since it stops the 30-minute cron burning firecrawl credits on a
+permanently broken document. But it means a fix to the converter or the gauntlet never
+reaches the files it fixes. After landing one:
+
+```bash
+cd doc-ingest-app
+python scripts/run_ingest_cron.py --retry-failed "%.gsheet"
+```
+
+Pass a SQL `LIKE` pattern narrow enough to cover only what your fix addresses. Clearing
+everything would also re-attempt the files still failing for unrelated reasons, at real
+per-file cost.

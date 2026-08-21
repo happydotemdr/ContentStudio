@@ -41,6 +41,17 @@ class Config:
     timezone_name: str = "America/Chicago"
     last_meeting_email_staleness_days: int = 30
     generation_timeout_s: int = 180
+    # How much client history the bundle carries. Two weeks of sent email
+    # covers the post-call email plus any mid-week nudge; two meeting notes
+    # give the prep doc's summary a trajectory rather than a snapshot. The
+    # email cap keeps a chatty fortnight from pushing the framework material
+    # out of the drafting prompt.
+    framework_catalog_path: Path = dataclasses.field(
+        default_factory=lambda: _APP_ROOT / "framework_catalog.yaml"
+    )
+    email_window_days: int = 14
+    max_recent_emails: int = 5
+    meeting_notes_count: int = 2
 
 
 _FIELD_TYPES = typing.get_type_hints(Config)
