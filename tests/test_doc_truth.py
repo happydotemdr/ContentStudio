@@ -470,11 +470,10 @@ def test_positive_and_negative_discriminators_disagree_on_exactly_the_known_ten(
 def test_the_two_provenance_rules_name_each_others_scope():
     docs_readme = (REPO / "docs" / "README.md").read_text(encoding="utf-8")
     claude = CLAUDE_MD.read_text(encoding="utf-8")
-    if "usually unmarked" in docs_readme:
-        assert "`docs/*.md`" in docs_readme, (
-            "docs/README.md's unmarked-[C] shorthand must name the scope it applies to"
-        )
-        assert "`docs/*.md`" in claude, (
-            "CLAUDE.md's 'no marker is a bug' rule must name the one documented exemption "
-            "and its scope, or the two rules read as a contradiction"
-        )
+    assert "`docs/*.md`" in docs_readme, (
+        "docs/README.md's unmarked-[C] shorthand must name the scope it applies to"
+    )
+    assert "`docs/*.md`" in claude, (
+        "CLAUDE.md's 'no marker is a bug' rule must name the one documented exemption "
+        "and its scope, or the two rules read as a contradiction"
+    )
