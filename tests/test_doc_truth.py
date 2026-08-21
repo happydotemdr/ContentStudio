@@ -346,3 +346,35 @@ def test_every_script_path_a_readme_tells_you_to_run_exists(doc_name):
         if not any(c.exists() for c in candidates):
             missing.append(token)
     assert not missing, f"{doc_name} names files that do not exist: {sorted(set(missing))}"
+
+
+FIREWALL_EXEMPT = {
+    "CLAUDE.md",                # the firewall + Origin sections themselves
+    "tests/test_doc_truth.py",  # this file
+}
+
+
+def _tracked_files_mentioning_familybrain() -> set[str]:
+    proc = subprocess.run(
+        ["git", "grep", "-l", "-i", "familybrain", "--", ".",
+         ":(exclude)docs/audit", ":(exclude)docs/superpowers"],
+        cwd=REPO, capture_output=True, encoding="utf-8", errors="replace",
+    )
+    return {p for p in proc.stdout.split() if p and p not in FIREWALL_EXEMPT}
+
+
+@pytest.mark.allow_subprocess
+def test_every_familybrain_mention_is_accounted_for_in_origin():
+    origin = CLAUDE_MD.read_text(encoding="utf-8")
+    start = origin.index("## FamilyBrain firewall")
+    section = origin[start:origin.index("## Using the skills")]
+    unexplained = [
+        path for path in sorted(_tracked_files_mentioning_familybrain())
+        if Path(path).name not in section and path not in section
+        and Path(path).parts[0] not in section
+    ]
+    assert not unexplained, (
+        "tracked files mention FamilyBrain but CLAUDE.md's Origin section does not "
+        f"account for them: {unexplained}. Explain them as history or remove them -- "
+        "an unexplained mention is indistinguishable from a live dependency (D-53)."
+    )
