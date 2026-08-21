@@ -42,5 +42,5 @@ cwd on `sys.path`.
     python -m pytest
 
 `python -m pytest` is the app suite (`1960 tests`). It is **not** run by a `pytest` at the repo
-root, which is scoped by `testpaths` to a separate root suite of `557 tests`. Both must pass
-before anything here is called green.
+root — that's a separate root suite (see `CLAUDE.md`'s Conventions section for its current
+count). Both must pass before anything here is called green.
