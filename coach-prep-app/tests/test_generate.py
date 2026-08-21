@@ -98,7 +98,11 @@ def fake_claude(monkeypatch):
             captured["argv"] = argv
             captured["kwargs"] = kwargs
             return fake
-        monkeypatch.setattr(generate.subprocess, "Popen", fake_popen)
+        # The isolation lives in cli_runner.run_isolated now, shared by
+        # generate, select_frameworks and the catalog build -- patch it
+        # where it actually runs. The assertions below are unchanged: they
+        # still pin generate_draft's real argv, cwd and stdin handling.
+        monkeypatch.setattr(generate.cli_runner.subprocess, "Popen", fake_popen)
         return captured
 
     return install

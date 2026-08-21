@@ -1,38 +1,21 @@
 # coach-prep-app/coach_prep_app/generate.py
-"""Generates the coach-prep draft body via an isolated claude -p subprocess
--- same isolation pattern as pipeline_app/comment_draft.py: no tools, no
-MCP, empty scratch cwd. The model cannot reach anything beyond what is
-embedded in the prompt."""
+"""Generates the coach-prep draft body via an isolated claude -p subprocess.
+The isolation itself -- no tools, no MCP, empty scratch cwd -- lives in
+cli_runner.run_isolated, shared with select_frameworks.py and the catalog
+build, so there is exactly one definition of it. This module owns only the
+prompt."""
 from __future__ import annotations
 
-import json
-import re
-import subprocess
 import sys
-import tempfile
 
 from coach_prep_app import cli_runner
 
-DEFAULT_TIMEOUT_S = 180
+DEFAULT_TIMEOUT_S = cli_runner.DEFAULT_TIMEOUT_S
 
-DISALLOWED_TOOLS = (
-    "Bash,PowerShell,WebFetch,WebSearch,Read,Write,Edit,NotebookEdit,"
-    "Glob,Grep,Task,Skill,TodoWrite,BashOutput,KillShell"
-)
-
-_DELIMITER = "<<<BUNDLE>>>"
-_DELIMITER_SCRUB = "[delimiter removed]"
-_DELIMITER_RE = re.compile(re.escape(_DELIMITER), re.IGNORECASE)
-
-
-def _scrub_delimiter(text: str) -> str:
-    """Untrusted client text (a meeting transcript, a sent email) with every
-    literal copy of the prompt's own fence delimiter neutralized -- without
-    this, text containing the delimiter closes the fenced block early and
-    everything after it reads as prompt rather than as material to draft
-    from. Same hazard and same fix as pipeline_app/comment_draft.py's
-    scrub_delimiter."""
-    return _DELIMITER_RE.sub(_DELIMITER_SCRUB, text)
+# Re-exported so callers and tests keep a single import site for these.
+DISALLOWED_TOOLS = cli_runner.DISALLOWED_TOOLS
+_scrub_delimiter = cli_runner.scrub_delimiter
+parse_envelope = cli_runner.parse_envelope
 
 
 _PROMPT_TEMPLATE = """\
@@ -81,69 +64,13 @@ def build_prompt(bundle: dict) -> str:
     )
 
 
-def parse_envelope(stdout: str) -> str | None:
-    try:
-        envelope = json.loads(stdout)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(envelope, dict) or envelope.get("is_error"):
-        return None
-    inner = envelope.get("result")
-    return inner if isinstance(inner, str) and inner.strip() else None
-
-
 def generate_draft(bundle: dict, timeout_s: int = DEFAULT_TIMEOUT_S) -> str | None:
-    try:
-        binary = cli_runner.resolve_claude_binary()
-    except FileNotFoundError as exc:
-        print(f"generate: {exc}", file=sys.stderr)
-        return None
-
-    argv = cli_runner.platform_argv([
-        binary, "-p", "--output-format", "json",
-        "--strict-mcp-config",
-        "--disallowedTools", DISALLOWED_TOOLS,
-    ])
-
     try:
         prompt = build_prompt(bundle)
     except (KeyError, TypeError, IndexError) as exc:
-        # A malformed bundle must not abort the whole orchestrator run --
-        # the caller loops over multiple clients per wake, and one bad
-        # bundle should skip that one client, not the rest.
+        # A malformed bundle must not abort the whole orchestrator run -- the
+        # caller loops over multiple clients per wake, and one bad bundle
+        # should skip that one client, not the rest.
         print(f"generate: malformed bundle: {exc}", file=sys.stderr)
         return None
-
-    try:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
-            try:
-                process = subprocess.Popen(
-                    argv, cwd=scratch, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
-                )
-            except (OSError, ValueError) as exc:
-                print(f"generate: could not start claude: {exc}", file=sys.stderr)
-                return None
-            try:
-                stdout, _ = process.communicate(prompt, timeout=timeout_s)
-            except subprocess.TimeoutExpired:
-                cli_runner.kill_process_tree(process)
-                try:
-                    process.communicate(timeout=5)
-                except (subprocess.TimeoutExpired, OSError, ValueError):
-                    pass
-                print(f"generate: timed out after {timeout_s}s", file=sys.stderr)
-                return None
-            except (OSError, ValueError) as exc:
-                cli_runner.kill_process_tree(process)
-                print(f"generate: subprocess failed: {exc}", file=sys.stderr)
-                return None
-    except OSError as exc:
-        print(f"generate: scratch directory failed: {exc}", file=sys.stderr)
-        return None
-
-    if process.returncode != 0:
-        print(f"generate: claude exited {process.returncode}", file=sys.stderr)
-        return None
-
-    return parse_envelope(stdout)
+    return cli_runner.run_isolated(prompt, timeout_s=timeout_s, label="generate")
