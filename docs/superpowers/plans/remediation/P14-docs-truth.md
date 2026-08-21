@@ -701,6 +701,21 @@ def test_every_familybrain_mention_is_accounted_for_in_origin():
 
   Run it. It fails, naming `rgs-briefs/2026-07-28-rgs-debut-visual-system.md`.
 
+> **Amendment, 2026-08-21 (found by the T4 implementer, verified by the orchestrator before this
+> task closes).** Two more FamilyBrain mentions landed after this brief was drafted, both inside
+> `pipeline-app/` and both self-evidently firewall-*enforcement*, not provenance: a code comment
+> at `pipeline-app/pipeline_app/comment_draft.py:357` ("also what keeps CLAUDE.md's FamilyBrain
+> firewall intact here", explaining why no `--mcp-config` is passed) and a negative test case at
+> `pipeline-app/tests/test_cli_runner.py:519` (`"../FamilyBrain/anything.md"` asserted `allowed=False`,
+> proving a path escaping into a sibling FamilyBrain directory is rejected). Both are the firewall
+> *working*, the same way the existing `rgs-briefs` entry already is — not a new class of leak.
+> Rather than name each site individually (brittle: any future protective test under `pipeline-app/`
+> would then need its own new Origin sentence forever), item 4 below is worded so its one sentence
+> covers the whole `pipeline-app/` tree by top-level directory name — `test_every_familybrain_mention_is_accounted_for_in_origin`'s
+> own matching logic accepts `Path(path).parts[0]` (here, literally `pipeline-app`) as a match, not
+> only the exact filename, so this sentence auto-covers any future enforcement site under that
+> directory without needing an edit. Four places now, not three.
+
 - [ ] **T4.2.** Replace `CLAUDE.md`'s `## Origin` body (lines 161–167) with:
 
 ```markdown
@@ -709,8 +724,8 @@ FamilyBrain repo, for an unrelated brand-intel feature. It was copied — not mo
 not `git mv`'d — into this repo as a one-time, one-directional operation: a fresh
 `git init` with no shared history or remote.
 
-FamilyBrain is named in exactly **three** places here, all of them historical provenance and none
-of them a live dependency:
+FamilyBrain is named in exactly **four** places here — three historical provenance, one
+enforcement — and none of them a live dependency:
 
 1. **`README.md`'s "Notes & scope" section and a few source-file headers**, narrating toolkit
    provenance — e.g. `gen_thinkers_manifest.ts` importing a sibling repo's TypeScript source. Not
@@ -720,15 +735,21 @@ of them a live dependency:
    2026-07-22" — a dated, one-time copy of brand text, not a link to anything. The same file at
    `:64-65` explicitly *rejects* a FamilyBrain infrastructure fact (which fonts the Pi compositor
    ships) as out of scope for this project. That is the firewall working, recorded in place.
-3. **This file's "FamilyBrain firewall" section**, which forbids adding a fourth.
+3. **`pipeline-app/`, in code comments and tests that verify the firewall holds** — e.g.
+   `comment_draft.py` noting why no `--mcp-config` is ever passed to the Claude subprocess, or
+   `test_cli_runner.py` asserting a path into a sibling `FamilyBrain/` directory is rejected. These
+   are the firewall being enforced and tested, not a dependency; new ones may appear under
+   `pipeline-app/` as coverage grows and need no edit here.
+4. **This file's "FamilyBrain firewall" section**, which forbids adding an unexplained one.
 
 `tests/test_doc_truth.py::test_every_familybrain_mention_is_accounted_for_in_origin` fails if a
-tracked file mentions FamilyBrain and this list does not account for it. If it fires, the answer is
-to explain the mention as history or delete it — never to leave it unexplained, because an
-unexplained mention reads exactly like a leak.
+tracked file mentions FamilyBrain and this list does not account for it — by exact path, bare
+filename, or top-level directory. If it fires outside `pipeline-app/`, the answer is to explain the
+mention as history or delete it — never to leave it unexplained, because an unexplained mention
+reads exactly like a leak.
 ```
 
-- [ ] **T4.3.** Re-run. Green. Commit `docs: account for the third FamilyBrain mention in Origin (D-53)`.
+- [ ] **T4.3.** Re-run. Green. Commit `docs: account for every current FamilyBrain mention in Origin (D-53)`.
 
 ---
 
