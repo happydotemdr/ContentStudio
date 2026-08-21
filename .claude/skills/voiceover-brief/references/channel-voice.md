@@ -41,27 +41,29 @@ Persona:         TBD — describe what the voice actually delivers (age/texture/
 Locked settings: PENDING AUDITION — no master render has been made against this voice yet.
   Model:            eleven_v3, single continuous generation per Short (not
                      per-beat chunking) — operator decision 2026-08-21,
-                     REVISING the earlier same-day decision below after a
-                     live listening comparison. Bracket audio tags
-                     ([excited], [whispers], [sighs], [pause], etc.) carry
-                     delivery, applied only where they genuinely fit — not
-                     every beat needs one. No per-beat numeric
-                     speed/style variation: a single constant
-                     stability/similarity_boost/style/speed baseline
-                     across the whole take. [P]
+                     REVISING the earlier same-day decision below (which had
+                     itself just resolved Open action 3 to
+                     eleven_multilingual_v2) after a live listening
+                     comparison. Bracket audio tags ([excited], [whispers],
+                     [sighs], [pause], etc.) carry delivery, applied only
+                     where they genuinely fit — not every beat needs one.
+                     No per-beat numeric speed/style variation: a single
+                     constant stability/similarity_boost/style/speed
+                     baseline across the whole take. [P]
   Stability:        pending
   similarity_boost: pending
   style:            pending
   speed:            pending
   use_speaker_boost:pending
 
-Known-good tags:   PENDING — requires a v3 probe (see Open action 1)
-Known-bad tags:    PENDING — requires a v3 probe (see Open action 1)
+Known-good tags:   PENDING — requires a v3 probe (see Open action 1, reopened below)
+Known-bad tags:    PENDING — requires a v3 probe (see Open action 1, reopened below)
 Dictionaries:      none
-Caveats:           SUPERSEDED 2026-08-21 [P]: the same-day "always
-                   eleven_multilingual_v2 for full PVC fidelity" decision
-                   below was tested against a v3+tags alternative in a
-                   live side-by-side comparison and the v3+tags result was
+Caveats:           SUPERSEDED 2026-08-21 [P]: earlier the same day, Open
+                   action 3 was resolved to "full PVC fidelity via
+                   eleven_multilingual_v2, no audio tags." That resolution
+                   was then tested against a v3+tags alternative in a live
+                   side-by-side comparison, and the v3+tags result was
                    judged clearly better — more natural intonation, no
                    audible per-segment "AI-ish" discontinuity. The
                    multilingual_v2 decision's own reasoning (PVC fidelity
@@ -85,7 +87,7 @@ Caveats:           SUPERSEDED 2026-08-21 [P]: the same-day "always
                    3. eleven_v3 has no <break> tag (already correctly
                       documented elsewhere in this skill) — bracket tags
                       and punctuation carry pacing instead.
-Verified on:       2026-08-18 — voice_id recorded; audition not yet run
+Verified on:       2026-08-21 — voice_id and model routing recorded; audition not yet run
 ```
 
 **Until the settings block is filled, briefs still derive settings per-script** from
@@ -115,25 +117,28 @@ reader may otherwise expect the pin to be conceding something.
 
 ## Open actions
 
-Three real consequences of the PVC path, not housekeeping.
+One reopened, one still open, one resolved-then-superseded.
 
-1. **Run one short v3 probe and fill the tag rows.** Tag effectiveness is bounded by the voice's
-   training data `[T]` — "don't expect a whispering voice to suddenly shout with a `[shout]`
-   tag" `[T]` (`.claude/skills/elevenlabs-audio/references/voice-profiles.md`). If the reference is
-   emotionally narrow, v3 tags **underperform silently**: they do not error, the audio just comes
-   back flat. Probe before a first master, and record what landed and what did not.
+1. **Run one short v3 probe and fill the tag rows.** Reopened 2026-08-21 — the
+   2026-08-21 routing decision moved this voice back onto `eleven_v3`, so the
+   probe this action originally called for is live again. Tag effectiveness is
+   bounded by the voice's training data `[T]` — "don't expect a whispering
+   voice to suddenly shout with a `[shout]` tag" `[T]`
+   (`.claude/skills/elevenlabs-audio/references/voice-profiles.md`). If the
+   reference is emotionally narrow, v3 tags **underperform silently**: they do
+   not error, the audio just comes back flat. Probe before a first master, and
+   record what landed and what did not.
 2. **Record the reference audio's condition.** Reference-audio quality still matters for a PVC,
    even though the failure mode is less acute than IVC's — "clean, no reverb, no background
    noise" `[T]`. This connects to a settings symptom worth knowing in advance: noise in the
    reference is exactly what a high `similarity_boost` reproduces faithfully. If the render
    sounds noisy, fix the reference rather than tuning `similarity_boost` down around it `[I]`.
-3. **Decide the PVC-on-v3 trade-off.** PVC voices are not fully optimized for `eleven_v3` `[T]`.
-   Before the first master, pick one of three options and record the choice on the card: run the
-   PVC on v3 as-is (tags work, fidelity not fully optimized), set `use_pvc_as_ivc: true` (lower
-   latency, IVC-grade fidelity, deliberate), or route to `eleven_multilingual_v2` (full PVC
-   fidelity, no audio tags) `[T]`
-   (`.claude/skills/elevenlabs-audio/references/voice-profiles.md` "PVC on v3"). This is a
-   fidelity-vs-expressiveness trade that belongs to the user, not a silent default.
+3. **Decide the PVC-on-v3 trade-off.** Resolved 2026-08-21 `[P]` to
+   `eleven_multilingual_v2` (full PVC fidelity, no audio tags) — then
+   SUPERSEDED the same day `[P]`: a live listening comparison favored
+   `eleven_v3` + bracket tags enough to outweigh the fidelity trade. See the
+   Caveats line on the card above for the full reasoning and the three
+   live-API corrections this decision depends on.
 
 ## Scope boundary
 
