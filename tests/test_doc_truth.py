@@ -9,6 +9,7 @@ pipeline_app, and these read documents as text anyway.
 """
 
 import ast
+import importlib.util
 import os
 import re
 import subprocess
@@ -273,6 +274,20 @@ def _claimed_counts(doc: Path) -> dict[str, int]:
     }
 
 
+def _pipeline_app_env_available() -> bool:
+    """CI's root-suite job installs only the repo-root requirements-dev.txt,
+    by design (finding F-63's isolation: root-suite must never depend on
+    pipeline-app's own packages). It never installs pytest-asyncio, which
+    pipeline-app/pytest.ini's `asyncio_mode = strict` requires -- collecting
+    from pipeline-app/ with that plugin absent makes pytest.ini's own
+    `filterwarnings = error` turn the resulting PytestConfigWarning fatal.
+    A command run with cwd=pipeline-app can't be verified from an
+    environment missing that plugin; this reports whether the current
+    interpreter has it, so the caller can skip just those commands rather
+    than fail on an absence root-suite's own CI job was built to have."""
+    return importlib.util.find_spec("pytest_asyncio") is not None
+
+
 @pytest.mark.allow_subprocess
 @pytest.mark.parametrize("doc_name", ["CLAUDE.md", "pipeline-app/README.md"])
 def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
@@ -282,6 +297,8 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
     commands = _documented_commands(doc)
     assert commands, f"{doc_name} must document its test invocation as an indented command block"
     env = {**os.environ, "DOC_TRUTH_CHILD": "1"}
+    pipeline_app_ready = _pipeline_app_env_available()
+    unverifiable = []
     for command in commands:
         prefix = "cd pipeline-app && "
         if command.startswith(prefix):
@@ -290,6 +307,9 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
         else:
             cwd = REPO / "pipeline-app" if doc_name.startswith("pipeline-app") else REPO
             pytest_part = command
+        if cwd == REPO / "pipeline-app" and not pipeline_app_ready:
+            unverifiable.append(command)
+            continue
         argv = [sys.executable, "-m", "pytest", "--collect-only", "-q",
                 "-p", "no:cacheprovider", *pytest_part.split()[3:]]
         proc = subprocess.run(argv, cwd=cwd, capture_output=True,
@@ -306,6 +326,18 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
         )
         assert collected == claimed, (
             f"{doc_name} claims `{command}` runs {claimed} tests; it collects {collected}"
+        )
+    if unverifiable and len(unverifiable) == len(commands):
+        pytest.skip(
+            f"{doc_name}: none of its documented commands are verifiable in this "
+            f"environment (pipeline-app's own pytest plugins are not installed here): "
+            f"{unverifiable}. Run from an environment with both toolchains installed."
+        )
+    elif unverifiable:
+        print(
+            f"NOTE: {doc_name} -- skipped verifying {unverifiable} in this environment "
+            "(pipeline-app's own pytest plugins are not installed here); the rest of this "
+            "doc's commands were verified normally."
         )
 
 
