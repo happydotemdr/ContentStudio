@@ -56,13 +56,31 @@ def cfg():
     return Config(pending_review_drive_folder_id="pending-folder")
 
 
-def _patch_pipeline_ok(monkeypatch):
+SAMPLE_ACTIVITY = {
+    "id": "examining-fear", "title": "Examining Fear",
+    "framework": "ABC's of coaching / Awareness", "kind": "activity",
+    "anchor": None, "live_ready": True, "duration_min": 10,
+    "why": "the undone call", "source_label": "fear",
+    "rel_path": "f/fear.md", "version": 1, "text": "Rate the fear 1-10.",
+}
+
+
+def _patch_pipeline_ok(monkeypatch, selection=None, invented=(), persist_inputs=False):
     from coach_prep_app import bundle as bundle_mod
-    from coach_prep_app import generate, publish
+    from coach_prep_app import framework_catalog, generate, publish, select_frameworks
 
     monkeypatch.setattr(bundle_mod, "build_bundle", lambda *a, **k: dict(SAMPLE_BUNDLE))
-    monkeypatch.setattr(bundle_mod, "persist_inputs", lambda *a, **k: None)
-    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180: "## Activities\n- x [last-meeting-email]")
+    monkeypatch.setattr(framework_catalog, "load_catalog", lambda path: ["a catalog entry"])
+    monkeypatch.setattr(framework_catalog, "render_index", lambda entries: "the index")
+    monkeypatch.setattr(
+        select_frameworks, "select",
+        lambda *a, **k: (
+            list(selection if selection is not None else [SAMPLE_ACTIVITY]), list(invented)
+        ),
+    )
+    if not persist_inputs:
+        monkeypatch.setattr(bundle_mod, "persist_inputs", lambda *a, **k: None)
+    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180, session_minutes=None: "## Activities\n- x [last-meeting-email]")
     monkeypatch.setattr(publish, "publish_draft", lambda *a, **k: "drive-file-1")
     return bundle_mod, generate, publish
 
@@ -149,7 +167,7 @@ def test_process_candidate_gate_failure_never_publishes_and_never_retries(conn, 
     re-alerting on every future wake for this same meeting' either."""
     bundle_mod, generate, publish = _patch_pipeline_ok(monkeypatch)
     # Generated text leaks another client's display name.
-    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180: "mentions Josh directly [last-meeting-email]")
+    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180, session_minutes=None: "mentions Josh directly [last-meeting-email]")
     publish_calls = []
     monkeypatch.setattr(publish, "publish_draft", lambda *a, **k: publish_calls.append(1) or "should-not-happen")
 
@@ -189,7 +207,7 @@ def test_process_candidate_records_when_the_gate_failure_alert_itself_fails_to_s
     not make the whole event invisible. Recorded in failure_reason so the
     weekly audit or a human inspecting the DB can still find it."""
     bundle_mod, generate, publish = _patch_pipeline_ok(monkeypatch)
-    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180: "mentions Josh directly [last-meeting-email]")
+    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180, session_minutes=None: "mentions Josh directly [last-meeting-email]")
 
     from coach_prep_app import notify
     monkeypatch.setattr(notify, "send_email", lambda subject, text, recipient=notify.RECIPIENT: False)
@@ -216,7 +234,7 @@ def test_process_candidate_generation_failure_is_retried_not_terminal(conn, cfg,
     watermark unset (retried next wake), writes status='failed' (never
     'gates_failed'), and sends no alert at all."""
     bundle_mod, generate, publish = _patch_pipeline_ok(monkeypatch)
-    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180: None)
+    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180, session_minutes=None: None)
     publish_calls = []
     monkeypatch.setattr(publish, "publish_draft", lambda *a, **k: publish_calls.append(1) or "should-not-happen")
 
@@ -255,7 +273,7 @@ def test_process_candidate_retries_notify_only_after_a_publish_that_failed_to_no
     bundle_mod, generate, publish = _patch_pipeline_ok(monkeypatch)
     generate_calls = []
     original_generate = generate.generate_draft
-    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180: generate_calls.append(1) or original_generate(b))
+    monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180, session_minutes=None: generate_calls.append(1) or original_generate(b))
     publish_calls = []
     monkeypatch.setattr(publish, "publish_draft", lambda *a, **k: publish_calls.append(1) or "drive-file-1")
 
@@ -392,3 +410,194 @@ def test_sample_bundle_matches_the_real_shape():
         f"stub drifted: only in stub {set(SAMPLE_BUNDLE) - set(real)}, "
         f"only in real {set(real) - set(SAMPLE_BUNDLE)}"
     )
+
+
+def test_generate_draft_stubs_match_the_real_signature():
+    """Every orchestrator test replaces generate_draft with a lambda whose
+    parameters are written out by hand. When the real function gained
+    session_minutes, six of them started raising TypeError -- the stubs and
+    the thing they stand in for had drifted apart with nothing checking."""
+    import inspect
+    from coach_prep_app import generate
+
+    real = set(inspect.signature(generate.generate_draft).parameters)
+    stubbed = {"b", "timeout_s", "session_minutes"} - {"b"} | {"bundle"}
+    assert real == stubbed, (
+        f"generate_draft's signature changed to {sorted(real)} -- update the "
+        f"lambdas in this file to match"
+    )
+
+
+# --- the two-stage pipeline -------------------------------------------------
+
+_EVENT = {"instance_id": "evt1", "start_utc": dt.datetime(2026, 8, 20, 15, 0, tzinfo=dt.timezone.utc)}
+_NOW = dt.datetime(2026, 8, 19, 13, 0, tzinfo=dt.timezone.utc)
+
+
+class _FakeDocIngestConn:
+    pass
+
+
+def _run(conn, cfg, monkeypatch, event=None, publish_capture=None):
+    from coach_prep_app import notify, publish as publish_mod
+    import coach_prep_app.doc_ingest_reader as reader
+    monkeypatch.setattr(notify, "send_email", lambda *a, **k: True)
+    monkeypatch.setattr(reader, "get_active_clients", lambda conn: [CLIENT, OTHER_CLIENT])
+    if publish_capture is not None:
+        monkeypatch.setattr(
+            publish_mod, "publish_draft",
+            lambda drive, folder, name, date, body: (
+                publish_capture.append(body) or "drive-file-1"
+            ),
+        )
+    return orchestrator.process_candidate(
+        conn, _FakeDocIngestConn(), None, None, None, cfg, CLIENT, event or _EVENT, _NOW
+    )
+
+
+def test_selected_activities_reach_the_drafting_bundle(conn, cfg, monkeypatch):
+    """Stage 1 picks, stage 2 drafts from the full text of what it picked.
+    If the selection never reached the bundle, the prep doc would be built on
+    the program material alone and look no different from before."""
+    _patch_pipeline_ok(monkeypatch)
+    from coach_prep_app import generate
+    seen = {}
+    monkeypatch.setattr(
+        generate, "generate_draft",
+        lambda b, timeout_s=180, session_minutes=None: (
+            seen.update(b) or "## Summary\n\n- x [last-meeting-email]"
+        ),
+    )
+    assert _run(conn, cfg, monkeypatch) == "published"
+    assert [a["id"] for a in seen["selected_frameworks"]] == ["examining-fear"]
+
+
+def test_selected_activities_are_recorded_as_inputs(conn, cfg, monkeypatch):
+    """The closing manifest is rendered from generation_inputs. An activity
+    the doc recommends but the manifest omits breaks the completeness promise
+    that section makes."""
+    _patch_pipeline_ok(monkeypatch, persist_inputs=True)
+    assert _run(conn, cfg, monkeypatch) == "published"
+    kinds = conn.execute(
+        "SELECT source_kind, reference FROM generation_inputs WHERE source_kind = 'selected_framework'"
+    ).fetchall()
+    assert kinds == [("selected_framework", "f/fear.md")]
+
+
+def test_a_failed_selection_is_retried_not_terminal(conn, cfg, monkeypatch):
+    """Same posture as a failed draft: transient, watermark left unset, the
+    next wake tries again. Publishing a prep doc with no framework material
+    would be worse than publishing it late."""
+    _patch_pipeline_ok(monkeypatch)
+    from coach_prep_app import select_frameworks
+    monkeypatch.setattr(select_frameworks, "select", lambda *a, **k: None)
+
+    assert _run(conn, cfg, monkeypatch) == "selection_failed"
+    assert conn.execute("SELECT COUNT(*) FROM watermarks").fetchone()[0] == 0
+    assert conn.execute("SELECT status FROM generation_runs").fetchone()[0] == "failed"
+
+
+def test_invented_ids_are_reported_but_do_not_sink_the_run(conn, cfg, monkeypatch, capsys):
+    """An id absent from the catalog is the model reaching for a tool from its
+    own training. The known picks still stand, so the run continues -- but it
+    must be visible, not silent."""
+    _patch_pipeline_ok(monkeypatch, invented=["johari-window"])
+    assert _run(conn, cfg, monkeypatch) == "published"
+    assert "johari-window" in capsys.readouterr().err
+
+
+def test_the_published_body_carries_the_confidentiality_footer(conn, cfg, monkeypatch):
+    from coach_prep_app import manifest
+    _patch_pipeline_ok(monkeypatch)
+    published = []
+    assert _run(conn, cfg, monkeypatch, publish_capture=published) == "published"
+    assert manifest.CONFIDENTIAL_HEADING in published[0]
+    assert "Sources this note was built from" in published[0]
+
+
+def test_the_footer_is_appended_after_the_gates_have_run(conn, cfg, monkeypatch):
+    """The footer names real source labels and file paths. If it were appended
+    BEFORE the citation gate, those labels would be scanned as if the model
+    had written them -- and worse, a model could satisfy the gate by writing
+    its own footer. Gates see the model's output and nothing else."""
+    _patch_pipeline_ok(monkeypatch)
+    from coach_prep_app import gates
+    scanned = []
+    real_gate = gates.citation_gate
+    monkeypatch.setattr(
+        gates, "citation_gate",
+        lambda text, allowed: scanned.append(text) or real_gate(text, allowed),
+    )
+    assert _run(conn, cfg, monkeypatch) == "published"
+    from coach_prep_app import manifest
+    assert manifest.CONFIDENTIAL_HEADING not in scanned[0]
+
+
+def test_a_gate_failure_publishes_no_footer_and_no_document(conn, cfg, monkeypatch):
+    """A leaked draft must not reach Drive carrying an authoritative-looking
+    source manifest that lends it credibility."""
+    _patch_pipeline_ok(monkeypatch)
+    from coach_prep_app import generate
+    monkeypatch.setattr(
+        generate, "generate_draft",
+        lambda b, timeout_s=180, session_minutes=None: "mentions Josh directly [last-meeting-email]",
+    )
+    published = []
+    assert _run(conn, cfg, monkeypatch, publish_capture=published) == "gate_failed"
+    assert published == []
+
+
+# --- session length ---------------------------------------------------------
+
+def test_event_duration_is_read_from_the_calendar(monkeypatch):
+    """The prep doc's time boxes come from how long the session actually is."""
+    class _Events:
+        def list(self, **kwargs):
+            return self
+
+        def execute(self):
+            return {"items": [{
+                "id": "evt1",
+                "start": {"dateTime": "2026-08-20T15:00:00+00:00"},
+                "end": {"dateTime": "2026-08-20T16:00:00+00:00"},
+                "attendees": [{"email": "sean@example.com"}],
+            }]}
+
+    class _Service:
+        def events(self):
+            return _Events()
+
+    from coach_prep_app.config import Config
+    events = orchestrator._list_upcoming_events(_Service(), Config(), _NOW)
+    assert events[0]["duration_minutes"] == 60
+
+
+@pytest.mark.parametrize("end,expected", [
+    ({"date": "2026-08-21"}, None),                                  # all-day event
+    ({"dateTime": "2026-08-20T15:00:00+00:00"}, None),               # zero length
+    ({"dateTime": "2026-08-22T15:00:00+00:00"}, None),               # implausibly long
+    ({"dateTime": "not a timestamp"}, None),                         # malformed
+    ({}, None),                                                       # absent
+])
+def test_an_unusable_end_time_leaves_the_duration_unset(end, expected):
+    """generate falls back to a default session length rather than printing
+    '~0 min' or splitting a two-day all-day event into coaching parts."""
+    class _Events:
+        def list(self, **kwargs):
+            return self
+
+        def execute(self):
+            return {"items": [{
+                "id": "evt1",
+                "start": {"dateTime": "2026-08-20T15:00:00+00:00"},
+                "end": end,
+                "attendees": [],
+            }]}
+
+    class _Service:
+        def events(self):
+            return _Events()
+
+    from coach_prep_app.config import Config
+    events = orchestrator._list_upcoming_events(_Service(), Config(), _NOW)
+    assert events[0]["duration_minutes"] is expected

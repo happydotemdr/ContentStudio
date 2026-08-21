@@ -10,7 +10,8 @@ import sys
 from zoneinfo import ZoneInfo
 
 from coach_prep_app import bundle as bundle_mod
-from coach_prep_app import db, doc_ingest_reader, gates, generate, notify, publish, trigger
+from coach_prep_app import db, doc_ingest_reader, framework_catalog, gates, generate, manifest
+from coach_prep_app import notify, publish, select_frameworks, trigger
 
 
 def _now_iso() -> str:
@@ -50,10 +51,40 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
     all_clients = doc_ingest_reader.get_active_clients(doc_ingest_conn)
     other_clients = [c for c in all_clients if c["slug"] != client["slug"]]
 
-    the_bundle = bundle_mod.build_bundle(gmail_service, doc_ingest_reader, doc_ingest_conn, cfg, client, now_utc)
+    # Stage 1: choose the framework activities, from a bundle that does not
+    # carry them yet. The corpus cannot fit in a drafting prompt, so selection
+    # reads the compact catalog index and drafting gets only what it picked.
+    catalog = framework_catalog.load_catalog(cfg.framework_catalog_path)
+    selection_bundle = bundle_mod.build_bundle(
+        gmail_service, doc_ingest_reader, doc_ingest_conn, cfg, client, now_utc
+    )
+    selection = select_frameworks.select(
+        selection_bundle, catalog, cfg, framework_catalog.render_index(catalog),
+        timeout_s=cfg.generation_timeout_s,
+    )
+    if selection is None:
+        _fail_run(conn, run_id, "selection_failed")
+        return "selection_failed"  # watermark deliberately NOT set -- transient, retried next wake
+
+    selected, invented_ids = selection
+    if invented_ids:
+        # Not fatal -- the known picks still stand -- but recorded, because an
+        # id the catalog does not have is the model reaching for a coaching
+        # tool from its own training instead of from Ryan's library.
+        print(
+            f"orchestrator: selection named {len(invented_ids)} id(s) absent from the catalog: "
+            f"{', '.join(invented_ids)}",
+            file=sys.stderr,
+        )
+
+    # Stage 2: the same bundle, now carrying the full text of what was chosen.
+    the_bundle = {**selection_bundle, "selected_frameworks": selected}
     bundle_mod.persist_inputs(conn, run_id, the_bundle, _now_iso())
 
-    generated = generate.generate_draft(the_bundle, timeout_s=cfg.generation_timeout_s)
+    generated = generate.generate_draft(
+        the_bundle, timeout_s=cfg.generation_timeout_s,
+        session_minutes=event.get("duration_minutes"),
+    )
     if generated is None:
         _fail_run(conn, run_id, "generation_failed")
         return "generation_failed"  # watermark deliberately NOT set -- a transient failure, retried next wake
@@ -87,9 +118,14 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
             _append_failure_reason(conn, run_id, "ALERT EMAIL FAILED")
         return "gate_failed"
 
+    # The footer goes on AFTER the gates have run on the model's own output:
+    # text the model cannot write is text it cannot weaken, and the
+    # confidentiality notice is the one line that must never be softened.
+    final_body = manifest.append_to(generated, manifest.fetch_inputs(conn, run_id))
+
     file_id = publish.publish_draft(
         drive_service, cfg.pending_review_drive_folder_id, client["display_name"],
-        _meeting_date_local(event["start_utc"], cfg.timezone_name), generated,
+        _meeting_date_local(event["start_utc"], cfg.timezone_name), final_body,
     )
     _mark_published(conn, run_id, file_id)
 
@@ -168,9 +204,23 @@ def _list_upcoming_events(calendar_service, cfg, now_utc: dt.datetime) -> list[d
     out = []
     for item in resp.get("items", []):
         start = item["start"].get("dateTime") or item["start"].get("date")
+        end = item.get("end", {}).get("dateTime") or item.get("end", {}).get("date")
+        start_utc = dt.datetime.fromisoformat(start).astimezone(dt.timezone.utc)
+        duration_minutes = None
+        if end:
+            # The prep doc's time boxes are computed from this. An all-day or
+            # malformed event leaves it None and generate falls back to its
+            # default session length rather than printing "~0 min".
+            try:
+                end_utc = dt.datetime.fromisoformat(end).astimezone(dt.timezone.utc)
+                minutes = round((end_utc - start_utc).total_seconds() / 60)
+                duration_minutes = minutes if 0 < minutes <= 8 * 60 else None
+            except (TypeError, ValueError):
+                duration_minutes = None
         out.append({
             "instance_id": item["id"],
-            "start_utc": dt.datetime.fromisoformat(start).astimezone(dt.timezone.utc),
+            "start_utc": start_utc,
+            "duration_minutes": duration_minutes,
             "attendees": [a["email"] for a in item.get("attendees", []) if "email" in a],
         })
     return out
