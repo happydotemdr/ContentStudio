@@ -64,6 +64,71 @@ def get_latest_tagged_meeting_note(conn: sqlite3.Connection, cfg, client_slug: s
     return {"source_label": "last-meeting-note", "rel_path": output_path, "version": version, "text": body}
 
 
+_MEETING_DATE_RE = re.compile(r"\b(20\d{2})[ _-](0[1-9]|1[0-2])[ _-](0[1-9]|[12]\d|3[01])\b")
+
+
+def meeting_date_from_filename(filename: str) -> str | None:
+    """The date the MEETING happened, read out of the note's own filename.
+
+    Gemini names every recording note '<title> - YYYY MM DD HH MM TZ - Notes by
+    Gemini', so the date is right there. It has to come from the filename
+    because the database's converted_at records when doc-ingest last INGESTED
+    the file, which is a different thing entirely -- re-converting an old note
+    moves converted_at forward and leaves the meeting date where it was.
+
+    Returns an ISO date string, or None for a hand-named file carrying no date
+    (e.g. 'joanne-topic-backlog.md.gdoc')."""
+    match = _MEETING_DATE_RE.search(filename or "")
+    return "-".join(match.groups()) if match else None
+
+
+def get_recent_meeting_notes(conn: sqlite3.Connection, cfg, client_slug: str, limit: int = 2) -> list[dict]:
+    """The client's most recent meeting notes, newest first, ordered by the
+    date of the MEETING rather than of the ingest.
+
+    Ordering by converted_at was wrong on real data: Joanne's July 22 note was
+    re-converted at 18:25:53 and her August 4 note at 18:25:40 on the same day,
+    so "the latest note" was the July session -- a fortnight stale, with
+    nothing on the page to say so. Notes with no parseable date sort below
+    every dated one and fall back to converted_at among themselves; they are
+    hand-named backlog files, not sessions.
+
+    Each note carries its own source_label so both can be cited distinctly in
+    Part 1 and validated separately by the citation gate."""
+    from doc_ingest import frontmatter as doc_ingest_frontmatter
+
+    rows = conn.execute(
+        "SELECT c.output_path, c.version_number, c.converted_at FROM conversions c "
+        "JOIN source_files sf ON sf.id = c.source_file_id "
+        "WHERE c.status = 'current' AND c.client = ? "
+        "AND sf.rel_path LIKE 'Client Meet Recordings & Notes/%'",
+        (client_slug,),
+    ).fetchall()
+
+    candidates = []
+    for output_path, version, converted_at in rows:
+        meeting_date = meeting_date_from_filename(Path(output_path).name)
+        candidates.append((meeting_date, converted_at, output_path, version))
+    # "" sorts below every real ISO date, so an undated file can never outrank
+    # a dated session just because it was ingested more recently.
+    candidates.sort(key=lambda c: (c[0] or "", c[1]), reverse=True)
+
+    notes = []
+    for meeting_date, _, output_path, version in candidates[:limit]:
+        final_path = cfg.converted_root / output_path
+        if not final_path.exists():
+            continue
+        _, body = doc_ingest_frontmatter.parse(final_path.read_text(encoding="utf-8"))
+        notes.append({
+            "source_label": f"meeting-note-{slugify_source_label(Path(output_path).name)}",
+            "rel_path": output_path,
+            "version": version,
+            "meeting_date": meeting_date,
+            "text": body,
+        })
+    return notes
+
+
 def slugify_source_label(filename: str) -> str:
     """A citable source label: lowercase letters, digits, and hyphens only
     -- exactly what gates.py's citation regex (`[a-z0-9-]+`) can match.

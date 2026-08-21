@@ -134,3 +134,137 @@ def test_open_readonly_rejects_writes(tmp_path):
             )
     finally:
         ro_conn.close()
+
+
+# --- meeting-date ordering and the two-note fetch ---------------------------
+#
+# get_latest_tagged_meeting_note ordered by converted_at -- when a file was
+# INGESTED, not when the meeting happened. Joanne's real corpus rows show the
+# two diverging: her July 22 note was re-converted on 2026-08-14T18:25:53 and
+# her August 4 note on 2026-08-14T18:25:40, so "most recent note" returned the
+# July session. Ryan would prep off a transcript two weeks stale with nothing
+# on the page to say so.
+
+def _seed_note(conn, cfg, filename, converted_at, client="joanne", body=None):
+    note_dir = cfg.converted_root / "Client Meet Recordings & Notes"
+    note_dir.mkdir(parents=True, exist_ok=True)
+    (note_dir / f"{filename}.md").write_text(
+        f"---\nversion: 1\n---\n\n{body or filename}", encoding="utf-8"
+    )
+    conn.execute(
+        "INSERT INTO source_files (rel_path, extension, classification, size_bytes, mtime, "
+        "content_hash, first_seen_at, last_seen_at) VALUES (?, 'gdoc', 'gdoc_pointer', 1, 'm', 'h', 'n', 'n')",
+        (f"Client Meet Recordings & Notes/{filename}",),
+    )
+    source_file_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "INSERT INTO conversions (source_file_id, version_number, output_path, status, source_type, "
+        "conversion_tool, converted_at, gauntlet_passed_at, client) VALUES "
+        "(?, 1, ?, 'current', 'gdoc', 'google-docs-export', ?, 'n', ?)",
+        (source_file_id, f"Client Meet Recordings & Notes/{filename}.md", converted_at, client),
+    )
+    conn.commit()
+
+
+@pytest.mark.parametrize("filename,expected", [
+    ("1 1 Coaching with Joanne - 2026 08 04 10 01 CST - Notes by Gemini.gdoc", "2026-08-04"),
+    ("Josh - 2026 08 20 07 54 CST - Notes by Gemini.gdoc.v3", "2026-08-20"),
+    ("Sean and Ryan Coaching Session - 2026 07 29 08 09 CST - Notes by Gemini.gdoc", "2026-07-29"),
+    ("Joanne and Ryan Chat - 2026 07 22 09 57 CST - Notes by Gemini V3.gdoc", "2026-07-22"),
+])
+def test_meeting_date_is_read_from_the_real_filename_shapes(filename, expected):
+    """Every one of these is a real corpus filename. Gemini names its notes
+    '<title> - YYYY MM DD HH MM TZ - Notes by Gemini'."""
+    assert doc_ingest_reader.meeting_date_from_filename(filename) == expected
+
+
+@pytest.mark.parametrize("filename", [
+    "joanne-topic-backlog.md.gdoc",
+    "1 1 coaching joanne-ryan 8-6-26 .md",
+    "notes.md",
+    "",
+])
+def test_meeting_date_is_none_when_the_filename_carries_no_date(filename):
+    """A hand-named file has no parseable date. It must fall back to
+    converted_at rather than being dropped or crashing the run."""
+    assert doc_ingest_reader.meeting_date_from_filename(filename) is None
+
+
+def test_notes_order_by_meeting_date_not_converted_at(doc_ingest_conn, tmp_path):
+    """Joanne's exact production shape: the July note ingested LAST."""
+    from coach_prep_app.config import Config
+    cfg = Config(converted_root=tmp_path / "converted")
+    _seed_note(doc_ingest_conn, cfg,
+               "1 1 Coaching with Joanne - 2026 08 04 10 01 CST - Notes by Gemini.gdoc",
+               "2026-08-14T18:25:40.170476+00:00", body="the August session")
+    _seed_note(doc_ingest_conn, cfg,
+               "Joanne and Ryan Chat - 2026 07 22 09 57 CST - Notes by Gemini V3.gdoc",
+               "2026-08-14T18:25:53.496056+00:00", body="the July session")
+
+    notes = doc_ingest_reader.get_recent_meeting_notes(doc_ingest_conn, cfg, "joanne", limit=2)
+
+    assert [n["text"].strip() for n in notes] == ["the August session", "the July session"]
+
+
+def test_get_recent_meeting_notes_returns_two_most_recent(doc_ingest_conn, tmp_path):
+    from coach_prep_app.config import Config
+    cfg = Config(converted_root=tmp_path / "converted")
+    for day, body in (("01", "oldest"), ("08", "middle"), ("15", "newest")):
+        _seed_note(doc_ingest_conn, cfg,
+                   f"Chat - 2026 08 {day} 10 00 CST - Notes by Gemini.gdoc",
+                   "2026-08-20T00:00:00+00:00", body=body)
+
+    notes = doc_ingest_reader.get_recent_meeting_notes(doc_ingest_conn, cfg, "joanne", limit=2)
+
+    assert [n["text"].strip() for n in notes] == ["newest", "middle"]
+
+
+def test_recent_notes_get_distinct_source_labels(doc_ingest_conn, tmp_path):
+    """Both notes are cited in Part 1 of the prep doc, and the citation gate
+    validates each tag against the allowlist. Two notes sharing one label
+    would make it impossible to tell which session a check-in item came from."""
+    from coach_prep_app.config import Config
+    cfg = Config(converted_root=tmp_path / "converted")
+    for day in ("01", "08"):
+        _seed_note(doc_ingest_conn, cfg,
+                   f"Chat - 2026 08 {day} 10 00 CST - Notes by Gemini.gdoc",
+                   "2026-08-20T00:00:00+00:00")
+
+    labels = [n["source_label"] for n in
+              doc_ingest_reader.get_recent_meeting_notes(doc_ingest_conn, cfg, "joanne", limit=2)]
+
+    assert len(set(labels)) == 2
+    assert all(label.replace("-", "").isalnum() for label in labels), labels
+
+
+def test_recent_notes_carry_the_meeting_date_for_the_prep_doc(doc_ingest_conn, tmp_path):
+    """Ryan needs to see WHICH session each note is, and the summary says how
+    long it has been since the last one."""
+    from coach_prep_app.config import Config
+    cfg = Config(converted_root=tmp_path / "converted")
+    _seed_note(doc_ingest_conn, cfg,
+               "Chat - 2026 08 04 10 00 CST - Notes by Gemini.gdoc", "2026-08-20T00:00:00+00:00")
+
+    note, = doc_ingest_reader.get_recent_meeting_notes(doc_ingest_conn, cfg, "joanne", limit=2)
+    assert note["meeting_date"] == "2026-08-04"
+
+
+def test_get_recent_meeting_notes_returns_empty_when_none_found(doc_ingest_conn, tmp_path):
+    from coach_prep_app.config import Config
+    cfg = Config(converted_root=tmp_path / "converted")
+    assert doc_ingest_reader.get_recent_meeting_notes(doc_ingest_conn, cfg, "sean", limit=2) == []
+
+
+def test_undated_notes_sort_below_dated_ones(doc_ingest_conn, tmp_path):
+    """A hand-named file with no parseable date must not outrank a real recent
+    session just because it happened to be ingested later."""
+    from coach_prep_app.config import Config
+    cfg = Config(converted_root=tmp_path / "converted")
+    _seed_note(doc_ingest_conn, cfg,
+               "Chat - 2026 08 04 10 00 CST - Notes by Gemini.gdoc",
+               "2026-08-01T00:00:00+00:00", body="a real dated session")
+    _seed_note(doc_ingest_conn, cfg,
+               "joanne-topic-backlog.md.gdoc", "2026-08-30T00:00:00+00:00", body="undated")
+
+    notes = doc_ingest_reader.get_recent_meeting_notes(doc_ingest_conn, cfg, "joanne", limit=2)
+    assert notes[0]["text"].strip() == "a real dated session"
