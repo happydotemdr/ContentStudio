@@ -237,3 +237,15 @@ def test_claude_md_requires_a_failing_assertion_per_defect():
     assert "which assertion would have failed" in text.lower(), (
         "CLAUDE.md must carry the standing rule F-10 exists to install"
     )
+
+
+def test_docs_readme_accounts_for_every_committed_doc():
+    docs = REPO / "docs"
+    readme = (docs / "README.md").read_text(encoding="utf-8")
+    unlisted = sorted(
+        p.name for p in docs.glob("*.md")
+        if p.name != "README.md" and p.name not in readme
+    )
+    assert not unlisted, (
+        f"docs/ holds committed documents docs/README.md never mentions: {unlisted}"
+    )
