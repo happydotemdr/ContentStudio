@@ -26,6 +26,36 @@ cleanup that drifts back within two sessions.
 
 ---
 
+## Status (2026-08-20)
+
+**Execution complete.** All 18 tasks landed, plus six addenda found and folded in along the way
+(T4a, T11a, T12a, T13a, and one fix-loop round each for T15 and T16 — see §0 and the Errors log
+in this session's own history for detail on each). A user-approved mid-wave Opus checkpoint ran
+after T12 and found/fixed 4 Important issues no per-task review would have caught. The mandatory
+final whole-branch Opus review ran after T18, found 7 Important findings plus minors, all fixed
+in one batched wave per SDD discipline (no second wave), and the scoped re-review came back
+clean. One residual Minor (`shorts-assembly`'s summary list still enumerating six items though
+its header sentence was corrected to "seven") was explicitly ruled safe to park — not
+load-bearing, since the machine-checked artifacts (the Output contract fence, the handoff block)
+are already complete and correct.
+
+**PR:** [#60](https://github.com/happydotemdr/ContentStudio/pull/60), branch
+`claude/p13-kickoff-resume-prompt-f64359` → `main`. An unrelated PR #59 merged to `main` while
+#60 was open and conflicted on two files (`.claude/skills/voiceover-brief/SKILL.md`,
+`scripts/cowork-plugin.lock.json`); resolved via `git merge origin/main` (merge commit `da52367`),
+preserving both branches' legitimate independent changes, plus four newly-unmarked normative
+bullets in `scripting-for-tts.md` that the merge introduced (marked `[I]`, matching the
+paragraph's own already-declared taxonomy scope).
+
+**CI, verified 2026-08-20:** all 6 check rows pass — `app-suite`, `no-live-credentials`,
+`root-suite`, each across both triggered runs (branch-push event and PR event).
+`mergeStateStatus: CLEAN`, `mergeable: MERGEABLE`. Root suite 534 passed; app suite 1954
+passed/4 skipped/2 xfailed (the 2 xfail are P15's, unrelated to P13). **Not yet merged** — ready,
+awaiting an explicit merge decision (merging to `main` is a shared-state action, not taken
+unilaterally).
+
+---
+
 ## 1. Scope
 
 ### Files this package owns (no other package may touch these)

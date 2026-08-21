@@ -1,4 +1,15 @@
-# Resume prompt — P13 kickoff, PR #58 pending merge
+# Resume prompt — P13 execution complete, PR #60 pending merge
+
+> **Update, 2026-08-20, end of the P13 kickoff session:** everything below this line was written
+> to kick P13 *off* and is now historical — P13's 18 tasks plus 6 addenda are done, its final
+> whole-branch review is clean, and [PR #60](https://github.com/happydotemdr/ContentStudio/pull/60)
+> is open against `main` with CI green (6/6 rows) and `mergeStateStatus: CLEAN`. **The only
+> remaining action for P13 is the merge decision itself** — a shared-state action this session
+> did not take unilaterally. Once #60 merges, this file should be rewritten fresh (following the
+> pattern of its own prior revision, "written after PR #54") as the kickoff prompt for **P14**,
+> with baselines re-verified against the post-merge `main`, not carried forward from anything
+> below. Until then, the rest of this file's content (traps, pre-flight results, scope) remains
+> accurate background for finishing P13's own branch — just not for "kicking off" anything.
 
 You are resuming a fully-planned, already-validated 328-finding audit-remediation programme (329 as currently tracked — see "Definition of done" below for why). Do not re-plan and do not re-audit.
 
@@ -51,7 +62,7 @@ Record whatever you get as the new baseline in this file's own next revision (or
 | B3 | P4, then P5 | merged |
 | B4 | P6, P7, P8, P9 | all four merged — Wave B4 complete |
 | B5 | P15 | merged as PR #54 (`8893789`) — Wave B5 complete |
-| C | **P13, then P14** | **P13 is next — pre-flight checked across two sessions, not yet started** |
+| C | **P13, then P14** | **P13 execution complete (2026-08-20): 18 tasks + 6 addenda, final whole-branch review clean. [PR #60](https://github.com/happydotemdr/ContentStudio/pull/60) open against `main`, CI green (6/6 rows), `mergeStateStatus: CLEAN` — awaiting merge decision. P14 blocked on that merge.** |
 
 **Why P13 is next, precisely:** Wave C's own stated rationale (master plan, search "Wave C") is "Documentation describes the fixed code, or it is fiction again. P14 is last because six packages owe it contract decisions." P13 comes first within Wave C because P14's own plan (§ "Contract for P14," inside P13's file, §6.1) is written as a **request P13 makes of P14** — three specific edits P14 must make to `docs/README.md`/`CLAUDE.md` to resolve a provenance-wording contradiction P13 discovers but cannot fix (it owns neither file). Landing P14 first would mean resolving that contradiction blind.
 
@@ -147,7 +158,7 @@ From the gate-coverage final review (PR #40, unrelated to this remediation progr
 
 ## Definition of done (the whole programme, not any one package)
 
-All 328 originally-audited findings closed, plus B-113 — **329 findings tracked, 329 closed as of P15's merge, 0 remaining in merged packages.** Each verified by the mechanism its plan names. Running total: P0+P1+P2+P3+P4+P5+P10+P11+P12+P6+P7+P8+P9+P15 merged (14 of 16); **P13, then P14 are next.** Count each package's own total from its merged PR, not from memory.
+All 328 originally-audited findings closed, plus B-113 — **329 findings tracked, 329 closed as of P15's merge, 0 remaining in merged packages.** Each verified by the mechanism its plan names. Running total: P0+P1+P2+P3+P4+P5+P10+P11+P12+P6+P7+P8+P9+P15 merged (14 of 16); **P13's 48 findings are closed on its own branch (PR #60, not yet merged) — count becomes 15 of 16 packages, 377 (329+48) findings, once #60 merges. P14 is next after that**, still not started. Count each package's own total from its merged PR, not from memory.
 
 Both suites were fully green with no documented exceptions beyond P15's own 2 documented xfail, as of `8893789` — **re-verify fresh** per the baseline section above; the 77-commit backlog almost certainly changed the app-suite count.
 
