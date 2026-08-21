@@ -162,7 +162,7 @@ cd "C:/Projects/ContentStudio/.claude/worktrees/pipeline-audit-review-4dd767/pip
 - **evidence**: `requirements.txt`, `pipeline-app/requirements.txt` (neither lists `pytest-cov` or `coverage`); install log for this audit
 - **component**: tests
 - **failure_mode**: coverage-gap
-- **blast_radius**: No one could distinguish "tested" from "has a test file named after it". `test_turn_service.py` — 11 tests, all green, against a 98%-covered module — reads as adequate because nothing ever separated line execution from assertion. (This line was corrected per F-29: the original count came from the `def test_` grep that §6 retracts.)
+- **blast_radius**: No one could distinguish "tested" from "has a test file named after it". `test_turn_service.py` — 42 tests, all green, against a 98%-covered module — reads as adequate because nothing ever separated line execution from assertion. (This line was corrected per F-29: the original count came from the `def test_` grep that §6 retracts.)
 - **trigger**: Any attempt to assess test adequacy before this audit.
 - **proposed_fix**: Add `pytest-cov` to both `requirements.txt` files and record a coverage floor. Note that a line-coverage floor alone would *not* have caught any of the 18 seed defects — pair it with the assertion-quality review in T14.
 - **fix_cost**: S
@@ -554,7 +554,7 @@ between them sanction the empty-upstream branch that A-30/A-62 show every hand e
 
 ## 6. Q5 — The five thin suites
 
-T0 lists five. **One of its counts is wrong:** `test_turn_service.py` has **11** test functions,
+T0 lists five. **One of its counts is wrong:** `test_turn_service.py` has **42** test functions,
 not 2 — verified by `pytest --collect-only`, which is the authoritative method here; the
 `^def test_` grep that produced the original 2 silently missed every `async def test_` (see §6's
 correction note). The other four counts survived re-measurement unchanged. The correction makes
@@ -865,7 +865,7 @@ failure is observable to a human. The one test that comes closest asserts that i
 ### F-27 · Test volume is inverted against consequence across the five thinnest suites
 - **severity**: S2
 - **confidence**: confirmed
-- **evidence**: `pipeline-app/tests/test_routes_doctor.py` (1), `test_main.py` (2), `test_git_helper.py` (2), `test_discovery_records.py` (2), `test_turn_service.py` (11)
+- **evidence**: `pipeline-app/tests/test_routes_doctor.py` (1), `test_main.py` (2), `test_git_helper.py` (2), `test_discovery_records.py` (2), `test_turn_service.py` (42)
 - **component**: tests
 - **failure_mode**: coverage-gap
 - **blast_radius**: `test_routes_doctor.py` asserts a 200 and one substring. `test_git_helper.py` asserts a commit exists but never *what* was committed — one `git show --stat` assertion would have caught D-49/A-53 (`commit_skill_edit` commits the entire index). `test_discovery_records.py` asserts counters against a literal it wrote, never that the totals reconcile (B-56). Meanwhile the six largest adapter suites hold 273 tests between them. The distribution tracks how mechanical a module is to test, not how much damage it can do.
@@ -890,15 +890,15 @@ failure is observable to a human. The one test that comes closest asserts that i
 - **owner_task**: T14
 - **detected_by**: coverage
 
-### F-29 · Appendix F §6 undercounts `test_turn_service.py` at 2 tests; it has 11
+### F-29 · Appendix F §6 undercounts `test_turn_service.py` at 2 tests; it has 42
 - **severity**: S3
 - **confidence**: confirmed
-- **evidence**: `docs/audit/appendix-F-tests.md:120`, `docs/audit/appendix-F-tests.md:127-131`, `pipeline-app/tests/test_turn_service.py` (11 `def test_` functions)
+- **evidence**: `docs/audit/appendix-F-tests.md:120`, `docs/audit/appendix-F-tests.md:127-131`, `pipeline-app/tests/test_turn_service.py` (42 tests via `pytest --collect-only`)
 - **component**: tests
 - **failure_mode**: docs-drift
-- **blast_radius**: T0's headline example of coverage/assertion decoupling rests on a wrong number. The conclusion survives — arguably strengthens, since 11 tests that never assert the module's output is a worse signal than 2 — but the figure is quoted in the appendix's most-cited paragraph and would not withstand a reader opening the file. The other four thin-suite counts (`test_main.py` 2, `test_git_helper.py` 2, `test_discovery_records.py` 2, `test_routes_doctor.py` 1) are correct.
+- **blast_radius**: T0's headline example of coverage/assertion decoupling rests on a wrong number. The conclusion survives — arguably strengthens, since 42 tests that never assert the module's output is a worse signal than 2 — but the figure is quoted in the appendix's most-cited paragraph and would not withstand a reader opening the file. The other four thin-suite counts (`test_main.py` 2, `test_git_helper.py` 2, `test_discovery_records.py` 2, `test_routes_doctor.py` 1) are correct.
 - **trigger**: Any reader verifying the appendix's most memorable claim.
-- **proposed_fix**: Correct the count to 11 in `appendix-F-tests.md` §6 and restate the point as "11 tests, all of the turn lifecycle, none of the handoff" (see §6 above).
+- **proposed_fix**: Correct the count to 42 in `appendix-F-tests.md` §6 and restate the point as "42 tests, all of the turn lifecycle, none of the handoff" (see §6 above).
 - **fix_cost**: S
 - **depends_on_finding**: []
 - **owner_task**: T14
