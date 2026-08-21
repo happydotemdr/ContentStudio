@@ -28,6 +28,14 @@ The single biggest correction to the supplied runbook, which described a 0.30–
 | **Natural** | "Closest to the original voice recording — balanced and neutral" | **Default for tagged narration** |
 | **Robust** | "Highly stable, but less responsive to directional prompts" | Consistency-critical long runs — **but it suppresses audio tags** |
 
+**Live-API correction, 2026-08-21** `[T]`: this table describes named
+*prompting concepts* ElevenLabs documents; the live `/text-to-speech` and
+`/with-timestamps` request bodies for eleven_v3 do NOT accept the mode name
+as a string value for `voice_settings.stability` — a request with
+`"stability": "natural"` returns a 422 ("Input should be a valid number,
+unable to parse string as a number"). Send a float in [0, 1] instead; 0.5
+is a reasonable Natural-equivalent starting point.
+
 Docs recommend **Creative or Natural for maximum expressiveness with audio tags** `[T]`.
 
 **The hard rule that follows: a tagged script plus Robust mode is a self-cancelling configuration.**

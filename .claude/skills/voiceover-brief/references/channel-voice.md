@@ -39,8 +39,16 @@ Persona:         TBD — describe what the voice actually delivers (age/texture/
                  not what it was intended to deliver
 
 Locked settings: PENDING AUDITION — no master render has been made against this voice yet.
-  Model:            eleven_v3 is this skill's default for Shorts [I]
-                    (references/voice-selection.md) — not yet confirmed on this voice
+  Model:            eleven_v3, single continuous generation per Short (not
+                     per-beat chunking) — operator decision 2026-08-21,
+                     REVISING the earlier same-day decision below after a
+                     live listening comparison. Bracket audio tags
+                     ([excited], [whispers], [sighs], [pause], etc.) carry
+                     delivery, applied only where they genuinely fit — not
+                     every beat needs one. No per-beat numeric
+                     speed/style variation: a single constant
+                     stability/similarity_boost/style/speed baseline
+                     across the whole take. [P]
   Stability:        pending
   similarity_boost: pending
   style:            pending
@@ -50,10 +58,33 @@ Locked settings: PENDING AUDITION — no master render has been made against thi
 Known-good tags:   PENDING — requires a v3 probe (see Open action 1)
 Known-bad tags:    PENDING — requires a v3 probe (see Open action 1)
 Dictionaries:      none
-Caveats:           PVC on v3 is not fully optimized [T] — the three-way trade-off (run PVC as-is /
-                   `use_pvc_as_ivc: true` / fall back to eleven_multilingual_v2) is not yet decided
-                   for this voice (see Open action 3;
-                   `.claude/skills/elevenlabs-audio/references/voice-profiles.md` "PVC on v3")
+Caveats:           SUPERSEDED 2026-08-21 [P]: the same-day "always
+                   eleven_multilingual_v2 for full PVC fidelity" decision
+                   below was tested against a v3+tags alternative in a
+                   live side-by-side comparison and the v3+tags result was
+                   judged clearly better — more natural intonation, no
+                   audible per-segment "AI-ish" discontinuity. The
+                   multilingual_v2 decision's own reasoning (PVC fidelity
+                   loss on v3) is real but was outweighed in practice.
+                   Three eleven_v3 API behaviors this session found
+                   undocumented or mis-documented, now load-bearing for
+                   this pin:
+                   1. eleven_v3's /text-to-speech (and /with-timestamps)
+                      REJECTS voice_settings.stability as the string
+                      "natural" — 422 "Input should be a valid number" —
+                      despite this skill's own model-routing.md/
+                      api-payload.md describing string mode names. Send a
+                      float (Natural ≈ 0.5) instead. [T]
+                   2. eleven_v3 REJECTS previous_text/next_text outright —
+                      400 "Providing previous_text or next_text is not yet
+                      supported with the 'eleven_v3' model" — so a
+                      single-take generation has no request-level
+                      stitching context to lose in the first place; this
+                      is a non-issue for the single-continuous-take
+                      approach specifically.
+                   3. eleven_v3 has no <break> tag (already correctly
+                      documented elsewhere in this skill) — bracket tags
+                      and punctuation carry pacing instead.
 Verified on:       2026-08-18 — voice_id recorded; audition not yet run
 ```
 

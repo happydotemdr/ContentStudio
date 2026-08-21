@@ -82,6 +82,11 @@ as "improves continuity across split generations" `[T]`; the supplied runbook's 
 characters" heuristic is **`[I]`**, not a documented figure. A sentence or two of real context each
 side is a sensible read.
 
+eleven_v3 currently rejects previous_text/next_text outright with a 400
+(verified live 2026-08-21) — this is moot for a single continuous
+generation, which has no chunk seams to stitch, but blocking if anyone
+still chunks a v3 script into multiple requests.
+
 **Stronger — request stitching.** `previous_request_ids` / `next_request_ids` (**max 3 each**)
 reference actual prior generations `[T]`. Anchors to rendered audio rather than text. **Prefer this
 whenever you have the IDs.** The supplied runbook omitted it entirely.
@@ -119,15 +124,13 @@ This is Validation Gate 2's most important single check.
   "text": "[confident] Core systems initialized. [sighs] Latency still needs tuning. [excited] Let's run the throughput validation.",
   "model_id": "eleven_v3",
   "voice_settings": {
-    "stability": "natural",
+    "stability": 0.5,
     "similarity_boost": 0.75,
     "style": 0.3,
     "speed": 1.0,
     "use_speaker_boost": true
   },
   "seed": 42,
-  "previous_text": "Initiating deep pipeline inspection.",
-  "next_text": "Terminating active connections on receipt.",
   "pronunciation_dictionary_locators": [
     { "pronunciation_dictionary_id": "DICT_ID", "version_id": "VERSION_ID" }
   ],
@@ -137,10 +140,11 @@ This is Validation Gate 2's most important single check.
 
 Query: `?output_format=mp3_44100_192&enable_logging=true`
 
-**Note on `stability` for v3:** v3 exposes stability as the three discrete modes Creative / Natural /
-Robust `[T]`. Confirm the exact wire representation your SDK or API version expects — mode string vs.
-mapped float — against the current API reference before running; this is one of the fastest-moving
-parts of the surface `[I]`. Everything else in the template is verified as written.
+**Live-verified correction, 2026-08-21** `[T]`: eleven_v3 rejects a string
+stability mode ("natural") with a 422 — send a float. It also rejects
+previous_text/next_text with a 400 — omit them entirely on v3 (this is a
+non-issue for a single continuous generation, which needs no chunk-seam
+stitching).
 
 ## Payload template — draft, Flash
 
