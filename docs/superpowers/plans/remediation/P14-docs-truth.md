@@ -1007,6 +1007,22 @@ indictment than 2.
 the question that would have exposed the gap continuously. The fix is a convention plus the check
 that makes the finding→plan mapping total rather than aspirational.
 
+> **Amendment, 2026-08-21 (P14 kickoff, before T8 dispatch).** T8.1's original bijection test
+> scanned each plan's ENTIRE pre-`## 4.` text for anything shaped like a finding id. Against the
+> live 16-plan corpus this produced 37 false "contested" findings: plans routinely mention another
+> package's finding id in a disclaimed cross-reference (`"A-32 is not in P3's finding set"`,
+> `"Routed to A-32's owner"`, a `"tracked separately"` handoff sub-table naming the real owner in
+> the same row) — every one hand-verified against the claiming plans' own text before this
+> amendment landed. The corrected version below scopes each plan's claims to its own
+> `## N. Finding → task map` section (present, verbatim-titled, in all sixteen plans — the
+> orchestration plan's own Verification §2 requirement) instead of the whole pre-`## 4.` prose, and
+> carries two small, explicit, hand-verified exception tables for the residue that survives even
+> that narrower scope: ten disclaimed same-table mentions, and one genuinely split finding (F-26,
+> closed as two separately-tasked halves by P1's T18 and P4's T19). Both tables are the same
+> "explicit ledger, shrink it, never grow it blindly" pattern `tests/test_skill_provenance.py`
+> already uses for its own triage ledgers — not a new convention. Verified against the merged tree:
+> 328/328 findings claimed, 0 unclaimed, 0 genuinely contested. No other part of T8 changes.
+
 - [ ] **T8.1 (test first).**
 
 ```python
@@ -1014,6 +1030,34 @@ AUDIT = REPO / "docs" / "audit"
 PLANS = REPO / "docs" / "superpowers" / "plans" / "remediation"
 FINDING_HEADING_RE = re.compile(r"^###\s+([A-F]-\d{2,3})\s+·", re.MULTILINE)
 FINDING_REF_RE = re.compile(r"\b([A-F]-\d{2,3})\b")
+TASK_MAP_HEADING_RE = re.compile(
+    r"^##\s+\d+\.\s*Finding\s*(?:→|->)\s*task map", re.MULTILINE | re.IGNORECASE
+)
+NEXT_H2_RE = re.compile(r"^##\s+\S", re.MULTILINE)
+
+# Verified by hand against the live tree (2026-08-21): the finding's real, sole
+# owner is the OTHER plan in the pair. The plan named here mentions the finding
+# only inside its own "Finding -> task map" section as a documented
+# cross-package dependency/handoff note (e.g. a "tracked separately" sub-table
+# naming the true owner in the same row), and that plan's own text disclaims
+# ownership. Shrink this dict as plans merge with cleaner cross-references;
+# never grow it without re-reading the disclaiming plan's own words.
+EXCLUDE_AS_MENTION = {
+    "B-01": "P8-engine-cron.md",
+    "B-06": "P8-engine-cron.md",
+    "B-21": "P8-engine-cron.md",
+    "B-72": "P10-roster.md",
+    "B-73": "P8-engine-cron.md",
+    "B-82": "P8-engine-cron.md",
+    "D-47": "P5-skills-editor.md",
+    "E-05": "P15-ui.md",
+    "E-07": "P15-ui.md",
+    "F-64": "P8-engine-cron.md",
+}
+# Verified by hand: genuinely split and closed by two real, separately-tasked
+# halves, each recorded as its own row in each plan's own task map (P1's T18,
+# P4's T19).
+KNOWN_SPLIT_FINDINGS = {"F-26"}
 
 
 def test_every_audit_finding_is_claimed_by_exactly_one_remediation_plan():
@@ -1025,12 +1069,21 @@ def test_every_audit_finding_is_claimed_by_exactly_one_remediation_plan():
     claims: dict[str, list[str]] = {}
     for plan in PLANS.glob("P*.md"):
         text = plan.read_text(encoding="utf-8")
-        scope = text[: text.index("## 4.")] if "## 4." in text else text
+        heading = TASK_MAP_HEADING_RE.search(text)
+        assert heading, f"{plan.name} has no '## N. Finding -> task map' section"
+        rest = text[heading.end():]
+        next_h2 = NEXT_H2_RE.search(rest)
+        scope = rest[: next_h2.start()] if next_h2 else rest
         for fid in set(FINDING_REF_RE.findall(scope)) & findings:
+            if EXCLUDE_AS_MENTION.get(fid) == plan.name:
+                continue
             claims.setdefault(fid, []).append(plan.name)
 
     unclaimed = sorted(findings - claims.keys())
-    contested = sorted(f for f, owners in claims.items() if len(owners) > 1)
+    contested = sorted(
+        f for f, owners in claims.items()
+        if len(owners) > 1 and f not in KNOWN_SPLIT_FINDINGS
+    )
     assert not unclaimed, f"audit findings no remediation plan claims: {unclaimed}"
     assert not contested, f"audit findings claimed by more than one plan: {contested}"
 
@@ -1043,8 +1096,10 @@ def test_claude_md_requires_a_failing_assertion_per_defect():
 ```
 
   The first is the programme-wide gate from the orchestration plan's Verification §2; it passes
-  only once all sixteen plans are complete, which is exactly when P14 runs. If it fails, name the
-  unclaimed ids in the report — do not add them to P14.
+  only once all sixteen plans are complete, which is exactly when P14 runs. If it fails after the
+  amendment above (a genuinely unclaimed id, or a contested one that isn't in `EXCLUDE_AS_MENTION`
+  or `KNOWN_SPLIT_FINDINGS`), name the ids in the report — do not add them to P14, and do not widen
+  either exception table without re-verifying the new case by hand the same way this amendment did.
 
 - [ ] **T8.2.** Add to `CLAUDE.md`'s Conventions list, immediately before the test-invocation
   bullet:
