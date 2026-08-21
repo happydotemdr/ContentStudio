@@ -60,23 +60,20 @@ Net-info-gain check: Most home-coffee content blames beans/grind/water temp;
   this says the problem is a skipped *step*, not an ingredient — genuinely
   different from the top existing videos on this topic. [C]
 
-HOOK        (0–3s | 9 words):
-  "Your drip coffee tastes flat — and it's not the beans."
-SETUP       (3–8s | 14 words):
-  "Cafes do one thing at home you skip. It costs about two dollars."
-BUILD/VALUE (8–28s | 46 words):
-  "Bloom the grounds first: pour just enough hot water to soak them,
-  wait thirty seconds, then finish the pour. That gas escaping? It's what
-  made your cup bitter. Same beans, same machine — one pause changes
-  everything."
-  [re-hook beat @ ~15s]: "But there's a second mistake almost everyone makes..."
-PAYOFF      (28–38s | 22 words):
-  "The second fix: water off the boil, ninety seconds after. Now taste it —
-  smooth, not sharp. That's the cafe difference."
-LOOP/CTA    (38–45s | 13 words):
-  "So it was never the beans. What flat cup are you fixing tonight?"
+HOOK        (0–3s  | 8 words): "Your drip coffee's flat. It's not the beans."
+SETUP       (3–8s  | 13 words): "Cafes do one thing at home you skip. It costs about two dollars."
+BUILD/VALUE (8–28s | 44 words):
+  (8–15s | 19 words): "Bloom the grounds first. Pour just enough hot water to soak them, wait thirty seconds, then finish the pour."
+  [re-hook beat @ ~15s] (15–21s | 8 words): "But there's a second mistake almost everyone makes..."
+  mechanism (21–28s | 17 words): "That gas escaping is what made your cup bitter. Same beans, same machine. One pause changes everything."
+PAYOFF      (28–38s | 20 words): "The second fix: water off the boil, ninety seconds after. Now taste it, smooth, not sharp. That's the cafe difference."
+LOOP/CTA    (38–45s | 13 words): "So it was never the beans. What flat cup are you fixing tonight?"
 Comment-bait question: "Drip, French press, or pour-over — which do you run?"
-Total word count: ~104 words (150–170 wpm band)
+Total word count: ~98 words (150–170 wpm band)
+
+GATES
+  Gate D (scripts/lint_script_language.py): pass
+  Gate E (fresh Opus critic): pass
 
 Visual notes (for visual-prompts downstream):
   Hook:     Close-up flat black coffee, slow push-in (signals "something's
