@@ -262,7 +262,7 @@ def test_beat_text_mismatch_raises():
         derive_segments_v3(text, alignment, ["A.", "Different."])
 
 
-def test_custom_names_are_used_in_order():
+def test_custom_names_are_used_in_order_v3():
     text, alignment = _build_v3_case(["A beat.", "Another beat."])
     segments = derive_segments_v3(text, alignment, ["A beat.", "Another beat."],
                                    names=["hook", "cta"])
