@@ -1,8 +1,10 @@
 # Brand Voice and Tone
 
-Distilled from `output/raisinggoodsports-brand-definition.md` (last synced 2026-07-25 — that
-file is a static reference copy maintained upstream; if it's ever refreshed with a newer
-edition, re-sync this file by hand and update this date).
+**This file is the authority for the brand's voice, lexicon, archetypes and signature thinkers.**
+It was distilled by hand from `output/raisinggoodsports-brand-definition.md` on 2026-07-25 — a
+historical provenance note only. No script in this repo produces that path, `output/` is
+git-ignored, and a fresh checkout will not have it: do not read it, and do not treat its absence
+as a failure.
 
 ## Voice traits (binding)
 

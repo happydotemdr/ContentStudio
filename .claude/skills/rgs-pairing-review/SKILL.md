@@ -1,9 +1,13 @@
 ---
 name: rgs-pairing-review
-description: Use when the thinkers corpus or RaisingGoodSports research corpus has been refreshed or expanded — new thinker works added to manifests/thinkers.json, or a research theme file re-split at a new edition — to detect what's new since the last pairing-map review and propose curated additions, or when asked to "review the pairing map," "check for new thinker or research content," or "expand the pairing map." Brand-specific to RaisingGoodSports; never runs on a schedule, only on request.
+description: Use when the thinkers corpus or RaisingGoodSports research corpus has been refreshed or expanded — new thinker works added to manifests/thinkers.json, or a research theme file re-split at a new edition — to detect what's new since the last pairing-map review and propose curated additions, or when asked to "review the pairing map," "check for new thinker or research content," or "expand the pairing map." Brand-specific to RaisingGoodSports; never runs on a schedule, only on request. Do not use this to produce a Grounding Brief for a Short — that is `rgs-grounding`; this skill only reviews the pairing map and proposes curated additions to it.
 ---
 
 # RGS Pairing Review
+
+**Outside the staged pipeline.** Nothing in `pipeline.yaml` feeds this skill and it feeds no
+stage; it mutates `rgs-grounding/references/pairing-map.md` through a human-approved edit and
+nothing else. It is invoked on request only — never on a schedule, never as part of a Short's run.
 
 A thin maintenance skill, separate from `rgs-grounding`: disjoint trigger ("I refreshed the
 corpus, review the map") and disjoint output (a proposal document, not a Grounding Brief). Has
@@ -28,7 +32,8 @@ Open `.claude/skills/rgs-grounding/references/pairing-map.md`'s front-matter:
 ### 2. Diff against current corpus state — three checks
 
 - **New thinker works:** every `slug` in `manifests/thinkers.json` tagged `parenting`, plus any
-  new work by one of the brand's 7 signature thinkers (per `output/raisinggoodsports-brand-definition.md`)
+  new work by one of the brand's 7 signature thinkers (per
+  `.claude/skills/rgs-grounding/references/brand-voice-and-tone.md`)
   regardless of its pillar tags, not present in `thinker_slugs_reviewed`. Don't diff against the
   full 53-slug manifest unscoped — most of it (Adam Smith, Barnum, etc.) is unrelated to this
   brand and would flood every review with irrelevant "new" items.
@@ -46,13 +51,20 @@ Open `.claude/skills/rgs-grounding/references/pairing-map.md`'s front-matter:
 ### 3. Secondary signal — organically-flagged gaps
 
 Grep `rgs-briefs/*.md` for the literal heading `## Gap-fill flag` (see `rgs-grounding`'s
-`references/thinker-corpus-protocol.md`). Each match is a pairing `rgs-grounding` used outside
+`.claude/skills/rgs-grounding/references/thinker-corpus-protocol.md`). Each match is a pairing `rgs-grounding` used outside
 the map — add it to this review pass as a candidate, even if its thinker/research slugs were
 already in the reviewed lists.
 Resolve each topic-slug to its **latest version only** before grepping — a superseded (older)
 version of a brief that already got its gap-fill flag reviewed must not be re-surfaced as if it
-were new. `scripts/resolve_brief_version.py --slug <topic-slug>` (no `--kind`) returns the
-current version's path for a given topic-slug.
+were new. `scripts/resolve_brief_version.py --slug <topic-slug> --kind grounding` returns the
+current version's path for a given topic-slug. **Briefs written before 2026-08-08 carry no
+`--kind` suffix** — if that prints `NONE`, fall back to the same call without `--kind`; the path
+it returns is the correct, current file to grep — no version-chain reasoning needed, this skill
+never writes a new version.
+
+This skill itself sits outside the artifact vocabulary published elsewhere in the skill set —
+it is not in `KIND_REGISTRY` or `SPECIALIST_KINDS` because its proposal document is not a
+resolver-tracked artifact.
 
 ### 4. Verify and draft, or reject with a reason
 
@@ -90,6 +102,27 @@ material, unlike the `pairing-map.md` it feeds):
 [For each existing row citing a changed code: still holds / needs revision / needs removal, with reasoning.]
 ```
 
+## Output format
+
+The proposal document from Step 5 above, restated as this skill's declared output shape — the
+same four `##` sections the real template above opens with, each restated here by name only,
+not duplicated in full:
+
+```markdown
+## New/changed since last review ([last_review date])
+[Thinkers, new research codes, edition-changed research codes, and gap-fill flags found —
+ each "list, or 'none'"]
+
+## Proposed additions
+[Each in pairing-map.md's exact row format, or "none proposed this review."]
+
+## Considered and rejected
+[One line each: what was checked, why it didn't earn a row.]
+
+## Re-verification verdicts (edition-changed codes only)
+[For each existing row citing a changed code: still holds / needs revision / needs removal, with reasoning.]
+```
+
 ### 6. Get human approval, then apply
 
 Present the proposal in conversation. On approval (whole or partial), edit the accepted rows
@@ -106,3 +139,15 @@ resulting `git diff` on `pairing-map.md` before it's committed — that diff is 
 - About to propose a row without having opened the actual source file this run → stop, open it.
 - Tempted to skip section 3 (the `rgs-briefs/` grep) because the diff in section 2 already found
   enough → don't skip it; organically-discovered gaps are a distinct signal from corpus growth.
+
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: none
+produces.stage: none
+produces.section: New/changed since last review
+produces.section: Proposed additions
+produces.section: Considered and rejected
+produces.section: Re-verification verdicts
+writes: .claude/skills/rgs-grounding/references/pairing-map.md
+```

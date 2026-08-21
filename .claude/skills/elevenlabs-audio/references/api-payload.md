@@ -1,5 +1,9 @@
 # API payload — parameters, templates, chunking & stitching
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-production-runbook.md` §3, §7, §9.
 
 This skill **emits** payloads. It does not send them, does not handle API keys, and does not spend
@@ -104,7 +108,7 @@ take can be re-rolled without re-rendering the whole job.
 
 - Fall back to `previous_text` / `next_text`
 - Accept weaker seams
-- **Say so explicitly in the output** rather than emitting a payload that silently degrades
+- **Say so explicitly in the output** `[I]` rather than emitting a payload that silently degrades
 
 This is Validation Gate 2's most important single check.
 

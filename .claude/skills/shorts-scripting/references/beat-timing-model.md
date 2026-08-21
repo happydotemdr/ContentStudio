@@ -39,11 +39,11 @@ For a punchier Short — the corpus default when reviving a dead/random channel
 `[C] (Nate Black, wqjiXKKqek4)`, or whenever the concept brief's premise is
 simple enough not to need the full arc — compress:
 
-- **Setup** to one clause (~6–10 words).
-- **Build** to ~30 words, one escalation step instead of several, and the
+- **Setup** `[I]` to one clause (~6–10 words).
+- **Build** `[I]` to ~30 words, one escalation step instead of several, and the
   re-hook beat can be dropped entirely if the Build itself is short enough that
   a second curiosity beat would feel forced.
-- **Hook, Payoff, Loop/CTA** keep roughly the same word budgets — they don't
+- **Hook, Payoff, Loop/CTA** `[I]` keep roughly the same word budgets — they don't
   compress well without losing their job.
 
 ## Word budgets are a target, not a hard ceiling

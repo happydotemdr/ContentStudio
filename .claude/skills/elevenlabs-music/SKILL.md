@@ -5,6 +5,10 @@ description: Builds a complete, ready-to-run Eleven Music setup — a bed profil
 
 # ElevenLabs Music (composition plans, prompt craft & credit discipline)
 
+> **`[T]` facts in this file were web-verified 2026-08-06** against live ElevenLabs Music documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Turns a music job into an **executable Eleven Music setup**: the bed profile, the section map, the
 prompt, the composition plan, the payload, and what it will cost — validated by fresh agents before
 a single credit is spent.
@@ -29,7 +33,7 @@ The boundary, stated once so neither skill drifts into the other:
 | The tone-contradiction call | `model_id`, plan shape, and the parameter conflicts |
 | Whether the Short gets a bed at all | The prompt, payload, and credit spend |
 
-**Loudness and ducking stay with `voiceover-brief`** (`references/production-and-loudness.md`) — do
+**Loudness and ducking stay with `voiceover-brief`** (`.claude/skills/voiceover-brief/references/production-and-loudness.md`) — do
 not duplicate or contradict them here. Downstream of both: `shorts-assembly`.
 
 ## Grounding — read before writing any rule
@@ -80,7 +84,7 @@ don't re-derive what it already says `[I]`:
 |---|---|
 | `## Bed arc` | The movement names, their beat ranges (s), and intended feeling — the Bed Profile Card's movement names, and Stage B's beat→chunk mapping source table |
 | `## Hook hold-out` | The fade-in timestamp Stage B's chunk arithmetic starts from (`composition-plans.md`'s beat→chunk method) |
-| `## Tone-contradiction check` | The per-beat tone data Gate 1's arc-vs-voiceover-brief tone check reads |
+| `## Tone-contradiction check` | Gate 1's confirmation that the tone-contradiction call already resolved, with no unresolved MISMATCH |
 | `## Deferred to elevenlabs-music` | The gaps (BPM, key, genre, instrumentation) the corpus doesn't cover and this skill must fill itself, in `prompt-craft.md`'s arc-to-style-vocabulary translation |
 | `## Downstream` | Confirms this skill is the next stage — no data to extract, just the handoff pointer |
 
@@ -136,9 +140,14 @@ already embeds the repo's sub-agent output contract.
 
 | Gate | Fires | Checks |
 |---|---|---|
-| **1 — Section map** | after Stage B | durations sum to runtime; every chunk within 3,000–120,000 ms; ≤30 chunks; vocal guard present on every chunk; no lyric/vocal content in any `text`; no artist/band/track name in any style string; arc does not contradict the voiceover brief's tone-per-beat call |
+| **1 — Section map** | after Stage B | durations sum to runtime; every chunk within 3,000–120,000 ms; ≤30 chunks; vocal guard present on every chunk; no lyric/vocal content in any `text`; no artist/band/track name in any style string; the Bed Arc's `## Tone-contradiction check` section is present and reports no unresolved MISMATCH |
 | **2 — Payload** | after Stage C | `model_id` explicit and matching the plan shape; prompt XOR `composition_plan`; no `seed` with `prompt`; no `force_instrumental` with a plan; no `music_length_ms` with a plan; style arrays ≤50; `output_format` matches phase |
 | **3 — Pre-master spend** | before any master render | a draft was emitted and confirmed; cost stated as an estimate with its `[T-unverified]` status named; re-roll budget named; no reliance on unverified free-plan claims |
+
+**Gate 1 never re-runs `music-brief`'s tone call.** The boundary table above assigns the
+tone-contradiction call upstream; this gate only confirms that the upstream artifact carries the
+section and that it resolved. Reading the voiceover brief here would be re-litigating a decision
+this skill declared it accepts `[I]`.
 
 **Gates 1 and 2 are independent — dispatch them in parallel** (single message, two tool calls) once
 both artifacts exist. **A gate returning findings blocks emission** until resolved or explicitly
@@ -200,13 +209,36 @@ re-decide**, the duck depth and LUFS target inherited from `voiceover-brief`, pl
 ever picks a *different* number from the one upstream chose, that is the drift the boundary exists
 to prevent.
 
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: music-spec
+produces.stage: 03-music
+produces.section: CONTROL SURFACE
+produces.section: BED PROFILE
+produces.section: SECTION MAP
+produces.section: UI PROMPT
+produces.section: COMPOSITION PLAN
+produces.section: REQUEST PAYLOAD
+produces.section: MIX HANDOFF
+produces.section: COST
+produces.section: QC CHECKLIST
+produces.section: VALIDATION GATES
+produces.section: NEXT
+consumes: music-brief#Bed arc
+consumes: music-brief#Hook hold-out
+consumes: music-brief#Tone-contradiction check
+consumes: music-brief#Deferred to elevenlabs-music
+consumes: voiceover-brief#Production & loudness
+```
+
 ## What this skill does NOT do
 
-- **Call the Eleven Music API.** It emits payloads and curl commands; you run them. It never handles
+- **Call the Eleven Music API.** `[I]` It emits payloads and curl commands; you run them. It never handles
   an API key, never renders audio, and never spends credits on its own.
-- **Duck depth, LUFS, or the mix** — `voiceover-brief`.
-- **The bed arc, the hook hold-out, or whether the Short gets a bed at all** — `music-brief`.
-- **The edit plan** — `shorts-assembly`. **The script** — `shorts-scripting`.
+- **Duck depth, LUFS, or the mix** `[I]` — `voiceover-brief`.
+- **The bed arc, the hook hold-out, or whether the Short gets a bed at all** `[I]` — `music-brief`.
+- **The edit plan** `[I]` — `shorts-assembly`. **The script** — `shorts-scripting`.
 
 ## `[T]` facts most likely to be stale
 
@@ -226,3 +258,51 @@ starting point, never a fact.
 - `references/api-payload.md` — the endpoint, full parameter surface, JSON/curl templates, and the
   cost section this skill's Stage D reads.
 - `references/validation-gates.md` — the three verbatim fresh-agent dispatch prompts.
+
+## File I/O contract
+
+**Artifact vocabulary — one table, copied unchanged into every skill.** The resolver matches
+filenames literally, so a `--kind` guessed from a stage id or a skill name returns `NONE` and
+exit 1 — which this section documents as the benign "upstream hasn't run yet" case. Copy the
+literal string from this table; never infer it `[I]`.
+
+| Stage id (`pipeline.yaml`) | `--kind` | `stage:` frontmatter | Owning skill |
+|---|---|---|---|
+| `grounding` | `grounding` | `00-grounding` | `rgs-grounding` |
+| `ideation` | `concept-brief` | `01-ideation` | `shorts-ideation` |
+| `scripting` | `script` | `02-scripting` | `shorts-scripting` |
+| `styleboard` | `styleboard` | `02b-styleboard` | `shorts-styleboard` |
+| `voiceover` | `voiceover-brief` | `03-voiceover` | `voiceover-brief` |
+| `visual` | `visual-prompts` | `03-visual` | `visual-prompts` |
+| `music` | `music` | `03-music` | `music-brief` |
+| `assembly` | `assembly` | `04-assembly` | `shorts-assembly` |
+| `repurpose` | `social-repurpose` | `05-repurpose` | `social-repurpose` |
+| — (specialist) | `audio-spec` | `03-voiceover` | `elevenlabs-audio` |
+| — (specialist) | `music-spec` | `03-music` | `elevenlabs-music` |
+| — (specialist) | *none — transcript-only* | — | `midjourney-prompting` |
+
+**App-driven** (a `pipeline-app` turn already told you an output path): follow that instruction
+exactly — write only to the named path, overwrite it each turn as instructed.
+
+**Standalone** (no output path was given): run
+`python scripts/resolve_brief_version.py --slug <slug> --kind music-spec --next --date <YYYY-MM-DD>`
+and write the MUSIC PRODUCTION SPEC at `rgs-briefs/<filename>` with this frontmatter:
+
+```yaml
+---
+date: <YYYY-MM-DD>
+kind: music-spec
+slug: <slug>
+stage: 03-music
+version: <version from the resolver>
+supersedes: <path from the plain (non---next) resolver call — only if version > 1>
+music_brief: <the music brief's path, exactly as the resolver printed it>
+status: complete
+---
+```
+
+State the exact file path in your final chat response. **Outside a ContentStudio Short there is no
+slug and no `rgs-briefs/`** — emit the spec in chat and say so explicitly, so the operator knows
+it is transcript-only and must be pasted into whatever record they keep `[I]`.
+
+Never edit an existing `rgs-briefs/*.md` file — a `PreToolUse` hook enforces this.

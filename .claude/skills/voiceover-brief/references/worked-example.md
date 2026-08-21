@@ -1,5 +1,13 @@
 # Worked example
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
+> This example illustrates rules already marked in this skill's other reference files and carries no independent normative weight. Where a line here restates a rule, the marker lives
+> on the rule, not on the illustration — do not copy an unmarked line out of this file into a
+> real brief as if it were sourced `[I]`.
+
 ## Input: shot-ready script excerpt (from `shorts-scripting`)
 
 ```
@@ -40,6 +48,20 @@ forward — don't re-pick per video `[T]`.
 
 *If a clone isn't set up yet:* fall back to a lesser-used library voice, never a default preset
 `(Make Money Matt, TvJhpOxFRsE)`.
+
+### Tone per beat
+
+| Beat | Timestamp range (s) | Tone | Delivery intent |
+|---|---|---|---|
+| Hook | 0–3 | Excited, confrontational | Land "you're not lazy" as a corrective jolt — the viewer braces for the usual guilt-trip opener and gets the opposite in the first clause; low stability/high style so the reversal actually lands with energy `[I]`. |
+| Shot 2 | 3–8 | Even, matter-of-fact | State "it's an emotion problem" as settled fact, not a hot take — high stability, low style keeps the reframe sounding assured rather than argued `[I]`. |
+| Shot 3 | 8–20 | Reflective, narrative | Walk the boredom/doubt/overwhelm list at an unhurried pace so it reads as recognition, not a lecture — storytelling preset, a little more style than Shot 2 to carry the small emotional beat `[I]`. |
+| Shot 4 | 20–35 | Instructive, calm | Guide the "ask what feeling you're avoiding, name it" technique like a doable next step, not another task on the pile — narration preset again, slightly slower speed to let the instruction breathe `[I]`. |
+| CTA | 35–45 | Sincere, warm | Close on a genuine invitation to comment, not a hard sell — Marketing/Shorts preset for a touch of lift, but the `[sincere]` tag (used below) is the load-bearing cue, not the settings `[I]`. |
+
+Tone assignments track the Settings table below one-for-one: low stability/high style rows (Hook,
+CTA) get the more excited/warm tones, high-stability/low-style rows (Shot 2, Shot 4) get the
+even/instructive tones — consistent with the model/settings choices, not an independent call.
 
 ### Model
 

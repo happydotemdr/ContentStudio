@@ -1,9 +1,14 @@
 ---
 name: visual-prompts
-description: Storyboards a shot-ready ContentStudio Short script into a visual prompt sheet using dual-register visual storytelling — consuming the world lock from `shorts-styleboard`, mapping each script beat to a shot count at the corpus's ~3-second visual cadence, building the whole shot sequence as an arc and passing it through Gate C before any prompt is written, deciding which beats need real animated motion versus a still, writing the image-to-video (i2v) prompt for any beat that does (Kling, Seedance, Veo, etc.), calling the cover/thumbnail decision, and assembling the whole sheet for handoff. Use this whenever the user has a scripted/timed Short (from shorts-scripting) and asks to "storyboard this script," "build the prompt sheet," "lock the world/registers," "how many shots does this beat need," "which beats need motion/animation," "write the i2v prompt," "give me a Kling/Seedance prompt," "run Gate C," or asks how to visualize a faceless Short beat by beat. The actual Midjourney prompt wording and parameter stack is NOT this skill's job — it delegates every still prompt to the `midjourney-prompting` skill, which owns V8.2 prompt craft, the flag stack, and consistency mechanics. Use that skill directly for a one-off image prompt with no Short script behind it. Does NOT lock the world or pick the sport — that is `shorts-styleboard`, which runs before this skill.
+description: Storyboards a shot-ready ContentStudio Short script into a visual prompt sheet using dual-register visual storytelling — consuming the world lock from `shorts-styleboard`, mapping each script beat to a shot count at the corpus's ~3-second visual cadence, building the whole shot sequence as an arc and passing it through Gate C before any prompt is written, deciding which beats need real animated motion versus a still, writing the image-to-video (i2v) prompt for any beat that does (Kling, Seedance, Veo, etc.), calling the cover/thumbnail decision, and assembling the whole sheet for handoff. Use this whenever the user has a scripted/timed Short (from shorts-scripting) and asks to "storyboard this script," "build the prompt sheet," "how many shots does this beat need," "which beats need motion/animation," "write the i2v prompt," "give me a Kling/Seedance prompt," "run Gate C," or asks how to visualize a faceless Short beat by beat. The actual Midjourney prompt wording and parameter stack is NOT this skill's job — it delegates every still prompt to the `midjourney-prompting` skill, which owns V8.2 prompt craft, the flag stack, and consistency mechanics. Use that skill directly for a one-off image prompt with no Short script behind it. Does NOT lock the world or pick the sport — that is `shorts-styleboard`, which runs before this skill.
 ---
 
 # Visual Prompts (script beats → Midjourney prompt sheet)
+
+> **`[T]` facts in this file were web-verified 2026-07-23** against live web sources for the corpus's tool/policy sweep
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+> Midjourney V8.2-specific facts cited from `midjourney-prompting` carry their own more specific verification date (2026-07-26) inline — that date wins where the two differ.
 
 ## Pipeline position
 
@@ -50,19 +55,23 @@ corpus theme (27 findings)**, flagged as such rather than padded with invented "
 find yourself about to write a rule with no `[C]`/`[I]`/`[T]` marker, stop — that's the signal you're
 inventing instead of sourcing. Say the corpus doesn't cover it and move on.
 
-The register system (`references/visual-registers.md`), its shot-class taxonomy, and the arc-first
-sequencing discipline (`references/visual-arc.md`) are **this skill's own operational design `[I]`** —
-the corpus has nothing to say about pairing a present-day register with a source-era register, or about
-sequencing a shot table before writing prompts. The thin `[C]` §6 pacing theme cited above backs the
-cautions those files guard against (stale frames, uncanny-valley motion), and the `[T]` Midjourney
-parameter bands they cite are web-verified against `docs.midjourney.com` — but the register/arc/Gate C
-system itself is not presented as corpus-derived, and neither file should be read as if it were.
+The register system and its shot-class taxonomy are **`shorts-styleboard`'s operational design
+`[I]`**, read here and never redefined — see
+`shorts-styleboard/references/visual-registers.md`. What this skill owns is the arc-first
+sequencing discipline (`references/visual-arc.md`), Gate C's checks, and the sheet format
+(`references/prompt-sheet-format.md`) — also `[I]`, also not corpus-derived: the corpus has
+nothing to say about sequencing a shot table before writing prompts. The thin `[C]` §6 pacing
+theme cited above backs the cautions those files guard against (stale frames, uncanny-valley
+motion), and the `[T]` Midjourney parameter bands they cite are web-verified against
+`docs.midjourney.com` — but the arc/Gate C system itself is not presented as corpus-derived.
 
 ## Optional input: a companion grounding artifact `[I]`
 
 If a companion grounding artifact is handed to this skill, its motif cue still informs
 shot-composition for the beat(s) carrying that citation — fold it into step 2's still-count
-decision and step 4's prompt anatomy for that beat, the same way any other visual note is used.
+decision and into the `subject:` field of step 4's delegation block for that beat, the same way
+any other visual note is used. **Not into prompt anatomy** — step 4 delegates prompt wording
+entirely to `midjourney-prompting`.
 The artifact's thinker/source and motif populating the `register_b_*` keys and `motif` key
 themselves is `shorts-styleboard`'s job, not this skill's (see step 2.5) — `shorts-styleboard`
 is fed the same grounding artifact upstream, so the world lock you read at step 2.5 should
@@ -94,10 +103,11 @@ its own sake" (see the over-editing caution in the same reference file).
 
 ### 2.5. Read the world lock — do not decide it
 
-The world lock is `shorts-styleboard`'s output, not yours. Read the styleboard artifact
-handed to you and inherit its 11 `register_a_*` / `register_b_*` / `motif` keys and its
-`slot_*` declarations unchanged `[I]`. **Do not re-emit the `WORLD LOCK` block into your
-sheet** — one home, no sync rule needed.
+The world lock is `shorts-styleboard`'s output, not yours. Read the styleboard artifact handed to
+you and inherit **all thirteen keys** unchanged `[I]` — the 11 `register_a_*` / `register_b_*` /
+`motif` world keys **and** the two `slot_register_a` / `slot_register_b` declarations, which are
+the lines Gate C's C20 resolves against the Style Library. **Do not re-emit the `WORLD LOCK` block
+into your sheet** — one home, no sync rule needed.
 
 If no styleboard artifact was supplied, stop and say so rather than inventing a world:
 an invented world lock produces invented `--sref` codes, which is the defect this split
@@ -171,12 +181,12 @@ Take back the prompt string and its parameters, and drop them into the sheet's r
 what comes back** — that skill's Gate A has already linted the syntax, ranges, and flag compatibility,
 and re-editing the string here silently breaks that guarantee.
 
-Two things you still own at this step:
+Three things you still own at this step:
 
-- **On-screen text never enters the prompt.** Midjourney cannot reliably render legible text
+- **On-screen text never enters the prompt.** `[C]` Midjourney cannot reliably render legible text
   `[C] (Tokenized AI, qFYJb0zYztY)`, so a beat's hook card or caption copy passes through to
   `shorts-assembly` as overlay copy. Flag it in the handoff so `midjourney-prompting` appends `No Text.`
-- **Sheet-level coherence is Gate C's job, not a judgment call.** Whether the sheet reads as one Short
+- **Sheet-level coherence is Gate C's job, not a judgment call.** `[I]` Whether the sheet reads as one Short
   with real shot-to-shot variety is a mechanical question at emission — `scripts/lint_prompt_sheet.py`
   runs mandatorily at step 7 against the finished sheet, rather than eyeballing whether two adjacent
   beats "look related" `[I]`. Step 3b's by-eye check of the arc table exists to catch the same
@@ -184,7 +194,7 @@ Two things you still own at this step:
   tool run — the CLI itself only becomes runnable once the sheet has real shot headings and prompts
   (step 7). If Gate C fails at step 7, the fix is almost always the arc table's sequencing (revisit
   step 3b's rules), not individual prompt wording.
-- **Do not achieve consistency by repeating a shared style-vocabulary string across prompts.** Cloning a
+- **Do not achieve consistency by repeating a shared style-vocabulary string across prompts.** `[I]` Cloning a
   style phrase (or an entire prompt body with a noun swapped) into every prompt is exactly what produced
   six near-identical stills in a real production run — see `references/visual-arc.md` §1. Consistency
   lives in the register's style slot, not in the prompt body. Gate C's **C11** enforces this mechanically
@@ -226,7 +236,7 @@ Read the packaging direction handed down from `shorts-ideation` (focal point, do
 it shows). Two outcomes, and this skill must state which one applies rather than silently skip the
 decision:
 
-- **The packaging direction wants something distinct from the Hook beat's still** (a different angle,
+- **The packaging direction wants something distinct from the Hook beat's still** `[I]` (a different angle,
   a composed/staged shot built specifically to be a thumbnail rather than a video frame) → delegate a
   dedicated cover prompt to `midjourney-prompting`, handing down the guide's photoreal-thumbnail recipe
   (§13 recipe A) as the **subject/composition brief** `[I]` — close-up of the subject + defining
@@ -237,7 +247,7 @@ decision:
   to wherever the cover actually renders** (9:16 for a Shorts-feed thumbnail, 16:9 for a separate
   widescreen slot) — this adaptation is this skill's own judgment `[I]`, not a corpus claim, since the
   guide's recipe was written for long-form 16:9 thumbnails, not Shorts.
-- **The packaging direction is satisfied by the Hook beat's own still** → state this explicitly in the
+- **The packaging direction is satisfied by the Hook beat's own still** `[I]` → state this explicitly in the
   prompt sheet: "Cover = Hook still + `shorts-assembly`'s text overlay, no separate generation." Don't
   leave the decision implicit — an unstated cover is indistinguishable from a forgotten one.
 
@@ -252,6 +262,8 @@ sheet that drifts from it (wrong dash, wrong case, a missing field) has shots si
 parser, not flagged. See `references/worked-example.md` for a full run of a real beat table through it.
 
 Skeleton (see `references/prompt-sheet-format.md` §2–§7 for the exact syntax of every piece below):
+
+## Output contract
 
 ```
 === VISUAL PROMPT SHEET — [Short ID / title] ===
@@ -272,9 +284,7 @@ COVER / THUMBNAIL
 ### Shot <N> — <Beat> (<time range>) · Register <A|B|PLATE> · <SHOT CLASS> · <SCALE> · <CAMERA HEIGHT>
 Changes vs. previous: <one line naming the visual change>
 
-```text
 <the entire prompt on ONE line>
-```
 
 I2V PROMPTS (only for beats marked "see I2V block" above — omit this section if none)
 | Beat | Source still | Target tool | I2V prompt | Start/end-frame notes |
@@ -286,8 +296,24 @@ OVERLAY COPY HANDOFF
 
 VALIDATION
   Gate A (midjourney-prompting syntax lint): [pass/fail]
-  Gate B (upstream visual-quality check, if applicable): [pass/fail]
+  Gate B (midjourney-prompting adversarial art direction — production-stage prompts only): [pass/fail/n/a]
   Gate C (scripts/lint_prompt_sheet.py):     [pass/fail/deferred — app-run — see below]
+```
+
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: visual-prompts
+produces.stage: 03-visual
+produces.section: WHOLE-SHORT SETUP
+produces.section: COVER / THUMBNAIL
+produces.section: I2V PROMPTS
+produces.section: OVERLAY COPY HANDOFF
+produces.section: VALIDATION
+consumes: shorts-scripting#Visual notes
+consumes: shorts-scripting#HOOK
+consumes: shorts-styleboard#WORLD LOCK
+consumes: shorts-styleboard#BINDINGS
 ```
 
 Write each row's still prompt to stand alone — Midjourney does not carry context between separate jobs
@@ -334,14 +360,15 @@ The image-to-video rules (`references/image-to-video.md`) rest on the guide's **
 table (which tool is strong at what) is the part of this skill most likely to go stale fastest, since
 external video-gen tools ship new versions far more often than Midjourney itself.
 
-The dual-register system (`references/visual-registers.md`), the arc-first sequencing discipline
-(`references/visual-arc.md`), and the copy-paste output contract (`references/prompt-sheet-format.md`)
-are **this skill's own operational design `[I]`**, not corpus findings — the corpus's thin §6 visuals
+The arc-first sequencing discipline (`references/visual-arc.md`) and the copy-paste output
+contract (`references/prompt-sheet-format.md`) are **this skill's own operational design `[I]`**,
+not corpus findings; the dual-register system they build on is `shorts-styleboard`'s
+(`shorts-styleboard/references/visual-registers.md`), also `[I]`. The corpus's thin §6 visuals
 theme (27 findings) says nothing about registers, shot-class taxonomies, arc sequencing, or a
-machine-parseable output format. Say so plainly if asked how solid these three files are: the pacing
-cautions they build on (`[C]`) and the Midjourney parameter bands they cite (`[T]`, verified 2026-07-26)
-are sourced; the register system, the shot classes, the arc discipline, Gate C's checks, and the sheet
-format itself are not — they are this skill's answer to a gap the corpus leaves open.
+machine-parseable output format. Say so plainly if asked how solid these files are: the pacing
+cautions they build on (`[C]`) and the Midjourney parameter bands they cite (`[T]`, verified
+2026-07-26) are sourced; the register system, the shot classes, the arc discipline, Gate C's
+checks, and the sheet format itself are not.
 
 **`[T]` facts most likely to need re-verification before you rely on them:**
 - Midjourney model/parameter facts — see `midjourney-prompting`'s own staleness list, which is current
@@ -352,6 +379,26 @@ format itself are not — they are this skill's answer to a gap the corpus leave
   tiering, pricing, and per-model limits) — this is the fastest-moving part of the whole corpus.
 
 ## File I/O contract
+
+**Artifact vocabulary — one table, copied unchanged into every skill.** The resolver matches
+filenames literally, so a `--kind` guessed from a stage id or a skill name returns `NONE` and
+exit 1 — which this section documents as the benign "upstream hasn't run yet" case. Copy the
+literal string from this table; never infer it `[I]`.
+
+| Stage id (`pipeline.yaml`) | `--kind` | `stage:` frontmatter | Owning skill |
+|---|---|---|---|
+| `grounding` | `grounding` | `00-grounding` | `rgs-grounding` |
+| `ideation` | `concept-brief` | `01-ideation` | `shorts-ideation` |
+| `scripting` | `script` | `02-scripting` | `shorts-scripting` |
+| `styleboard` | `styleboard` | `02b-styleboard` | `shorts-styleboard` |
+| `voiceover` | `voiceover-brief` | `03-voiceover` | `voiceover-brief` |
+| `visual` | `visual-prompts` | `03-visual` | `visual-prompts` |
+| `music` | `music` | `03-music` | `music-brief` |
+| `assembly` | `assembly` | `04-assembly` | `shorts-assembly` |
+| `repurpose` | `social-repurpose` | `05-repurpose` | `social-repurpose` |
+| — (specialist) | `audio-spec` | `03-voiceover` | `elevenlabs-audio` |
+| — (specialist) | `music-spec` | `03-music` | `elevenlabs-music` |
+| — (specialist) | *none — transcript-only* | — | `midjourney-prompting` |
 
 This skill participates in ContentStudio's file-based pipeline handoff (see
 `docs/superpowers/specs/2026-07-28-skill-markdown-file-contract-design.md`). Two modes:

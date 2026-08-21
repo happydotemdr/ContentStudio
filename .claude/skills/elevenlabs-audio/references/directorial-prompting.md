@@ -1,5 +1,9 @@
 # Directorial prompting — the five layers, the tag catalog, and dialogue
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-production-runbook.md` §5.
 
 **Everything in this file applies to `eleven_v3` only.** Audio tags and inline IPA are v3
@@ -115,7 +119,7 @@ payload. **That is not the documented mechanism** and will be read as literal te
 - Input is a **JSON array of turns, each with its own `text` and `voice_id`** — no inline labels
 - **≤2,000 characters total across all inputs** — *lower* than v3's own 5,000 TTS cap
 - Audio tags go inside each turn's `text` as normal
-- **Explicitly not intended for real-time** applications like conversational agents
+- **Explicitly not intended for real-time** `[T-unverified]` applications like conversational agents
 
 ```json
 {

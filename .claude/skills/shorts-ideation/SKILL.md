@@ -1,9 +1,14 @@
 ---
 name: shorts-ideation
-description: Turns a raw faceless-YouTube-Shorts idea or topic into a validated concept brief — a chosen angle/take, a hook concept, and a title/thumbnail packaging direction — grounded entirely in the ContentStudio corpus's niche-selection, ideation, and packaging findings (never generic content-creation advice). Use this skill whenever the user has a raw idea or topic for a faceless Short and wants to turn it into a concept brief, asks "what angle should I take on this," "help me package this Short," "what's the hook for this idea," "turn this idea into a video concept," or is starting the ideation stage of the ContentStudio eight-skill pipeline before scripting. It has no upstream skill (the input is a raw human idea) and its output feeds directly into `shorts-scripting`.
+description: Turns a raw faceless-YouTube-Shorts idea or topic into a validated concept brief — a chosen angle/take, a hook concept, and a title/thumbnail packaging direction — grounded entirely in the ContentStudio corpus's niche-selection, ideation, and packaging findings (never generic content-creation advice). Use this skill whenever the user has a raw idea or topic for a faceless Short and wants to turn it into a concept brief, asks "what angle should I take on this," "help me package this Short," "what's the hook for this idea," "turn this idea into a video concept," or is starting the ideation stage of the ContentStudio eight-skill pipeline before scripting. It has no upstream skill (the input is a raw human idea) and its output feeds directly into `shorts-scripting`. Do not use this to write opening lines, retention structure, or any scripting mechanic — that is `shorts-scripting`; this skill hands off a promise and a direction, not a draft.
 ---
 
 # Shorts Ideation
+
+> This skill's own body carries no specific `[T]` tool/policy fact of its own — it is entirely
+> `[C]` corpus-cited or `[I]` operational judgment, per this project's marker convention. The
+> project's `[T]` convention itself was last verified 2026-07-23 against the live web; this file
+> has nothing of that kind to re-check.
 
 Turn a raw idea/topic into a **validated concept brief**: a chosen angle/take, a hook
 concept, and a title/thumbnail packaging direction. Every normative rule this skill applies
@@ -34,24 +39,24 @@ interface convention, not a corpus claim — that's why it's marked `[I]`.
 
 When a companion artifact is provided:
 
-- **Prefer an angle consistent with its archetype/angle hint.** Don't invent an angle the
+- **Prefer an angle consistent with its archetype/angle hint.** `[I]` Don't invent an angle the
   artifact's citations can't support.
-- **If no archetype-consistent angle passes this skill's own validation gate** (step 5 below —
+- **If no archetype-consistent angle passes this skill's own validation gate** `[I]` (step 5 below —
   net information gain, home-feed click test, packaging-compellingness, demonetization screen):
   do not stretch a citation to force a fit. Instead, pick from the artifact's own "alternates
   considered" list if it has one, or report back that the upstream brand skill needs to produce a
   different pairing. Never ship a brief built on an unsupported angle.
-- **Demonetization screen and safety-sensitive citations:** step 2's screen (below) flags
+- **Demonetization screen and safety-sensitive citations:** `[I]` step 2's screen (below) flags
   "sensitive medical/financial framing." A companion artifact's safety-sensitive citation passes
   this screen when it already carries a named source and non-sensational framing (the upstream
   brand skill's own protocol should guarantee this) — the screen's intent is to catch content
   presenting *as* a health/financial authority, and a properly-sourced citation is the opposite
   of that failure mode. Only an unsourced or sensationalized safety-sensitive claim fails the
   screen.
-- **Staleness check:** if the artifact's stated date predates the most recent refresh of
+- **Staleness check:** `[I]` if the artifact's stated date predates the most recent refresh of
   whatever corpus it cites, or its status field indicates it isn't in an active/consumable
   state, flag this before use rather than proceeding silently.
-- **Carry it forward, don't re-derive it.** The concept brief's "Grounding" section (see the
+- **Carry it forward, don't re-derive it.** `[I]` The concept brief's "Grounding" section (see the
   template below) points at the artifact rather than re-typing its citation text — the artifact
   remains the single source of truth for citation content.
 
@@ -59,10 +64,10 @@ When a companion artifact is provided:
 
 This skill produces a **concept**, not a script. Concretely:
 
-- **In scope:** which angle/take on the idea, which emotional trigger/title frame the hook
+- **In scope:** `[I]` which angle/take on the idea, which emotional trigger/title frame the hook
   concept uses, what promise the opening must keep, and the title/thumbnail packaging
   direction.
-- **Out of scope (belongs to `shorts-scripting`):** exact opening lines, in-medias-res
+- **Out of scope (belongs to `shorts-scripting`):** `[I]` exact opening lines, in-medias-res
   staging, re-hook cadence, contrast-word mechanics ("but/so"), the 2-1-3 point ordering,
   proof-density timing, or any other retention/scripting mechanic. Those come from the
   audit's §4 (Scripting, hooks, retention), which is `shorts-scripting`'s corpus — not
@@ -138,7 +143,7 @@ ship a brief that fails its own gate.
 
 Use the template below. Keep it tight — this is a brief, not a document.
 
-## Concept brief template
+## Output contract
 
 ```markdown
 # Concept Brief: [working title of the idea]
@@ -177,10 +182,23 @@ This brief feeds `shorts-scripting` next. Scripting owns the opening lines, rete
 structure, and pacing — not this brief.
 ```
 
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: concept-brief
+produces.stage: 01-ideation
+produces.section: Angle / take
+produces.section: Hook concept
+produces.section: Packaging direction
+produces.section: Validation
+produces.section: Grounding
+produces.section: Handoff
+```
+
 ## Worked example
 
-See `references/worked-example.md` for a full worked run — a raw idea taken through all
-five workflow steps to the finished concept brief handed off to `shorts-scripting`.
+See `references/worked-example.md` for a full worked run — a raw idea taken through all six
+workflow steps to the finished concept brief handed off to `shorts-scripting`.
 
 ## Citation index (what's grounded where)
 
@@ -202,6 +220,26 @@ not a corpus claim. If a future edit needs another industry-practice or tool/pol
 it `[I]`/`[T]` explicitly rather than leaving it bare.
 
 ## File I/O contract
+
+**Artifact vocabulary — one table, copied unchanged into every skill.** The resolver matches
+filenames literally, so a `--kind` guessed from a stage id or a skill name returns `NONE` and
+exit 1 — which this section documents as the benign "upstream hasn't run yet" case. Copy the
+literal string from this table; never infer it `[I]`.
+
+| Stage id (`pipeline.yaml`) | `--kind` | `stage:` frontmatter | Owning skill |
+|---|---|---|---|
+| `grounding` | `grounding` | `00-grounding` | `rgs-grounding` |
+| `ideation` | `concept-brief` | `01-ideation` | `shorts-ideation` |
+| `scripting` | `script` | `02-scripting` | `shorts-scripting` |
+| `styleboard` | `styleboard` | `02b-styleboard` | `shorts-styleboard` |
+| `voiceover` | `voiceover-brief` | `03-voiceover` | `voiceover-brief` |
+| `visual` | `visual-prompts` | `03-visual` | `visual-prompts` |
+| `music` | `music` | `03-music` | `music-brief` |
+| `assembly` | `assembly` | `04-assembly` | `shorts-assembly` |
+| `repurpose` | `social-repurpose` | `05-repurpose` | `social-repurpose` |
+| — (specialist) | `audio-spec` | `03-voiceover` | `elevenlabs-audio` |
+| — (specialist) | `music-spec` | `03-music` | `elevenlabs-music` |
+| — (specialist) | *none — transcript-only* | — | `midjourney-prompting` |
 
 This skill participates in ContentStudio's file-based pipeline handoff (see
 `docs/superpowers/specs/2026-07-28-skill-markdown-file-contract-design.md`). Two modes:

@@ -1,5 +1,9 @@
 # Worked example: raw idea → concept brief
 
+> This example illustrates rules already marked in this skill's other reference files and carries no independent normative weight. Where a line here restates a rule, the marker lives
+> on the rule, not on the illustration — do not copy an unmarked line out of this file into a
+> real brief as if it were sourced `[I]`.
+
 This shows the full path from a raw, unformed idea through this skill's workflow steps
 to the finished concept brief handed off to `shorts-scripting`.
 

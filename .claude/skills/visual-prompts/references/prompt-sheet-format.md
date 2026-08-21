@@ -1,6 +1,6 @@
 # Prompt sheet format — the exact copy-paste output contract
 
-This file assumes `visual-registers.md` (the register contract and the world-lock keys)
+This file assumes `.claude/skills/shorts-styleboard/references/visual-registers.md` (the register contract and the world-lock keys)
 and `visual-arc.md` (the shot-sequence workflow) are already read. It documents the
 **literal, byte-level format** that `scripts/lint_prompt_sheet.py`'s parser
 (`parse_sheet`, `SHOT_HEADING_RE`, `WORLD_HEADING_RE`, `WORLD_ENTRY_RE`) accepts, so a
@@ -12,7 +12,7 @@ linter `[I]`.
 
 Two concrete reasons, not a style preference:
 
-- **(a) Copy-paste, in one action.** The previous sheet shape was a Markdown table —
+- **(a) Copy-paste, in one action.** `[I]` The previous sheet shape was a Markdown table —
   prompt text in one column, `--ar`/`--sref`/`--s` flags in the next. No cell in that
   table was ever a complete, pasteable Midjourney prompt: the user had to manually
   stitch the prompt cell and the params cell back together before submitting a job.
@@ -27,7 +27,7 @@ Two concrete reasons, not a style preference:
   `--oref <url> --ow <n>` pair, or nothing at all for
   a personalization binding). Paste the token as-is and Midjourney renders the literal words
   "style register a" into the image instead of applying a look `[I]`.
-- **(b) Gate C needs a machine-parseable artifact.** A checklist an agent can read and
+- **(b) Gate C needs a machine-parseable artifact.** `[I]` A checklist an agent can read and
   silently skip is not a gate. Emitting the sheet in a format `scripts/lint_prompt_sheet.py`
   can parse turns "did you follow the register rules" from an honor-system checklist
   into a deterministic pass/fail the agent cannot route around `[I]`.
@@ -87,7 +87,7 @@ punctuation-tolerant:
   one field, not two.
 - A **middot** (`·`), not a pipe or hyphen, between every metadata field from here on:
   `Register <A|B|PLATE>`, shot class, scale, camera height.
-- **All metadata values are uppercase except the beat** — `Register A`, `DETAIL`,
+- **All metadata values are uppercase except the beat** `[I]` — `Register A`, `DETAIL`,
   `MACRO`, `LOW`. Shot class and scale may contain hyphens (`ACTION-ADJACENT`,
   `MID-WIDE`); camera height may not (`LOW`/`EYE`/`HIGH`/`OVERHEAD` only).
 - A heading the parser cannot match — wrong dash, wrong case, a missing field — is
@@ -117,7 +117,7 @@ The prompt body must carry all 9 layers with concrete renderable content — **G
 C12** requires at least 10 comma-separated clauses and at least 60 words in the body.
 
 State the tension in full rather than quietly overriding it. `midjourney-prompting`'s
-own `references/prompt-architecture.md` carries:
+own `.claude/skills/midjourney-prompting/references/prompt-architecture.md` carries:
 
 > **Short usually beats long.** Long prompts dilute which words the model actually weights
 > `[C] (Tokenized AI, vezJXJGQMoY)`.
@@ -152,22 +152,22 @@ Everything below sits outside `scripts/lint_prompt_sheet.py`'s parser — it nev
 these sections — but they still travel downstream to `shorts-assembly` and must be
 present in every emitted sheet `[I]`:
 
-- **`WHOLE-SHORT SETUP`** — aspect ratio (`--ar 9:16`), the **two style slots**
+- **`WHOLE-SHORT SETUP`** `[I]` — aspect ratio (`--ar 9:16`), the **two style slots**
   (`{style:register_a}`, `{style:register_b}`) and the path to the styleboard artifact
   they resolve against, and the **phase ladder** — the ordered list of script beats this
   sheet covers, so a reader can see the whole arc before reading a single shot block.
   "Phase ladder" is this skill's own name for that list, not a corpus or parser term `[I]`.
-- **The cover/thumbnail decision** (`SKILL.md` step 6) — either a `### Cover — <Beat> ·
+- **The cover/thumbnail decision** `[I]` (`SKILL.md` step 6) — either a `### Cover — <Beat> ·
   Register <A|B|PLATE> · <SHOT CLASS> · <SCALE> · <CAMERA HEIGHT>` block with its own
   fenced prompt, or a line beginning exactly `Cover = Hook` stating the Hook still
   doubles as the cover. Gate C's **C19** rejects a sheet that states neither `[I]`.
-- **The I2V block** — for any beat `SKILL.md` step 5 decided needs a real animated clip:
+- **The I2V block** `[I]` — for any beat `SKILL.md` step 5 decided needs a real animated clip:
   source still, target tool and one-line why, the i2v prompt text itself, and
   start/end-frame notes, per `references/image-to-video.md` `[I]`.
-- **The overlay-copy handoff** — any on-screen text/hook-card/caption copy that was kept
+- **The overlay-copy handoff** `[I]` — any on-screen text/hook-card/caption copy that was kept
   out of the Midjourney prompt (per `SKILL.md` step 4's "on-screen text never enters the
   prompt" rule) is listed here for `shorts-assembly` to composite `[I]`.
-- **The validation line** — reports the outcome of all three gates before handoff: Gate A
+- **The validation line** `[I]` — reports the outcome of all three gates before handoff: Gate A
   (`midjourney-prompting`'s syntax lint), Gate B (whatever upstream visual-quality check
   applies), and Gate C (`scripts/lint_prompt_sheet.py`, this file's own gate). State pass
   or fail for each; never report Gate C as passed without having actually run it
@@ -179,6 +179,6 @@ An i2v prompt inherits its source still's register and must not import the other
 register's vocabulary. A clip built from a Register A still stays photographic (camera
 optics, `documentary sports photography` medium) end to end; a clip built from a
 Register B still stays painterly (no camera/lens language, no `DSLR`) end to end — the
-same vocabulary-disjunction rule that governs still prompts (`visual-registers.md` §2)
+same vocabulary-disjunction rule that governs still prompts (`.claude/skills/shorts-styleboard/references/visual-registers.md` §2)
 still applies once motion is added, because the i2v tool is only ever transforming one
 register's still, never blending the two.

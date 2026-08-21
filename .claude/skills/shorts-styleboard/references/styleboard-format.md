@@ -10,7 +10,8 @@ every world-lock check (C8–C10) and every slot declaration (C18) against it `[
 === STYLEBOARD — [Short ID / title] ===
 
 WORLD LOCK
-  [the 11 keys from visual-registers.md §7, plus one slot_* line per slot the sheet uses]
+  [all 13 keys: the 11 world keys from visual-registers.md §7, plus slot_register_a and
+   slot_register_b — one slot_* line per slot the sheet uses]
 
 BINDINGS
   [one line per slot: which Style Library entry it binds to, and why]

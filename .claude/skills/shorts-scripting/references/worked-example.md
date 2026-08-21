@@ -1,5 +1,9 @@
 # Worked example: concept brief → timed script
 
+> This example illustrates rules already marked in this skill's other reference files and carries no independent normative weight. Where a line here restates a rule, the marker lives
+> on the rule, not on the illustration — do not copy an unmarked line out of this file into a
+> real brief as if it were sourced `[I]`.
+
 This shows the full path from an upstream `shorts-ideation` concept brief to this
 skill's output contract, with inline notes on which corpus rule drove each
 choice. The premise (a home coffee-bloom trick) is the same one used in

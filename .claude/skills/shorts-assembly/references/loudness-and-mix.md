@@ -23,9 +23,9 @@ Provenance markers as in `pacing-and-editing.md`. Primary source: `docs/headless
 
 ## Loudness targets `[I]`
 
-- **Voice peaks around −3 to −6 dB; overall loudness target ≈ −14 LUFS** (YouTube normalizes toward this).
-- **Music bed sits ~15–20 dB below the voice** — this is the same instruction as the −22 dB duck above, restated as a relative level.
-- **SFX** (whoosh on cuts, subtle hits on text-card reveals) at a level that punctuates without startling.
+- **Voice peaks around −3 to −6 dB; overall loudness target ≈ −14 LUFS** `[I]` (YouTube normalizes toward this).
+- **Music bed sits ~15–20 dB below the voice** `[I]` — this is the same instruction as the −22 dB duck above, restated as a relative level.
+- **SFX** `[I]` (whoosh on cuts, subtle hits on text-card reveals) at a level that punctuates without startling.
 - **Check the final mix on phone speakers, not headphones** — that's how it will actually be watched `[I]`.
 
 ## Voice pacing (feeds from the voiceover brief, re-stated for the edit)

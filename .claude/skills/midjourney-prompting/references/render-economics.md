@@ -94,10 +94,10 @@ This section is this skill's own operational design, not a corpus or vendor clai
 discusses stage gating. It follows from the verified cost ladder above. Three of this skill's stages
 are exploratory by definition and **terminate at Phase 1**:
 
-- **`moodboard`** — generating candidate images to curate into a board. Output quality is irrelevant;
+- **`moodboard`** `[I]` — generating candidate images to curate into a board. Output quality is irrelevant;
   the board stores style, not pixels.
-- **`explore`** — finding a direction. If you don't know what you want yet, resolution cannot help.
-- **`profile`** — generating grids to train a Personalization profile by selection.
+- **`explore`** `[I]` — finding a direction. If you don't know what you want yet, resolution cannot help.
+- **`profile`** `[I]` — generating grids to train a Personalization profile by selection.
 
 Emitting `--hd`, `--q 2`+, or `--oref` for any of these is a **Gate A lint failure**, not a judgment
 call. It is the specific waste this skill exists to prevent.

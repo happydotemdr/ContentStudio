@@ -1,5 +1,9 @@
 # Caption & overlay system
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against `docs/headless-shorts-production-playbook.md` and live tool-pricing pages
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Provenance markers as in `pacing-and-editing.md`. Primary source: `docs/headless-shorts-production-playbook.md` §4 (`[I]` unless noted). Cross-checked against `docs/headless-youtube-audit.md` §6, which is `[C]` but pulls a different direction on caption density — both are given below rather than silently merged, per this project's anti-generic rule.
 
 ## Two overlay layers
@@ -33,7 +37,7 @@ Provenance markers as in `pacing-and-editing.md`. Primary source: `docs/headless
 
 - **Playbook default (Shorts-specialist grounded, `[I]`):** caption every spoken word throughout the Short, synced word-by-word, karaoke-highlighted.
 - **Audit §6 counter-finding (`[C]`, from the faceless-core/craft-general channels):** **"Keep captions small and mostly at the start"** — audiences dislike large captions; consider a small one-word-at-a-time template only for the **first ~5–10 seconds**, then rely on YouTube's auto-subtitles for the body `[C] (One Person Business, 6s2T2NlWDhQ; Make Money Matt, LlIkMWX50aQ)`.
-- **Reconciliation (a judgment call, not a corpus finding):** these come from different channel populations — the audit's "front-load only" advice is observed mostly on longer-form faceless content, while the playbook's full-caption default is built from Shorts specialists (Jenny Hoyos, Nate Black, vidIQ, Nick Nimmin) whose exemplars run full karaoke captions throughout. For a 30–45s Short, default to **full-duration karaoke captions** (the Shorts-specific finding), but pull the audit's *size and restraint* discipline into it: keep the caption typography small/unobtrusive relative to the frame rather than dominating it, and never let captions repeat the on-screen hook-card text redundantly. Flag this as an open call if the user's channel leans closer to the audit's faceless-core style than the Shorts-specialist style.
+- **Reconciliation (a judgment call, not a corpus finding):** `[I]` these come from different channel populations — the audit's "front-load only" advice is observed mostly on longer-form faceless content, while the playbook's full-caption default is built from Shorts specialists (Jenny Hoyos, Nate Black, vidIQ, Nick Nimmin) whose exemplars run full karaoke captions throughout. For a 30–45s Short, default to **full-duration karaoke captions** (the Shorts-specific finding), but pull the audit's *size and restraint* discipline into it: keep the caption typography small/unobtrusive relative to the frame rather than dominating it, and never let captions repeat the on-screen hook-card text redundantly. Flag this as an open call if the user's channel leans closer to the audit's faceless-core style than the Shorts-specialist style.
 
 ## Timing
 

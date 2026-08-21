@@ -1,5 +1,13 @@
 # Worked example — S042 "The $2 coffee trick"
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against `docs/headless-shorts-production-playbook.md` and live tool-pricing pages
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
+> This example illustrates rules already marked in this skill's other reference files and carries no independent normative weight. Where a line here restates a rule, the marker lives
+> on the rule, not on the illustration — do not copy an unmarked line out of this file into a
+> real brief as if it were sourced `[I]`.
+
 This runs the full upstream chain (script → voiceover brief → prompt sheet) through to an edit plan. The script, shot list, and AI prompts are the corpus's own worked example, reused verbatim from `docs/headless-shorts-production-playbook.md` Template Pack (§7) items 1–3; the voiceover brief is constructed the way `voiceover-brief` would produce it, following the same playbook's §5 voice-overlay rules. Markers as elsewhere; anything without one traces to a cited rule already established in `pacing-and-editing.md` / `caption-overlay-system.md` / `loudness-and-mix.md`.
 
 ## Inputs assumed

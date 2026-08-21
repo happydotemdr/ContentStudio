@@ -40,7 +40,7 @@ prompt string.
 | `--draft` | flag | off | 24 images at 512px for 0.4 min GPU — half of SD. Web-only `[T] (verified 2026-07-26)`. See `render-economics.md` |
 | `--seed` | integer | random | Locks the generation blueprint. V8 holds **99% identical** with a fixed seed `[T] (verified 2026-07-26)`; a small word change survives, a **big subject swap still breaks it** `[C] (Future Tech Pilot, ZPJB6jurDfE)` |
 | `--no` | text | none | **Supported in V8.1/V8.2** `[T] (verified 2026-07-26)`. Works best for removing a **color**; unreliable as a general negative-prompt tool `[C] (Future Tech Pilot, Tv1dfGcOSnA / IS0Kk9OFaZQ)` |
-| `--iw` | 0–3 | 1 | Image-prompt weight. `0.5` ≈ colors only, `2–2.5` ≈ near-copy; halve on each re-application pass (2, 1, 0.5, 0.25) `[C][T]` |
+| `--iw` | 0–3 | 1 | Image-prompt weight. `0.5` ≈ colors only, `2–2.5` ≈ near-copy `[I]` — downgraded from `[C][T]`: this specific ratio claim carries no channel/video_id citation anywhere in-repo (the source guide's own table repeats it uncited too); halve on each re-application pass (2, 1, 0.5, 0.25) `[C] (Tokenized AI, o6cAA8jziPU)` — recovered via `docs/midjourney-prompting-guide.md:377`, which cites this exact halving technique |
 | `--sref` | code / URL / `random` | none | Style transfer. See `style-systems.md` |
 | `--sw` | 0–1000 | 100 | Style-reference strength. **Incompatible with Moodboards** `[T] (verified 2026-07-26)` |
 | `--sv` | see delta | — | **Omit in V8.2** — no V8 `--sv` behavior is documented. **Incompatible with Moodboards** `[T] (verified 2026-07-26)` |

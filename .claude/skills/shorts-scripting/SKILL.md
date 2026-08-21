@@ -1,9 +1,15 @@
 ---
 name: shorts-scripting
-description: Writes a shot-ready, beat-timed YouTube Shorts script (hook through loop/CTA) from a validated Shorts concept brief. Every rule traces to the ContentStudio corpus (1,100+ findings, 420 videos, 14 channels) with an explicit [C]/[I]/[T] marker — never generic scriptwriting advice; gaps are flagged, not filled. Use whenever the user has a Shorts concept, angle, or hook direction (including shorts-ideation output) and wants the script written — e.g. "write the script for this Short," "turn this concept into a timed script," "script out this idea," "give me the hook-to-CTA beats for this Short," or "I need a shot-ready script before I brief voiceover/visuals." Also use to punch up or restructure an existing rough Short script against the corpus's hook/retention/ending rules.
+description: Writes a shot-ready, beat-timed YouTube Shorts script (hook through loop/CTA) from a validated Shorts concept brief. Every rule traces to the ContentStudio corpus (1,100+ findings, 420 videos, 14 channels) with an explicit [C]/[I]/[T] marker — never generic scriptwriting advice; gaps are flagged, not filled. Use whenever the user has a Shorts concept, angle, or hook direction (including shorts-ideation output) and wants the script written — e.g. "write the script for this Short," "turn this concept into a timed script," "script out this idea," "give me the hook-to-CTA beats for this Short," or "I need a shot-ready script before I brief voiceover/visuals." Also use to punch up or restructure an existing rough Short script against the corpus's hook/retention/ending rules. Do not use this to decide the concept, title or thumbnail (that is `shorts-ideation`, upstream), to set ElevenLabs voice/model settings (`voiceover-brief`), to write image or video prompts (`visual-prompts`), or to write descriptions, hashtags or chapters (`social-repurpose`).
 ---
 
 # Shorts scripting
+
+> **This skill does not itself use `[T]`** — tool/policy facts for voiceover/visual/audio
+> tooling belong to `voiceover-brief`, `visual-prompts`, `elevenlabs-audio`, and
+> `midjourney-prompting` (see "Markers" below). This header is dated verified 2026-07-23 for
+> consistency with this project's `[T]` marker convention, not because this file asserts a
+> vendor fact of its own.
 
 Turns a validated Shorts **concept brief** into a **shot-ready, beat-timed
 script**: Hook → Setup → Build/Value (with a re-hook) → Payoff → Loop/CTA, each
@@ -20,14 +26,22 @@ project-wide anti-generic guarantee this skill exists to enforce.
   this skill scripts a concept, it doesn't originate one. **Optionally**, a companion grounding
   artifact may also be handed to this skill directly, or reached via the concept brief's
   "Grounding" section — see "Optional input" below.
-- **Downstream output feeds two separate skills:**
-  - **`voiceover-brief`** — needs each beat's VO line, timestamp range, and
-    word count to build the ElevenLabs production brief.
-  - **`visual-prompts`** — needs each beat's timestamp range and visual note to
-    build the Midjourney prompt sheet.
-  Both are authored separately — this skill's job ends at a complete,
-  self-contained script; don't reach ahead into voice-setting or image-prompt
-  territory (see "What this skill does NOT do" below).
+- **Downstream output feeds six skills:**
+  - **`shorts-styleboard`** (**required next** — `visual-prompts` hard-stops without its
+    artifact) — needs the beat list and the claim each beat rests on, to lock the two registers.
+  - **`voiceover-brief`** (required) — needs each beat's VO line, timestamp range, and word
+    count to build the ElevenLabs production brief.
+  - **`visual-prompts`** (required, and requires the styleboard first) — needs each beat's
+    timestamp range and visual note to build the Midjourney prompt sheet.
+  - **`music-brief`** (optional, and runs *after* `voiceover-brief`) — needs the beat boundaries
+    in seconds; its tone input comes from the voiceover brief, not from here.
+  - **`shorts-assembly`** (required) — reads the script directly for its shot table and
+    Delivery-notes constraints, alongside the styleboard, voiceover brief and visual prompts.
+  - **`social-repurpose`** (required) — reads the script directly for hook language and any
+    publish constraint, alongside the edit plan.
+  All six are authored separately — this skill's job ends at a complete, self-contained script;
+  don't reach ahead into voice-setting or image-prompt territory (see "What this skill does NOT
+  do" below).
 
 ## Provenance discipline (read before writing a single line)
 
@@ -53,7 +67,7 @@ Every reference file in `references/` marks each rule:
   (`references/read-aloud-gates.md`).
 - **`[T]`** — not used by this skill; tool/policy facts belong to
   `voiceover-brief` and `visual-prompts`.
-- **`[S]`** script-baseline — derived from an observed failure in this repo's
+- **`[S]`** `[I]` script-baseline — derived from an observed failure in this repo's
   own shipped output, cited by file and beat in
   `docs/script-language-baseline.md`. Used only by the read-aloud gates. **An
   `[S]` rule that cannot name a real shipped line violating it is a bug — mark
@@ -73,7 +87,7 @@ than inventing your own framing for that material:
   lands, whether its Payoff-equivalent content is the Build's proof beat or this script's own
   Payoff beat) — the fixed translation rule behind that judgment, if you need the full reasoning,
   is whatever reference file the artifact's producing skill documents (e.g. `rgs-grounding`'s
-  `references/scripting-beat-mapping.md`).
+  `.claude/skills/rgs-grounding/references/scripting-beat-mapping.md`).
 - Preserve any citation markers in the artifact's text verbatim (e.g. `[THINKER: ...]`,
   `[RESEARCH: ...]`) in this script's output — don't strip or paraphrase them away.
 - Restate any quotability constraint (e.g. quote-ok vs. paraphrase-caution) at every beat that
@@ -133,8 +147,9 @@ If no companion artifact is provided, this section doesn't apply — script norm
     on screen, not a rendered image/video prompt (that's `visual-prompts`'
     job). Flag any beat carrying a spoken statistic or list so it's rendered
     as on-screen text/graphic downstream.
-11. **Fill the output contract exactly** (below) and state the up/downstream
-    handoff explicitly at the end of the response.
+11. **Fill the output contract exactly** (below) and state the up/downstream handoff explicitly
+    at the end of the response, naming all six downstream consumers and which are required for
+    the next stage to run.
 
 ## Beat-timing model (standard 35–45s band)
 
@@ -200,6 +215,29 @@ Delivery notes: <muted-friendly check, medium-confidence flags used (if any),
   copied verbatim>
 ```
 
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: script
+produces.stage: 02-scripting
+produces.section: HOOK
+produces.section: SETUP
+produces.section: BUILD/VALUE
+produces.section: PAYOFF
+produces.section: LOOP/CTA
+produces.section: Comment-bait question
+produces.section: Next-video bridge
+produces.section: Total word count
+produces.section: GATES
+produces.section: Visual notes
+produces.section: Delivery notes
+consumes: shorts-ideation#Angle / take
+consumes: shorts-ideation#Hook concept
+consumes: shorts-ideation#Packaging direction
+consumes: rgs-grounding#Handoff
+consumes: rgs-grounding#Constraints that survive to publish
+```
+
 **Every `<…>` above is a slot, and the two `GATES` slots are the ones a gate
 checks: D6 rejects a `Gate E:` value still wrapped in `<…>` or `[…]`, or still
 carrying the template's `|` bars** `[I]`. Emitting the contract unfilled is a
@@ -212,13 +250,13 @@ your first script if this is a new session.
 
 ## What this skill does NOT do
 
-- **Doesn't set ElevenLabs voice/model settings** (stability, similarity,
+- **Doesn't set ElevenLabs voice/model settings** `[I]` (stability, similarity,
   audio tags) — that's `voiceover-brief`. Hand it the VO lines and timing only.
-- **Doesn't write Midjourney/image-video prompts** — that's `visual-prompts`.
+- **Doesn't write Midjourney/image-video prompts** `[I]` — that's `visual-prompts`.
   Hand it the visual notes and timing only.
-- **Doesn't decide the concept, title, or thumbnail** — that's `shorts-
+- **Doesn't decide the concept, title, or thumbnail** `[I]` — that's `shorts-
   ideation`, upstream. If a concept brief is missing, ask for it.
-- **Doesn't invent packaging-adjacent SEO/AEO content** (descriptions,
+- **Doesn't invent packaging-adjacent SEO/AEO content** `[I]` (descriptions,
   hashtags, chapters) — those are long-form-specific corpus findings that
   belong to packaging/repurposing work, not the script itself.
 
@@ -246,6 +284,26 @@ your first script if this is a new session.
 
 ## File I/O contract
 
+**Artifact vocabulary — one table, copied unchanged into every skill.** The resolver matches
+filenames literally, so a `--kind` guessed from a stage id or a skill name returns `NONE` and
+exit 1 — which this section documents as the benign "upstream hasn't run yet" case. Copy the
+literal string from this table; never infer it `[I]`.
+
+| Stage id (`pipeline.yaml`) | `--kind` | `stage:` frontmatter | Owning skill |
+|---|---|---|---|
+| `grounding` | `grounding` | `00-grounding` | `rgs-grounding` |
+| `ideation` | `concept-brief` | `01-ideation` | `shorts-ideation` |
+| `scripting` | `script` | `02-scripting` | `shorts-scripting` |
+| `styleboard` | `styleboard` | `02b-styleboard` | `shorts-styleboard` |
+| `voiceover` | `voiceover-brief` | `03-voiceover` | `voiceover-brief` |
+| `visual` | `visual-prompts` | `03-visual` | `visual-prompts` |
+| `music` | `music` | `03-music` | `music-brief` |
+| `assembly` | `assembly` | `04-assembly` | `shorts-assembly` |
+| `repurpose` | `social-repurpose` | `05-repurpose` | `social-repurpose` |
+| — (specialist) | `audio-spec` | `03-voiceover` | `elevenlabs-audio` |
+| — (specialist) | `music-spec` | `03-music` | `elevenlabs-music` |
+| — (specialist) | *none — transcript-only* | — | `midjourney-prompting` |
+
 This skill participates in ContentStudio's file-based pipeline handoff (see
 `docs/superpowers/specs/2026-07-28-skill-markdown-file-contract-design.md`). Two modes:
 
@@ -259,7 +317,7 @@ to `rgs-briefs/` in this mode.
    `python scripts/resolve_brief_version.py --slug <slug> --kind concept-brief` from the repo
    root (you need the `slug` the concept brief's author stated — ask for it if you don't have
    it). This prints `<path>\t<version>` where `<path>` is already `rgs-briefs/`-relative (or, if
-   nothing is found yet, prints `NONE\t0` and exits 1 — that's the expected "no file yet, fall
+   nothing is found yet, prints `NONE\t0` and exits 3 — that's the expected "no file yet, fall
    back to chat-pasted input" case, not an error). Read the file it reports. If it points at a
    `grounding:` field, treat that as the companion grounding artifact per "Optional input" above.
    **Staleness check:** re-run `resolve_brief_version.py --slug <slug> --kind concept-brief`

@@ -352,6 +352,184 @@ This check, like the one above it, only covers drift inside P13's own scope plus
 plan explicitly reads — it is not a re-audit of the 77 unrelated commits themselves (they belong
 to no package in this remediation programme and were not reviewed for their own correctness here).
 
+**Addendum, found during T4's own task review (not a pre-flight pass — a gap T4's own fix
+created in a P13-owned file no task touches):** T4's C-16 fix changes `elevenlabs-music/SKILL.md`'s
+Gate 1 row to read `the Bed Arc's `## Tone-contradiction check` section is present and reports no
+unresolved MISMATCH`, and adds "**Gate 1 never re-runs `music-brief`'s tone call.**" directly
+beneath the gate table. `elevenlabs-music/references/validation-gates.md` (in §1's owned-file
+list, but not cited by any task T1-T18) is the actual fresh-agent prompt Gate 1 dispatches — and
+it still contradicts both new sentences:
+
+- `:39` still asks the operator to supply `VOICEOVER BRIEF TONE PER BEAT: <the tone call, beat by
+  beat, or "none supplied">` as a gate input — a raw upstream artifact Gate 1 no longer needs, per
+  the new SKILL.md framing.
+- `:69-74`, checklist Item 8 ("TONE CONTRADICTION"), still instructs the fresh agent to
+  independently "Compare each section's intended feeling against the voiceover brief's tone for
+  the same beat" and flag any undeclared contradiction as a FINDING — the fresh agent still
+  performs its own comparison for every beat the Bed Arc doesn't already flag, which is exactly
+  the re-derivation the new "Gate 1 never re-runs" sentence disclaims.
+
+**Task T4a (new, addendum-only — one file, `elevenlabs-music/references/validation-gates.md`):**
+
+- [ ] Delete the `VOICEOVER BRIEF TONE PER BEAT: <...>` line at `:39` — Gate 1 no longer takes the
+      raw tone-per-beat call as an input; `BED ARC TONE-CONTRADICTION CHECK` at `:40` (already
+      present) is the only tone-related field it needs.
+- [ ] Replace checklist Item 8 (`:69-74`) with:
+
+```
+8. TONE CONTRADICTION. This gate does not compare feelings itself — that call belongs to
+   `music-brief`, upstream. Confirm only: the Bed Arc's tone-contradiction check is present
+   (not "none declared"), and every row in it is either a stated non-contradiction or a declared
+   MISMATCH with a rationale. An **absent** tone-contradiction check, or a MISMATCH row with no
+   stated rationale, is a FINDING. Do not independently judge whether a section's feeling
+   contradicts the spoken tone — that re-derivation is exactly what the new Gate 1 semantics
+   retire.
+```
+
+- [ ] Commit: `fix(elevenlabs-music): retire Gate 1's own tone comparison to match the new
+      SKILL.md semantics`.
+
+This does not reopen T4 (already reviewed and approved for its own two-file scope) — it closes a
+gap T4's own fix exposed in a third, P13-owned file that no original task cited.
+
+**Addendum, found during T11's own dispatch prep (not a review finding — a coverage gap in the
+plan's own 18-task list, discovered while verifying T11's citations before dispatch):**
+`elevenlabs-audio/SKILL.md` never receives a `## Handoff contract (machine-checked)` block from
+any of T1-T18 — confirmed by grepping the whole plan file for "elevenlabs-audio" near "handoff":
+zero matches. `elevenlabs-music` (T4, `produces.kind`/`stage` filled in by T11) and
+`midjourney-prompting` (T10) both got one; `elevenlabs-audio` — one of the same three tool
+specialists T11 itself is titled after — never does. Since T2's two parametrized tests run over
+`ALL_SKILLS` (which includes `elevenlabs-audio`), both permanently fail unless a block is added:
+confirmed live, `python -m pytest tests/test_skill_provenance.py -q -k elevenlabs-audio` fails 2
+of 2 with `elevenlabs-audio/SKILL.md has no \`\`\`handoff block`. This breaks the plan's own
+stated goal ("T3–T12 close them skill by skill" — all 26 red cases from T2, not 24 of 26).
+
+**Task T11a (new, addendum-only — one file, `elevenlabs-audio/SKILL.md`):** add a handoff block
+matching the file's actual `## Output contract` sections (`CONTROL SURFACE`, `VOICE PROFILE`,
+`MODEL ROUTING`, `VOICE SETTINGS`, `DIRECTORIAL SCRIPT`, `PRONUNCIATION`, `REQUEST PAYLOAD`,
+`COST`, `QC CHECKLIST`, `VALIDATION GATES`, `NEXT` — confirmed live) and the three upstream
+fields C-13's boundary table (landed in T11) says this skill compatibility-checks against
+`voiceover-brief`'s brief (model/voice, settings, tag placement) plus the voice pick itself:
+
+- [ ] Add, immediately after `## Output contract`'s fenced template:
+
+```markdown
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: audio-spec
+produces.stage: 03-voiceover
+produces.section: CONTROL SURFACE
+produces.section: VOICE PROFILE
+produces.section: MODEL ROUTING
+produces.section: VOICE SETTINGS
+produces.section: DIRECTORIAL SCRIPT
+produces.section: PRONUNCIATION
+produces.section: REQUEST PAYLOAD
+produces.section: COST
+produces.section: QC CHECKLIST
+produces.section: VALIDATION GATES
+produces.section: NEXT
+consumes: voiceover-brief#Voice pick
+consumes: voiceover-brief#Tone per beat
+consumes: voiceover-brief#Settings
+consumes: voiceover-brief#Script, reformatted for TTS
+```
+```
+
+- [ ] Commit: `fix(elevenlabs-audio): add the handoff block the other two specialists already have`.
+
+This does not reopen T11 (already reviewed and approved for its own four-file scope) — it closes
+a plan-coverage gap (a skill with zero handoff-block task, not a task that got its scope wrong).
+
+**Mid-wave checkpoint, after T12 (2026-08-20) — an Opus review of the whole T1-T12 arc, not a
+per-task review.** Full report on file; four findings on ALREADY-LANDED work that no task in
+T13-T18 will touch (verified against those tasks' own scope), batched into one addendum below.
+Several more findings concern T13/T14/T18's own shown text having drifted since authoring —
+those are NOT fixed here; they are recorded in this file's own §0 history for correction when
+each of those tasks is dispatched, per this programme's standing discipline (amend before
+dispatch, same as every task so far).
+
+**Task T12a (new, addendum-only — four files, batched per this programme's final-review
+convention of one fix dispatch for a findings list, not one per finding):**
+
+1. **`elevenlabs-audio/SKILL.md:33-34`** — stale step numbers, a T3/T11 interaction. T3
+   (`05328f1`) inserted a new step 3 into `voiceover-brief`'s workflow, pushing Settings to step
+   4 and TTS-reformat to step 5. T11 (`0b698fb`) then rewrote this exact sentence copying the
+   plan's own pre-T3 wording verbatim. Live text: "`voiceover-brief` step 2 names a model, step
+   **3** sets the four settings plus speaker boost, and step **4** places v3 audio tags and
+   phonetic respellings." Replace `step 3` → `step 4` and `step 4` → `step 5`.
+2. **`voiceover-brief/references/worked-example.md`** — the worked example has no `## Tone per
+   beat` section, even though T3 made that section a declared, three-consumer output that
+   `SKILL.md:78-82` calls "a missing row is a blocked downstream stage, not a defaulted one."
+   Add a `## Tone per beat` section to the worked example, in the same position T3 specified for
+   the real output contract (between `## Voice pick` and `## Settings`), filled in with a
+   plausible tone-per-beat row set for whatever script beats the existing worked example already
+   uses — matching the file's own established depth/style, not inventing new script content.
+3. **`shorts-assembly/SKILL.md:82`** — "Then produce the plan itself under these **six**
+   headings" undercounts; the fenced template immediately below has **seven** (T5's own C-21 fix
+   added a 7th, "Constraints that survive to publish," which the sentence never updated — flagged
+   as a deferred Minor at T5's own review, since re-escalated to Important because that 7th
+   section is exactly the one `social-repurpose` consumes by name, per this same sentence's own
+   "renaming one breaks `social-repurpose`" warning three lines later). Change `six` → `seven`.
+4. **`rgs-pairing-review/SKILL.md`'s T12-added `## Output format` block** — its fenced
+   restatement declares a `## Proposal` heading that the REAL artifact
+   (`output/pairing-proposals/YYYY-MM-DD-proposal.md`, per the file's own step-5 template) never
+   contains — that file opens `# Pairing Map Review Proposal — [date]` then `## New/changed since
+   last review`, `## Proposed additions`, `## Considered and rejected`, `## Re-verification
+   verdicts`. Nothing currently consumes `rgs-pairing-review#Proposal`, so blast radius is low,
+   but the declaration is fiction — precisely the defect class this whole package exists to
+   eliminate. Replace the `## Output format` block's fenced content so it names the artifact's
+   *real* four section headings (not a generic "Proposal" placeholder), and update the handoff
+   block's `produces.section: Proposal` line to match whichever of the four is the natural
+   "primary" section (or list more than one, if that's a better match for how this skill is
+   actually consumed — use judgment, there is no existing consumer to be strictly compatible
+   with).
+
+- [ ] Commit: `fix(checkpoint): reconcile four already-landed drifts found at the T1-T12 midwave review`.
+
+This does not reopen T3/T5/T6/T11/T12 (each already reviewed and approved for its own scope) —
+it closes four gaps only visible once the whole arc is read together, exactly the class of
+defect a per-task review cannot see.
+
+**Addendum, found during T13's own task review (a defect in this plan's ORIGINAL text, not a
+controller amendment gone wrong — T13's implementation followed the plan's own migration-note
+prose verbatim; the prose itself is self-contradicting):** the migration note both files now
+carry —"If `--kind grounding` prints `NONE` but a bare `<date>-<slug>.md` exists, that is the
+prior version — name it in `supersedes:` and write the new one with the suffix"— collides with
+the resolver's own mechanics. A kindless-`_pattern` miss makes `--kind grounding --next` propose
+`best_version = 0` → `next_version = 1`, and this plan's own C-23 frontmatter template says
+"omit this line entirely if version is 1" for `supersedes:`. Following the note as written
+produces `<date>-<slug>-grounding.md` with `version: 1` **and** a `supersedes:` line — two live
+briefs for the same topic both claiming version 1, no descending chain, and `find_latest` can't
+even catch the collision (the two files match different kind-patterns). Confirmed live in both
+`rgs-grounding/SKILL.md` and `rgs-pairing-review/SKILL.md` (both got this note from T13).
+
+**Task T13a (new, addendum-only — two files, the same two T13 already touched for this note):**
+
+- [ ] In `rgs-grounding/SKILL.md`, replace the migration note (search for "Briefs written before
+      2026-08-08 carry no `--kind` suffix") with:
+
+```markdown
+**Briefs written before 2026-08-08 carry no `--kind` suffix.** If `--kind grounding` prints
+`NONE` but a bare `<date>-<slug>.md` exists, that is the prior version — the kindless lookup
+cannot see it, so **do not trust the resolver's proposed version number in this case**. Read the
+bare file's own `version:` frontmatter field, set the new brief's `version:` to one higher than
+that, add a `-v<N>` suffix to the filename matching it (the resolver's auto-generated filename
+omits the suffix for what it thinks is version 1 — override it by hand), and set `supersedes:`
+to the old bare file's path. Do not rename the old file `[I]`.
+```
+
+- [ ] Apply the same corrected note (adjusted for its own shorter fallback-sentence form) to
+      `rgs-pairing-review/SKILL.md`'s mirrored note, added by T13's amendment item 4 — same
+      contradiction, same fix: don't trust a proposed version 1 for a topic with an existing
+      kindless brief; read that brief's own version, continue the chain by hand.
+- [ ] Commit: `fix(rgs): stop the grounding-brief migration note from writing a broken version chain`.
+
+This does not reopen T13 (already reviewed and approved — it correctly transcribed the plan's
+own text) — it fixes a defect in the plan's original migration-note prose, found only once T13
+made that prose live and a reviewer traced its actual resolver interaction.
+
 ---
 
 ## 3. Tasks
@@ -2379,6 +2557,22 @@ as ~0 under `docs/README.md`, and neither reading is true.
 (C-48 proposed it), so `CLAUDE.md:236-241`'s "the linters and skill provenance" phrasing stays
 correct — and becomes true rather than aspirational once T15 lands.
 
+**Addendum, from the final whole-branch review (2026-08-20).** Two more items for P14's queue,
+found reading the finished branch as a whole rather than any single task:
+
+4. **A fourth alternative-vocabulary token is undeclared.** `shorts-scripting/SKILL.md:70`
+   declares and uses a `[S]` marker (17 occurrences) that is not in `ALTERNATIVE_VOCABULARY`,
+   not in this §6.1 list above, and not covered by any test — it happens to always co-occur with
+   a real `[I]`/`[C]` on the same bullet today, so nothing fails, but the registry P14 is being
+   handed to publish is incomplete without it. Add `[S]` to whatever list item 2 above becomes.
+5. **`docs/style-library.md:198`** still instructs a future editor to update
+   `visual-prompts/references/visual-registers.md` §2 — a file T14 deleted as a tombstone.
+   `docs/style-library.md` is P11-owned, not P13's or P14's, but the instruction is now a live
+   forward-looking pointer at a file that no longer exists, not a historical record (unlike the
+   two dated `rgs-briefs/` references to the same old path, which are fine as-is). Whoever picks
+   up `docs/style-library.md` next should retarget it to
+   `shorts-styleboard/references/visual-registers.md`.
+
 ### 6.2 Contract for P4 — the stage graph binds to the handoff block
 
 P4 owns `pipeline.yaml` and the stage graph, and may need SKILL.md input/output declarations to
@@ -2397,11 +2591,37 @@ change so the declared graph matches the reachable one. P13 makes that machine-c
   literally and ~40 artifacts already exist under the current names). If P4 concludes the
   vocabulary must be unified on stage ids, that is a filename migration of `rgs-briefs/` — P14's
   files — and needs its own task in P4's plan, not a P13 edit.
-- **One open item P4 must decide (C-03):** `assembly` is `depends_on: [voiceover, visual]`, so the
-  script is not in `input_files`. T5 resolves it on the skill side by routing the script through
-  the voiceover brief's `script:` pointer. If P4 instead adds `scripting` to `assembly`'s
-  `depends_on`, T5's "Input 2 in app-driven mode" paragraph becomes wrong and must be simplified
-  to a direct read. P13 should be re-run on that one paragraph if P4 takes that route.
+- **C-03, resolved during execution, not left open.** At authoring time `assembly` was
+  `depends_on: [voiceover, visual]`, and this item asked P4 to decide whether to add `scripting`
+  directly. P4 did — `28d1862` added both `scripting` and `styleboard` to `assembly`'s
+  `depends_on` five days after this plan was authored, before P13's own Task 1 was ever
+  dispatched. T5 was executed against the corrected graph (a direct script read, no
+  pointer-chase), confirmed live at dispatch time. Nothing further needed here.
+
+**Addendum, from the final whole-branch review (2026-08-20).** Two edges in the live stage graph
+have no reciprocal `consumes:` declaration on the skill side — found by cross-checking every
+`pipeline.yaml` `depends_on` edge against its target skill's handoff block, something no single
+task's own review could see:
+
+1. **`assembly` `depends_on: [… styleboard …]`, but `shorts-assembly`'s handoff block declares
+   no `shorts-styleboard#…` edge.** The skill's own prose (`SKILL.md:51-53`) clearly reads the
+   styleboard's `BINDINGS` section at paste time — the edge is real, just undeclared. Two more of
+   the same shape on the same handoff block: `elevenlabs-audio#DIRECTORIAL SCRIPT` (`:27-29`) and
+   `elevenlabs-music#MIX HANDOFF` (`:31`), both prose-referenced but not declared. All three
+   resolve against their producers' actual declared sections — this is a completeness gap in
+   `shorts-assembly`'s own handoff block, not a stage-graph error, and P13 fixes it directly
+   (see the final-review fix wave) rather than handing it to P4.
+2. **`repurpose` `depends_on: [ideation, scripting, assembly]`, but T6's C-04 fix committed
+   `social-repurpose` to "exactly two inputs: the timed script … and shorts-assembly's edit
+   plan"** — `ideation` is in the stage graph's dependency list but is not one of the two inputs
+   the skill's own description/body/File-I/O now uniformly declare. `test_the_registry_matches_
+   the_declared_stage_graph` only compares stage *ids*, not per-edge reachability, so this
+   divergence is not machine-visible today. P4 should decide: is `ideation` a load-bearing input
+   `social-repurpose` should actually read (in which case P13's C-04 fix undercounts and needs a
+   follow-up task), or is it in `depends_on` only to guarantee ordering/availability without the
+   skill needing to *read* it (in which case `pipeline.yaml`'s dependency and the skill's actual
+   input list are both correct, just for different reasons, and nothing needs to change)? P13
+   cannot make this call — it owns the skill's declared inputs, not the stage graph's intent.
 
 ---
 
@@ -2418,8 +2638,16 @@ own §Verification explicitly warns against — worktrees are created and torn d
 that path is long gone. Run this from whatever worktree's repo root you're actually in.)
 
 1. `tests/test_skill_provenance.py` is parametrized over **13 skills** and sweeps **all 64
-   reference files** (63 after T14 deletes the tombstone) — verified by
-   `test_every_skill_directory_is_classified` and the citation tests' file sweep.
+   reference files** — verified by `test_every_skill_directory_is_classified` and the citation
+   tests' file sweep. **Corrected by the final whole-branch review (2026-08-20):** this line
+   originally said "63 after T14 deletes the tombstone," arithmetic that was wrong even at
+   authoring time — §1's owned-file manifest omitted
+   `voiceover-brief/references/single-take-architecture.md` (a file that already existed on disk
+   pre-P13, per the 77-commit backlog documented in this file's own §0), so §1 listed 64 files
+   while disk actually held 65. T14's tombstone deletion (65 → 64) offset that omission by
+   coincidence, and the count landed right for the wrong reason. Live count post-P13: **64**,
+   correct. No action needed — the suite already sweeps the real directory, not §1's manifest —
+   but do not trust this line's arithmetic as a derivation; it is a corrected observation.
 2. Every `SKILL.md` carries a ```` ```handoff ```` block, and both handoff tests are green for all
    13 skills.
 3. `grep -rn "references/production-and-loudness.md" .claude/skills/` returns only
@@ -2428,8 +2656,19 @@ that path is long gone. Run this from whatever worktree's repo root you're actua
    `grep -rn "visual-registers.md" .claude/skills/visual-prompts/` returns only qualified paths.
 5. `TIER_1_PENDING` and `C_CITATION_PENDING` are present, non-hidden, and strictly smaller than
    their seeded values; every entry that reaches zero unmarked blocks has been deleted (the test
-   fails if a clean file keeps its entry).
-6. `python scripts/lint_prompt_sheet.py` (P11) and `python scripts/lint_script_language.py` (P12)
-   still pass on the committed `rgs-briefs/` artifacts — no skill edit here changes a format either
-   linter parses.
+   fails if a clean file keeps its entry). **Correction, final review:** as originally specified,
+   only `TIER_1_PENDING` actually enforces "keeps its entry after going clean" and neither ledger
+   enforces "did not silently regress while still pending" (a suppressed file's real unmarked/
+   uncited count could grow past its recorded number with no test noticing). The final-review fix
+   wave adds the missing enforcement to both; see the branch's closing commits.
+6. **Corrected by the final whole-branch review (2026-08-20):** this item originally read
+   "`python scripts/lint_prompt_sheet.py` (P11) and `python scripts/lint_script_language.py`
+   (P12) still pass on the committed `rgs-briefs/` artifacts" as a completion bar for THIS
+   package. That was already false at P13's own base commit (`53a3553`) — several
+   `rgs-briefs/*-visual-prompts.md` and `*-script.md` artifacts fail one or both linters, and
+   P13 touches none of the files involved (no `rgs-briefs/`, no linter scripts, no
+   `docs/style-library.md`) — confirmed the linter output is byte-identical between base and
+   head. This is pre-existing artifact debt, not P13's to close, and stating it as P13's own
+   bar was a plan defect. Restated: **P13 introduces no *new* linter failures** on the committed
+   `rgs-briefs/` artifacts — verifiably true, and the correct form of this check.
 7. `bash scripts/build-cowork-plugin.sh` (P12) runs clean, since `.claude/skills/` is its input.

@@ -1,5 +1,9 @@
 # Production, mixing & loudness
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-voiceover-guide.md` §5 and §8, cross-checked against
 `docs/headless-youtube-audit.md` §5. `[T]` facts below (LUFS target, ducking-dB norms,
 disclosure policy) are web-verified as of **2026-07-23** — re-verify against
@@ -20,7 +24,7 @@ audio track first** to remove peaks and even out volume before final loudness no
 
 - **Docs/notes target −12 to −18 dB under the voice `[T]`.** The settings guide's cheat-sheet
   gives −16 dB as a safe default starting point.
-- **Corpus creators run noticeably lower — around −21 to −22 dB** — and call loud music the
+- **Corpus creators run noticeably lower — around −21 to −22 dB** `[C]` — and call loud music the
   **most common cause of low average view duration (AVD)** that beginners underestimate
   `(Romayroh, Wox4Jt_2t6w)` `(Roberto Blake, iaTavrWIGDM)`.
 - **Parameter-mapping correction, this project `[P]`:** this channel's render-spec implemented the corpus's

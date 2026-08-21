@@ -1,5 +1,9 @@
 # Cost, credits & the two-phase protocol
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-production-runbook.md` §8.
 
 ## Billing basis `[T]`
@@ -107,7 +111,7 @@ inverts the runbook's advice and is the actual money-saving move.
 - Fixed `seed` (0–4,294,967,295) gives **best-effort** deterministic sampling `[T]` — it reduces
   variation across identical requests, it does not guarantee identical audio.
 - Use it to isolate the effect of one change. Do not promise reproducibility on it `[I]`.
-- **Name a re-roll budget** whenever you select v3 Creative mode — "prone to hallucinations" is
+- **Name a re-roll budget** `[T]` whenever you select v3 Creative mode — "prone to hallucinations" is
   documented behavior `[T]`, so re-rolls are an expected cost, not a failure.
 
 ## Chunking and cost `[I]`

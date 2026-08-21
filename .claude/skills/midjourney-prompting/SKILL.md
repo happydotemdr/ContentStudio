@@ -5,6 +5,10 @@ description: Writes best-in-class Midjourney V8.2 prompts and the parameter stac
 
 # Midjourney Prompting (V8.2 craft, parameters & GPU discipline)
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live docs.midjourney.com documentation (the V8.2 delta)
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Turns an image brief into an **executable Midjourney prompt**: the 9-layer body, the flag stack, the
 consistency mechanism, and the phase to run it in — linted every time, and adversarially reviewed
 before anything expensive renders.
@@ -40,9 +44,9 @@ is stills-only. Downstream of both: `shorts-assembly`.
 
 Two sources, deliberately separate:
 
-- **`references/v82-model-delta.md`** — platform truth. Web-verified against live `docs.midjourney.com`
+- **`references/v82-model-delta.md`** `[I]` — platform truth. Web-verified against live `docs.midjourney.com`
   on **2026-07-26**, the day after V8.2 became default. **Read this first**; it is the tie-breaker.
-- **`docs/midjourney-prompting-guide.md`** — the corpus view. 384 findings across four dedicated
+- **`docs/midjourney-prompting-guide.md`** `[I]` — the corpus view. 384 findings across four dedicated
   Midjourney YouTube channels, snapshot 2026-07-23, documenting **V8.1**.
 
 Markers, copied verbatim wherever a rule is repeated:
@@ -91,7 +95,8 @@ Deterministic mappings — same inputs, same prompt, so a user can re-run and re
 | `variance: tight` | `--c 0` |
 | `variance: some` | `--c 3–9` `[C] (Future Tech Pilot, Tv1dfGcOSnA / fMEvMqvzUbc)` |
 | `variance: wild` | `--c 25–50` |
-| `consistency: style-lock` | `--sref <code>` + `--sw`, or moodboard `--p <code>` |
+| `consistency: style-lock` (standalone) | `--sref <code>` + `--sw`, or moodboard `--p <code>` |
+| `consistency: style-lock` (**pipeline mode**) | the inherited `{style:register_a}` / `{style:register_b}` / `{char:<name>}` slot token handed down by `visual-prompts`, placed **last in the flag block** — **never** a literal code. Gate C's C16 rejects an invented code and C18 rejects a slot placed before the first ` --` |
 | `consistency: subject-lock` | `--oref <url> --ow 50–150` — **and the V7 warning below** |
 | `budget: cheap` | `--relax`, stay in Draft/SD |
 | `budget: no limit` | `--q 2`+ at production |
@@ -102,22 +107,22 @@ Full reasoning in `references/prompt-architecture.md` and `references/parameters
 
 ### Step 0 — Resolve the control surface
 
-Infer the eight inputs. Echo them back in one compact block with every assumed default named. Proceed
-without waiting for confirmation unless `format` is genuinely unknowable.
+Infer the nine inputs. Echo them back in one compact block with every assumed default named.
+Proceed without waiting for confirmation unless `format` is genuinely unknowable.
 
 ### Step 1 — Build the 9-layer prompt body
 
 Read `references/prompt-architecture.md`. Order: medium → subject → action/pose/state → environment →
 composition/angle → optics/lens/depth-of-field → lighting mechanics → color/atmosphere → parameters.
 
-- **Front-load what matters** — Midjourney weights earlier words more heavily and words far back often
+- **Front-load what matters** `[C]` — Midjourney weights earlier words more heavily and words far back often
   fail to appear `[C] (Future Tech Pilot, ioJ6istzwHw)`.
 - **Short beats long, standalone** — length dilutes which words get weighted `[C] (Tokenized AI,
   vezJXJGQMoY)`. Nine layers is not nine mandatory clauses; drop a layer that adds nothing. **In
   pipeline mode this changes**: all nine layers are mandatory with concrete content, minimum 10
   clauses and 60 words, enforced by Gate C's C12 (`references/prompt-architecture.md`, "Density, not
   length — the pipeline exception `[I]`").
-- **No quality buzzwords** — `photorealistic`, `8k`, `masterpiece`, `ultra-detailed`, `trending on
+- **No quality buzzwords** `[T-unverified]` — `photorealistic`, `8k`, `masterpiece`, `ultra-detailed`, `trending on
   ArtStation`. Replace each with the concrete physical detail it was standing in for. *(That these
   actively degrade V8.2 is `[T-unverified]` — the ban stands on craft grounds, not model behavior.)*
 - End with `No Text.` if the brief involves on-screen copy `[C] (Tokenized AI, qFYJb0zYztY)`.
@@ -142,12 +147,12 @@ Never `--hd`, never `--q 2`+, never `--oref` here (`--oref` is Draft-incompatibl
 draft command and **stop for their pick**. What happens to that pick depends on
 which job this is `[I]`:
 
-- **Style discovery** (`stage: moodboard` / `explore`) — harvest the winning thumbnail's
+- **Style discovery** `[I]` (`stage: moodboard` / `explore`) — harvest the winning thumbnail's
   style code; it becomes a Style Library entry, and the ladder terminates here.
   **Record it in `docs/style-library.md` before the session closes, in that file's
   `Entry format` shape** `[I]` — a harvested code that lives only in a Midjourney session
   is not recoverable by anyone else, and the pipeline reads the Library, not the session.
-- **Asset rendering in the ContentStudio pipeline** — do *not* harvest. The style is
+- **Asset rendering in the ContentStudio pipeline** `[I]` — do *not* harvest. The style is
   already bound from the Library via the sheet's `{style:…}` slot and is present from the
   draft onward, so the pick chooses a *composition*, not a style. Drafting off-style would
   make the pick meaningless.
@@ -189,7 +194,7 @@ Full checklists and the verbatim dispatch prompt are in `references/validation-g
 
 | Gate | Fires | Cost | Checks |
 |---|---|---|---|
-| **A — syntax & compatibility** | **every prompt, always** | free, inline | flags last / spacing / no punctuation; every value in range; `--oref` ✗ Draft·Fast·`--q 4`; moodboard ✗ `--sv`·`--sw`; `--ar` ≤ 4:1 under `--hd`; no buzzwords; **stage discipline** — no `--hd`/`--q 2`+/`--oref` in an exploratory stage; every line marked |
+| **A — syntax & compatibility** | **every prompt, always** | free, inline | flags last / spacing / no punctuation; every value in range; `--oref` ✗ Draft·Fast·`--q 4`; moodboard ✗ `--sv`·`--sw`; `--ar` ≤ 4:1 under `--hd`; no buzzwords; **stage discipline** — no `--hd`/`--q 2`+/`--oref` in an exploratory stage; every line marked; **pipeline mode** — the consistency flag is an unresolved `{style:…}`/`{char:…}` slot, not a literal code, and it sits after `--ar`/`--raw`/`--s` |
 | **B — adversarial art direction** | **`production` only** | one fresh agent | weakest of the 9 layers; where literal reading bites; what's buried too late to render; flag stack vs stated intent; one concrete rewrite |
 
 In pipeline mode, `visual-prompts` runs a third gate, **Gate C**, over the assembled prompt sheet
@@ -209,7 +214,7 @@ without running it**, and write `Gate B: n/a — [stage]` rather than omitting t
 === MIDJOURNEY PROMPT — [job name] — [STAGE] ===
 
 CONTROL SURFACE
-  subject / stage / look / format / consistency / literalism / variance / budget
+  subject / stage / look / format / consistency / literalism / variance / budget / register
   Assumed defaults: [every value chosen for the user, named]
 
 CONSISTENCY
@@ -243,15 +248,61 @@ NEXT
 In pipeline mode, collapse this to the prompt + parameters + one-line why — `visual-prompts` owns
 the sheet.
 
+**This skill writes no file, by design** `[I]`. In pipeline mode its output is absorbed into
+`visual-prompts`' prompt sheet, which is the durable artifact; in standalone mode the spec is
+transcript-only and must be pasted into whatever record the operator keeps. The one thing that
+**does** persist is a harvested style code — record it in `docs/style-library.md` before the
+session closes (step 3).
+
+**Artifact vocabulary — one table, copied unchanged into every skill.** The resolver matches
+filenames literally, so a `--kind` guessed from a stage id or a skill name returns `NONE` and
+exit 1 — which this section documents as the benign "upstream hasn't run yet" case. Copy the
+literal string from this table; never infer it `[I]`.
+
+| Stage id (`pipeline.yaml`) | `--kind` | `stage:` frontmatter | Owning skill |
+|---|---|---|---|
+| `grounding` | `grounding` | `00-grounding` | `rgs-grounding` |
+| `ideation` | `concept-brief` | `01-ideation` | `shorts-ideation` |
+| `scripting` | `script` | `02-scripting` | `shorts-scripting` |
+| `styleboard` | `styleboard` | `02b-styleboard` | `shorts-styleboard` |
+| `voiceover` | `voiceover-brief` | `03-voiceover` | `voiceover-brief` |
+| `visual` | `visual-prompts` | `03-visual` | `visual-prompts` |
+| `music` | `music` | `03-music` | `music-brief` |
+| `assembly` | `assembly` | `04-assembly` | `shorts-assembly` |
+| `repurpose` | `social-repurpose` | `05-repurpose` | `social-repurpose` |
+| — (specialist) | `audio-spec` | `03-voiceover` | `elevenlabs-audio` |
+| — (specialist) | `music-spec` | `03-music` | `elevenlabs-music` |
+| — (specialist) | *none — transcript-only* | — | `midjourney-prompting` |
+
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: none
+produces.stage: none
+produces.section: CONTROL SURFACE
+produces.section: CONSISTENCY
+produces.section: PROMPT
+produces.section: LAYER BREAKDOWN
+produces.section: PARAMETERS
+produces.section: COST
+produces.section: VALIDATION
+produces.section: ARCHIVE
+produces.section: NEXT
+consumes: visual-prompts#WHOLE-SHORT SETUP
+consumes: shorts-styleboard#BINDINGS
+reads: docs/style-library.md
+writes: docs/style-library.md
+```
+
 ## What this skill does NOT do
 
-- **Render anything.** It emits prompt strings; you run them in Midjourney. It never spends GPU time.
-- **Image-to-video, motion, or i2v prompts** — `visual-prompts`
+- **Render anything.** `[I]` It emits prompt strings; you run them in Midjourney. It never spends GPU time.
+- **Image-to-video, motion, or i2v prompts** `[I]` — `visual-prompts`
   (`.claude/skills/visual-prompts/references/image-to-video.md`).
-- **Decide how many stills a Short beat needs, or the ~3s cadence** — `visual-prompts`.
-- **Captions, overlay text, or the edit** — `shorts-assembly`. Midjourney can't render legible text
+- **Decide how many stills a Short beat needs, or the ~3s cadence** `[I]` — `visual-prompts`.
+- **Captions, overlay text, or the edit** `[I]` — `shorts-assembly`. Midjourney can't render legible text
   anyway `[C] (Tokenized AI, qFYJb0zYztY)`.
-- **Voice or audio** — `voiceover-brief`, then `elevenlabs-audio`.
+- **Voice or audio** `[I]` — `voiceover-brief`, then `elevenlabs-audio`.
 
 ## `[T]` facts most likely to be stale — re-verify before relying on them
 

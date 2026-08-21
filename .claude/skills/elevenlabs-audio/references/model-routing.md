@@ -1,5 +1,9 @@
 # Model routing & the feature-compatibility matrix
 
+> **`[T]` facts in this file were web-verified 2026-07-26** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-production-runbook.md` §1.
 
 ## The models `[T]`
@@ -107,11 +111,11 @@ Multilingual v2 it gets full fidelity but no tags. Name the trade-off and let th
 Not a model setting — a **different endpoint** `[T]`:
 
 - `/v1/text-to-dialogue/convert`
-- **`eleven_v3` exclusively**
+- **`eleven_v3` exclusively** `[T]`
 - Input is a **JSON array of turns, each with `text` and `voice_id`** — no inline `Speaker A:` labels
-- **≤2,000 characters total across all inputs** — lower than v3's own 5,000 TTS cap
+- **≤2,000 characters total across all inputs** `[T]` — lower than v3's own 5,000 TTS cap
 - Audio tags go inside each turn's `text`
-- **Not for real-time**
+- **Not for real-time** `[T]`
 
 If a script has two voices and the user asked for a standard TTS payload, that is a routing error to
 surface, not a formatting detail to paper over.

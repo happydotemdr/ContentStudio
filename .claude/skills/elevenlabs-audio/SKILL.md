@@ -1,9 +1,13 @@
 ---
 name: elevenlabs-audio
-description: Builds a complete, ready-to-run ElevenLabs configuration — voice profile, model routing, voice settings, tag-annotated directorial script, PLS pronunciation dictionary, JSON request payload, curl command, and credit estimate — from a simple set of inputs, with fresh-agent validation gates before anything is rendered. Use whenever the user is generating speech with ElevenLabs and needs the actual setup rather than creative direction: "which ElevenLabs model should I use," "write me the API payload / request body," "what stability and similarity settings," "why does my TTS sound robotic / slurred / monotone," "why are my audio tags being ignored," "how do I stop it mispronouncing this word," "make me a pronunciation dictionary," "clone a voice," "explore/pick a voice," "narrate this audiobook chapter / script / ad," "set up multi-speaker dialogue," "how do I not burn credits iterating." Works standalone for any audio job (audiobook, agent, ad, character dialogue, podcast) AND as the downstream specialist for ContentStudio's `voiceover-brief` skill, which hands down the creative call for a Short and leaves the executable configuration to this skill. Do not use this to decide a Short's voice character or the music/loudness mix (that is `voiceover-brief`), or to write the script's content (that is `shorts-scripting`).
+description: Builds a complete, ready-to-run ElevenLabs configuration — voice profile, model routing, voice settings, tag-annotated directorial script, PLS pronunciation dictionary, JSON request payload, curl command, and credit estimate — from a simple set of inputs, with fresh-agent validation gates before anything is rendered. Use whenever the user is generating speech with ElevenLabs and needs the actual setup rather than creative direction: "which ElevenLabs model should I use," "write me the API payload / request body," "what stability and similarity settings," "why does my TTS sound robotic / slurred / monotone," "why are my audio tags being ignored," "how do I stop it mispronouncing this word," "make me a pronunciation dictionary," "clone a voice," "explore/pick a voice," "narrate this audiobook chapter / script / ad," "set up multi-speaker dialogue," "how do I not burn credits iterating." Works standalone for any audio job (audiobook, agent, ad, character dialogue, podcast) AND as the downstream specialist for ContentStudio's `voiceover-brief` skill, which hands down the creative call for a Short and leaves the executable configuration to this skill. Do not use this to make the creative call — which voice a ContentStudio Short should use and why, the tone per beat, the content-type framing, or the loudness/ducking mix are all `voiceover-brief`; this skill converts those into an executable configuration and compatibility-checks the model, settings and tags it is handed. Nor to write the script's content (that is `shorts-scripting`).
 ---
 
 # ElevenLabs Audio (configuration, prompting & credit discipline)
+
+> **`[T]` facts in this file were web-verified 2026-07-26** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
 
 Turns an audio job into an **executable ElevenLabs setup**: the model, the settings, the tagged
 script, the dictionary, the payload, and what it will cost — validated by fresh agents before a
@@ -22,23 +26,39 @@ a working configuration. Enter at Stage B with the voice and tone already decide
 
 The boundary, stated once so neither skill drifts into the other:
 
-| `voiceover-brief` owns | `elevenlabs-audio` owns |
+| `voiceover-brief` owns (the call) | `elevenlabs-audio` owns (the execution) |
 |---|---|
-| Which voice, and why (the shadowban/default-voice reasoning) | `model_id` routing and the feature-compatibility check |
+| Which voice, and why (the shadowban/default-voice reasoning) | The feature-compatibility check that confirms the voice/model pairing renders |
 | Tone and delivery intent per beat | The tag syntax that actually produces that delivery |
 | Content-type framing | The settings floats / stability mode |
 | −14 LUFS target, music ducking, the mix | The request payload, dictionaries, chunking, credit spend |
 
-**Loudness and ducking stay with `voiceover-brief`** (`references/production-and-loudness.md`) —
-do not duplicate or contradict them here. Downstream of both: `shorts-assembly`.
+**Three of those rows arrive partly filled, and you must compatibility-check them rather than
+accept them blind** `[I]`. `voiceover-brief` step 2 names a model, step 4 sets the four settings
+plus speaker boost, and step 5 places v3 audio tags and phonetic respellings. Treat each as an
+**upstream input under review**, not a decided call:
+
+- **Model.** `[I]` If the named `model_id` cannot render a feature the brief also asks for (a v3-only
+  tag on a v2 model, a dictionary on an engine that ignores it), say so and route to the model
+  that can. Name the override in `MODEL ROUTING`.
+- **Settings.** `[I]` If a float is out of range for the routed model, or a stability *mode* is named
+  where the model takes a float (or vice versa), convert it and say what you converted.
+- **Tags.** `[I]` If a placed tag is not in the routed model's tag catalog, replace it with the nearest
+  supported tag or fold the intent into the settings, and say which.
+
+**Do not re-litigate the voice, the tone per beat, the content type, or the mix.** Those four
+rows are decided upstream, full stop — that is the "accept the call" rule, and it is scoped to
+exactly those four. Loudness and ducking stay with `voiceover-brief`
+(`.claude/skills/voiceover-brief/references/production-and-loudness.md`) — do not duplicate or
+contradict them here. Downstream of both: `shorts-assembly`.
 
 ## Grounding — read before writing any rule
 
 Two sources, deliberately separate:
 
-- **`docs/elevenlabs-production-runbook.md`** — platform truth. Engines, parameters, tags,
+- **`docs/elevenlabs-production-runbook.md`** `[I]` — platform truth. Engines, parameters, tags,
   dictionaries, credits. Web-verified against live ElevenLabs docs **2026-07-26**.
-- **`docs/elevenlabs-voiceover-guide.md`** — the corpus view (24 findings). Thin, and honest about it.
+- **`docs/elevenlabs-voiceover-guide.md`** `[I]` — the corpus view (24 findings). Thin, and honest about it.
 
 Markers, copied verbatim wherever a rule is repeated:
 
@@ -222,17 +242,40 @@ VALIDATION GATES
   Gate 1: [pass | findings]   Gate 2: [pass | findings]   Gate 3: [pass | findings | n/a]
 
 NEXT
-  [draft → confirm → master, or the downstream handoff]
+  [draft → confirm → master. Then hand this spec to `shorts-assembly` as its optional input 2b:
+   it reads the DIRECTORIAL SCRIPT's chunk boundaries and the rendered asset filename.]
+```
+
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: audio-spec
+produces.stage: 03-voiceover
+produces.section: CONTROL SURFACE
+produces.section: VOICE PROFILE
+produces.section: MODEL ROUTING
+produces.section: VOICE SETTINGS
+produces.section: DIRECTORIAL SCRIPT
+produces.section: PRONUNCIATION
+produces.section: REQUEST PAYLOAD
+produces.section: COST
+produces.section: QC CHECKLIST
+produces.section: VALIDATION GATES
+produces.section: NEXT
+consumes: voiceover-brief#Voice pick
+consumes: voiceover-brief#Tone per beat
+consumes: voiceover-brief#Settings
+consumes: voiceover-brief#Script, reformatted for TTS
 ```
 
 ## What this skill does NOT do
 
-- **Call the ElevenLabs API.** It emits payloads and curl commands; you run them. It never handles
+- **Call the ElevenLabs API.** `[I]` It emits payloads and curl commands; you run them. It never handles
   an API key, never renders audio, and never spends credits on its own.
-- **Loudness, ducking, or the music mix** — `voiceover-brief`.
-- **Decide a Short's voice character or creative tone** in pipeline mode — `voiceover-brief` already did.
-- **Write the script's content** — `shorts-scripting`.
-- **Visuals** — `visual-prompts`. **Edit/assembly** — `shorts-assembly`.
+- **Loudness, ducking, or the music mix** `[I]` — `voiceover-brief`.
+- **Decide a Short's voice character or creative tone** `[I]` in pipeline mode — `voiceover-brief` already did.
+- **Write the script's content** `[I]` — `shorts-scripting`.
+- **Visuals** `[I]` — `visual-prompts`. **Edit/assembly** — `shorts-assembly`.
 
 ## `[T]` facts most likely to be stale — re-verify before relying on them
 
@@ -241,7 +284,7 @@ These moved recently or are the kind that move often (`docs/elevenlabs-productio
 - Model IDs and character caps (5,000 / 10,000 / 40,000), and whether a newer flagship has shipped.
 - Pricing, the Flash/Turbo 50% discount, and the per-character rate.
 - The v3 stability mode names (Creative / Natural / Robust) — recently replaced a float slider.
-- **Phoneme-tag model support** — currently `eleven_v3` + `eleven_flash_v2` only, and the
+- **Phoneme-tag model support** `[T-unverified]` — currently `eleven_v3` + `eleven_flash_v2` only, and the
   runbook-sourced claim that Flash v2.5 supports them is **wrong**.
 - The free-regeneration policy — website-only, not API.
 - PVC-on-v3 optimization status, and whether `use_pvc_as_ivc` is still needed.
@@ -264,3 +307,51 @@ as a fact.
 - `references/cost-and-credits.md` — billing basis, two-phase protocol, the free-regeneration truth.
 - `references/validation-gates.md` — the three verbatim fresh-agent dispatch prompts.
 - `references/worked-example.md` — one job end to end: inputs → draft → gates → master.
+
+## File I/O contract
+
+**Artifact vocabulary — one table, copied unchanged into every skill.** The resolver matches
+filenames literally, so a `--kind` guessed from a stage id or a skill name returns `NONE` and
+exit 1 — which this section documents as the benign "upstream hasn't run yet" case. Copy the
+literal string from this table; never infer it `[I]`.
+
+| Stage id (`pipeline.yaml`) | `--kind` | `stage:` frontmatter | Owning skill |
+|---|---|---|---|
+| `grounding` | `grounding` | `00-grounding` | `rgs-grounding` |
+| `ideation` | `concept-brief` | `01-ideation` | `shorts-ideation` |
+| `scripting` | `script` | `02-scripting` | `shorts-scripting` |
+| `styleboard` | `styleboard` | `02b-styleboard` | `shorts-styleboard` |
+| `voiceover` | `voiceover-brief` | `03-voiceover` | `voiceover-brief` |
+| `visual` | `visual-prompts` | `03-visual` | `visual-prompts` |
+| `music` | `music` | `03-music` | `music-brief` |
+| `assembly` | `assembly` | `04-assembly` | `shorts-assembly` |
+| `repurpose` | `social-repurpose` | `05-repurpose` | `social-repurpose` |
+| — (specialist) | `audio-spec` | `03-voiceover` | `elevenlabs-audio` |
+| — (specialist) | `music-spec` | `03-music` | `elevenlabs-music` |
+| — (specialist) | *none — transcript-only* | — | `midjourney-prompting` |
+
+**App-driven** (a `pipeline-app` turn already told you an output path): follow that instruction
+exactly — write only to the named path, overwrite it each turn as instructed.
+
+**Standalone** (no output path was given): run
+`python scripts/resolve_brief_version.py --slug <slug> --kind audio-spec --next --date <YYYY-MM-DD>`
+and write the AUDIO PRODUCTION SPEC at `rgs-briefs/<filename>` with this frontmatter:
+
+```yaml
+---
+date: <YYYY-MM-DD>
+kind: audio-spec
+slug: <slug>
+stage: 03-voiceover
+version: <version from the resolver>
+supersedes: <path from the plain (non---next) resolver call — only if version > 1>
+voiceover_brief: <the voiceover brief's path, exactly as the resolver printed it>
+status: complete
+---
+```
+
+State the exact file path in your final chat response. **Outside a ContentStudio Short there is no
+slug and no `rgs-briefs/`** — emit the spec in chat and say so explicitly, so the operator knows
+it is transcript-only and must be pasted into whatever record they keep `[I]`.
+
+Never edit an existing `rgs-briefs/*.md` file — a `PreToolUse` hook enforces this.

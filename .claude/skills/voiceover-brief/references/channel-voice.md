@@ -1,5 +1,9 @@
 # The channel voice — pinned
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 The narrator voice is **already chosen**. This file records which one, so that
 `references/voice-selection.md`'s "pick ONE voice and keep it consistent" rule has an actual
 subject and no brief ever ships a placeholder `voice_id` again.
@@ -13,8 +17,9 @@ is correct. Never cite a `[P]` line as corpus or vendor support for anything.
 
 **`eDwT8Vhp2yxJzAMmuuPA` is the narrator voice for every ContentStudio Short, across all
 brands.** Do not audition, do not re-derive it from `voice-selection.md`'s doctrine, do not
-substitute a "better fit" for a particular script. The voice is the channel's identity `[T]` `[I]`
-and consistency across uploads is the point.
+substitute a "better fit" for a particular script. The voice is the channel's identity `[I]` —
+a branding judgment, not a platform fact; neither ElevenLabs nor YouTube publishes it — and
+consistency across uploads is the point.
 
 **Supersedes `5kVvcrJnhhULT5LdbshJ`** (the previous IVC pin, retired 2026-08-18 in favor of a
 higher-fidelity PVC trained on the same operator's voice — see "The card" below). Any prior
@@ -103,13 +108,13 @@ Three real consequences of the PVC path, not housekeeping.
 
 **This pins the narrator, and only the narrator.** Two limits:
 
-- **Non-narrator casting is decided per-Short and this pin does not override it.** Where a Short
+- **Non-narrator casting is decided per-Short and this pin does not override it.** `[P]` Where a Short
   casts a second voice, that casting runs the full `voice-selection.md` process on its own
   terms and is bound by whatever constraints its script carries. The worked case:
   `rgs-briefs/2026-07-28-nobody-asked-the-kid-voiceover-brief.md` casts a composite child under
   an absolute "no real child's voice, ever — not filmed, not sampled, not cloned" rule, and
   reaches ElevenLabs Voice Design as the one path that satisfies it structurally. **A pinned
   narrator is never licence to voice a second character with it.**
-- **An explicit user override still wins.** If the user names a different `voice_id` for a
+- **An explicit user override still wins.** `[I]` If the user names a different `voice_id` for a
   specific job, use it — and say plainly in the brief that the channel pin was overridden, so
   the inconsistency is a recorded choice rather than a silent drift `[I]`.

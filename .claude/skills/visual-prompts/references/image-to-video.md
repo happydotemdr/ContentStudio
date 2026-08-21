@@ -1,5 +1,10 @@
 # Image-to-video prompting — distilled for a faceless-Shorts beat pipeline
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against Kling, Seedance, Veo and other image-to-video vendor documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+> This file's model-landscape table is the fastest-staling content in the skill — re-verify it before trusting any model comparison.
+
 Distilled from `docs/midjourney-prompting-guide.md` §8 "Video generation & motion (image→video)"
 (lines ~220-306), plus the workflow golden rule from §9 and the model-fit note from §6/§7. This is
 the corpus's largest single Midjourney-guide theme (79 findings) — it exists because MJ makes the
@@ -66,23 +71,31 @@ ckeY9tswmrM)`:
   timeline — space them out, since tight spacing on complex motion is harder to interpolate `[C] (Wade
   McMaster, D-dB2sdsMIk)`.
 
-**Prompt techniques that carry over to any i2v tool** `[C] (Tao Prompts)`:
+**Prompt techniques that carry over to any i2v tool** `[I]` — downgraded from a bare `[C] (Tao
+Prompts)`: `docs/midjourney-prompting-guide.md`'s own §8 "Prompt techniques for motion" section
+(the source this list is distilled from) attributes the whole subsection to Tao Prompts at the
+section header only and never assigns this framing sentence its own video id, so no specific id
+could be resolved without the git-ignored corpus index. The individual techniques below keep
+their own citations where the source guide gives one:
 - Keep it short — 1-2 subjects, 1-2 actions; complexity adds control, not quality `[C] (9os35azf4Jw,
   4LI8JKPdOmU)`.
 - State **speed explicitly** ("slowly"/"quickly") — the single most useful lever, and it makes
   otherwise-ignored camera moves actually happen `[C] (Future Tech Pilot, Dkj7Jqejfz0)`.
 - Phrase camera moves as *what the camera sees now → what it will see next* ("the camera zooms out to
   reveal...") `[C]`.
-- **Anchor** off-screen or currently-invisible details in words, so they stay consistent once a camera
+- **Anchor** `[C]` off-screen or currently-invisible details in words, so they stay consistent once a camera
   move reveals them `[C] (Tao Prompts, zzBmvzR-URg)`.
-- **Restate framing** even when the start frame already shows it ("start with a side profile of...")
+- **Restate framing** `[C]` even when the start frame already shows it ("start with a side profile of...")
   `[C] (Tao Prompts, M7p7HrJjcdA)`.
 - Say **"in a single shot, no cuts"** to stop a big move from being auto-split into multiple shots
   `[C] (Tao Prompts, ckeY9tswmrM)`.
 - Say **"no subtitles and no music"** on every prompt — several tools burn in subtitles/music that
   ruin splicing into the edit `[C] (Tao Prompts, JQzF5LP4VTs)`.
 - Use **negative prompts** for what you don't want ("no windows," "completely silent, no gunshots") —
-  easier than describing the desired result `[C] (Tao Prompts)`.
+  easier than describing the desired result `[I]` — downgraded from a bare `[C] (Tao Prompts)`:
+  `docs/midjourney-prompting-guide.md:300` carries this exact finding under the same
+  section-level "(Tao Prompts)" attribution with no video id of its own, so no specific id
+  could be resolved without the git-ignored corpus index.
 
 **Realism rules for AI video** `[C] (Tao Prompts, LOAHPLUbmPQ)`:
 - Keep the subject large in frame (close/medium) — small or distant subjects degrade.
@@ -95,12 +108,12 @@ ckeY9tswmrM)`:
 
 | Model | Strength | Watch out |
 |---|---|---|
-| **Kling** (A-tier) | Sharp detail, strong prompt adherence, best for over-the-top action; best dedicated motion-transfer/lip-sync mapping. Excels at start/end-frame transformations. | Fast fight motion can warp/flicker bodies `[C] (uCsc0ORcJDo, 4tpDAX23RL0, elCv87a4iK4)`. |
-| **Google Veo 3** (B-tier) | Dialogue/audio, small movements, consistency. | Smooths/washes out detail; max 8s clips `[C] (uCsc0ORcJDo, 4tpDAX23RL0)`. |
-| **Seedance 2.0** | Best multi-shot model — one prompt cuts between angles/dialogue; organic human movement; ~90% usable. | Most expensive (a 10s clip can top $5 vs ~30¢ on Google Omni); no native extend `[C] (RUAuMD5hUBw, gpkbPCrGF6g, j8ImtURt9-0)`. |
-| **Google Omni** | Cheap (~30¢/10s) video *editing* (style transfer, character swap). | Max 10s, heavily censored, blocks character-ref images `[C] (elCv87a4iK4)`. |
-| **Runway Gen-2** | Motion Brush (mask up to 5 regions, direction + z-axis). | Hit-or-miss, distorts faces (best on close-ups) `[C] (vezJXJGQMoY, MfK-WkKUnKQ)`. |
-| **Sora 2** | Strong for memes/short-form. | Heavily censored; blocks people images for image-to-video `[C] (uCsc0ORcJDo)`. |
+| **Kling** (A-tier) | Sharp detail, strong prompt adherence, best for over-the-top action; best dedicated motion-transfer/lip-sync mapping. Excels at start/end-frame transformations. | Fast fight motion can warp/flicker bodies `[C] (Tao Prompts, uCsc0ORcJDo, 4tpDAX23RL0, elCv87a4iK4)`. |
+| **Google Veo 3** (B-tier) | Dialogue/audio, small movements, consistency. | Smooths/washes out detail; max 8s clips `[C] (Tao Prompts, uCsc0ORcJDo, 4tpDAX23RL0)`. |
+| **Seedance 2.0** | Best multi-shot model — one prompt cuts between angles/dialogue; organic human movement; ~90% usable. | Most expensive (a 10s clip can top $5 vs ~30¢ on Google Omni); no native extend `[C] (Tao Prompts, RUAuMD5hUBw; Wade McMaster, gpkbPCrGF6g; Tao Prompts, j8ImtURt9-0)`. |
+| **Google Omni** | Cheap (~30¢/10s) video *editing* (style transfer, character swap). | Max 10s, heavily censored, blocks character-ref images `[C] (Tao Prompts, elCv87a4iK4)`. |
+| **Runway Gen-2** | Motion Brush (mask up to 5 regions, direction + z-axis). | Hit-or-miss, distorts faces (best on close-ups) `[C] (Tokenized AI, vezJXJGQMoY, MfK-WkKUnKQ)`. |
+| **Sora 2** | Strong for memes/short-form. | Heavily censored; blocks people images for image-to-video `[C] (Tao Prompts, uCsc0ORcJDo)`. |
 
 **Common across models:** most add too much motion by default; people deform under big motions;
 extend features tend to "lose the plot" over multiple generations `[C]`. For a single Short beat this
@@ -108,12 +121,12 @@ mostly argues for **one clip per beat, not a chained extend sequence** — see b
 
 ## Multi-shot beats (rare for a single Short beat, but the corpus covers it) `[C]`
 
-- **Seedance 2.0 is the named best multi-shot model** (cuts between angles/dialogue from one prompt)
+- **Seedance 2.0 is the named best multi-shot model** `[C]` (cuts between angles/dialogue from one prompt)
   but the most expensive option `[C] (Tao Prompts, RUAuMD5hUBw)`.
 - Structure a multi-shot prompt with **explicit timestamps + referenced images**: "0-3s: wide tracking
   shot of [subject] (@image1); 3-6s: close-up ... (@image2)" — the `@image1`/`@image2` tags point each
   segment at the right labeled reference `[C] (Tao Prompts, UHv61jUBx7M; Wade McMaster, H29b2gjX6Kg)`.
-- **Multi-shot is still unreliable** — rendering separate single shots and editing them together in
+- **Multi-shot is still unreliable** `[C]` — rendering separate single shots and editing them together in
   the assembly stage yields higher quality `[C] (Wade McMaster, g1SRS7-Bqlk)`. Default to single-shot
   i2v prompts per beat unless the beat genuinely needs an in-clip cut.
 

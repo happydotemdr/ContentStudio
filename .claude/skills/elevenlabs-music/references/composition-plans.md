@@ -1,5 +1,9 @@
 # Composition plans — shapes, beat mapping, and the instrumental technique
 
+> **`[T]` facts in this file were web-verified 2026-08-06** against live ElevenLabs Music documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-music-runbook.md` §2, §3.
 
 This is the reference for Stage B, **the stage that earns the whole skill**: turning a `music-brief`
@@ -136,10 +140,10 @@ names without guessing which beats got folded together.
 Two things this corrects from the design brief that seeded this skill, both confirmed today via the
 composition-plans how-to guide's own chunk examples `[T]`:
 
-- **Plan-mode instrumental is `negative_styles`, not `lines: []`.** `music_v1`'s `lines[]` being
+- **Plan-mode instrumental is `negative_styles`, not `lines: []`.** `[T-unverified]` `music_v1`'s `lines[]` being
   empty is **not documented as an instrumental guarantee** — record any reliance on it as
   `[T-unverified]`, and do not use it alone even on a `music_v1` plan.
-- **`force_instrumental` is prompt-only.** It does not exist as a composition-plan field, and
+- **`force_instrumental` is prompt-only.** `[T]` It does not exist as a composition-plan field, and
   setting it on a plan request has no effect — the vocal guard on a plan is `negative_styles`, full
   stop.
 

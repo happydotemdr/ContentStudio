@@ -45,7 +45,7 @@ Verified mechanics `[T] (verified 2026-07-26)`:
 - **Incompatible with** Draft Mode, Conversational Mode, Fast Mode, `--q 4`, inpainting/outpainting,
   Vary Region, Pan, Zoom Out. *(That means the cheap ideation path and `--oref` are mutually exclusive
   by design — establish the look in draft first, attach `--oref` only at lock.)*
-- **Compatible with** Personalization, Moodboards, `--stylize`, Style References.
+- **Compatible with** `[T]` Personalization, Moodboards, `--stylize`, Style References.
 - High `--stylize` or `--exp` **compete** with `--ow` for influence — raise `--ow` to compensate.
 
 Midjourney's own best practices `[T] (verified 2026-07-26)`: the text prompt still carries the scene —
@@ -64,7 +64,7 @@ Transfers colors, medium, texture, and lighting — **not** subject geometry. Co
 `[T] (verified 2026-07-26)`.
 
 - `--sw` is **0–1000, default 100**. **Not compatible with Moodboards** `[T] (verified 2026-07-26)`.
-- **`--sref random`** resolves to a concrete code on submission. Paired with a **permutation,
+- **`--sref random`** `[T]` resolves to a concrete code on submission. Paired with a **permutation,
   `--repeat`, or Draft Mode**, **every image in the batch gets a different code**
   `[T] (verified 2026-07-26)` — this is the officially supported mechanism behind the cheap style sweep
   in `render-economics.md`, not a community workaround.
@@ -91,11 +91,11 @@ Builds a **custom `--sref` code** from a pick-from-the-grid session; it uses the
 the ones you don't*. Web-only `[T] (verified 2026-07-26)`.
 
 Three things that cost people money and reproducibility:
-- **Previews consume your GPU time.** Midjourney's own mitigation: add **`--draft`** to the Style
+- **Previews consume your GPU time.** `[T]` Midjourney's own mitigation: add **`--draft`** to the Style
   Creator prompt `[T] (verified 2026-07-26)`.
-- **It renders in V7**, so a prompt carrying V7-incompatible parameters may error until you strip them
+- **It renders in V7** `[T]`, so a prompt carrying V7-incompatible parameters may error until you strip them
   `[T] (verified 2026-07-26)`.
-- **Codes stack, they do not merge.** Entering the Style Creator with an existing `--sref` adds a second
+- **Codes stack, they do not merge.** `[T]` Entering the Style Creator with an existing `--sref` adds a second
   code alongside it; the previews you are judging use **both**. To reproduce that look later you must
   carry **both codes** forward `[T] (verified 2026-07-26)`.
 
@@ -129,10 +129,10 @@ specific — "for when words just aren't enough" `[T] (verified 2026-07-26)`.
 Midjourney learns your taste from images you select.
 
 - **Unlock the Global Profile first** — `--p` errors until you do `[T] (verified 2026-07-26)`.
-- **Training is grid selection, not pairwise ranking.** Midjourney: "Rating image pairs has been
+- **Training is grid selection, not pairwise ranking.** `[T]` Midjourney: "Rating image pairs has been
   replaced with selecting images from a grid" `[T] (verified 2026-07-26)`. *(The runbook's pairwise
   description is refuted — that flow no longer exists.)*
-- **The Global V7 Profile works in V8.1 and V8.2.** You can create additional V8 profiles, but there is
+- **The Global V7 Profile works in V8.1 and V8.2.** `[T]` You can create additional V8 profiles, but there is
   **no Global V8 Profile** `[T] (verified 2026-07-26)`.
 - `--p pID` → `--p code` on submit; multiple profiles supported `[T] (verified 2026-07-26)`.
 - Liking images on the Explore page **influences your Global Profile** — check which version an image

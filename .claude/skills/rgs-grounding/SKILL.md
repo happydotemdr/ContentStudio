@@ -5,6 +5,11 @@ description: Use when producing RaisingGoodSports content and a Short's script, 
 
 # RGS Grounding
 
+> **This file does not itself carry tool/policy facts.** The bracket token named below is a
+> cross-reference to the unrelated 14-channel headless-YouTube corpus's marker vocabulary (see
+> `CLAUDE.md`), included only to explain why RGS does not use it — verified 2026-07-23, for
+> consistency with that referenced convention, not because this file asserts a vendor fact of its own.
+
 Turn a raw RaisingGoodSports topic into a **Grounding Brief**: one thinker citation and one
 research citation, verified against source text, structured around the brand's hook → turn →
 payoff → reframe spine. This is RaisingGoodSports's differentiator — "what a 100-year-old
@@ -17,7 +22,7 @@ the source, not recalled from what the model already knows about Veblen or Adler
 |---|---|
 | **Upstream** | None — a raw RGS topic, pain point, or a specific thinker/finding already in mind |
 | **This skill** | Topic → one verified Grounding Brief, saved to `rgs-briefs/` |
-| **Downstream** | Feeds `shorts-ideation` (angle/archetype pick, via the concept brief's Grounding reference line); the same brief also feeds `shorts-scripting` (citation text per beat, mapped per `references/scripting-beat-mapping.md`) and `visual-prompts` (motif cues) — hand it forward at each stage, don't regenerate it |
+| **Downstream** | Feeds `shorts-ideation` (angle/archetype pick, via the concept brief's Grounding reference line). The same brief then travels forward to `shorts-scripting` (citation text per beat, mapped per `references/scripting-beat-mapping.md`), to **`shorts-styleboard`** (thinker/source and motif, which populate the world lock's `register_b_*` keys and `motif` directly), and to `visual-prompts` (**motif cue for shot composition only** — the register keys are the styleboard's job). Hand it forward at each stage; don't regenerate it |
 
 ## Why matching is map-first, not live-glob-first
 
@@ -27,6 +32,11 @@ not the same as grounding what you *say about it*. Read `references/pairing-map.
 always — it's the only trusted set of matches. Live-glob (`references/thinker-corpus-protocol.md`
 Path 2) is a flagged fallback for topics the map doesn't cover yet, never a first resort taken
 for speed.
+
+The map itself is maintained by `rgs-pairing-review` — a maintenance skill outside the staged
+pipeline. When a run finds no fitting row, the right move is to raise it there (its Gap-fill flag
+sweep picks up every `## Gap-fill flag` heading in `rgs-briefs/`), not to normalise the live-glob
+fallback.
 
 ## Citation markers
 
@@ -81,9 +91,14 @@ mandatory and does not get skipped for speed; see "Red flags" below.
 
 ### 4. Write the Grounding Brief
 
+## Output contract
+
 ```markdown
 ---
 date: [YYYY-MM-DD]
+kind: grounding
+slug: [topic-slug]
+stage: 00-grounding
 topic: "[topic]"
 thinker: "[Name]"
 concept: "[concept]"
@@ -128,15 +143,16 @@ references/thinker-corpus-protocol.md Path 2 for the exact required heading/text
 
 ## Handoff
 Feeds shorts-ideation next. Travels forward as a companion artifact to shorts-scripting
-(citation text per beat above, mapped per `references/scripting-beat-mapping.md`) and
-visual-prompts (visual motif cue: [from the map row]).
+(citation text per beat above, mapped per `references/scripting-beat-mapping.md`),
+shorts-styleboard (thinker/source and motif → the world lock's `register_b_*` keys and `motif`),
+and visual-prompts (motif cue for shot composition only: [from the map row]).
 
 **Per-brief mapping judgment** (see `references/scripting-beat-mapping.md` — state both, don't
 restate the fixed mapping itself):
 - Turn content lands in: [Setup / early-Build, ~[N]s]
 - Payoff content (research finding) serves as: [the Build's proof beat / the script's own Payoff beat]
 
-**Constraints that survive to publish** (omit this line entirely if none apply): [e.g.
+Constraints that survive to publish (omit this line entirely if none apply): [e.g.
 "paraphrase-caution — never render as an on-screen quote/direct-attribution card" / "R5 —
 mandatory 988 Suicide & Crisis Lifeline line required in final captions/copy"]
 
@@ -146,12 +162,33 @@ mandatory 988 Suicide & Crisis Lifeline line required in final captions/copy"]
 
 ### 5. Save it
 
-First, run `python scripts/resolve_brief_version.py --slug <topic-slug>` (no `--kind` — grounding
-briefs don't have one) from the repo root. If it prints a path (not `NONE`), that's the current
-version being superseded — remember its printed path verbatim for the `supersedes:` field below;
-it's already `rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
+**Artifact vocabulary — one table, copied unchanged into every skill.** The resolver matches
+filenames literally, so a `--kind` guessed from a stage id or a skill name returns `NONE` and
+exit 1 — which this section documents as the benign "upstream hasn't run yet" case. Copy the
+literal string from this table; never infer it.
 
-Then run `python scripts/resolve_brief_version.py --slug <topic-slug> --next --date <YYYY-MM-DD>`
+| Stage id (`pipeline.yaml`) | `--kind` | `stage:` frontmatter | Owning skill |
+|---|---|---|---|
+| `grounding` | `grounding` | `00-grounding` | `rgs-grounding` |
+| `ideation` | `concept-brief` | `01-ideation` | `shorts-ideation` |
+| `scripting` | `script` | `02-scripting` | `shorts-scripting` |
+| `styleboard` | `styleboard` | `02b-styleboard` | `shorts-styleboard` |
+| `voiceover` | `voiceover-brief` | `03-voiceover` | `voiceover-brief` |
+| `visual` | `visual-prompts` | `03-visual` | `visual-prompts` |
+| `music` | `music` | `03-music` | `music-brief` |
+| `assembly` | `assembly` | `04-assembly` | `shorts-assembly` |
+| `repurpose` | `social-repurpose` | `05-repurpose` | `social-repurpose` |
+| — (specialist) | `audio-spec` | `03-voiceover` | `elevenlabs-audio` |
+| — (specialist) | `music-spec` | `03-music` | `elevenlabs-music` |
+| — (specialist) | *none — transcript-only* | — | `midjourney-prompting` |
+
+First, run `python scripts/resolve_brief_version.py --slug <topic-slug> --kind grounding` from
+the repo root. If it prints a path (not `NONE`), that's the current version being superseded —
+remember its printed path verbatim for the `supersedes:` field below; it's already
+`rgs-briefs/`-relative, don't prepend `rgs-briefs/` again.
+
+Then run
+`python scripts/resolve_brief_version.py --slug <topic-slug> --kind grounding --next --date <YYYY-MM-DD>`
 to get the exact filename and version number to write (first-ever brief for this topic-slug:
 version 1, no `-v` suffix; a regrounding of an existing topic: the next version — this prints a
 bare filename, not a path, so `rgs-briefs/<that filename>` below is correct as written). Set the
@@ -160,6 +197,14 @@ add `supersedes: <the path the first resolve_brief_version.py call above printed
 brief to `rgs-briefs/<that filename>` (see `rgs-briefs/README.md` for the schema). Never edit an
 existing file in this directory — a `PreToolUse` hook blocks it. Confirm the file was written
 before ending the turn.
+
+**Briefs written before 2026-08-08 carry no `--kind` suffix.** If `--kind grounding` prints
+`NONE` but a bare `<date>-<slug>.md` exists, that is the prior version — the kindless lookup
+cannot see it, so **do not trust the resolver's proposed version number in this case**. Read the
+bare file's own `version:` frontmatter field, set the new brief's `version:` to one higher than
+that, add a `-v<N>` suffix to the filename matching it (the resolver's auto-generated filename
+omits the suffix for what it thinks is version 1 — override it by hand), and set `supersedes:`
+to the old bare file's path. Do not rename the old file.
 
 ## Red flags — stop and re-verify
 
@@ -175,8 +220,9 @@ before ending the turn.
 
 ## Citation index
 
-- `references/pairing-map.md` — the curated matches (Task 2 of the implementation plan; ~18–24
-  rows across the brand's 7 signature thinkers).
+- `references/pairing-map.md` — the curated matches, built per
+  `docs/superpowers/plans/2026-07-25-raisinggoodsports-grounding-skills.md` Task 2 (~18–24 rows
+  across the brand's 7 signature thinkers).
 - `references/thinker-corpus-protocol.md` — map-first/live-glob-fallback resolution procedure.
 - `references/research-corpus-protocol.md` — research-code resolution + verify-policy rules.
 - `references/safety-sensitive-handling.md` — R5/R11/R12/R14 protocol.
@@ -185,3 +231,13 @@ before ending the turn.
   Hook/Setup/Build/Payoff/Loop-CTA mapping rule, stated once; every brief's Handoff states only
   the per-brief judgment this mapping leaves open.
 - `references/worked-example.md` — one full topic-to-brief run.
+
+## Handoff contract (machine-checked)
+
+```handoff
+produces.kind: grounding
+produces.stage: 00-grounding
+produces.section: Handoff
+produces.section: Constraints that survive to publish
+produces.section: Alternates considered
+```

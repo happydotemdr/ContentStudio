@@ -1,16 +1,20 @@
 # Formatting the script for TTS
 
+> **`[T]` facts in this file were web-verified 2026-07-23** against live ElevenLabs documentation
+> and have not been re-checked since. Vendor facts go stale fast — re-verify before relying on a
+> parameter range, a model id, or a credit rate `[T]`.
+
 Distilled from `docs/elevenlabs-voiceover-guide.md` §4 and the delivery-mechanics findings in
 `docs/headless-youtube-audit.md` §5. A script written for the eye reads flat through a TTS
 model — write (and reformat) for the ear.
 
 ## Formatting moves
 
-- **Break into short sentences.** Long clauses run the model out of breath and blur the
+- **Break into short sentences.** `[C]` Long clauses run the model out of breath and blur the
   meaning — this mirrors human delivery advice that the final words in a line carry the
   meaning, so don't let energy (or, here, the model's phrasing) trail off at the end of a
   clause `(Kallaway, ZM3elcBE48I)`.
-- **Use punctuation as pacing.** Commas, ellipses (`…`), and line breaks place breaths and
+- **Use punctuation as pacing.** `[T]` Commas, ellipses (`…`), and line breaks place breaths and
   beats `[T]`. A period is a full stop; an ellipsis is a held pause. Add these deliberately when
   reformatting a script that was written for reading rather than speaking.
 - **Use v3 audio tags for emotion, not capitals `[T]`.** In Eleven v3, add emotion inline —
@@ -19,7 +23,7 @@ model — write (and reformat) for the ear.
   reliable lever `[T]`.
 - **Respell tricky words phonetically `[T]`.** Brand names, acronyms, and unusual terms
   mispronounce often — respell them the way they sound (e.g., `nginx` → `engine-x`).
-- **End declarative lines on a downward inflection, not upspeak.** Upspeak reads as
+- **End declarative lines on a downward inflection, not upspeak.** `[C]` Upspeak reads as
   uncertainty; keep the CTA and any confident claims phrased so the natural TTS read lands
   down, not up, at the line's end `(Kallaway, ZM3elcBE48I)`.
 - **Section the script instead of one giant block `[T]`.** Generate section-by-section (hook /
@@ -42,15 +46,16 @@ separately corpus- or vendor-documented rule. The specific ElevenLabs rendering 
 year cadence, compound-adjective misparsing) were **not independently measured** — only the fix for "2,556" and
 "2026" was actually tested. Treat these as this skill's best-guess taxonomy, not verified facts:
 
-- **Counts/quantities:** full cardinal words — `2,556` → "two thousand, five hundred fifty-six".
-- **Years:** the natural two-digit-pair spoken form, not a cardinal count — `2026` → "twenty twenty-six", not
-  "two thousand twenty-six" (untested hypothesis for *why* — the tested fact is only that the cardinal-count
-  form for this specific year showed a smaller, milder version of the same digit-elongation artifact).
-- **Compound adjectives** (a number modifying a noun with hyphens, e.g. "2,300-year-old"): hyphenate the whole
-  spelled-out phrase — "two-thousand-three-hundred-year-old", not "two thousand three hundred year old"
+- **Counts/quantities:** `[I]` full cardinal words — `2,556` → "two thousand, five hundred fifty-six".
+- **Years:** `[I]` the natural two-digit-pair spoken form, not a cardinal count — `2026` → "twenty twenty-six",
+  not "two thousand twenty-six" (untested hypothesis for *why* — the tested fact is only that the
+  cardinal-count form for this specific year showed a smaller, milder version of the same digit-elongation
+  artifact).
+- **Compound adjectives** `[I]` (a number modifying a noun with hyphens, e.g. "2,300-year-old"): hyphenate the
+  whole spelled-out phrase — "two-thousand-three-hundred-year-old", not "two thousand three hundred year old"
   (untested hypothesis for why the unhyphenated form would misread).
-- **Break-tag attribute values are exempt** — `<break time="0.9s" />`'s `"0.9s"` is SSML syntax, never spoken
-  text, and must stay numeric. Only respell text the model will actually vocalize.
+- **Break-tag attribute values are exempt** `[I]` — `<break time="0.9s" />`'s `"0.9s"` is SSML syntax, never
+  spoken text, and must stay numeric. Only respell text the model will actually vocalize.
 
 Flag any number this taxonomy doesn't cleanly cover (currency, phone-number-style digit strings, decimals) in
 the brief rather than guessing — those weren't tested in the finding above.
