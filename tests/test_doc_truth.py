@@ -1,0 +1,133 @@
+"""Executable checks on the repo's own documentation.
+
+Every assertion here corresponds to a claim some README or CLAUDE.md makes about the
+code. The audit (2026-08-08) found four such claims false at once, all of them written
+once and never checked again. These tests are the checking.
+
+Stdlib + pytest only. No app imports -- the root suite must stay import-free of
+pipeline_app, and these read documents as text anyway.
+"""
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
+CLAUDE_MD = REPO / "CLAUDE.md"
+
+# Each probe is (regex, destination-label). A match is an outbound call site.
+# Adding a network dependency means adding its probe here AND its row to
+# CLAUDE.md -- the test below fails until both exist.
+#
+# The CDN probe should match nothing: P15 vendored htmx to static/ and deleted the
+# unpkg.com reference. It stays as a reintroduction guard, redundant with -- not a
+# replacement for -- P15's own templates/** check.
+OUTBOUND_PROBES = [
+    (re.compile(r"""<script[^>]+src=["']https?://"""), "third-party CDN"),
+    (re.compile(r"\brequests\.(?:get|post|put|patch|delete)\s*\("), "requests"),
+    (re.compile(r"\burllib\.request\.urlopen\s*\("), "urllib"),
+    (re.compile(r"""\[\s*["']yt-dlp["']|["']yt-dlp["']\s*,\s*["']"""), "yt-dlp subprocess (inline argv)"),
+    (re.compile(r"(?<!def )\b_run_ytdlp\s*\("), "yt-dlp subprocess (centralized helper)"),
+    (re.compile(r"\bYouTubeTranscriptApi\s*\("), "youtube-transcript-api"),
+    (re.compile(r"(?<!def )\bplatform_argv\s*\("), "claude subprocess"),
+    (re.compile(r"\bsession\.get\s*\("), "requests session"),
+]
+
+SCANNED = [
+    "pipeline-app/pipeline_app/**/*.py",
+    "pipeline-app/pipeline_app/templates/*.html",
+    "pipeline-app/tools/*.py",    # post-F-64 rename of pipeline-app/scripts/
+    "download_*.py",
+]
+
+# A table row cites one path and one or more line numbers:
+#   `pipeline_app/brightdata_job.py:64` (trigger), `:76` (poll), `:86` (fetch)
+ROW_PATH_RE = re.compile(r"`([\w./-]+\.(?:py|html)):(\d+)`")
+ROW_EXTRA_LINE_RE = re.compile(r"`:(\d+)`")
+
+
+def _measured_call_sites() -> set[str]:
+    found = set()
+    for pattern in SCANNED:
+        for path in REPO.glob(pattern):
+            if "test" in path.parts or path.name.startswith("test_"):
+                continue
+            rel = path.relative_to(REPO).as_posix()
+            for lineno, line in enumerate(
+                path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+            ):
+                if line.lstrip().startswith("#"):
+                    continue
+                if any(rx.search(line) for rx, _ in OUTBOUND_PROBES):
+                    found.add(f"{rel}:{lineno}")
+    return found
+
+
+def _network_section() -> str:
+    text = CLAUDE_MD.read_text(encoding="utf-8")
+    return text[text.index("- **Local only**"): text.index("- **Adding a discovery platform.**")]
+
+
+def _normalise(path_token: str) -> str:
+    """CLAUDE.md cites app modules as `pipeline_app/x.py`; make it repo-relative."""
+    if not (REPO / path_token).exists() and (REPO / "pipeline-app" / path_token).exists():
+        return f"pipeline-app/{path_token}"
+    return path_token
+
+
+def _documented_call_sites() -> set[str]:
+    cited = set()
+    for row in _network_section().splitlines():
+        anchors = ROW_PATH_RE.findall(row)
+        if not anchors:
+            continue
+        rel = _normalise(anchors[0][0])
+        linenos = {lineno for _, lineno in anchors} | set(ROW_EXTRA_LINE_RE.findall(row))
+        cited |= {f"{rel}:{lineno}" for lineno in linenos}
+    return cited
+
+
+def _documented_destinations() -> set[str]:
+    """First cell of every table row that carries a call-site citation."""
+    return {
+        row.split("|")[1].strip()
+        for row in _network_section().splitlines()
+        if row.lstrip().startswith("|") and ROW_PATH_RE.search(row)
+    }
+
+
+def test_claude_md_lists_every_outbound_call_site():
+    measured = _measured_call_sites()
+    documented = _documented_call_sites()
+    undocumented = sorted(measured - documented)
+    phantom = sorted(documented - measured)
+    assert not undocumented, (
+        "outbound call sites in the code but not in CLAUDE.md's network table:\n  "
+        + "\n  ".join(undocumented)
+        + "\nAdd a row, or remove the dependency."
+    )
+    assert not phantom, (
+        "CLAUDE.md's network table cites call sites that no longer exist:\n  "
+        + "\n  ".join(phantom)
+    )
+
+
+COUNT_RE = re.compile(
+    r"\*\*(\d+)\*\*\s+outbound call sites? across\s+\*\*(\d+)\*\*\s+destinations"
+)
+
+
+def test_claude_md_network_counts_match_its_own_table():
+    text = CLAUDE_MD.read_text(encoding="utf-8")
+    match = COUNT_RE.search(text)
+    assert match, "CLAUDE.md must state the call-site and destination counts in the documented form"
+    claimed_sites, claimed_dests = int(match.group(1)), int(match.group(2))
+    assert claimed_sites == len(_measured_call_sites()), (
+        "CLAUDE.md's call-site count disagrees with the measured code"
+    )
+    rows = _documented_destinations()  # distinct values in the table's first column
+    assert claimed_dests == len(rows), "CLAUDE.md's destination count disagrees with its own table"

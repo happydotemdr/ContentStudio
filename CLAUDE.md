@@ -190,9 +190,39 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
 
 ## Conventions
 
-- Local only. No deploying, no external hosting, no cloud sync.
-- **Exceptions to "local only":** two outbound network dependencies, both in the daily discovery
-  email path (`pipeline-app/pipeline_app/discovery_notify.py`), and both deliberate.
+- **Local only** in the sense that nothing here deploys, is hosted externally, or syncs to a
+  cloud — but **not** network-free. The repo makes **20** outbound call sites across **10**
+  destinations. The tables below are the complete roster;
+  `tests/test_doc_truth.py::test_claude_md_lists_every_outbound_call_site` fails if a call site
+  exists in the code and not here, or here and not in the code, so this list cannot quietly rot
+  the way its two-item predecessor did.
+
+  **App runtime** — reached by running the app or letting the scheduled discovery run fire. No
+  operator action required beyond starting it:
+
+  | Destination | Call site(s) | Cost | What leaves this machine |
+  |---|---|---|---|
+  | Anthropic, via a `claude` subprocess | `pipeline_app/cli_runner.py:291` | **billed to your Claude plan** | Every pipeline stage turn: the rendered kickoff prompt, plus whatever the stage's allowed tools read from this repo. This call *is* the app. |
+  | Anthropic, via a `claude -p` subprocess | `pipeline_app/comment_draft.py:353` | **billed** | Exception 2 below. |
+  | `api.resend.com` | `pipeline_app/discovery_notify.py:114` | free tier | Exception 1 below. |
+  | `api.brightdata.com` | `pipeline_app/brightdata_job.py:348` (trigger), `:361` (poll), `:374` (fetch), `:408` (delete) | **billed per record — real money, per run** | The target handle or profile URL and the job parameters, for Instagram / LinkedIn / Facebook / X discovery. |
+  | `www.googleapis.com/youtube/v3` | `pipeline_app/discovery_youtube_api.py:121` | quota-metered | Video ids and the API key. |
+  | `public.api.bsky.app` | `pipeline_app/discovery_bluesky.py:35` | free | The handle being enumerated. |
+  | `www.youtube.com`, via `yt-dlp` | `pipeline_app/discovery_youtube.py:44`, `:157`, `:262`, `:403` | free | The handle or video id — and the session cookies in `pipeline-app/cookies.txt` when that file exists. |
+  | `www.youtube.com`, via `youtube-transcript-api` | `pipeline_app/discovery_youtube.py:380` | free | The video id. |
+
+  **Manual toolkit** — only when you run a downloader script by hand. Never reached by the app or
+  by the scheduled task:
+
+  | Destination | Call site(s) | What leaves this machine |
+  |---|---|---|
+  | Project Gutenberg / `archive.org` | `download_thinkers.py:108` | The work URLs listed in `manifests/thinkers.json`. |
+  | `public.api.bsky.app` | `download_brandintel.py:69` | The handle being enumerated. |
+  | `www.youtube.com`, via `yt-dlp` / `youtube-transcript-api` | `download_brandintel.py:78`, `:87`, `:131`, `:154` | The handle or video id. |
+
+  **Two of these carry corpus content rather than just an identifier.** Both are in the daily
+  discovery email path and both are deliberate; their contracts are unchanged:
+
   1. **Notification email, via Resend's HTTP API.** Sends the day's captured post titles, author
      display names (a handle appears only when no display name is configured for that author),
      engagement metrics, publish dates when known, and post URLs; a ~400 character excerpt of the
@@ -205,7 +235,12 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
 
   See `docs/superpowers/specs/2026-08-01-discovery-email-summary-design.md` and
   `docs/superpowers/specs/2026-08-08-morning-email-social-expansion-design.md` for the full
-  rationale.
+  rationale. Adding a **new** destination is a decision, not a detail: it needs a probe in
+  `tests/test_doc_truth.py` and a row here in the same commit.
+
+  **Front-end assets are vendored, never fetched.** htmx ships from
+  `pipeline_app/static/htmx-2.0.0.min.js`; there is no CDN in the page load path, and a P15 test
+  fails on any `http(s)://` appearing under `templates/**`. Do not reintroduce one.
 - **Adding a discovery platform.** A new adapter's `download_item` must write YAML frontmatter
   containing `fetched_at` (an aware-UTC `isoformat(timespec="seconds")` string), with the post's
   text as the markdown body. An adapter honoring that contract appears in the daily email —
