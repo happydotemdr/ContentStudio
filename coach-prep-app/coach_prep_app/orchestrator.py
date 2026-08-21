@@ -92,9 +92,13 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
     allowed_labels = gates.allowed_labels(the_bundle)
     bad_citations = gates.citation_gate(generated, allowed_labels)
     leaked = gates.leakage_scan(generated, other_clients)
-    if bad_citations or leaked:
+    unsafe_markdown = gates.roundtrip_safe_markdown(generated)
+    if bad_citations or leaked or unsafe_markdown:
         _fail_run(
-            conn, run_id, f"gate_failed: bad_citations={bad_citations} leaked={leaked}", status="gates_failed"
+            conn, run_id,
+            f"gate_failed: bad_citations={bad_citations} leaked={leaked} "
+            f"unsafe_markdown={unsafe_markdown}",
+            status="gates_failed",
         )
         # Terminal, per spec: "a hard stop, never auto-retried silently."
         # Setting the watermark HERE too (not only on success) is what makes
@@ -104,7 +108,8 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
         trigger.mark_done(conn, client["slug"], event["instance_id"], _now_iso())
         alert_sent = notify.send_email(
             f"ALERT: coach-prep isolation gate failed for {client['display_name']}",
-            f"Run {run_id} failed its mechanical gates. bad_citations={bad_citations} leaked={leaked}\n"
+            f"Run {run_id} failed its mechanical gates. bad_citations={bad_citations} "
+            f"leaked={leaked} unsafe_markdown={unsafe_markdown}\n"
             f"No draft was published or sent. This will NOT be retried automatically -- "
             f"investigate and re-run by hand if appropriate.",
             recipient=cfg.notify_recipient,

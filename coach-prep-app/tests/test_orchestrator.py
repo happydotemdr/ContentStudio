@@ -601,3 +601,34 @@ def test_an_unusable_end_time_leaves_the_duration_unset(end, expected):
     from coach_prep_app.config import Config
     events = orchestrator._list_upcoming_events(_Service(), Config(), _NOW)
     assert events[0]["duration_minutes"] is expected
+
+
+def test_markdown_that_will_not_survive_google_docs_fails_the_gate(conn, cfg, monkeypatch):
+    """A draft carrying raw HTML or an H4 renders wrong in the Doc Ryan opens
+    mid-call, AND comes back garbled through the ingest cron -- which is then
+    the corpus's permanent record of what he was given. Cheaper to regenerate
+    than to publish."""
+    _patch_pipeline_ok(monkeypatch)
+    from coach_prep_app import generate
+    monkeypatch.setattr(
+        generate, "generate_draft",
+        lambda b, timeout_s=180, session_minutes=None:
+            "## Summary\n\n<br>a break\n\n#### Too deep\n\n- x [last-meeting-email]",
+    )
+    published = []
+    assert _run(conn, cfg, monkeypatch, publish_capture=published) == "gate_failed"
+    assert published == []
+    reason = conn.execute("SELECT failure_reason FROM generation_runs").fetchone()[0]
+    assert "raw_html" in reason
+    assert "heading_deeper_than_h3" in reason
+
+
+def test_the_footer_never_trips_the_roundtrip_gate(conn, cfg, monkeypatch):
+    """The footer is appended after the gates, so it is never scanned -- but
+    it still has to survive the round trip, since it lands in the same Doc."""
+    from coach_prep_app import gates, manifest
+    _patch_pipeline_ok(monkeypatch, persist_inputs=True)
+    published = []
+    assert _run(conn, cfg, monkeypatch, publish_capture=published) == "published"
+    assert gates.roundtrip_safe_markdown(published[0]) == []
+    assert manifest.CONFIDENTIAL_HEADING in published[0]

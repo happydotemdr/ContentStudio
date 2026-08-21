@@ -23,6 +23,12 @@ def publish_draft(
         "parents": [pending_review_folder_id],
         "mimeType": "application/vnd.google-apps.document",
     }
-    media = MediaInMemoryUpload(markdown_body.encode("utf-8"), mimetype="text/plain")
+    # text/markdown, not text/plain. Drive converts a markdown upload into a
+    # real Doc -- headings, bold, bullets, tables. Uploaded as text/plain it
+    # was stored verbatim, so Ryan opened the draft to literal "## Part 1"
+    # characters. The round trip stays symmetric: doc-ingest already exports
+    # Docs back OUT as text/markdown (drive_client.export_google_doc), so the
+    # ingest cron recovers the same markdown it published.
+    media = MediaInMemoryUpload(markdown_body.encode("utf-8"), mimetype="text/markdown")
     created = drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
     return created["id"]

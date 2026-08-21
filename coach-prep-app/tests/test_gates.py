@@ -1,6 +1,8 @@
 # coach-prep-app/tests/test_gates.py
 from __future__ import annotations
 
+import pytest
+
 from coach_prep_app import gates
 
 OTHER_CLIENTS = [
@@ -128,3 +130,51 @@ def test_a_draft_citing_an_unsupplied_framework_still_fails():
     working from its own knowledge of coaching tools instead of the corpus."""
     draft = "- Try the Johari Window [johari-window]\n"
     assert gates.citation_gate(draft, gates.allowed_labels(_BUNDLE)) == ["johari-window"]
+
+
+# --- round-trip safety ------------------------------------------------------
+
+def test_a_clean_prep_doc_passes():
+    draft = (
+        "## Summary\n\nHe has not made the call.\n\n"
+        "### Why this direction\n\nBecause it is the fourth session.\n\n---\n\n"
+        "## Part 1 — Check-in (~10 min)\n\n"
+        "- What came up in the journalling? [last-meeting-email]\n\n"
+        "### How to run it live\n\n1. Ask it plainly.\n2. Say **nothing** for a beat.\n\n"
+        "| Book | Author |\n| --- | --- |\n| Dare to Lead | Brene Brown |\n"
+    )
+    assert gates.roundtrip_safe_markdown(draft) == []
+
+
+@pytest.mark.parametrize("draft,hazard", [
+    ("## Part 1\n\n<br>a line break", "raw_html"),
+    ("## Part 1\n\n<div>a block</div>", "raw_html"),
+    ("## Part 1\n\nA claim[^1]\n\n[^1]: the note", "footnote"),
+    ("## Part 1\n\n#### Too deep\n\ntext", "heading_deeper_than_h3"),
+    ("## Part 1\n\nSee [the guide][guide]\n\n[guide]: https://example.com", "reference_style_link"),
+    ("## Part 1\n\n* * *\n\ntext", "asterisk_thematic_break"),
+])
+def test_roundtrip_gate_catches_each_hazard(draft, hazard):
+    assert hazard in gates.roundtrip_safe_markdown(draft)
+
+
+def test_roundtrip_gate_reports_every_hazard_it_finds():
+    """One regeneration should fix all of them, not surface them one per run."""
+    draft = "## Part 1\n\n<br>\n\n#### Deep\n\nA claim[^1]\n\n[^1]: note"
+    found = gates.roundtrip_safe_markdown(draft)
+    assert set(found) >= {"raw_html", "heading_deeper_than_h3", "footnote"}
+
+
+def test_roundtrip_gate_allows_the_markdown_the_prep_doc_actually_uses():
+    """The template asks for H2/H3, bold, bullets, numbered steps, `---`
+    rules and a table. None of that may trip the gate, or every run fails."""
+    from coach_prep_app import manifest
+    footer = manifest.render([
+        ("gmail_thread", "last-meeting-email", "thread-1", None),
+        ("selected_framework", "fear", "Frameworks/Fear.pdf.md", "2"),
+    ])
+    assert gates.roundtrip_safe_markdown(footer) == []
+
+
+def test_roundtrip_gate_does_not_flag_an_em_dash_or_a_time_box():
+    assert gates.roundtrip_safe_markdown("## Part 1 — Check-in (~10 min)\n\ntext") == []

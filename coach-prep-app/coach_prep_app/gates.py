@@ -46,3 +46,32 @@ def allowed_labels(the_bundle: dict) -> set[str]:
     if the_bundle.get("book_list"):
         labels.add(the_bundle["book_list"]["source_label"])
     return labels
+
+
+# Markdown constructs Google's Docs importer drops, mangles, or renders as
+# literal text. The published draft is picked up by the ingest cron and
+# converted back to markdown, so anything that does not survive the trip out
+# also does not survive the trip back -- and the recovered file becomes the
+# corpus's record of what Ryan was given.
+_ROUNDTRIP_HAZARDS = (
+    (re.compile(r"<[a-zA-Z/!][^>]*>"), "raw_html"),
+    (re.compile(r"\[\^[^\]]+\]"), "footnote"),
+    (re.compile(r"^#{4,}\s", re.MULTILINE), "heading_deeper_than_h3"),
+    (re.compile(r"^\s*\[[^\]]+\]:\s+\S+", re.MULTILINE), "reference_style_link"),
+    (re.compile(r"^\s{0,3}(\*\s*){3,}$", re.MULTILINE), "asterisk_thematic_break"),
+)
+# Not checked: nested tables. Markdown has no syntax for them, so there is
+# nothing to detect -- a first attempt at a pattern for it matched every
+# ordinary header-plus-separator table, including the prep doc's own book
+# list, and would have failed every run.
+
+
+def roundtrip_safe_markdown(generated_text: str) -> list[str]:
+    """Names of markdown constructs in the draft that will not survive the
+    Google Docs round trip. Empty means clean.
+
+    Runs alongside the citation and leakage gates for the same reason they
+    do: a defect found here costs a regenerated draft, whereas one found
+    later costs Ryan a doc he cannot read mid-call and leaves the corpus
+    holding a garbled record of it."""
+    return sorted({name for pattern, name in _ROUNDTRIP_HAZARDS if pattern.search(generated_text)})
