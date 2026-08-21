@@ -268,3 +268,85 @@ def test_undated_notes_sort_below_dated_ones(doc_ingest_conn, tmp_path):
 
     notes = doc_ingest_reader.get_recent_meeting_notes(doc_ingest_conn, cfg, "joanne", limit=2)
     assert notes[0]["text"].strip() == "a real dated session"
+
+
+# --- source labels must identify ONE document -------------------------------
+#
+# slugify_source_label did filename.split(".", 1)[0] to strip doc-ingest's
+# "<name>.<ext>.md" suffixes. Real corpus filenames carry dots in the NAME --
+# JSCCCoachingToolA3.2ExaminingFear.pdf.md -- so it truncated at "A3" and
+# collapsed 43 distinct Jay Shetty coaching tools onto 10 labels. Measured
+# 2026-08-21 across the built catalog.
+#
+# That is a safety defect, not a cosmetic one. The label IS the citation gate's
+# allowlist entry, so a draft could cite [jscccoachingtoola3] having been given
+# "To-Be List" while appearing to cite "Examining Fear", and the gate would
+# pass it. It is also what the closing manifest prints, so Ryan could not tell
+# which of four tools the note actually drew on.
+
+@pytest.mark.parametrize("filename,expected", [
+    ("JSCCCoachingToolA3.2ExaminingFear.pdf.md", "jscccoachingtoola3-2examiningfear"),
+    ("JSCCCoachingToolA3.1To-BeList.pdf.md", "jscccoachingtoola3-1to-belist"),
+    ("JSCCCoachingToolC2.3ThoughtTrapChallenge.pdf.md", "jscccoachingtoolc2-3thoughttrapchallenge"),
+    ("Vision & Passion.gdoc.md", "vision-passion"),
+    ("F2BU_Module_00_The_Judge.docx.md", "f2bu-module-00-the-judge"),
+    ("Josh - 2026 08 20 07 54 CST - Notes by Gemini.gdoc.v3.md",
+     "josh-2026-08-20-07-54-cst-notes-by-gemini"),
+    ("Wheel of Life.xlsx.md", "wheel-of-life"),
+])
+def test_source_label_keeps_what_distinguishes_a_document(filename, expected):
+    assert doc_ingest_reader.slugify_source_label(filename) == expected
+
+
+def test_every_jay_shetty_tool_gets_its_own_label():
+    """The four C2 tools are four different exercises. One shared label makes
+    them indistinguishable to the citation gate and to Ryan reading the
+    manifest."""
+    names = [
+        "JSCCCoachingToolC2.1ChallengingComfortZone.pdf.md",
+        "JSCCCoachingToolC2.2DiscoverLimitingBeliefs.pdf.md",
+        "JSCCCoachingToolC2.3ThoughtTrapChallenge.pdf.md",
+        "JSCCCoachingToolC2.4ConflictResolution.pdf.md",
+    ]
+    labels = [doc_ingest_reader.slugify_source_label(n) for n in names]
+    assert len(set(labels)) == 4, labels
+
+
+def test_source_label_is_still_matchable_by_the_citation_gate():
+    """gates.citation_gate's regex only recognises [a-z0-9-]. A label carrying
+    anything else is a tag the gate cannot see."""
+    import re
+    for filename in (
+        "JSCCCoachingToolA3.2ExaminingFear.pdf.md",
+        "Vision & Passion.gdoc.md",
+        "Josh - 2026 08 20 07 54 CST - Notes by Gemini.gdoc.v3.md",
+    ):
+        label = doc_ingest_reader.slugify_source_label(filename)
+        assert re.fullmatch(r"[a-z0-9-]+", label), label
+
+
+def test_meeting_note_labels_are_short_enough_to_read_mid_call():
+    """Part 1's bullets carry these inline, and Ryan reads them out loud while
+    talking. The full Gemini filename ran to 48 characters in the middle of a
+    question."""
+    note_label = doc_ingest_reader.meeting_note_label(
+        "Josh - 2026 08 20 07 54 CST - Notes by Gemini.gdoc.v3.md"
+    )
+    assert note_label == "session-2026-08-20"
+
+
+def test_meeting_note_labels_stay_distinct_across_sessions():
+    labels = {
+        doc_ingest_reader.meeting_note_label(n)
+        for n in ("Josh - 2026 08 20 07 54 CST - Notes by Gemini.gdoc.v3.md",
+                  "Josh - 2026 08 04 10 02 CST - Notes by Gemini.gdoc.md")
+    }
+    assert labels == {"session-2026-08-20", "session-2026-08-04"}
+
+
+def test_an_undated_meeting_note_falls_back_to_its_filename():
+    """A hand-named note has no date to build a short label from. It must
+    still get a citable label rather than a collision-prone constant."""
+    label = doc_ingest_reader.meeting_note_label("joanne-topic-backlog.md.gdoc.md")
+    assert label.startswith("session-")
+    assert "joanne-topic-backlog" in label

@@ -120,13 +120,31 @@ def get_recent_meeting_notes(conn: sqlite3.Connection, cfg, client_slug: str, li
             continue
         _, body = doc_ingest_frontmatter.parse(final_path.read_text(encoding="utf-8"))
         notes.append({
-            "source_label": f"meeting-note-{slugify_source_label(Path(output_path).name)}",
+            "source_label": meeting_note_label(Path(output_path).name),
             "rel_path": output_path,
             "version": version,
             "meeting_date": meeting_date,
             "text": body,
         })
     return notes
+
+
+_SOURCE_SUFFIXES = (".md", ".v2", ".v3", ".v4", ".pdf", ".docx", ".gdoc",
+                    ".gsheet", ".xlsx", ".ppt", ".txt")
+
+
+def meeting_note_label(filename: str) -> str:
+    """A short, citable label for one session's note.
+
+    Part 1's bullets carry these inline and Ryan reads them out loud mid-call.
+    The full Gemini filename slugified to 48 characters --
+    `meeting-note-josh-2026-08-20-07-54-cst-notes-by-gemini` -- dropped into
+    the middle of a question he is asking a client. The date is the only part
+    that tells him which session it was."""
+    meeting_date = meeting_date_from_filename(filename)
+    if meeting_date:
+        return f"session-{meeting_date}"
+    return f"session-{slugify_source_label(filename)}"
 
 
 def slugify_source_label(filename: str) -> str:
@@ -137,8 +155,25 @@ def slugify_source_label(filename: str) -> str:
     and Path.stem only strips the last one, leaving ".gdoc" (and any
     punctuation in the original name, e.g. "&") in a naive label -- both of
     which the citation regex would then silently fail to recognize as part
-    of the tag at all, defeating the check."""
-    stem = filename.split(".", 1)[0]
+    of the tag at all, defeating the check.
+
+    Strips KNOWN suffixes from the end, one at a time, rather than cutting at
+    the first dot. Cutting at the first dot is what the original did, and real
+    corpus filenames carry dots in the NAME:
+    "JSCCCoachingToolA3.2ExaminingFear.pdf.md" truncated to "jscccoachingtoola3",
+    collapsing 43 distinct Jay Shetty tools onto 10 labels (measured
+    2026-08-21). The label IS the citation gate's allowlist entry, so a draft
+    given "To-Be List" could cite [jscccoachingtoola3] as if it were
+    "Examining Fear" and the gate would pass it -- and the closing manifest
+    could not tell Ryan which of four tools the note drew on."""
+    stem = filename
+    changed = True
+    while changed:
+        changed = False
+        for suffix in _SOURCE_SUFFIXES:
+            if stem.lower().endswith(suffix):
+                stem = stem[: -len(suffix)]
+                changed = True
     slug = re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
     return slug or "source"
 

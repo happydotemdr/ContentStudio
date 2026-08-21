@@ -355,3 +355,36 @@ def test_write_catalog_refuses_a_duplicate_id(tmp_path):
     with pytest.raises(fc.CatalogError, match="refusing to write"):
         fc.write_catalog(path, [_entry(id="dup", rel_path="a.md"), _entry(id="dup", rel_path="b.md")])
     assert not path.exists()
+
+
+def test_no_source_label_in_the_committed_catalog_covers_two_documents():
+    """A source_label IS the citation gate's allowlist entry and the line the
+    closing manifest prints. Two documents sharing one means a draft given
+    "To-Be List" can cite the label of "Examining Fear" and pass the gate,
+    and Ryan cannot tell from the manifest which document the note read.
+
+    Measured 2026-08-21: slugify_source_label cut filenames at the first dot,
+    so the 43 Jay Shetty tools -- whose names carry dots, A3.2, C2.3 -- shared
+    just 10 labels between them."""
+    from collections import defaultdict
+
+    catalog_path = Path(__file__).resolve().parents[1] / "framework_catalog.yaml"
+    by_label = defaultdict(set)
+    for entry in fc.load_catalog(catalog_path):
+        by_label[entry.source_label].add(entry.rel_path)
+
+    colliding = {label: sorted(paths) for label, paths in by_label.items() if len(paths) > 1}
+    assert colliding == {}, colliding
+
+
+def test_every_committed_source_label_is_matchable_by_the_citation_gate():
+    """gates.citation_gate only recognises [a-z0-9-]. A label carrying
+    anything else is a tag the gate cannot see at all."""
+    import re
+
+    catalog_path = Path(__file__).resolve().parents[1] / "framework_catalog.yaml"
+    bad = [
+        e.source_label for e in fc.load_catalog(catalog_path)
+        if not re.fullmatch(r"[a-z0-9-]+", e.source_label)
+    ]
+    assert bad == [], bad

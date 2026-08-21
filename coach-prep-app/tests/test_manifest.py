@@ -135,3 +135,60 @@ def test_fetch_inputs_is_scoped_to_one_run(tmp_path):
         assert "josh-note.md" not in rendered
     finally:
         conn.close()
+
+
+# --- the framework rows must name the ACTIVITY ------------------------------
+#
+# Measured on Josh's real run, 2026-08-21. Two of five chosen activities came
+# from one file, so the manifest printed the same row twice:
+#
+#   - `parenting` -- .../Adult Emotional Dysregulation/Parenting.pdf.md (v1)
+#   - `parenting` -- .../Adult Emotional Dysregulation/Parenting.pdf.md (v1)
+#
+# The activities were "Visualize One Small Dopamine Step" and "Freeze Response
+# Under Chronic Stress". Neither is named, one looks like a duplicated row, and
+# `parenting` tells Ryan nothing about what the note actually drew on.
+
+_FRAMEWORK_ROWS = [
+    ("selected_framework", "parenting", "Frameworks/Parenting.pdf.md", "1"),
+    ("selected_framework", "parenting", "Frameworks/Parenting.pdf.md", "1"),
+    ("selected_framework", "module-9", "Frameworks/Module 9.pdf.md", "1"),
+]
+
+
+def test_the_same_source_file_is_not_listed_twice():
+    """Two activities from one document are two entries in the doc but one
+    source. A repeated identical line reads as a rendering fault."""
+    rendered = manifest.render(_FRAMEWORK_ROWS)
+    assert rendered.count("Frameworks/Parenting.pdf.md") == 1
+
+
+def test_repeated_sources_still_list_every_other_source():
+    rendered = manifest.render(_FRAMEWORK_ROWS)
+    assert "Frameworks/Module 9.pdf.md" in rendered
+    assert "module-9" in rendered
+
+
+def test_deduplication_does_not_collapse_different_versions_of_one_file():
+    """Two runs of the same document at different versions are genuinely
+    different inputs, and which one the note read is the point of recording
+    the version at all."""
+    rows = [
+        ("program_source", "structure", "Offer/Structure.gdoc.md", "1"),
+        ("program_source", "structure", "Offer/Structure.gdoc.md", "3"),
+    ]
+    rendered = manifest.render(rows)
+    assert "(v1)" in rendered
+    assert "(v3)" in rendered
+
+
+def test_deduplication_is_scoped_within_a_kind():
+    """A file that is BOTH a program source and the source of a chosen
+    activity is playing two roles, and the manifest says so under both
+    headings rather than hiding one."""
+    rows = [
+        ("program_source", "structure", "Offer/Structure.gdoc.md", None),
+        ("selected_framework", "structure", "Offer/Structure.gdoc.md", None),
+    ]
+    rendered = manifest.render(rows)
+    assert rendered.count("Offer/Structure.gdoc.md") == 2

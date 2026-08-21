@@ -57,8 +57,21 @@ def render(rows: list[tuple[str, str, str, str | None]]) -> str:
         "",
     ]
 
+    # Deduplicated on (kind, label, reference, version), preserving order.
+    # Several chosen activities can come from one document -- on a real run,
+    # two of five did -- and the manifest lists SOURCES, so printing that file
+    # twice reads as a rendering fault rather than as two activities. Scoped
+    # within a kind on purpose: a file that is both a program source and the
+    # source of a chosen activity is playing two roles, and the manifest says
+    # so under both headings. A differing version is never collapsed, since
+    # which version the note read is the whole point of recording it.
     by_kind: dict[str, list[tuple[str, str, str | None]]] = {}
+    seen: set[tuple[str, str, str, str | None]] = set()
     for source_kind, source_label, reference, version in rows:
+        key = (source_kind, source_label, reference, version)
+        if key in seen:
+            continue
+        seen.add(key)
         by_kind.setdefault(source_kind, []).append((source_label, reference, version))
 
     listed = 0
