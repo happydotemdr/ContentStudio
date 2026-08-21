@@ -8,6 +8,7 @@ from stitcher.naming import Workspace
 from stitcher.vo_alignment import Segment
 
 from native_pipeline import orchestrate
+from native_pipeline.errors import VoModeMismatchError
 
 # Computed independently of native_pipeline.orchestrate's own _REPO_ROOT /
 # _ELEVENLABS_TOOLING_DIR / _STITCHER_DIR constants, so a regression in that
@@ -106,6 +107,64 @@ def test_run_vo_stage_appends_flag_lines_to_log_when_flagging_finds_something(tm
 
     assert "FLAG:" in log_path.read_text(encoding="utf-8")
     assert "beat1" in log_path.read_text(encoding="utf-8")
+
+
+def test_run_vo_stage_v3_tags_mode_calls_derive_segments_v3(monkeypatch, tmp_path):
+    calls = {}
+
+    def fake_derive_segments_v3(text, alignment, beat_texts, names=None):
+        calls["args"] = (text, alignment, beat_texts)
+        return []
+
+    def fake_derive_segments(text, alignment, names=None):
+        raise AssertionError("break-mode derive_segments must not be called in v3_tags mode")
+
+    monkeypatch.setattr(orchestrate, "derive_segments_v3", fake_derive_segments_v3)
+    monkeypatch.setattr(orchestrate, "derive_segments", fake_derive_segments)
+    monkeypatch.setattr(orchestrate, "flag_outliers", lambda *a, **k: [])
+    monkeypatch.setattr(orchestrate.subprocess, "run", lambda *a, **k: None)
+
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps({"text": "beat one\n\nbeat two"}), encoding="utf-8")
+    ws = Workspace(root=tmp_path / "renders", slug="v3-mode-test", mode="final")
+    ws.ensure_dirs()
+    (ws.assets_dir / "alignment.json").write_text(
+        json.dumps({"characters": [], "character_start_times_seconds": [],
+                    "character_end_times_seconds": []}),
+        encoding="utf-8",
+    )
+
+    orchestrate.run_vo_stage(
+        ws, payload_path, "https://example.invalid/with-timestamps",
+        ws.log_path("test"), vo_mode="v3_tags", beat_texts=["beat one", "beat two"],
+    )
+    assert calls["args"][2] == ["beat one", "beat two"]
+
+
+def test_run_vo_stage_v3_tags_without_beat_texts_raises(tmp_path):
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps({"text": "x"}), encoding="utf-8")
+    ws = Workspace(root=tmp_path / "renders", slug="v3-mode-missing", mode="final")
+    ws.ensure_dirs()
+
+    with pytest.raises(VoModeMismatchError, match="requires beat_texts"):
+        orchestrate.run_vo_stage(
+            ws, payload_path, "https://example.invalid", ws.log_path("test"),
+            vo_mode="v3_tags",
+        )
+
+
+def test_run_vo_stage_unknown_mode_raises(tmp_path):
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps({"text": "x"}), encoding="utf-8")
+    ws = Workspace(root=tmp_path / "renders", slug="bad-mode", mode="final")
+    ws.ensure_dirs()
+
+    with pytest.raises(VoModeMismatchError, match="'break' or 'v3_tags'"):
+        orchestrate.run_vo_stage(
+            ws, payload_path, "https://example.invalid", ws.log_path("test"),
+            vo_mode="bogus",
+        )
 
 
 def test_run_music_stage_writes_plan_and_calls_music_send(tmp_path, monkeypatch):

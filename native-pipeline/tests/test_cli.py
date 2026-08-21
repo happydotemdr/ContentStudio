@@ -7,7 +7,7 @@ from native_pipeline.cli import EXIT_USAGE, main
 def test_render_command_calls_all_four_stages_in_order(tmp_path, monkeypatch):
     calls = []
 
-    def fake_run_vo_stage(ws, payload_path, url, log_path):
+    def fake_run_vo_stage(ws, payload_path, url, log_path, vo_mode="break", beat_texts=None):
         calls.append("vo")
         from stitcher.vo_alignment import Segment
         return tmp_path / "take.mp3", [Segment(name="beat1", at=0.0, duration=5.0)]
@@ -67,7 +67,7 @@ def test_render_command_resolves_relative_paths_to_absolute(tmp_path, monkeypatc
     """
     received = {}
 
-    def fake_run_vo_stage(ws, payload_path, url, log_path):
+    def fake_run_vo_stage(ws, payload_path, url, log_path, vo_mode="break", beat_texts=None):
         received["ws_root"] = ws.root
         received["payload_path"] = payload_path
         from stitcher.vo_alignment import Segment
@@ -219,3 +219,51 @@ def test_render_command_rejects_invalid_asset_manifest_before_any_billed_call(tm
 
     assert exit_code == EXIT_USAGE
     assert calls == [], f"a billed stage was invoked despite an invalid --asset-manifest: {calls}"
+
+
+def test_render_command_rejects_v3_tags_mode_without_vo_beat_texts_before_any_billed_call(tmp_path, monkeypatch, capsys):
+    """--vo-mode v3_tags requires --vo-beat-texts (run_vo_stage's
+    VoModeMismatchError has no way to recover boundaries otherwise). This
+    must be caught here, before run_vo_stage/run_music_stage -- real,
+    billed API calls -- ever run.
+    """
+    calls = []
+
+    def fake_run_vo_stage(ws, payload_path, url, log_path, vo_mode="break", beat_texts=None):
+        calls.append("vo")
+        raise AssertionError("run_vo_stage must not be called when --vo-beat-texts is missing")
+
+    def fake_run_music_stage(segments, bed_arc_path, ws, url, log_path):
+        calls.append("music")
+        raise AssertionError("run_music_stage must not be called when --vo-beat-texts is missing")
+
+    monkeypatch.setattr("native_pipeline.cli.orchestrate.run_vo_stage", fake_run_vo_stage)
+    monkeypatch.setattr("native_pipeline.cli.orchestrate.run_music_stage", fake_run_music_stage)
+
+    beat_texts_path = tmp_path / "beat_texts.json"
+    beat_texts_path.write_text(json.dumps(["hello"]), encoding="utf-8")
+    styles_path = tmp_path / "styles.json"
+    styles_path.write_text(json.dumps({
+        "default": {"font_file": "Inter-Bold.ttf", "size_px": 64, "body": "#FFFFFF", "accent": "#FFD700",
+                    "max_width_px": 900, "max_lines": 3},
+    }), encoding="utf-8")
+    asset_manifest_path = tmp_path / "manifest.json"
+    asset_manifest_path.write_text(json.dumps([]), encoding="utf-8")
+
+    exit_code = main([
+        "render", "test-slug",
+        "--root", str(tmp_path / "renders"),
+        "--vo-payload", str(tmp_path / "payload.json"),
+        "--vo-url", "https://fake-vo-url",
+        "--bed-arc", str(tmp_path / "bed_arc.json"),
+        "--music-url", "https://fake-music-url",
+        "--asset-manifest", str(asset_manifest_path),
+        "--beat-texts", str(beat_texts_path),
+        "--styles", str(styles_path),
+        "--captions-style", "default",
+        "--vo-mode", "v3_tags",
+    ])
+
+    assert exit_code == EXIT_USAGE
+    assert calls == [], f"a billed stage was invoked despite missing --vo-beat-texts: {calls}"
+    assert "--vo-beat-texts is required" in capsys.readouterr().err

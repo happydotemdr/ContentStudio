@@ -27,10 +27,11 @@ from pathlib import Path
 
 from stitcher.ffmpeg import measure_loudness
 from stitcher.naming import Workspace
-from stitcher.vo_alignment import Segment, derive_segments
+from stitcher.vo_alignment import Segment, derive_segments, derive_segments_v3
 from stitcher.vo_timing import derive_captions
 
 from native_pipeline import assemble, contracts, music_plan
+from native_pipeline.errors import VoModeMismatchError
 from native_pipeline.flagging import flag_outliers
 from native_pipeline.shots import build_shots
 
@@ -53,7 +54,32 @@ def _append_flags(flags: list[dict], log_path: Path) -> None:
             f.write(f"FLAG: {flag}\n")
 
 
-def run_vo_stage(ws: Workspace, payload_path: Path, url: str, log_path: Path) -> tuple[Path, list[Segment]]:
+def run_vo_stage(
+    ws: Workspace, payload_path: Path, url: str, log_path: Path,
+    vo_mode: str = "break", beat_texts: list[str] | None = None,
+) -> tuple[Path, list[Segment]]:
+    """vo_mode selects which segment-derivation strategy matches the
+    payload's own script-composition convention:
+      - "break" (default): eleven_multilingual_v2/flash, beats joined by
+        SSML <break> tags (elevenlabs_tooling.breaks.compose_break_tagged_text).
+        Uses stitcher.vo_alignment.derive_segments.
+      - "v3_tags": eleven_v3, beats joined by a blank line with bracket
+        audio tags (elevenlabs_tooling.tags.compose_tagged_text). Uses
+        stitcher.vo_alignment.derive_segments_v3, which additionally
+        requires `beat_texts` (the exact per-beat strings, tag prefix
+        included, that compose_tagged_text was given) to recover
+        boundaries -- there is no <break> marker to split on.
+
+    Fails loud on a mismatch rather than guessing.
+    """
+    if vo_mode not in ("break", "v3_tags"):
+        raise VoModeMismatchError(f"vo_mode must be 'break' or 'v3_tags', got {vo_mode!r}")
+    if vo_mode == "v3_tags" and not beat_texts:
+        raise VoModeMismatchError(
+            "vo_mode='v3_tags' requires beat_texts (derive_segments_v3 has "
+            "no <break> marker to split on)"
+        )
+
     audio_output = ws.asset("single_take.mp3")
     alignment_output = ws.asset("alignment.json")
     subprocess.run(
@@ -66,7 +92,10 @@ def run_vo_stage(ws: Workspace, payload_path: Path, url: str, log_path: Path) ->
     )
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
     alignment = json.loads(alignment_output.read_text(encoding="utf-8"))
-    segments = derive_segments(payload["text"], alignment)
+    if vo_mode == "v3_tags":
+        segments = derive_segments_v3(payload["text"], alignment, beat_texts)
+    else:
+        segments = derive_segments(payload["text"], alignment)
 
     spans = [(segment.name, segment.at, segment.duration) for segment in segments]
     flags = flag_outliers(audio_output, spans, log_path)

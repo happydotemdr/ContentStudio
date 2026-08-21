@@ -29,3 +29,9 @@ class BedDurationMismatchError(RuntimeError):
 class IterationBudgetExceededError(RuntimeError):
     """A generation attempt was requested for a track (VO or music) after
     its 2-attempt iteration cap was already spent."""
+
+
+class VoModeMismatchError(ValueError):
+    """run_vo_stage's vo_mode is unrecognized, or is 'v3_tags' without the
+    beat_texts derive_segments_v3 needs (there is no <break> marker to
+    split on, unlike the 'break' mode)."""
