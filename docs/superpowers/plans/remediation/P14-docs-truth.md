@@ -1197,20 +1197,30 @@ P14's. **Outcome A below, as amended, is the one to implement; outcome B is stru
   doc that names a category differently from the test that enforces it is the same defect this
   package exists to close.
 
+> **Amendment, 2026-08-21 (found by the T9 implementer, fixed before this task closes).** The
+> original check below gated both assertions behind `if "usually unmarked" in docs_readme:`. The
+> chosen wording for both replacements (T9.3, below) is "usually left off the line" /
+> "usually leave the marker off" — accurate to the rule, but not the literal string
+> `"usually unmarked"` — so the `if` never became true and the whole test passed **vacuously**,
+> asserting nothing, exactly the anti-tautology defect class this programme exists to eliminate.
+> Outcome B (no exemption anywhere, which is the only branch where the `if` guard would ever
+> matter) is permanently struck per I4's resolution, so the guard serves no purpose going
+> forward: after T9 lands, both documents must **always** name the `docs/*.md` scope, full stop.
+> The corrected version below asserts that directly, unconditionally.
+
 - [ ] **T9.2 (test first).**
 
 ```python
 def test_the_two_provenance_rules_name_each_others_scope():
     docs_readme = (REPO / "docs" / "README.md").read_text(encoding="utf-8")
     claude = CLAUDE_MD.read_text(encoding="utf-8")
-    if "usually unmarked" in docs_readme:
-        assert "`docs/*.md`" in docs_readme, (
-            "docs/README.md's unmarked-[C] shorthand must name the scope it applies to"
-        )
-        assert "`docs/*.md`" in claude, (
-            "CLAUDE.md's 'no marker is a bug' rule must name the one documented exemption "
-            "and its scope, or the two rules read as a contradiction"
-        )
+    assert "`docs/*.md`" in docs_readme, (
+        "docs/README.md's unmarked-[C] shorthand must name the scope it applies to"
+    )
+    assert "`docs/*.md`" in claude, (
+        "CLAUDE.md's 'no marker is a bug' rule must name the one documented exemption "
+        "and its scope, or the two rules read as a contradiction"
+    )
 ```
 
 - [ ] **T9.3 — outcome A — IMPLEMENT THIS ONE.** The shorthand survives, scoped to `docs/*.md`.
@@ -1452,7 +1462,7 @@ the statement is the whole proof.
 | **F-10** | `test_claude_md_requires_a_failing_assertion_per_defect` | surfacing | Asserts the standing rule is present in CLAUDE.md, so the requirement survives the session that wrote it. |
 | *(T11, no finding)* | `test_claude_md_email_promise_matches_the_pinned_disclosure` | — | Reads P9's `email_render.DISCLOSURE` out of the source and requires CLAUDE.md to contain that exact sentence. The doc does not get its own wording, so it cannot drift from the behaviour. |
 | *(T11, no finding)* | `test_no_doc_repeats_the_unachievable_never_a_full_post_body_promise` | — | Pins the retracted promise absent. It was not merely inaccurate — it was unachievable at any cap, since a post shorter than the cap is included whole by definition. |
-| *(T9, no finding)* | `test_the_two_provenance_rules_name_each_others_scope` | — | If either document keeps the "usually unmarked" shorthand, both must name the `docs/*.md` scope. Neither can silently widen. |
+| *(T9, no finding)* | `test_the_two_provenance_rules_name_each_others_scope` | — | Both documents must name the `docs/*.md` scope unconditionally (amended from an `if "usually unmarked" in ...` gate that never fired against the chosen wording and passed vacuously). Neither can silently widen. |
 | *(T12, no finding)* | `test_docs_readme_accounts_for_every_committed_doc` | — | Every committed `docs/*.md` must be named in `docs/README.md`. |
 
 **Why these count as tests and not as lint.** Each one takes a *document* as input and a *fact
