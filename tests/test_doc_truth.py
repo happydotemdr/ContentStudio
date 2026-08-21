@@ -8,6 +8,7 @@ Stdlib + pytest only. No app imports -- the root suite must stay import-free of
 pipeline_app, and these read documents as text anyway.
 """
 
+import ast
 import os
 import re
 import subprocess
@@ -477,3 +478,57 @@ def test_the_two_provenance_rules_name_each_others_scope():
         "CLAUDE.md's 'no marker is a bug' rule must name the one documented exemption "
         "and its scope, or the two rules read as a contradiction"
     )
+
+
+def test_claude_md_email_promise_matches_the_pinned_disclosure():
+    """P9 pinned the real behaviour in email_render.DISCLOSURE; CLAUDE.md must say the
+    same thing. Read as text -- the root suite does not import app code.
+
+    DISCLOSURE is assembled from concatenated string/f-string literals inside
+    parentheses, not one quoted string, so a plain quote-to-quote regex can't
+    extract its rendered value. Parse just that assignment's expression with
+    `ast` and evaluate it with the two size constants it references bound in --
+    still text-only: nothing from pipeline_app is imported.
+    """
+    email_path = REPO / "pipeline-app" / "pipeline_app" / "email_render.py"
+    digest_path = REPO / "pipeline-app" / "pipeline_app" / "discovery_digest.py"
+    email_source = email_path.read_text(encoding="utf-8")
+    digest_source = digest_path.read_text(encoding="utf-8")
+
+    tree = ast.parse(email_source, filename=str(email_path))
+    node = next(
+        (n for n in tree.body if isinstance(n, ast.Assign)
+         and any(isinstance(t, ast.Name) and t.id == "DISCLOSURE" for t in n.targets)),
+        None,
+    )
+    assert node is not None, "email_render.DISCLOSURE not found -- P9's pin is missing"
+
+    title_max = re.search(r"^TITLE_MAX_CHARS\s*=\s*(\d+)", digest_source, re.MULTILINE)
+    excerpt_max = re.search(r"^EXCERPT_MAX_CHARS\s*=\s*(\d+)", email_source, re.MULTILINE)
+    assert title_max and excerpt_max, (
+        "TITLE_MAX_CHARS/EXCERPT_MAX_CHARS constants moved -- update this probe"
+    )
+
+    expr = ast.fix_missing_locations(ast.Expression(body=node.value))
+    disclosure = eval(
+        compile(expr, "<email_render.DISCLOSURE>", "eval"),
+        {"__builtins__": {}},
+        {
+            "TITLE_MAX_CHARS": int(title_max.group(1)),
+            "EXCERPT_MAX_CHARS": int(excerpt_max.group(1)),
+        },
+    )
+    disclosure = " ".join(disclosure.split())
+    claude = " ".join(CLAUDE_MD.read_text(encoding="utf-8").split())
+    assert disclosure in claude, (
+        "CLAUDE.md's email privacy paragraph has drifted from email_render.DISCLOSURE. "
+        "The doc does not get its own wording for this."
+    )
+
+
+def test_no_doc_repeats_the_unachievable_never_a_full_post_body_promise():
+    for doc in (CLAUDE_MD, REPO / "README.md"):
+        assert "never a full post body" not in doc.read_text(encoding="utf-8"), (
+            f"{doc.name} repeats a promise the code cannot keep: any post shorter than "
+            "the excerpt cap is included in full by definition."
+        )
