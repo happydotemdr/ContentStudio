@@ -34,6 +34,14 @@ _SUSPECT_HEADING_RE = re.compile(
 )
 REHOOK_RE = re.compile(r"^\[re-hook\b")
 SUBRANGE_RE = re.compile(r"^\(\d+")
+# A sub-beat named before its range, e.g. `mechanism (11-18s | 19 words):`.
+# Legalized by operator decision 2026-08-20 (docs/superpowers/plans/remediation/
+# P13-skills-contracts.md, T6's "NEW FINDING" block): the label-first form is now
+# an accepted sibling of SUBRANGE_RE's range-first form, not a refused line. Only
+# recognised together with BUDGET_GROUP_RE below -- a label followed by a plain
+# time range and no budget group is a visual note about a beat (e.g.
+# `Hook (0-3s): …`), not a sub-beat, and must stay unmatched.
+LABEL_FIRST_SUBRANGE_RE = re.compile(r"^[A-Za-z][\w'/-]*(?:\s+[A-Za-z][\w'/-]*)*\s*\(\d+")
 RANGE_RE = re.compile(r"\((\d+)\s*[–—-]\s*(\d+)s")
 # Straight AND curly quote pairs. A lone apostrophe (' or ’) is deliberately
 # NOT a delimiter: it is a letter's neighbour in "won't" / "kid’s", not a span
@@ -47,15 +55,18 @@ QUOTED_RE = re.compile(r'"([^"]+)"|“([^”]+)”')
 # declare it or the parse blocks (C-89) -- a witness the author can omit is no
 # witness at all.
 DECLARED_WORDS_RE = re.compile(r"\|\s*(\d+)\s*words")
-# A refused sub-beat's tell: a `(start-end)` range that does not start the
-# line -- e.g. `mechanism (11-18s | 19 words):` -- fails SUBRANGE_RE (which
-# requires the range to open the line) and names no BEAT_LABEL either, so it
-# falls through both `_beat_name` and `_disguised_beat_label` unrecognised.
-# The anchor here is the budget group, not the range: measured identical
-# precision against the 4 shipped fixtures (2/2 true positives, 0 false
-# positives) to a `RANGE_RE and DECLARED_WORDS_RE` anchor, and it additionally
-# catches `mechanism (11-18 sec | 19 words):`, whose non-standard range suffix
-# a RANGE_RE anchor misses outright.
+# A carried-over-from-nowhere line's tell: a `(start-end)` range that does not
+# start the line and names no BEAT_LABEL either -- e.g. a garbled or
+# non-alphabetic prefix in front of the range. LABEL_FIRST_SUBRANGE_RE now
+# accepts the common case of that shape (a bare label ahead of the range); what
+# still falls through both `_beat_name` and `_disguised_beat_label` unrecognised
+# is the residue LABEL_FIRST_SUBRANGE_RE does not cover, and it is refused loud
+# rather than deleted silent, on the same principle as a disguised top-level
+# heading. The anchor for that residual refusal is the budget group, not the
+# range: measured identical precision against the 4 shipped fixtures (2/2 true
+# positives, 0 false positives) to a `RANGE_RE and DECLARED_WORDS_RE` anchor, and
+# it additionally catches `mechanism (11-18 sec | 19 words):`-shaped lines whose
+# non-standard range suffix a RANGE_RE anchor misses outright.
 BUDGET_GROUP_RE = re.compile(r"\([^)\n]*\|\s*\d+\s*words[^)\n]*\)")
 
 
@@ -103,6 +114,8 @@ def _beat_name(stripped: str) -> str | None:
     if REHOOK_RE.match(stripped):
         return "re-hook"
     if SUBRANGE_RE.match(stripped):
+        return "sub-beat"
+    if LABEL_FIRST_SUBRANGE_RE.match(stripped) and BUDGET_GROUP_RE.search(stripped):
         return "sub-beat"
     return None
 
@@ -183,15 +196,16 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
     parser saying out loud that it is linting less text than the script
     contains.
 
-    A sub-beat line SUBRANGE_RE refuses (its range does not start the line,
-    e.g. a label-first `mechanism (11-18s | 19 words):`) is also refused loud
-    rather than deleted silent, on the same principle as a disguised top-level
-    heading -- but only when it carries its own `| N words` budget group,
-    the author's own assertion that the line is a beat line. Known limit,
-    stated rather than papered over: a refused sub-beat line carrying no
-    budget group is not detected here. The dropped-text check above is the
-    independent second detector for that case, when the sub-beat's own
-    budget or its parent group's budget survives on a nearby line."""
+    A label-first sub-beat (e.g. `mechanism (11-18s | 19 words):`) is a legal
+    sibling of the range-first form SUBRANGE_RE matches -- see
+    LABEL_FIRST_SUBRANGE_RE. A line that still matches neither, and carries its
+    own `| N words` budget group (the author's own assertion that the line is a
+    beat line), is refused loud rather than deleted silent, on the same
+    principle as a disguised top-level heading. Known limit, stated rather than
+    papered over: a refused line carrying no budget group is not detected here.
+    The dropped-text check above is the independent second detector for that
+    case, when the line's own budget or its parent group's budget survives on a
+    nearby line."""
     vo_lines: list[VOLine] = []
     findings: list[Finding] = []
 
@@ -248,8 +262,10 @@ def parse_script(text: str) -> tuple[list[VOLine], list[Finding]]:
                         "PARSE",
                         current_label,
                         f"line {number}: {stripped[:70]!r} carries a word budget but is not "
-                        "a parseable sub-beat line -- SUBRANGE_RE requires the range to "
-                        "start the line; move the label after the colon or drop it",
+                        "a parseable sub-beat line -- neither SUBRANGE_RE (range opens the "
+                        "line) nor LABEL_FIRST_SUBRANGE_RE (a bare label opens the line, "
+                        "immediately followed by the range) matches; fix the line to one of "
+                        "those two shapes",
                         kind="fail",
                     )
                 )

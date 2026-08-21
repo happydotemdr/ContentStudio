@@ -1175,7 +1175,21 @@ consumes: shorts-assembly#Shot table
 
 ---
 
-#### NEW FINDING raised in the field 2026-08-10 — AWAITING OPERATOR VALIDATION, not yet a task
+#### NEW FINDING raised in the field 2026-08-10 — RESOLVED 2026-08-20
+
+> **Operator decision (2026-08-20): label-first sub-beats are legal.** Implemented directly (not
+> deferred to a future package): `scripts/lint_script_language.py` gained `LABEL_FIRST_SUBRANGE_RE`
+> as a legal sibling of `SUBRANGE_RE`; `tests/test_lint_script_language.py` replaced the C-88b
+> refusal tests with parse/dropped-text/exit-0 tests for the now-legal form and dropped the dead
+> `C88b-label-first-subbeat` mutation row; `shorts-scripting/SKILL.md`'s output contract and
+> `references/read-aloud-gates.md` now state both legal sub-beat shapes explicitly; and
+> `references/worked-example.md`'s script body was rewritten to the correct grammar (it also had a
+> second, independent defect beyond label-first: its Build/Value VO text sat on the line *after*
+> the heading with no range or label at all, which is not — and remains not — a legal third shape
+> under either decision). Re-verified before implementing: all four disagreeing sources still
+> disagreed, the worked example still produced 8 `PARSE`-and-related findings when run through Gate
+> D (worse than the 5 originally measured, since the gate hardened in between), and zero collateral
+> across the 8 real script artifacts in this checkout (4 `tests/fixtures/`, 4 `rgs-briefs/`).
 
 **The script format Gate D enforces is authoritatively defined nowhere, and the skill's own worked
 example does not parse under its own gate.**
