@@ -25,6 +25,6 @@ cwd on `sys.path`.
     cd pipeline-app
     python -m pytest
 
-This is the app suite: `1960 tests`. It is **not** run by a `pytest` at the repo root, which is
-scoped by `testpaths` to a separate root suite of `543 tests`. Both must pass before anything
-here is called green.
+`python -m pytest` is the app suite (`1960 tests`). It is **not** run by a `pytest` at the repo
+root, which is scoped by `testpaths` to a separate root suite of `543 tests`. Both must pass
+before anything here is called green.

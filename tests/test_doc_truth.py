@@ -251,7 +251,9 @@ def test_docs_readme_accounts_for_every_committed_doc():
     )
 
 
-COMMAND_BLOCK_RE = re.compile(r"^\s{4,}(python -m pytest[^\n]*)$", re.MULTILINE)
+COMMAND_BLOCK_RE = re.compile(
+    r"^\s{4,}((?:cd pipeline-app && )?python -m pytest[^\n]*)$", re.MULTILINE
+)
 
 
 def _documented_commands(doc: Path) -> list[str]:
@@ -264,7 +266,8 @@ def _claimed_counts(doc: Path) -> dict[str, int]:
     return {
         cmd: int(n)
         for cmd, n in re.findall(
-            r"`(python -m pytest[^`]*)`[^\n]*?\b([\d,]+) tests", text.replace(",", "")
+            r"`((?:cd pipeline-app && )?python -m pytest[^`]*)`[^\n]*?\b([\d,]+) tests",
+            text.replace(",", ""),
         )
     }
 
@@ -279,9 +282,15 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
     assert commands, f"{doc_name} must document its test invocation as an indented command block"
     env = {**os.environ, "DOC_TRUTH_CHILD": "1"}
     for command in commands:
-        cwd = REPO / "pipeline-app" if doc_name.startswith("pipeline-app") else REPO
+        prefix = "cd pipeline-app && "
+        if command.startswith(prefix):
+            cwd = REPO / "pipeline-app"
+            pytest_part = command[len(prefix):]
+        else:
+            cwd = REPO / "pipeline-app" if doc_name.startswith("pipeline-app") else REPO
+            pytest_part = command
         argv = [sys.executable, "-m", "pytest", "--collect-only", "-q",
-                "-p", "no:cacheprovider", *command.split()[3:]]
+                "-p", "no:cacheprovider", *pytest_part.split()[3:]]
         proc = subprocess.run(argv, cwd=cwd, capture_output=True,
                               encoding="utf-8", errors="replace", env=env)
         assert proc.returncode == 0, (
@@ -289,10 +298,14 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
         )
         collected = int(re.search(r"(\d+) tests? collected", proc.stdout).group(1))
         claimed = _claimed_counts(doc).get(command)
-        if claimed is not None:
-            assert collected == claimed, (
-                f"{doc_name} claims `{command}` runs {claimed} tests; it collects {collected}"
-            )
+        assert claimed is not None, (
+            f"{doc_name} documents `{command}` but never states its test count in the "
+            "`{command}` ... NNN tests` form on the same line -- an unchecked count is the "
+            "defect this test exists to catch"
+        )
+        assert collected == claimed, (
+            f"{doc_name} claims `{command}` runs {claimed} tests; it collects {collected}"
+        )
 
 
 def test_no_doc_claims_a_bare_pytest_is_sufficient():
