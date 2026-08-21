@@ -274,9 +274,14 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
   fails on any `http(s)://` appearing under `templates/**`. Do not reintroduce one.
 - **Adding a discovery platform.** A new adapter's `download_item` must write YAML frontmatter
   containing `fetched_at` (an aware-UTC `isoformat(timespec="seconds")` string), with the post's
-  text as the markdown body. An adapter honoring that contract appears in the daily email —
-  inventory entry, link, title, and spotlight eligibility — with **no change to any email-side
-  module**. `fetched_at` is the only **mandatory** field: it is the watermark, and an item without
+  text as the markdown body. An adapter honoring that contract appears in the daily email's
+  inventory entry, link, title and spotlight eligibility with **no change to any email-side
+  module** — with one named exception. **Publish-date rendering:** `pipeline_app/discovery_digest.py`
+  reads `published` directly, and *also* accepts a YouTube-shaped `upload_date` (`YYYYMMDD`) as a
+  fallback. That fallback is legacy and is the only platform-specific shape in the email path. A
+  new adapter that wants its publish date rendered must emit `published`; it must not emit
+  `upload_date` expecting it to be understood, and no third shape will be added for it.
+  `fetched_at` is the only **mandatory** field: it is the watermark, and an item without
   it is excluded from the run. `url` is strongly expected but not required — an item missing it is
   still listed, rendered without a link, and a warning goes to stderr. `like_count`,
   `comment_count`, `view_count`, and `published` are optional and are omitted from the render when
