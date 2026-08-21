@@ -64,7 +64,11 @@ def _fake_parse(data, filename=None, content_type=None, options=None):
         # parity, not a number picked to trivially satisfy the tolerance.
         return MagicMock(markdown=_DOCX_SENTENCE)
     if filename == "Sample.xlsx":
-        rows = "\n".join(f"| {i} | {i * 2} |" for i in range(5))
+        # Sample.xlsx has 5 non-empty rows, the first standing in for the
+        # header -- so the markdown carries 4 DATA rows under its own
+        # header, not 5. This emitted 5 until 2026-08-21, modelling a
+        # headerless sheet no real export produces.
+        rows = "\n".join(f"| {i} | {i * 2} |" for i in range(4))
         return MagicMock(markdown=f"## Sheet\n\n| A | B |\n|---|---|\n{rows}\n")
     raise AssertionError(f"unexpected firecrawl.parse call for filename={filename!r}")
 
