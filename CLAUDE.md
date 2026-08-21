@@ -42,6 +42,14 @@ sourced. If the corpus is thin on a topic, the skill says so explicitly rather t
 filling the gap with generic advice — that discipline is the entire point of this
 project (see "Anti-generic guarantee" below).
 
+There is exactly **one** documented exemption and it does not reach a skill: the corpus documents
+under `docs/*.md` treat `[C]` as their document-wide default and usually leave the marker off,
+carrying the `(Channel, video_id)` citation instead — see `docs/README.md`'s provenance key.
+Nothing outside `docs/*.md` inherits the shorthand. Three further classes of unmarked line inside
+a skill are not bugs either — the non-bug categories recorded in
+`tests/test_skill_provenance.py`: RGS alternative-vocabulary lines, worked-example
+illustrations, and structural pointers.
+
 **One more marker, for decisions rather than evidence:**
 
 - **`[P]` Project/operator decision** — a call made by this project's owner and

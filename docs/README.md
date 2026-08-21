@@ -54,8 +54,13 @@ creators do; the runbook tells you what the platform actually supports.
 
 Every substantive claim carries one of three markers so you always know how much to trust it:
 
-- **`[C]` Corpus-cited** (default; usually unmarked in the audit) — extracted from a transcript, cited as
-  `(Channel, video_id)`. Two or more channels agreeing = flagged **strongly-supported**.
+- **`[C]` Corpus-cited** — extracted from a transcript, cited as `(Channel, video_id)`. Two or
+  more channels agreeing = flagged **strongly-supported**.
+  **Scope of the "unmarked" shorthand:** inside `docs/*.md` — this folder's corpus documents, and
+  only these — `[C]` is the document-wide default and is usually left off the line: the
+  `(Channel, video_id)` citation *is* the marker. The shorthand does **not** extend to
+  `.claude/skills/**` or to `rgs-briefs/`, where CLAUDE.md's rule is absolute — a normative line
+  with no marker is a bug, not an implied `[C]`.
 - **`[I]` Industry practice** — well-established general craft not specific to this corpus.
 - **`[T]` Tool / policy fact** — product, pricing, or YouTube-policy specifics, **web-verified 2026-07-23**.
   These go stale fast — **re-verify tool pricing before relying on it.**
