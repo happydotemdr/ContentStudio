@@ -89,11 +89,13 @@ instead of inventing a confident-sounding number.
    extrapolation rule.
 5. **Reformat the script text for TTS.** Read `references/scripting-for-tts.md`: short
    sentences, punctuation-as-pacing, v3 audio tags placed inline, phonetic respellings for
-   tricky words, and a check for lines that don't "sound like a person." Section the script
+   tricky words, spelled-out numbers, and a check for lines that don't "sound like a person."
+   Section the script
    into TTS generation units (hook / beat / CTA, or matching the upstream shot breaks) so bad
-   takes can be re-rolled cheaply. For this channel specifically, `references/single-take-architecture.md` supersedes the
-   per-beat sectioning above with a `[P]` decision to generate as one continuous take instead —
-   read it before applying this step here.
+   takes can be re-rolled cheaply. Per-beat sectioning above is the standing default; read
+   `references/single-take-architecture.md` only when the user explicitly requests single-take
+   generation for this channel — its `[P]` decision to generate as one continuous take applies on
+   request, not by default.
 6. **State the production/loudness target.** Read `references/production-and-loudness.md`:
    −14 LUFS on the voice track, music ducked to the corpus's practitioner depth
    (−21 to −22 dB) with the docs' −12 to −18 dB range given alongside it, and the
@@ -157,9 +159,9 @@ consumes: shorts-scripting#Delivery notes
 
 - `references/channel-voice.md` — **the pinned channel narrator voice.** Read this before
   `voice-selection.md`; the casting call is already made.
-- `references/single-take-architecture.md` — **the pinned production-pipeline architecture.**
-  Read this alongside `channel-voice.md` — it decides whether the VO is generated per-beat or as
-  a single continuous take, which changes how step 5 below applies to this channel.
+- `references/single-take-architecture.md` — the production-pipeline architecture for
+  single-take generation. Per-beat sectioning is the standing default (step 5); read this file
+  only when the user explicitly requests single-take generation for this channel.
 - `references/voice-selection.md` — voice/cloning choice, the default-voice warning, model pick.
   Applies to non-narrator casting and to overrides — see `channel-voice.md`.
 - `references/settings-by-content-type.md` — stability/similarity/style/speed, preset table,

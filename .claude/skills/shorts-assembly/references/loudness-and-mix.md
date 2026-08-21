@@ -10,6 +10,14 @@ Provenance markers as in `pacing-and-editing.md`. Primary source: `docs/headless
 
 - **Duck the music under the voice to about −22 dB** (or one-click auto-ducking) so it never overpowers the VO `[C] (Roberto Blake, iaTavrWIGDM)`.
 - Audit corroborates with a slightly wider band: **keep background music around −21 to −22 dB, ducked under vocals** — loud music is one of the most common, most underestimated AVD killers `[C] (Romayroh, Wox4Jt_2t6w)`. In Premiere, the Essential Sound panel gives one-click auto-ducking around −22 dB; match music length with the Remix tool, not rate-stretch (rate-stretch alters pitch) `[C] (Roberto Blake, iaTavrWIGDM)`.
+- **This channel's actual numbers, corrected `[P]`:** don't hand a fresh multi-segment edit plan `gain_db:
+  -22.0 / duck_db: -29.0` — that pairing put `duck_db` (the level under voice, what a listener actually hears
+  through a near-continuously-speaking take) 7-8dB below this file's own -21/-22dB citation, and drew direct
+  operator feedback that the bed was "totally washed out nearly inaudible"
+  (`docs/superpowers/plans/2026-08-20-dual-pipeline-vo-music-test-RESULTS.md`). Use `gain_db: -14.0 / duck_db:
+  -21.0` (same 7dB swing, both raised ~8dB, `duck_db` now landing exactly on this file's own cited band) —
+  already this repo's own precedent in `stitcher/renders/do-less-sold-as-win-more/render-spec.json`, not a
+  fresh guess.
 - **Never use music whose emotional tone contradicts the words** — no music beats wrong music `[C] (Kallaway, i7upRL4H1FM)`.
 - **Give on-screen visuals matching sounds; use risers, hits, and drones to convey emotion**; pausing the music before the key line changes the whole feel `[C] (vidIQ, DiZnbihU4NM)`.
 
