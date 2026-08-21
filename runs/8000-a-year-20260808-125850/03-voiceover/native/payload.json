@@ -1,0 +1,14 @@
+{
+  "text": "[excited] Eight grand a year on club soccer. [pause][whispers] Why?\n\nAsk any club-soccer parent… and the real answer never comes out.\n\n[pause] Here’s the psychologist Alfred add-ler, writing in nineteen twenty-seven. Nobody calls it vanity. They call it ambition. Investing in her future.\n\nBut here’s what that story quietly costs.\n\nIn a twenty-nineteen study, Post and colleagues tracked the real bill. Thousands a year… chasing a scholarship most kids never get.\n\nSo why can’t you say why? [pause][sighs] Because that’s what vanity sounds like from the inside. It was never dishonesty. And naming it… makes it optional again.\n\n[pause] Eight grand a year. Now you can say why.",
+  "model_id": "eleven_v3",
+  "voice_settings": {
+    "stability": 0.5,
+    "similarity_boost": 0.8,
+    "style": 0.0,
+    "speed": 1.0,
+    "use_speaker_boost": true
+  },
+  "seed": 20260821,
+  "apply_text_normalization": "auto",
+  "use_pvc_as_ivc": false
+}
