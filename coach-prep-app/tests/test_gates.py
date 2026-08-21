@@ -72,3 +72,59 @@ def test_leakage_scan_still_catches_capitalized_first_name():
     ]
     text = "- Grace mentioned this exact struggle too [last-meeting-email]"
     assert gates.leakage_scan(text, clients) == ["grace"]
+
+
+# --- allowed_labels ---------------------------------------------------------
+
+_BUNDLE = {
+    "recent_emails": [
+        {"source_label": "last-meeting-email"}, {"source_label": "sent-email-2"},
+    ],
+    "meeting_notes": [
+        {"source_label": "meeting-note-aug"}, {"source_label": "meeting-note-jul"},
+    ],
+    "program_sources": [{"source_label": "program-structure"}],
+    "book_list": {"source_label": "f2bu-coaching-book-recommendations"},
+    "selected_frameworks": [{"source_label": "examining-fear"}],
+}
+
+
+def test_allowed_labels_covers_every_source_in_the_bundle():
+    """A label missing here fails the citation gate and stops the run. The
+    bundle grew from one email and one note to several of each plus a book
+    list and the selected activities -- a caller assembling this set by hand
+    would silently stop allowing whatever it had not been taught about."""
+    assert gates.allowed_labels(_BUNDLE) == {
+        "last-meeting-email", "sent-email-2", "meeting-note-aug", "meeting-note-jul",
+        "program-structure", "f2bu-coaching-book-recommendations", "examining-fear",
+    }
+
+
+def test_allowed_labels_handles_a_bundle_with_no_book_list():
+    labels = gates.allowed_labels({**_BUNDLE, "book_list": None})
+    assert "f2bu-coaching-book-recommendations" not in labels
+    assert "last-meeting-email" in labels
+
+
+def test_allowed_labels_of_an_empty_bundle_is_empty():
+    """A run that found nothing must yield an empty allowlist, so any tag at
+    all in the draft fails the gate -- a draft citing sources that were never
+    supplied is precisely what the gate exists to stop."""
+    assert gates.allowed_labels({}) == set()
+
+
+def test_a_draft_citing_the_new_source_kinds_passes_the_gate():
+    draft = (
+        "- Checked in on the reading [f2bu-coaching-book-recommendations]\n"
+        "- Ran the fear exercise [examining-fear]\n"
+        "- Referenced the July session [meeting-note-jul]\n"
+    )
+    assert gates.citation_gate(draft, gates.allowed_labels(_BUNDLE)) == []
+
+
+def test_a_draft_citing_an_unsupplied_framework_still_fails():
+    """The selected activities are the ONE part of the prompt the model helped
+    choose. A draft citing an activity that was never embedded is the model
+    working from its own knowledge of coaching tools instead of the corpus."""
+    draft = "- Try the Johari Window [johari-window]\n"
+    assert gates.citation_gate(draft, gates.allowed_labels(_BUNDLE)) == ["johari-window"]

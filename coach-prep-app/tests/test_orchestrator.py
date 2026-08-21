@@ -25,6 +25,31 @@ OTHER_CLIENT = {
 }
 
 
+# The shape the real build_bundle returns. Kept in one place and checked
+# against the real function by test_sample_bundle_matches_the_real_shape below
+# -- an inline stub written by hand is exactly how a suite goes green while
+# production raises KeyError, which is what happened when the bundle grew from
+# one email and one note to several of each.
+SAMPLE_BUNDLE = {
+    "client_display_name": "Sean",
+    "client_slug": "sean",
+    "recent_emails": [
+        {"source_label": "last-meeting-email", "thread_id": "t1", "subject": "Follow-up",
+         "sent_date": "2026-08-18", "text": "x"},
+    ],
+    "meeting_notes": [
+        {"source_label": "meeting-note-aug", "rel_path": "a.md", "version": 1,
+         "meeting_date": "2026-08-04", "text": "y"},
+    ],
+    "program_sources": [
+        {"source_label": "program-source-1", "rel_path": "b.md", "version": None, "text": "z"},
+    ],
+    "book_list": {"source_label": "f2bu-coaching-book-recommendations", "rel_path": "c.md",
+                  "version": None, "text": "| Book | Author |"},
+    "selected_frameworks": [],
+}
+
+
 @pytest.fixture
 def cfg():
     from coach_prep_app.config import Config
@@ -35,15 +60,7 @@ def _patch_pipeline_ok(monkeypatch):
     from coach_prep_app import bundle as bundle_mod
     from coach_prep_app import generate, publish
 
-    monkeypatch.setattr(
-        bundle_mod, "build_bundle",
-        lambda *a, **k: {
-            "client_display_name": "Sean", "client_slug": "sean",
-            "last_meeting_email": {"source_label": "last-meeting-email", "thread_id": "t1", "text": "x"},
-            "last_meeting_note": {"source_label": "last-meeting-note", "rel_path": "a.md", "version": 1, "text": "y"},
-            "program_sources": [{"source_label": "program-source-1", "rel_path": "b.md", "version": None, "text": "z"}],
-        },
-    )
+    monkeypatch.setattr(bundle_mod, "build_bundle", lambda *a, **k: dict(SAMPLE_BUNDLE))
     monkeypatch.setattr(bundle_mod, "persist_inputs", lambda *a, **k: None)
     monkeypatch.setattr(generate, "generate_draft", lambda b, timeout_s=180: "## Activities\n- x [last-meeting-email]")
     monkeypatch.setattr(publish, "publish_draft", lambda *a, **k: "drive-file-1")
@@ -331,3 +348,47 @@ def test_run_once_isolates_a_per_client_failure_and_continues(conn, cfg, monkeyp
     # than propagating out of run_once.
     assert calls == ["sean", "josh"]
     assert results == ["error: sean", "not_due"]
+
+
+def test_sample_bundle_matches_the_real_shape():
+    """Pins the stub above to what build_bundle actually returns.
+
+    Every orchestrator test runs against SAMPLE_BUNDLE rather than the real
+    assembler. When the bundle grew from one email and one note to several of
+    each, the old inline stub kept the retired keys -- so the whole suite
+    stayed green while process_candidate raised KeyError on the first real
+    run. This is the assertion that would have caught it."""
+    from coach_prep_app import bundle as bundle_mod
+    from coach_prep_app.config import Config
+
+    class _Reader:
+        @staticmethod
+        def get_recent_meeting_notes(conn, cfg, slug, limit=2):
+            return []
+
+        @staticmethod
+        def get_program_sources(cfg):
+            return []
+
+    class _NoEmail:
+        def users(self):
+            return self
+
+        def messages(self):
+            return self
+
+        def list(self, **kwargs):
+            return self
+
+        def execute(self):
+            return {"messages": []}
+
+    real = bundle_mod.build_bundle(
+        _NoEmail(), _Reader(), None, Config(),
+        {"slug": "sean", "display_name": "Sean", "primary_email": "sean@example.com"},
+        dt.datetime(2026, 8, 19, tzinfo=dt.timezone.utc),
+    )
+    assert set(SAMPLE_BUNDLE) == set(real), (
+        f"stub drifted: only in stub {set(SAMPLE_BUNDLE) - set(real)}, "
+        f"only in real {set(real) - set(SAMPLE_BUNDLE)}"
+    )

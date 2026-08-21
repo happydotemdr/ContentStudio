@@ -31,6 +31,19 @@ CATALOG_PATH = HERE.parent / "framework_catalog.yaml"
 # but cataloguing them lets selection reference a specific section of one.
 _CORPUS_LIKE = "Frameworks to consider/%"
 
+# Files inside that scope which must NOT be catalogued, each with its reason.
+# Kept as an explicit list rather than a filename pattern: a rule like "drop
+# anything ending in ' (1)'" would also drop a document legitimately named
+# that way, and there is exactly one such file in the corpus today.
+_EXCLUDED = {
+    # A Drive copy of the canonical Judge module, byte-different but
+    # substantively the same. program_sources.yaml already records the
+    # non-"(1)" filename as canonical (confirmed by Brian 2026-08-18).
+    # Indexing both produced seven near-duplicate entries competing with the
+    # real ones for a place in a budget-limited index.
+    "Frameworks to consider/Sabatoures/F2BU_Module_00_The_Judge (1).docx.md",
+}
+
 _PROMPT_TEMPLATE = """\
 You are indexing one document from a professional coaching library so a coach can find the right \
 exercise later. Produce catalog entries, not a summary.
@@ -146,6 +159,8 @@ def corpus_files(doc_ingest_conn, cfg) -> list[dict]:
 
     files = []
     for rel_path, version in sorted(by_path.items()):
+        if rel_path in _EXCLUDED:
+            continue
         final_path = cfg.converted_root / rel_path
         if not final_path.exists():
             print(f"  MISSING  {rel_path}", file=sys.stderr)

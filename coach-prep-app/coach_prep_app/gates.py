@@ -27,3 +27,22 @@ def leakage_scan(generated_text: str, other_clients: list[dict]) -> list[str]:
         if matched:
             hits.append(client["slug"])
     return hits
+
+
+def allowed_labels(the_bundle: dict) -> set[str]:
+    """Every source label this bundle legitimately carries -- the allowlist the
+    citation gate validates the draft's inline tags against.
+
+    Derived from the bundle rather than assembled by each caller: the bundle
+    grew from one email and one note to several of each plus a book list and
+    the selected framework activities, and a caller that built this set by
+    hand would silently stop allowing whatever it had not been taught about.
+    A label missing from here fails the gate and stops the run."""
+    labels = {
+        item["source_label"]
+        for key in ("recent_emails", "meeting_notes", "program_sources", "selected_frameworks")
+        for item in the_bundle.get(key) or []
+    }
+    if the_bundle.get("book_list"):
+        labels.add(the_bundle["book_list"]["source_label"])
+    return labels

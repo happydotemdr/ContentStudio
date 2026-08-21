@@ -149,3 +149,26 @@ def test_build_prompt_names_every_allowed_kind():
     prompt = build.build_prompt("a.md", "CBT", "body")
     for kind in fc.KINDS:
         assert kind in prompt
+
+
+# --- excluded files ---------------------------------------------------------
+
+def test_the_duplicate_judge_module_is_excluded():
+    """The corpus holds a Drive copy of the Judge module, byte-different but
+    substantively the same. program_sources.yaml already records the non-"(1)"
+    filename as canonical. Indexing both produced seven near-duplicate entries
+    competing with the real ones for a place in a budget-limited index."""
+    assert (
+        "Frameworks to consider/Sabatoures/F2BU_Module_00_The_Judge (1).docx.md"
+        in build._EXCLUDED
+    )
+    assert "Frameworks to consider/Sabatoures/F2BU_Module_00_The_Judge.docx.md" not in build._EXCLUDED
+
+
+def test_exclusions_are_exact_paths_not_patterns():
+    """A rule like 'drop anything ending in (1)' would also drop a document
+    legitimately named that way. Every exclusion must be a decision about one
+    named file."""
+    for excluded in build._EXCLUDED:
+        assert "%" not in excluded and "*" not in excluded
+        assert excluded.endswith(".md")

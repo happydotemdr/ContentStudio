@@ -235,3 +235,86 @@ def test_render_index_of_the_whole_corpus_stays_within_prompt_budget():
     rendered = fc.render_index(entries)
     approx_tokens = len(rendered) / 4
     assert approx_tokens < 15000, f"catalog index is ~{approx_tokens:.0f} tokens"
+
+
+# --- id collisions across files ---------------------------------------------
+#
+# Found by the first real build, 2026-08-21: the corpus holds two
+# near-duplicate Judge modules ("F2BU_Module_00_The_Judge.docx.md" and the
+# same name with " (1)"), and indexing them produced four identical ids --
+# judge-three-directions, judge-justification-lies, judge-sage-steps,
+# judge-saboteur-assessment. The build crashed on UNIQUE constraint failed
+# at sync_to_db. ids can only ever be unique WITHIN a document, because each
+# is indexed by its own isolated turn that cannot see the others.
+
+def test_merge_disambiguates_the_same_id_from_two_different_files():
+    a = _entry(id="judge-sage-steps", rel_path="Sabatoures/Judge.docx.md")
+    b = _entry(id="judge-sage-steps", rel_path="Sabatoures/Judge (1).docx.md")
+    merged, _ = fc.merge([], [a, b])
+    ids = [e.id for e in merged]
+    assert len(ids) == len(set(ids)), ids
+    assert "judge-sage-steps" in ids
+
+
+def test_merge_leaves_a_unique_id_untouched():
+    """Disambiguation must be the exception. Rewriting ids that do not collide
+    would churn the whole catalog on every rebuild and break curated entries,
+    which are matched by id."""
+    entries = [_entry(id="a", rel_path="x.md"), _entry(id="b", rel_path="y.md")]
+    merged, _ = fc.merge([], entries)
+    assert sorted(e.id for e in merged) == ["a", "b"]
+
+
+def test_merge_disambiguation_is_stable_across_rebuilds():
+    """The suffix derives from rel_path, not from ordering or a counter. An id
+    that changed between runs would orphan its curated edits."""
+    a = _entry(id="dup", rel_path="one.md")
+    b = _entry(id="dup", rel_path="two.md")
+    first, _ = fc.merge([], [a, b])
+    second, _ = fc.merge([], [b, a])
+    assert sorted(e.id for e in first) == sorted(e.id for e in second)
+
+
+def test_merge_keeps_the_same_id_from_the_same_file():
+    """Re-indexing one file must not disambiguate its entry against its own
+    previous self -- that is a replacement, not a collision."""
+    old = _entry(id="dup", rel_path="one.md", source_version=1)
+    new = _entry(id="dup", rel_path="one.md", source_version=2)
+    merged, _ = fc.merge([old], [new])
+    assert [(e.id, e.source_version) for e in merged] == [("dup", 2)]
+
+
+def test_merged_catalog_always_loads_back(tmp_path):
+    """merge feeds write_catalog, and load_catalog rejects duplicate ids. A
+    merge that emitted one would write a catalog the app cannot read."""
+    colliding = [
+        _entry(id="dup", rel_path=f"file-{i}.md", framework=f"F{i}") for i in range(3)
+    ]
+    merged, _ = fc.merge([], colliding)
+    path = tmp_path / "catalog.yaml"
+    fc.write_catalog(path, merged)
+    assert len(fc.load_catalog(path)) == 3
+
+
+def test_sync_to_db_accepts_a_merged_catalog_with_collisions(tmp_path):
+    """The exact crash: UNIQUE constraint failed: framework_catalog.id."""
+    conn = db.init_db(tmp_path / "coach_prep.db")
+    try:
+        merged, _ = fc.merge([], [
+            _entry(id="dup", rel_path="one.md"),
+            _entry(id="dup", rel_path="two.md"),
+        ])
+        assert fc.sync_to_db(conn, merged) == 2
+    finally:
+        conn.close()
+
+
+def test_write_catalog_refuses_a_duplicate_id(tmp_path):
+    """The first real build crashed at sync_to_db AFTER write_catalog had
+    already run, stranding a YAML with duplicate ids. Every subsequent run then
+    died at startup in load_catalog, before reaching any code that could fix
+    it. Enforcing the invariant at the write boundary makes that unreachable."""
+    path = tmp_path / "catalog.yaml"
+    with pytest.raises(fc.CatalogError, match="refusing to write"):
+        fc.write_catalog(path, [_entry(id="dup", rel_path="a.md"), _entry(id="dup", rel_path="b.md")])
+    assert not path.exists()

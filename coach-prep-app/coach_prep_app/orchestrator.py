@@ -58,11 +58,7 @@ def process_candidate(conn, doc_ingest_conn, calendar_service, gmail_service, dr
         _fail_run(conn, run_id, "generation_failed")
         return "generation_failed"  # watermark deliberately NOT set -- a transient failure, retried next wake
 
-    allowed_labels = {
-        the_bundle["last_meeting_email"]["source_label"],
-        the_bundle["last_meeting_note"]["source_label"],
-        *[i["source_label"] for i in the_bundle["program_sources"]],
-    }
+    allowed_labels = gates.allowed_labels(the_bundle)
     bad_citations = gates.citation_gate(generated, allowed_labels)
     leaked = gates.leakage_scan(generated, other_clients)
     if bad_citations or leaked:

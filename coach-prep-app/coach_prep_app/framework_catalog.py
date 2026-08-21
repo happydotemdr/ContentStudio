@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 from pathlib import Path
 
@@ -120,6 +121,17 @@ def load_catalog(path: Path) -> list[CatalogEntry]:
 
 
 def write_catalog(path: Path, entries: list[CatalogEntry]) -> None:
+    # Refuse to write a catalog load_catalog would reject. The first real build
+    # crashed after write_catalog had already run, leaving a YAML with duplicate
+    # ids on disk -- which then made every subsequent run fail at startup,
+    # before it could get far enough to fix anything. Enforcing the invariant
+    # at the write boundary means no code path can strand an unreadable file.
+    duplicates = sorted({e.id for e in entries if [x.id for x in entries].count(e.id) > 1})
+    if duplicates:
+        raise CatalogError(
+            f"refusing to write {path}: duplicate id(s) {', '.join(duplicates)} -- "
+            f"run the entries through merge(), which disambiguates them"
+        )
     path.write_text(
         yaml.safe_dump(
             [entry.to_yaml_dict() for entry in entries],
@@ -127,6 +139,33 @@ def write_catalog(path: Path, entries: list[CatalogEntry]) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _disambiguate_ids(entries: list[CatalogEntry]) -> list[CatalogEntry]:
+    """Make ids unique across the whole catalog.
+
+    Each corpus file is indexed by its own isolated turn, which cannot see any
+    other file's entries -- so an id is only ever unique WITHIN a document. Two
+    near-duplicate documents legitimately produce the same one. The corpus has
+    exactly that: two Judge modules differing only by a " (1)" suffix, which
+    yielded four colliding ids on the first real build and crashed sync_to_db
+    on UNIQUE constraint failed.
+
+    The first holder of an id keeps it unchanged, so the common case stays
+    readable. Later holders take a short suffix derived from their rel_path --
+    derived, not counted, because a curated entry is matched by id and an id
+    that shifted between rebuilds would orphan its edits."""
+    by_id: dict[str, str] = {}
+    out = []
+    for entry in sorted(entries, key=lambda e: (e.id, e.rel_path)):
+        owner = by_id.get(entry.id)
+        if owner is None or owner == entry.rel_path:
+            by_id[entry.id] = entry.rel_path
+            out.append(entry)
+            continue
+        digest = hashlib.sha256(entry.rel_path.encode("utf-8")).hexdigest()[:6]
+        out.append(dataclasses.replace(entry, id=f"{entry.id}-{digest}"))
+    return out
 
 
 def merge(existing: list[CatalogEntry], rebuilt: list[CatalogEntry]) -> tuple[list[CatalogEntry], list[str]]:
@@ -147,6 +186,7 @@ def merge(existing: list[CatalogEntry], rebuilt: list[CatalogEntry]) -> tuple[li
             kept_curated.append(entry.id)
             continue
         merged[merged.index(prior)] = entry
+    merged = _disambiguate_ids(merged)
     merged.sort(key=lambda e: (e.framework, e.rel_path, e.id))
     return merged, sorted(kept_curated)
 
