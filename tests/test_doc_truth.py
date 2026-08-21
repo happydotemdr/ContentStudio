@@ -267,8 +267,12 @@ def test_docs_readme_accounts_for_every_committed_doc():
     )
 
 
+# `cd <app> && ` for any app directory. This named pipeline-app alone until
+# 2026-08-21, which is the third of three places that did -- and the one that
+# mattered most: a command block for another suite was not collected at all,
+# so the whole check silently skipped it rather than failing.
 COMMAND_BLOCK_RE = re.compile(
-    r"^\s{4,}((?:cd pipeline-app && )?python -m pytest[^\n]*)$", re.MULTILINE
+    r"^\s{4,}((?:cd [\w.-]+ && )?python -m pytest[^\n]*)$", re.MULTILINE
 )
 
 
@@ -279,10 +283,14 @@ def _documented_commands(doc: Path) -> list[str]:
 def _claimed_counts(doc: Path) -> dict[str, int]:
     """Maps a documented command to the test count the same doc claims for it."""
     text = doc.read_text(encoding="utf-8")
+    # `cd <app> && ` for any app directory, not just pipeline-app. Hardcoding
+    # one directory here meant a count claimed for any other suite was never
+    # compared against anything: the command mapped to no claim at all, and
+    # a deliberately wrong "999 tests" for coach-prep-app passed silently.
     return {
         cmd: int(n)
         for cmd, n in re.findall(
-            r"`((?:cd pipeline-app && )?python -m pytest[^`]*)`[^\n]*?\b([\d,]+) tests",
+            r"`((?:cd [\w.-]+ && )?python -m pytest[^`]*)`[^\n]*?\b([\d,]+) tests",
             text.replace(",", ""),
         )
     }
@@ -314,10 +322,14 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
     pipeline_app_ready = _pipeline_app_env_available()
     unverifiable = []
     for command in commands:
-        prefix = "cd pipeline-app && "
-        if command.startswith(prefix):
-            cwd = REPO / "pipeline-app"
-            pytest_part = command[len(prefix):]
+        # `cd <app> && python -m pytest ...` for any app directory, not just
+        # pipeline-app. The repo has four suites, each run from its own
+        # directory, and hardcoding one of them here is how the other three
+        # stayed undocumented and unchecked.
+        cd_prefix = re.match(r"cd ([\w.-]+) && (.+)", command)
+        if cd_prefix:
+            cwd = REPO / cd_prefix.group(1)
+            pytest_part = cd_prefix.group(2)
         else:
             cwd = REPO / "pipeline-app" if doc_name.startswith("pipeline-app") else REPO
             pytest_part = command

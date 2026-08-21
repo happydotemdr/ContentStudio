@@ -339,16 +339,26 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
   defects.
   `tests/test_doc_truth.py::test_every_audit_finding_is_claimed_by_exactly_one_remediation_plan`
   keeps the finding→plan mapping total, so the gap stays measured instead of being measured once.
-- **Tests live in two suites, each run from its own directory, and `python -m pytest` is
+- **Tests live in four suites, each run from its own directory, and `python -m pytest` is
   mandatory — not a style preference.**
 
       python -m pytest tests/
 
       cd pipeline-app && python -m pytest
 
+      cd doc-ingest-app && python -m pytest
+
+      cd coach-prep-app && python -m pytest
+
   `python -m pytest tests/` at the repo root is the linter / doc-truth / skill-provenance suite (557 tests).
-  `cd pipeline-app && python -m pytest` is the app suite (1960 tests).
-  **Both must be run; neither is a superset of the other.** Three traps, all measured on 2026-08-20:
+  `cd pipeline-app && python -m pytest` is the Shorts pipeline app suite (1960 tests).
+  `cd doc-ingest-app && python -m pytest` is the Freedom2BeU corpus ingest suite (243 tests).
+  `cd coach-prep-app && python -m pytest` is the coach-prep generation suite (294 tests).
+  **All four must be run; none is a superset of another.** This said "two suites" until
+  2026-08-21, naming only the root and pipeline-app ones — the two Freedom2BeU apps had been
+  there the whole time, and `test_documented_test_commands_collect_what_the_docs_claim` could
+  not catch the omission because it only knew how to run a command prefixed `cd pipeline-app`.
+  It now handles any app directory. Three traps, all measured on 2026-08-20:
 
   - **A bare `pytest` at the repo root is silently wrong.** `pytest.ini`'s `testpaths = tests`
     scopes it to the root suite, so it prints a pass line and exits 0 while never running the app
