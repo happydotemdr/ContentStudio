@@ -191,7 +191,7 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
 ## Conventions
 
 - **Local only** in the sense that nothing here deploys, is hosted externally, or syncs to a
-  cloud — but **not** network-free. The repo makes **20** outbound call sites across **10**
+  cloud — but **not** network-free. The repo makes **22** outbound call sites across **11**
   destinations. The tables below are the complete roster;
   `tests/test_doc_truth.py::test_claude_md_lists_every_outbound_call_site` fails if a call site
   exists in the code and not here, or here and not in the code, so this list cannot quietly rot
@@ -217,8 +217,9 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
   | Destination | Call site(s) | What leaves this machine |
   |---|---|---|
   | Project Gutenberg / `archive.org` | `download_thinkers.py:108` | The work URLs listed in `manifests/thinkers.json`. |
-  | `public.api.bsky.app` | `download_brandintel.py:69` | The handle being enumerated. |
+  | `public.api.bsky.app` | `download_brandintel.py:69` (shared `http_get()` helper), `:273` (bsky call site) | The handle being enumerated. |
   | `www.youtube.com`, via `yt-dlp` / `youtube-transcript-api` | `download_brandintel.py:78`, `:87`, `:131`, `:154` | The handle or video id. |
+  | arbitrary URL (per `manifests/brand_sources.json`'s `rss` entries) | `download_brandintel.py:336` | The feed URL configured in the roster; no other data — a plain HTTP GET. No feeds are configured today (the `rss` section holds only a `_comment`), but `--platforms` defaults to `youtube,bluesky,rss` and `do_rss` is wired into `main()`, so this destination is live and default-on the moment any feed is added. |
 
   **Two of these carry corpus content rather than just an identifier.** Both are in the daily
   discovery email path and both are deliberate; their contracts are unchanged:

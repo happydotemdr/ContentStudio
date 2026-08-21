@@ -35,6 +35,7 @@ OUTBOUND_PROBES = [
     (re.compile(r"\bYouTubeTranscriptApi\s*\("), "youtube-transcript-api"),
     (re.compile(r"(?<!def )\bplatform_argv\s*\("), "claude subprocess"),
     (re.compile(r"\bsession\.get\s*\("), "requests session"),
+    (re.compile(r"(?<!def )\bhttp_get\s*\("), "download_brandintel.py http_get() helper (shared by bsky + rss)"),
 ]
 
 SCANNED = [
