@@ -26,20 +26,70 @@ later date, not the `v1` file's original date).
 
 Stage artifacts append the stage name to their Short's slug:
 `YYYY-MM-DD-<topic-slug>-<stage>.md`, where `<stage>` is one of `concept-brief`, `script`,
-`voiceover-brief`, `visual-prompts`, `assembly`, `social-repurpose`. Run-level documents shared
-by several Shorts use a run slug instead of a topic slug — e.g.
-`2026-07-28-rgs-debut-reference-scan.md`.
+`styleboard`, `voiceover-brief`, `visual-prompts`, `music`, `assembly`, `social-repurpose` — one
+per producing stage in `pipeline.yaml`, in that order. Run-level documents shared by several
+Shorts use a run slug instead of a topic slug — e.g.
+`2026-07-28-rgs-debut-reference-scan.md`, and carry `kind:` values of their own
+(`reference-scan`, `sparks`, `visual-system`).
+
+> **`styleboard` and `music` have never been written.** As of 2026-08-08 this directory holds zero
+> artifacts of either kind. Neither `shorts-styleboard` nor `music-brief` has run end to end
+> against this ledger, so neither one's frontmatter contract has ever been exercised by a real
+> file — the two rows above are a specification, not a precedent. Treat them as untested until the
+> first Short produces one, and check the emitted frontmatter against §Front-matter schema by hand
+> that first time.
+>
+> The two are not equally optional. In `pipeline.yaml`, `assembly.depends_on` includes
+> **`styleboard`** — a Short cannot reach assembly without one — while `music` sits in
+> `assembly.optional_depends_on`. So the missing `styleboard` artifact is a gap in a *required*
+> stage that no Short has yet exercised; the missing `music` artifact is a gap in an optional one.
+> `tests/test_doc_truth.py::test_rgs_briefs_readme_enumerates_every_producing_pipeline_stage`
+> keeps this enumeration in step with `pipeline.yaml`; it cannot tell you whether the stage works.
+
+### `kind:` vocabulary — the complete set
+
+| `kind:` | Written by | Scope |
+|---|---|---|
+| `concept-brief` | `shorts-ideation` | one Short |
+| `script` | `shorts-scripting` | one Short |
+| `styleboard` | `shorts-styleboard` | one Short — **never yet written** |
+| `voiceover-brief` | `voiceover-brief` | one Short |
+| `visual-prompts` | `visual-prompts` | one Short |
+| `music` | `music-brief` | one Short — **never yet written** |
+| `assembly` | `shorts-assembly` | one Short |
+| `social-repurpose` | `social-repurpose` | one Short |
+| `reference-scan` | run-level, by hand | a batch of Shorts |
+| `sparks` | run-level, by hand | a batch of Shorts |
+| `visual-system` | run-level, by hand | a batch of Shorts |
+
+No other value is valid. `2026-07-25-let-kids-play-act-specialization-visual-prompts.md` carries
+the one-off `kind: visual-prompt-sheet`; it is immutable and stays as written, and is listed here
+as a known deviation rather than a permitted spelling. Emit `visual-prompts`.
 
 ## Two file kinds — and the rule that keeps them apart
 
-A **grounding brief** carries `thinker`, `concept`, `research_codes` and `archetype`, and has
-**no** `kind` field. Every other file here carries a **`kind:`** field naming what it is
-(`reference-scan`, `sparks`, `visual-system`, …) and omits the grounding fields.
+A **grounding brief** is a file whose front-matter carries all three of `thinker`, `concept` and
+`research_codes` (plus `archetype`). Everything else in this directory — stage artifacts and
+run-level documents alike — is not a grounding brief.
 
-> **Consumers that glob this directory MUST skip any file with a `kind:` field.**
+> **Consumers that glob this directory MUST select grounding briefs positively: a file counts only
+> if it has `thinker` AND `concept` AND `research_codes`.**
 > This applies to `rgs-grounding`'s recency and repeat checks and to `rgs-pairing-review`.
-> A `kind:`-bearing file has no `thinker`/`concept`/`research_codes` to compare, and treating
-> one as a grounding brief will either crash the check or silently corrupt the recency window.
+>
+> **Do not use "has no `kind:`" as the test.** Ten stage artifacts written on 2026-07-25 — the
+> whole `let-kids-play-act` and `let-kids-play-act-specialization` chains — predate the `kind:`
+> contract and carry only `version: 1`. A `kind:`-skipping consumer reads all ten as grounding
+> briefs, then finds no `thinker`/`concept`/`research_codes` to compare and either crashes or
+> silently corrupts the recency window with ten phantom pairings. Those ten files are immutable
+> (`.claude/hooks/protect_briefs.py`), so the discriminator is what changes, not the files.
+>
+> Every file written since 2026-07-28 does carry `kind:`, and new artifacts must keep carrying it —
+> it is how a *human* tells the files apart at a glance, and it is what §"`kind:` vocabulary"
+> enumerates. It is simply not what a *program* should branch on.
+
+`tests/test_doc_truth.py::test_positive_and_negative_discriminators_disagree_on_exactly_the_known_ten`
+pins the size of that disagreement, so neither an eleventh pre-contract file nor a quiet backfill
+can change the rule's blast radius without a test failing.
 
 ## Provenance markers used in this directory
 
@@ -73,8 +123,8 @@ status: candidate
 ---
 ```
 
-Stage artifact (concept-brief, script, voiceover-brief, visual-prompts,
-assembly, social-repurpose):
+Stage artifact (concept-brief, script, styleboard, voiceover-brief, visual-prompts,
+music, assembly, social-repurpose):
 
 ```yaml
 ---
@@ -109,8 +159,8 @@ status: complete
 - **The `status` vocabulary differs by file kind — the two are not
   interchangeable.** Grounding briefs use `status: candidate` → `status:
   produced` (the latter written as a new, higher `version`, per the bullet
-  above). Stage artifacts (concept-brief, script, voiceover-brief,
-  visual-prompts, assembly, social-repurpose) use `status: complete` or
+  above). Stage artifacts (concept-brief, script, styleboard, voiceover-brief,
+  visual-prompts, music, assembly, social-repurpose) use `status: complete` or
   `status: draft` instead — `complete` for a finished handoff-ready artifact,
   `draft` for a version written mid-revision that isn't yet ready to hand to
   the next stage. Neither vocabulary applies to the other file kind.
@@ -141,12 +191,13 @@ file here without error. No other content in any backfilled file was changed.
 ## Who reads this
 
 - `rgs-grounding` (soft recency/variety rules — deprioritize a thinker used in the last ~5
-  briefs by filename date; flag an exact concept×code repeat within the last ~15). **Must skip
-  `kind:`-bearing files.**
+  briefs by filename date; flag an exact concept×code repeat within the last ~15). **Must select positively on `thinker` + `concept` +
+  `research_codes` — see "Two file kinds" above.**
 - `rgs-pairing-review` (greps for a "Gap-fill flag" section — see
   `.claude/skills/rgs-grounding/references/thinker-corpus-protocol.md` — to catch pairings that
   came from the live-glob fallback rather than the curated map, so they enter the next review).
-  **Must skip `kind:`-bearing files.**
+  **Must select positively on `thinker` + `concept` +
+  `research_codes` — see "Two file kinds" above.**
 - `pipeline-app`'s `grounding_service.snapshot_rgs_briefs()` hashes `*.md` here and
   `identify_new_brief()` requires **exactly one** file to have changed. A batch run that writes
   several files at once will return `None` from that function — expected, not a bug, but worth

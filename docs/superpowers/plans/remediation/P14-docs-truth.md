@@ -152,6 +152,20 @@ Commit after each task. `docs:` for prose-only tasks, `test:` for the test-first
 The current bullet claims two outbound dependencies. This replaces it with a measured roster, and
 with a test that fails the day the roster and the code disagree in *either* direction.
 
+> **Amendment, 2026-08-21 (P14 kickoff, before T1 dispatch).** The `OUTBOUND_PROBES` list below
+> was corrected after a first implementer dispatch surfaced that the code had been refactored
+> since this plan's `[C]`ode was drafted, in ways the original probes silently mismatched:
+> `discovery_youtube.py`'s three separate inline yt-dlp calls were centralized into one
+> `_run_ytdlp()` helper called from three sites (`:157`, `:262`, `:403`), and the original
+> `["']yt-dlp["']` literal-string probe both missed those call sites entirely (no literal string on
+> the `subprocess.run(cmd, ...)` line itself) and over-matched unrelated label/dict-value strings
+> (`source = "yt-dlp"`, `_SOURCE_RANK = {"yt-dlp": 1}`) that are not call sites. Separately,
+> `comment_draft.py`'s real Anthropic subprocess call builds its argv via `cli_runner.platform_argv(`,
+> not `build_claude_argv(` — the original `claude subprocess` probe never matched it. The corrected
+> probes below were verified against every true- and false-positive line found in the live tree
+> (see `tests/test_doc_truth.py`'s own T1.2 measured roster once T1 lands) before this amendment.
+> No other part of T1 changes.
+
 - [ ] **T1.1 (test first).** Create `tests/test_doc_truth.py` with the enumerator and the first
   check. Run it. It must fail with "call sites in code but not in CLAUDE.md: …" listing every row
   the current two-item bullet omits.
@@ -189,9 +203,10 @@ OUTBOUND_PROBES = [
     (re.compile(r"""<script[^>]+src=["']https?://"""), "third-party CDN"),
     (re.compile(r"\brequests\.(?:get|post|put|patch|delete)\s*\("), "requests"),
     (re.compile(r"\burllib\.request\.urlopen\s*\("), "urllib"),
-    (re.compile(r"""["']yt-dlp["']"""), "yt-dlp subprocess"),
+    (re.compile(r"""\[\s*["']yt-dlp["']|["']yt-dlp["']\s*,\s*["']"""), "yt-dlp subprocess (inline argv)"),
+    (re.compile(r"(?<!def )\b_run_ytdlp\s*\("), "yt-dlp subprocess (centralized helper)"),
     (re.compile(r"\bYouTubeTranscriptApi\s*\("), "youtube-transcript-api"),
-    (re.compile(r"\bbuild_claude_argv\s*\(|\bclaude_argv\b"), "claude subprocess"),
+    (re.compile(r"(?<!def )\bplatform_argv\s*\("), "claude subprocess"),
     (re.compile(r"\bsession\.get\s*\("), "requests session"),
 ]
 
@@ -382,11 +397,33 @@ considered and rejected.
   2026-08-08 baseline of 201 / 833 / 1,034 — every package added tests. Do not write a count you
   have not just observed.
 
+> **Amendment, 2026-08-21 (found by the T2 task reviewer, fixed before this task closes).** The
+> code below has been corrected from its first draft. The original `COMMAND_BLOCK_RE`/
+> `_claimed_counts` pair only ever recognised a command block whose captured text STARTS with
+> literal `python -m pytest` — but T2.3's own target prose documents the app suite as
+> `cd pipeline-app && python -m pytest` (a compound command, `cd` first). Against the corrected
+> CLAUDE.md text this meant: the app-suite command was never extracted at all (so never run, never
+> count-checked), and the per-doc `cwd` selection (based on `doc_name` alone) had no way to run a
+> `cd`-prefixed command from the right directory even if it had been extracted, since `CLAUDE.md`
+> documents commands for BOTH suites in one file. `pipeline-app/README.md`'s own command WAS
+> extracted and run (it's a bare `python -m pytest`, no `cd` prefix, preceded by a separate `cd
+> pipeline-app` line) — its collection success was checked, but its claimed count never was,
+> because its prose states the count in a separate sentence with no backtick-quoted command on the
+> same line, and the regex requires both on one line. Net effect: only the ROOT suite's count was
+> ever actually pinned by an equality assertion; the APP suite's count (in both files) was pure
+> prose nobody checked — precisely the class of defect this whole task exists to eliminate. Fixed
+> below by teaching the regex/test the compound-command shape, and (T2.4, below) rewording
+> `pipeline-app/README.md`'s prose to co-locate its command and count on one line, the same style
+> `T2.3`'s own target text already uses for the root suite. Verified end to end against the live
+> tree before this amendment landed: both files, both commands, both counts, all four checks green.
+
 - [ ] **T2.2 (test first).** Add the check that runs *the command the doc states*, not a copy of it.
   The doc is the input; that is the whole point.
 
 ```python
-COMMAND_BLOCK_RE = re.compile(r"^\s{4,}(python -m pytest[^\n]*)$", re.MULTILINE)
+COMMAND_BLOCK_RE = re.compile(
+    r"^\s{4,}((?:cd pipeline-app && )?python -m pytest[^\n]*)$", re.MULTILINE
+)
 
 
 def _documented_commands(doc: Path) -> list[str]:
@@ -399,7 +436,8 @@ def _claimed_counts(doc: Path) -> dict[str, int]:
     return {
         cmd: int(n)
         for cmd, n in re.findall(
-            r"`(python -m pytest[^`]*)`[^\n]*?\b([\d,]+) tests", text.replace(",", "")
+            r"`((?:cd pipeline-app && )?python -m pytest[^`]*)`[^\n]*?\b([\d,]+) tests",
+            text.replace(",", ""),
         )
     }
 
@@ -414,9 +452,15 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
     assert commands, f"{doc_name} must document its test invocation as an indented command block"
     env = {**os.environ, "DOC_TRUTH_CHILD": "1"}
     for command in commands:
-        cwd = REPO / "pipeline-app" if doc_name.startswith("pipeline-app") else REPO
+        prefix = "cd pipeline-app && "
+        if command.startswith(prefix):
+            cwd = REPO / "pipeline-app"
+            pytest_part = command[len(prefix):]
+        else:
+            cwd = REPO / "pipeline-app" if doc_name.startswith("pipeline-app") else REPO
+            pytest_part = command
         argv = [sys.executable, "-m", "pytest", "--collect-only", "-q",
-                "-p", "no:cacheprovider", *command.split()[3:]]
+                "-p", "no:cacheprovider", *pytest_part.split()[3:]]
         proc = subprocess.run(argv, cwd=cwd, capture_output=True,
                               encoding="utf-8", errors="replace", env=env)
         assert proc.returncode == 0, (
@@ -424,10 +468,14 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
         )
         collected = int(re.search(r"(\d+) tests? collected", proc.stdout).group(1))
         claimed = _claimed_counts(doc).get(command)
-        if claimed is not None:
-            assert collected == claimed, (
-                f"{doc_name} claims `{command}` runs {claimed} tests; it collects {collected}"
-            )
+        assert claimed is not None, (
+            f"{doc_name} documents `{command}` but never states its test count in the "
+            "`{command}` ... NNN tests` form on the same line -- an unchecked count is the "
+            "defect this test exists to catch"
+        )
+        assert collected == claimed, (
+            f"{doc_name} claims `{command}` runs {claimed} tests; it collects {collected}"
+        )
 
 
 def test_no_doc_claims_a_bare_pytest_is_sufficient():
@@ -523,16 +571,21 @@ def test_no_doc_claims_a_bare_pytest_is_sufficient():
 ## Test
 
 Run from this directory. `python -m` is required, not optional — a bare `pytest` here fails
-collection on the four modules that import the local `tools` package, because the console-script
+collection on the modules that import the local `tools` package, because the console-script
 entry point does not put the cwd on `sys.path`.
 
     cd pipeline-app
     python -m pytest
 
-This is the app suite: `NNN tests`. It is **not** run by a `pytest` at the repo root, which is
-scoped by `testpaths` to a separate root suite of `NNN tests`. Both must pass before anything here
-is called green.
+`python -m pytest` is the app suite (`NNN tests`). It is **not** run by a `pytest` at the repo
+root, which is scoped by `testpaths` to a separate root suite (`NNN tests`). Both must pass before
+anything here is called green.
 ```
+
+  Note the count and its command are on the same sentence — `test_documented_test_commands_collect_what_the_docs_claim`
+  requires the two co-located on one line to pin the claimed count against the measured one; two
+  separate sentences ("This is the app suite: `NNN tests`.") leave the count unchecked. Keep this
+  form.
 
 - [ ] **T2.5.** Re-run T2.2's checks. Green. Commit `docs: document the test invocation that actually works (F-30, F-62)`.
 
@@ -648,6 +701,21 @@ def test_every_familybrain_mention_is_accounted_for_in_origin():
 
   Run it. It fails, naming `rgs-briefs/2026-07-28-rgs-debut-visual-system.md`.
 
+> **Amendment, 2026-08-21 (found by the T4 implementer, verified by the orchestrator before this
+> task closes).** Two more FamilyBrain mentions landed after this brief was drafted, both inside
+> `pipeline-app/` and both self-evidently firewall-*enforcement*, not provenance: a code comment
+> at `pipeline-app/pipeline_app/comment_draft.py:357` ("also what keeps CLAUDE.md's FamilyBrain
+> firewall intact here", explaining why no `--mcp-config` is passed) and a negative test case at
+> `pipeline-app/tests/test_cli_runner.py:519` (`"../FamilyBrain/anything.md"` asserted `allowed=False`,
+> proving a path escaping into a sibling FamilyBrain directory is rejected). Both are the firewall
+> *working*, the same way the existing `rgs-briefs` entry already is — not a new class of leak.
+> Rather than name each site individually (brittle: any future protective test under `pipeline-app/`
+> would then need its own new Origin sentence forever), item 4 below is worded so its one sentence
+> covers the whole `pipeline-app/` tree by top-level directory name — `test_every_familybrain_mention_is_accounted_for_in_origin`'s
+> own matching logic accepts `Path(path).parts[0]` (here, literally `pipeline-app`) as a match, not
+> only the exact filename, so this sentence auto-covers any future enforcement site under that
+> directory without needing an edit. Four places now, not three.
+
 - [ ] **T4.2.** Replace `CLAUDE.md`'s `## Origin` body (lines 161–167) with:
 
 ```markdown
@@ -656,8 +724,8 @@ FamilyBrain repo, for an unrelated brand-intel feature. It was copied — not mo
 not `git mv`'d — into this repo as a one-time, one-directional operation: a fresh
 `git init` with no shared history or remote.
 
-FamilyBrain is named in exactly **three** places here, all of them historical provenance and none
-of them a live dependency:
+FamilyBrain is named in exactly **four** places here — three historical provenance, one
+enforcement — and none of them a live dependency:
 
 1. **`README.md`'s "Notes & scope" section and a few source-file headers**, narrating toolkit
    provenance — e.g. `gen_thinkers_manifest.ts` importing a sibling repo's TypeScript source. Not
@@ -667,15 +735,21 @@ of them a live dependency:
    2026-07-22" — a dated, one-time copy of brand text, not a link to anything. The same file at
    `:64-65` explicitly *rejects* a FamilyBrain infrastructure fact (which fonts the Pi compositor
    ships) as out of scope for this project. That is the firewall working, recorded in place.
-3. **This file's "FamilyBrain firewall" section**, which forbids adding a fourth.
+3. **`pipeline-app/`, in code comments and tests that verify the firewall holds** — e.g.
+   `comment_draft.py` noting why no `--mcp-config` is ever passed to the Claude subprocess, or
+   `test_cli_runner.py` asserting a path into a sibling `FamilyBrain/` directory is rejected. These
+   are the firewall being enforced and tested, not a dependency; new ones may appear under
+   `pipeline-app/` as coverage grows and need no edit here.
+4. **This file's "FamilyBrain firewall" section**, which forbids adding an unexplained one.
 
 `tests/test_doc_truth.py::test_every_familybrain_mention_is_accounted_for_in_origin` fails if a
-tracked file mentions FamilyBrain and this list does not account for it. If it fires, the answer is
-to explain the mention as history or delete it — never to leave it unexplained, because an
-unexplained mention reads exactly like a leak.
+tracked file mentions FamilyBrain and this list does not account for it — by exact path, bare
+filename, or top-level directory. If it fires outside `pipeline-app/`, the answer is to explain the
+mention as history or delete it — never to leave it unexplained, because an unexplained mention
+reads exactly like a leak.
 ```
 
-- [ ] **T4.3.** Re-run. Green. Commit `docs: account for the third FamilyBrain mention in Origin (D-53)`.
+- [ ] **T4.3.** Re-run. Green. Commit `docs: account for every current FamilyBrain mention in Origin (D-53)`.
 
 ---
 
@@ -992,6 +1066,22 @@ indictment than 2.
 the question that would have exposed the gap continuously. The fix is a convention plus the check
 that makes the finding→plan mapping total rather than aspirational.
 
+> **Amendment, 2026-08-21 (P14 kickoff, before T8 dispatch).** T8.1's original bijection test
+> scanned each plan's ENTIRE pre-`## 4.` text for anything shaped like a finding id. Against the
+> live 16-plan corpus this produced 37 false "contested" findings: plans routinely mention another
+> package's finding id in a disclaimed cross-reference (`"A-32 is not in P3's finding set"`,
+> `"Routed to A-32's owner"`, a `"tracked separately"` handoff sub-table naming the real owner in
+> the same row) — every one hand-verified against the claiming plans' own text before this
+> amendment landed. The corrected version below scopes each plan's claims to its own
+> `## N. Finding → task map` section (present, verbatim-titled, in all sixteen plans — the
+> orchestration plan's own Verification §2 requirement) instead of the whole pre-`## 4.` prose, and
+> carries two small, explicit, hand-verified exception tables for the residue that survives even
+> that narrower scope: ten disclaimed same-table mentions, and one genuinely split finding (F-26,
+> closed as two separately-tasked halves by P1's T18 and P4's T19). Both tables are the same
+> "explicit ledger, shrink it, never grow it blindly" pattern `tests/test_skill_provenance.py`
+> already uses for its own triage ledgers — not a new convention. Verified against the merged tree:
+> 328/328 findings claimed, 0 unclaimed, 0 genuinely contested. No other part of T8 changes.
+
 - [ ] **T8.1 (test first).**
 
 ```python
@@ -999,6 +1089,34 @@ AUDIT = REPO / "docs" / "audit"
 PLANS = REPO / "docs" / "superpowers" / "plans" / "remediation"
 FINDING_HEADING_RE = re.compile(r"^###\s+([A-F]-\d{2,3})\s+·", re.MULTILINE)
 FINDING_REF_RE = re.compile(r"\b([A-F]-\d{2,3})\b")
+TASK_MAP_HEADING_RE = re.compile(
+    r"^##\s+\d+\.\s*Finding\s*(?:→|->)\s*task map", re.MULTILINE | re.IGNORECASE
+)
+NEXT_H2_RE = re.compile(r"^##\s+\S", re.MULTILINE)
+
+# Verified by hand against the live tree (2026-08-21): the finding's real, sole
+# owner is the OTHER plan in the pair. The plan named here mentions the finding
+# only inside its own "Finding -> task map" section as a documented
+# cross-package dependency/handoff note (e.g. a "tracked separately" sub-table
+# naming the true owner in the same row), and that plan's own text disclaims
+# ownership. Shrink this dict as plans merge with cleaner cross-references;
+# never grow it without re-reading the disclaiming plan's own words.
+EXCLUDE_AS_MENTION = {
+    "B-01": "P8-engine-cron.md",
+    "B-06": "P8-engine-cron.md",
+    "B-21": "P8-engine-cron.md",
+    "B-72": "P10-roster.md",
+    "B-73": "P8-engine-cron.md",
+    "B-82": "P8-engine-cron.md",
+    "D-47": "P5-skills-editor.md",
+    "E-05": "P15-ui.md",
+    "E-07": "P15-ui.md",
+    "F-64": "P8-engine-cron.md",
+}
+# Verified by hand: genuinely split and closed by two real, separately-tasked
+# halves, each recorded as its own row in each plan's own task map (P1's T18,
+# P4's T19).
+KNOWN_SPLIT_FINDINGS = {"F-26"}
 
 
 def test_every_audit_finding_is_claimed_by_exactly_one_remediation_plan():
@@ -1010,12 +1128,21 @@ def test_every_audit_finding_is_claimed_by_exactly_one_remediation_plan():
     claims: dict[str, list[str]] = {}
     for plan in PLANS.glob("P*.md"):
         text = plan.read_text(encoding="utf-8")
-        scope = text[: text.index("## 4.")] if "## 4." in text else text
+        heading = TASK_MAP_HEADING_RE.search(text)
+        assert heading, f"{plan.name} has no '## N. Finding -> task map' section"
+        rest = text[heading.end():]
+        next_h2 = NEXT_H2_RE.search(rest)
+        scope = rest[: next_h2.start()] if next_h2 else rest
         for fid in set(FINDING_REF_RE.findall(scope)) & findings:
+            if EXCLUDE_AS_MENTION.get(fid) == plan.name:
+                continue
             claims.setdefault(fid, []).append(plan.name)
 
     unclaimed = sorted(findings - claims.keys())
-    contested = sorted(f for f, owners in claims.items() if len(owners) > 1)
+    contested = sorted(
+        f for f, owners in claims.items()
+        if len(owners) > 1 and f not in KNOWN_SPLIT_FINDINGS
+    )
     assert not unclaimed, f"audit findings no remediation plan claims: {unclaimed}"
     assert not contested, f"audit findings claimed by more than one plan: {contested}"
 
@@ -1028,8 +1155,10 @@ def test_claude_md_requires_a_failing_assertion_per_defect():
 ```
 
   The first is the programme-wide gate from the orchestration plan's Verification §2; it passes
-  only once all sixteen plans are complete, which is exactly when P14 runs. If it fails, name the
-  unclaimed ids in the report — do not add them to P14.
+  only once all sixteen plans are complete, which is exactly when P14 runs. If it fails after the
+  amendment above (a genuinely unclaimed id, or a contested one that isn't in `EXCLUDE_AS_MENTION`
+  or `KNOWN_SPLIT_FINDINGS`), name the ids in the report — do not add them to P14, and do not widen
+  either exception table without re-verifying the new case by hand the same way this amendment did.
 
 - [ ] **T8.2.** Add to `CLAUDE.md`'s Conventions list, immediately before the test-invocation
   bullet:
@@ -1068,20 +1197,30 @@ P14's. **Outcome A below, as amended, is the one to implement; outcome B is stru
   doc that names a category differently from the test that enforces it is the same defect this
   package exists to close.
 
+> **Amendment, 2026-08-21 (found by the T9 implementer, fixed before this task closes).** The
+> original check below gated both assertions behind `if "usually unmarked" in docs_readme:`. The
+> chosen wording for both replacements (T9.3, below) is "usually left off the line" /
+> "usually leave the marker off" — accurate to the rule, but not the literal string
+> `"usually unmarked"` — so the `if` never became true and the whole test passed **vacuously**,
+> asserting nothing, exactly the anti-tautology defect class this programme exists to eliminate.
+> Outcome B (no exemption anywhere, which is the only branch where the `if` guard would ever
+> matter) is permanently struck per I4's resolution, so the guard serves no purpose going
+> forward: after T9 lands, both documents must **always** name the `docs/*.md` scope, full stop.
+> The corrected version below asserts that directly, unconditionally.
+
 - [ ] **T9.2 (test first).**
 
 ```python
 def test_the_two_provenance_rules_name_each_others_scope():
     docs_readme = (REPO / "docs" / "README.md").read_text(encoding="utf-8")
     claude = CLAUDE_MD.read_text(encoding="utf-8")
-    if "usually unmarked" in docs_readme:
-        assert "`docs/*.md`" in docs_readme, (
-            "docs/README.md's unmarked-[C] shorthand must name the scope it applies to"
-        )
-        assert "`docs/*.md`" in claude, (
-            "CLAUDE.md's 'no marker is a bug' rule must name the one documented exemption "
-            "and its scope, or the two rules read as a contradiction"
-        )
+    assert "`docs/*.md`" in docs_readme, (
+        "docs/README.md's unmarked-[C] shorthand must name the scope it applies to"
+    )
+    assert "`docs/*.md`" in claude, (
+        "CLAUDE.md's 'no marker is a bug' rule must name the one documented exemption "
+        "and its scope, or the two rules read as a contradiction"
+    )
 ```
 
 - [ ] **T9.3 — outcome A — IMPLEMENT THIS ONE.** The shorthand survives, scoped to `docs/*.md`.
@@ -1323,7 +1462,7 @@ the statement is the whole proof.
 | **F-10** | `test_claude_md_requires_a_failing_assertion_per_defect` | surfacing | Asserts the standing rule is present in CLAUDE.md, so the requirement survives the session that wrote it. |
 | *(T11, no finding)* | `test_claude_md_email_promise_matches_the_pinned_disclosure` | — | Reads P9's `email_render.DISCLOSURE` out of the source and requires CLAUDE.md to contain that exact sentence. The doc does not get its own wording, so it cannot drift from the behaviour. |
 | *(T11, no finding)* | `test_no_doc_repeats_the_unachievable_never_a_full_post_body_promise` | — | Pins the retracted promise absent. It was not merely inaccurate — it was unachievable at any cap, since a post shorter than the cap is included whole by definition. |
-| *(T9, no finding)* | `test_the_two_provenance_rules_name_each_others_scope` | — | If either document keeps the "usually unmarked" shorthand, both must name the `docs/*.md` scope. Neither can silently widen. |
+| *(T9, no finding)* | `test_the_two_provenance_rules_name_each_others_scope` | — | Both documents must name the `docs/*.md` scope unconditionally (amended from an `if "usually unmarked" in ...` gate that never fired against the chosen wording and passed vacuously). Neither can silently widen. |
 | *(T12, no finding)* | `test_docs_readme_accounts_for_every_committed_doc` | — | Every committed `docs/*.md` must be named in `docs/README.md`. |
 
 **Why these count as tests and not as lint.** Each one takes a *document* as input and a *fact
@@ -1371,3 +1510,22 @@ Two adjacent files were checked and are deliberately left alone:
 - **The `scripts/` → `tools/` rename touches prose in three of the docs P14 owns.** Before T13,
   `git grep -n "pipeline-app/scripts" -- '*.md'` over the owned files must return nothing. A
   README that names a directory the rename deleted is B-80 happening a second time.
+
+---
+
+## Inputs received (2026-08-21, P14 kickoff)
+
+All nine gate rows resolved by direct measurement against the merged tree at `main`'s
+`5ea160b` (P13 + PR #61 both merged) — no package had a live agent to ask, so each answer
+below is sourced from that package's own shipped code/tests/plan text, not a guess.
+
+| # | From | Date | Verbatim decision |
+|---|---|---|---|
+| I1/I2 | P0 | 2026-08-21 | Confirmed live at T2 time (measure fresh, not reused): two suites, two rootdirs, `python -m pytest` mandatory in both. No single runner entry point exists. Collected counts to be measured during T2 itself. |
+| I3 | P10 | 2026-08-21 | Verbatim invocation is **`python tools/migrate_handles_from_manifest.py`** (run from `pipeline-app/`) — confirmed two ways: the script's own `Usage:` docstring line (`pipeline-app/tools/migrate_handles_from_manifest.py:9`, also echoed in `--help`), and P10's own plan text `docs/superpowers/plans/remediation/P10-roster.md:1844` (`> python scripts/migrate_handles_from_manifest.py`, pre-rename spelling — substitute `tools` for `scripts` per the F-64 rename). Not `python -m tools.migrate_handles_from_manifest`; the placeholder in T3.1 is replaced. |
+| I4 | P13 | 2026-08-21 | Confirmed against the live `ALTERNATIVE_VOCABULARY`/`STRUCTURAL_SECTIONS`/`WORKED_EXAMPLE_DISCLAIMER` constants in `tests/test_skill_provenance.py:436-451`. The three non-bug category names the plan already uses — "RGS alternative-vocabulary lines", "worked-example illustrations", "structural pointers" — match the live constants' shape and T9 uses them verbatim as drafted. Separately noted (not a T9 input, not P14's to act on): the same test file's `TIER_1_PENDING` ledger (lines 491-501) carries four entries under `.claude/skills/rgs-grounding/**` and `.claude/skills/rgs-pairing-review/SKILL.md` whose notes say "needs a P14 decision on an RGS-side design marker" for those skills' own operational-design bullets (no corpus/vendor marker fits them). P14's own Scope (§1) explicitly excludes `.claude/skills/**`, so this decision has no owner in the current programme — recorded here as a carried-forward open item, same status as the P15↔P3/P5 sanitizer-divergence item, not actioned by P14. |
+| I5 | P13 | 2026-08-21 | Confirmed against the live `KIND_REGISTRY` in `tests/test_skill_provenance.py:64-74`: `styleboard` → `kind: styleboard`, `stage: 02b-styleboard`, owned by `shorts-styleboard`; `music` → `kind: music`, `stage: 03-music`, owned by `music-brief`; `visual` → `kind: visual-prompts` (not `visual-prompt-sheet`), `stage: 03-visual`. T5's drafted text already matches these tokens exactly — no substitution needed. |
+| I6 | P13 | 2026-08-21 | Confirmed by exhaustive grep: the retracted "MUST skip any file with a `kind:` field" sentence exists nowhere under `.claude/skills/rgs-grounding/**` or `.claude/skills/rgs-pairing-review/**` — its only occurrence in the tree is `rgs-briefs/README.md:39`, the exact line T6 rewrites. `rgs-grounding/SKILL.md:60-64`'s recency check reads a `thinker:` field directly and does not branch on `kind:` absence. T6 is **not blocked**: rewriting the README's rule to positive does not create a mismatch with any live skill behavior, because no skill file encodes the negative rule to begin with. |
+| I7 | P6 + P9 | 2026-08-21 | Confirmed against live `pipeline-app/pipeline_app/discovery_digest.py`: the YouTube-shaped `upload_date` alias is **retained**, not removed — `PUBLISHED_FIELDS = ("published", "upload_date")` (line 58), with the module's own docstring (lines 23-27) stating `published` is optional, `upload_date` is accepted as its ONE alias for YouTube's yt-dlp-shaped frontmatter, and no third name is read. **Outcome B (T10.3) applies** — the fallback is a named exception, not a removed one. |
+| I8 | P9 | 2026-08-21 | Confirmed live: `pipeline-app/pipeline_app/email_render.py:58-64` defines `DISCLOSURE = ("Each item contributes a derived title of at most " f"{TITLE_MAX_CHARS} characters, which for a platform with no title " "field is the opening of the post text. The spotlight additionally " f"contributes up to {EXCERPT_MAX_CHARS} characters of its " "primary text, which for a post shorter than that is the whole post.")`. T11 takes this string, with `TITLE_MAX_CHARS`/`EXCERPT_MAX_CHARS` substituted for their live values, verbatim into CLAUDE.md. |
+| I9 | P4 | 2026-08-21 | Confirmed live against `pipeline.yaml`: `assembly.depends_on: [scripting, styleboard, voiceover, visual]` with `optional_depends_on: [music]` (lines 40-41); `repurpose.depends_on: [ideation, scripting, assembly]` (line 45). Matches the plan's stated resolution exactly. |

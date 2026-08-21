@@ -42,6 +42,14 @@ sourced. If the corpus is thin on a topic, the skill says so explicitly rather t
 filling the gap with generic advice — that discipline is the entire point of this
 project (see "Anti-generic guarantee" below).
 
+There is exactly **one** documented exemption and it does not reach a skill: the corpus documents
+under `docs/*.md` treat `[C]` as their document-wide default and usually leave the marker off,
+carrying the `(Channel, video_id)` citation instead — see `docs/README.md`'s provenance key.
+Nothing outside `docs/*.md` inherits the shorthand. Three further classes of unmarked line inside
+a skill are not bugs either — the non-bug categories recorded in
+`tests/test_skill_provenance.py`: RGS alternative-vocabulary lines, worked-example
+illustrations, and structural pointers.
+
 **One more marker, for decisions rather than evidence:**
 
 - **`[P]` Project/operator decision** — a call made by this project's owner and
@@ -161,10 +169,32 @@ FamilyBrain.
 The corpus was originally built as a research corpus (`corpus-archive/`) inside the
 FamilyBrain repo, for an unrelated brand-intel feature. It was copied — not moved,
 not `git mv`'d — into this repo as a one-time, one-directional operation: a fresh
-`git init` with no shared history or remote. `README.md`'s "Notes & scope" section and
-a few source-file headers narrate this (toolkit provenance, e.g. `gen_thinkers_manifest.ts`
-importing a sibling repo's TypeScript source) as historical/structural fact, not as a
-live dependency — none of it is runnable against FamilyBrain from here.
+`git init` with no shared history or remote.
+
+FamilyBrain is named in exactly **four** places here — three historical provenance, one
+enforcement — and none of them a live dependency:
+
+1. **`README.md`'s "Notes & scope" section and a few source-file headers**, narrating toolkit
+   provenance — e.g. `gen_thinkers_manifest.ts` importing a sibling repo's TypeScript source. Not
+   runnable against FamilyBrain from here; kept as documentation of where the JSON came from.
+2. **`rgs-briefs/2026-07-28-rgs-debut-visual-system.md:23`**, whose `[B]` marker legend records
+   that `output/raisinggoodsports-brand-definition.md` was "pulled from the live FamilyBrain Pi
+   2026-07-22" — a dated, one-time copy of brand text, not a link to anything. The same file at
+   `:64-65` explicitly *rejects* a FamilyBrain infrastructure fact (which fonts the Pi compositor
+   ships) as out of scope for this project. That is the firewall working, recorded in place.
+3. **`pipeline-app/`, in code comments and tests that verify the firewall holds** — e.g.
+   `pipeline_app/comment_draft.py` noting why no `--mcp-config` is ever passed to the Claude
+   subprocess, or `test_cli_runner.py` asserting a path into a sibling `FamilyBrain/` directory is
+   rejected. These
+   are the firewall being enforced and tested, not a dependency; new ones may appear under
+   `pipeline-app/` as coverage grows and need no edit here.
+4. **This file's "FamilyBrain firewall" section**, which forbids adding an unexplained one.
+
+`tests/test_doc_truth.py::test_every_familybrain_mention_is_accounted_for_in_origin` fails if a
+tracked file mentions FamilyBrain and this list does not account for it — by exact path, bare
+filename, or top-level directory. If it fires outside `pipeline-app/`, the answer is to explain the
+mention as history or delete it — never to leave it unexplained, because an unexplained mention
+reads exactly like a leak.
 
 ## Using the skills
 
@@ -190,14 +220,47 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
 
 ## Conventions
 
-- Local only. No deploying, no external hosting, no cloud sync.
-- **Exceptions to "local only":** two outbound network dependencies, both in the daily discovery
-  email path (`pipeline-app/pipeline_app/discovery_notify.py`), and both deliberate.
+- **Local only** in the sense that nothing here deploys, is hosted externally, or syncs to a
+  cloud — but **not** network-free. The repo makes **22** outbound call sites across **11**
+  destinations. The tables below are the complete roster;
+  `tests/test_doc_truth.py::test_claude_md_lists_every_outbound_call_site` fails if a call site
+  exists in the code and not here, or here and not in the code, so this list cannot quietly rot
+  the way its two-item predecessor did.
+
+  **App runtime** — reached by running the app or letting the scheduled discovery run fire. No
+  operator action required beyond starting it:
+
+  | Destination | Call site(s) | Cost | What leaves this machine |
+  |---|---|---|---|
+  | Anthropic, via a `claude` subprocess | `pipeline_app/cli_runner.py:291` | **billed to your Claude plan** | Every pipeline stage turn: the rendered kickoff prompt, plus whatever the stage's allowed tools read from this repo. This call *is* the app. |
+  | Anthropic, via a `claude -p` subprocess | `pipeline_app/comment_draft.py:353` | **billed** | Exception 2 below. |
+  | `api.resend.com` | `pipeline_app/discovery_notify.py:114` | free tier | Exception 1 below. |
+  | `api.brightdata.com` | `pipeline_app/brightdata_job.py:348` (trigger), `:361` (poll), `:374` (fetch), `:408` (delete) | **billed per record — real money, per run** | The target handle or profile URL and the job parameters, for Instagram / LinkedIn / Facebook / X discovery. |
+  | `www.googleapis.com/youtube/v3` | `pipeline_app/discovery_youtube_api.py:121` | quota-metered | Video ids and the API key. |
+  | `public.api.bsky.app` | `pipeline_app/discovery_bluesky.py:35` | free | The handle being enumerated. |
+  | `www.youtube.com`, via `yt-dlp` | `pipeline_app/discovery_youtube.py:44`, `:157`, `:262`, `:403` | free | The handle or video id — and the session cookies in `pipeline-app/cookies.txt` when that file exists. |
+  | `www.youtube.com`, via `youtube-transcript-api` | `pipeline_app/discovery_youtube.py:380` | free | The video id. |
+
+  **Manual toolkit** — only when you run a downloader script by hand. Never reached by the app or
+  by the scheduled task:
+
+  | Destination | Call site(s) | What leaves this machine |
+  |---|---|---|
+  | Project Gutenberg / `archive.org` | `download_thinkers.py:108` | The work URLs listed in `manifests/thinkers.json`. |
+  | `public.api.bsky.app` | `download_brandintel.py:69` (shared `http_get()` helper), `:273` (bsky call site) | The handle being enumerated. |
+  | `www.youtube.com`, via `yt-dlp` / `youtube-transcript-api` | `download_brandintel.py:78`, `:87`, `:131`, `:154` | The handle or video id. |
+  | arbitrary URL (per `manifests/brand_sources.json`'s `rss` entries) | `download_brandintel.py:336` | The feed URL configured in the roster; no other data — a plain HTTP GET. No feeds are configured today (the `rss` section holds only a `_comment`), but `--platforms` defaults to `youtube,bluesky,rss` and `do_rss` is wired into `main()`, so this destination is live and default-on the moment any feed is added. |
+
+  **Two of these carry corpus content rather than just an identifier.** Both are in the daily
+  discovery email path and both are deliberate; their contracts are unchanged:
+
   1. **Notification email, via Resend's HTTP API.** Sends the day's captured post titles, author
      display names (a handle appears only when no display name is configured for that author),
-     engagement metrics, publish dates when known, and post URLs; a ~400 character excerpt of the
-     one post the email spotlights; and three AI-drafted comments on it. Never a full transcript,
-     never a full post body, never any other corpus content.
+     engagement metrics, publish dates when known, and post URLs; and three AI-drafted comments on
+     the one post the email spotlights. Each item contributes a derived title of at most 90
+     characters, which for a platform with no title field is the opening of the post text. The
+     spotlight additionally contributes up to 400 characters of its primary text, which for a post
+     shorter than that is the whole post. Never a full transcript, never any other corpus content.
   2. **Comment drafting, via a `claude -p` subprocess** (`pipeline_app/comment_draft.py`). Sends
      the spotlighted post's full text, or a YouTube transcript truncated to 12,000 characters, to
      Anthropic. One post per day, only the spotlighted one. The turn runs with every tool denied,
@@ -205,12 +268,22 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
 
   See `docs/superpowers/specs/2026-08-01-discovery-email-summary-design.md` and
   `docs/superpowers/specs/2026-08-08-morning-email-social-expansion-design.md` for the full
-  rationale.
+  rationale. Adding a **new** destination is a decision, not a detail: it needs a probe in
+  `tests/test_doc_truth.py` and a row here in the same commit.
+
+  **Front-end assets are vendored, never fetched.** htmx ships from
+  `pipeline_app/static/htmx-2.0.0.min.js`; there is no CDN in the page load path, and a P15 test
+  fails on any `http(s)://` appearing under `templates/**`. Do not reintroduce one.
 - **Adding a discovery platform.** A new adapter's `download_item` must write YAML frontmatter
   containing `fetched_at` (an aware-UTC `isoformat(timespec="seconds")` string), with the post's
-  text as the markdown body. An adapter honoring that contract appears in the daily email —
-  inventory entry, link, title, and spotlight eligibility — with **no change to any email-side
-  module**. `fetched_at` is the only **mandatory** field: it is the watermark, and an item without
+  text as the markdown body. An adapter honoring that contract appears in the daily email's
+  inventory entry, link, title and spotlight eligibility with **no change to any email-side
+  module** — with one named exception. **Publish-date rendering:** `pipeline_app/discovery_digest.py`
+  reads `published` directly, and *also* accepts a YouTube-shaped `upload_date` (`YYYYMMDD`) as a
+  fallback. That fallback is legacy and is the only platform-specific shape in the email path. A
+  new adapter that wants its publish date rendered must emit `published`; it must not emit
+  `upload_date` expecting it to be understood, and no third shape will be added for it.
+  `fetched_at` is the only **mandatory** field: it is the watermark, and an item without
   it is excluded from the run. `url` is strongly expected but not required — an item missing it is
   still listed, rendered without a link, and a warning goes to stderr. `like_count`,
   `comment_count`, `view_count`, and `published` are optional and are omitted from the render when
@@ -229,9 +302,46 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
   rejects a shot with no style mechanism at all. C20 resolves each slot's declared label
   against `docs/style-library.md`, read from the repo by default (`--style-library` overrides),
   so a label naming no entry fails the gate instead of failing at paste time.
-- **Tests live in two suites, each run from its own directory.** Repo root:
-  `python -m pytest tests/ -v` (the linters and skill provenance). App:
-  `cd pipeline-app && python -m pytest`. Run each from the directory named — `pipeline-app`
-  has its own `scripts/` package, and invoking its suite from the repo root shadows it with
-  the root `scripts/` and raises `ModuleNotFoundError`. A `pytest.ini` at each level pins the
-  rootdir so a bare `pytest` does the right thing in both places.
+- **Every defect writeup names the assertion that would have caught it.** The 2026-08-08 audit
+  found 32 S0/S1 defects against a 1,034-test suite at 95% line coverage, and **zero** of them had
+  a test — not because they were untestable (29 were a single assertion away, 3 partially so, none
+  genuinely out of reach) but because nobody was ever required to ask. So: any finding recorded
+  under `docs/audit/` and any bug fixed anywhere in this repo carries a
+  *"which assertion would have failed?"* line, and the fix lands that assertion as a named
+  regression test that was observed failing first. A fix with no such test is not a fix; a
+  finding with no such line is not finished. Coverage is not the bar — 95% coexisted with 328
+  defects.
+  `tests/test_doc_truth.py::test_every_audit_finding_is_claimed_by_exactly_one_remediation_plan`
+  keeps the finding→plan mapping total, so the gap stays measured instead of being measured once.
+- **Tests live in two suites, each run from its own directory, and `python -m pytest` is
+  mandatory — not a style preference.**
+
+      python -m pytest tests/
+
+      cd pipeline-app && python -m pytest
+
+  `python -m pytest tests/` at the repo root is the linter / doc-truth / skill-provenance suite (557 tests).
+  `cd pipeline-app && python -m pytest` is the app suite (1960 tests).
+  **Both must be run; neither is a superset of the other.** Three traps, all measured on 2026-08-20:
+
+  - **A bare `pytest` at the repo root is silently wrong.** `pytest.ini`'s `testpaths = tests`
+    scopes it to the root suite, so it prints a pass line and exits 0 while never running the app
+    suite — four fifths of the repo's tests. A green bare `pytest` is not evidence of anything.
+  - **A bare `pytest` inside `pipeline-app/` fails collection.** The console-script entry point
+    does not prepend the cwd to `sys.path`; `python -m` does. Without it, six test modules that
+    import this app's local code by a bare module name fail: `test_backfill_youtube_frontmatter.py`,
+    `test_migrate_handles.py`, `test_setup_discovery_task.py`, and `test_tag_handle_brands_2026_08.py`
+    each do `from tools import ...` and raise `ModuleNotFoundError: No module named 'tools'`;
+    `test_routes_discovery.py` and `test_run_discovery_cron.py` each do
+    `import run_discovery_cron as cron` and raise
+    `ModuleNotFoundError: No module named 'run_discovery_cron'`. `pipeline-app/scripts/` was
+    renamed `pipeline-app/tools/` on 2026-08-08 (finding F-64); this module list and error text
+    are re-measured as of 2026-08-20, not the F-64 snapshot — two of the six modules
+    (`test_routes_discovery.py`, `test_tag_handle_brands_2026_08.py`) were added after F-64 landed.
+  - **Running the app suite from the repo root is still wrong.** `pipeline-app` is not on
+    `sys.path` from there either, so the same six modules fail to import with the same two
+    `ModuleNotFoundError` shapes described above.
+
+  `tests/test_doc_truth.py::test_documented_test_commands_collect_what_the_docs_claim` executes
+  the two commands above exactly as written here and fails if either stops collecting the stated
+  count.

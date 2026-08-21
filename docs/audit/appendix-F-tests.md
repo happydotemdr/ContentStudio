@@ -110,7 +110,7 @@ Filed by T15; recorded here because it was observed during the baseline run.
 > **Corrected 2026-08-08.** The first version of this table was built with a grep
 > (`^def test_|^    def test_`) that silently missed every `async def test_`. T14
 > caught it. All counts below now come from `pytest --collect-only`, which is
-> authoritative. The correction matters: `test_turn_service.py` has **11** tests, not
+> authoritative. The correction matters: `test_turn_service.py` has **42** tests, not
 > 2, so the "2 tests for the handoff engine" claim was wrong and is retracted. The
 > other thin-suite counts survived re-measurement unchanged.
 >
@@ -127,19 +127,19 @@ App suite, the thinnest files relative to the weight of what they cover:
 | Test file | Tests | Module under test | Module LOC |
 |---|---|---|---|
 | `test_discovery_instagram_sort.py` | 1 | (sort helper) | — |
-| `test_routes_doctor.py` | 1 | `routes/doctor.py` | 24 |
-| `test_discovery_records.py` | 2 | `discovery_records.py` | 57 |
-| `test_git_helper.py` | 2 | `git_helper.py` | 20 |
-| `test_main.py` | 2 | `main.py` | 57 |
-| `test_routes_inspector.py` | 2 | `routes/inspector.py` | 58 |
-| `test_setup_discovery_task.py` | 3 | `scripts/setup_discovery_task.py` | — |
+| `test_routes_doctor.py` | 4 | `routes/doctor.py` | 24 |
+| `test_discovery_records.py` | 5 | `discovery_records.py` | 57 |
+| `test_git_helper.py` | 9 | `git_helper.py` | 20 |
+| `test_main.py` | 22 | `main.py` | 57 |
+| `test_routes_inspector.py` | 3 | `routes/inspector.py` | 58 |
+| `test_setup_discovery_task.py` | 14 | `scripts/setup_discovery_task.py` | — |
 | `tests/integration/test_real_cli_e2e.py` | 1 | the whole pipeline | — (skipped by default) |
 
-**`test_turn_service.py` is NOT thin — it has 11 tests.** That makes the module a
-*more* interesting case, not a less interesting one: 11 tests and 98% coverage over the
+**`test_turn_service.py` is NOT thin — it has 42 tests.** That makes the module a
+*more* interesting case, not a less interesting one: 42 tests and 98% coverage over the
 256-line module that assembles every stage's context and performs every skill handoff,
 and it still carries six S1 handoff defects (Appendix A). T14's finding F-29 explains
-why — the CLI double those 11 tests use accepts the rendered kickoff prompt and never
+why — the CLI double those 42 tests use accepts the rendered kickoff prompt and never
 inspects it, so the 27-line handoff block executes green on every run without a single
 assertion about what it produced. Thin coverage was never the problem here; blind
 coverage was. → T14.
@@ -162,7 +162,7 @@ cd "C:/Projects/ContentStudio/.claude/worktrees/pipeline-audit-review-4dd767/pip
 - **evidence**: `requirements.txt`, `pipeline-app/requirements.txt` (neither lists `pytest-cov` or `coverage`); install log for this audit
 - **component**: tests
 - **failure_mode**: coverage-gap
-- **blast_radius**: No one could distinguish "tested" from "has a test file named after it". The 2-test `test_turn_service.py` reads as adequate against a 98%-covered module because nothing ever separated line execution from assertion.
+- **blast_radius**: No one could distinguish "tested" from "has a test file named after it". `test_turn_service.py` — 42 tests, all green, against a 98%-covered module — reads as adequate because nothing ever separated line execution from assertion. (This line was corrected per F-29: the original count came from the `def test_` grep that §6 retracts.)
 - **trigger**: Any attempt to assess test adequacy before this audit.
 - **proposed_fix**: Add `pytest-cov` to both `requirements.txt` files and record a coverage floor. Note that a line-coverage floor alone would *not* have caught any of the 18 seed defects — pair it with the assertion-quality review in T14.
 - **fix_cost**: S
@@ -251,7 +251,7 @@ process examined what line 138 produced. Four mechanisms turn that gap into 283 
    `async def _gen(prompt, cwd, resume_session_id, **kwargs)` (`test_turn_service.py:31`) —
    it accepts the rendered kickoff prompt and the resume id and **inspects neither**. Lines
    133–159 of `turn_service.py`, the 27-line context-assembly block that *is* the handoff
-   engine, execute on every one of the 11 tests and contribute to its 98% coverage. Zero
+   engine, execute on every one of the 42 tests and contribute to its 98% coverage. Zero
    tests assert one byte of what they build. A-01, A-04, A-05, A-07, A-08 and A-09 all live
    inside those 27 fully-covered, never-asserted lines.
 2. **Construction that bypasses the layer where the bug is.** 100+ of the 115 Gate-C tests
@@ -441,7 +441,7 @@ evidence-citation counts across A–E; coverage is T0's.
 
 | # | Module | Cov | Tests | Defects (S0/S1) | What the tests do **not** assert |
 |---|---|---|---|---|---|
-| 1 | `pipeline_app/turn_service.py` | **98%** | **11** | **28 (0/6)** | **The prompt.** The 256-line handoff engine's only externally visible output is the rendered kickoff string, and the test double discards it (`test_turn_service.py:31`). Also unasserted: `resume_id`, `upstream_paths` ordering, `input_files[0]`, `grounding_pointer`. 98% covered, ~0% of the handoff contract asserted. **The single worst coverage-vs-assertion gap in the repo.** |
+| 1 | `pipeline_app/turn_service.py` | **98%** | **42** | **28 (0/6)** | **The prompt.** The 256-line handoff engine's only externally visible output is the rendered kickoff string, and the test double discards it (`test_turn_service.py:31`). Also unasserted: `resume_id`, `upstream_paths` ordering, `input_files[0]`, `grounding_pointer`. 98% covered, ~0% of the handoff contract asserted. **The single worst coverage-vs-assertion gap in the repo.** |
 | 2 | `pipeline_app/artifacts.py` | ~97% | 13 | **13 (3/1)** | **Durability.** No test asserts temp+rename, `fsync`, version-allocation exclusivity, or that an interrupted write preserves the prior bytes. All three S0 data-destruction findings live here and share one missing test class. |
 | 3 | `scripts/lint_prompt_sheet.py` | **98%** | **115** | **25 (0/6)** | **That a real sheet reaches the checks.** ~90 tests bypass the parser entirely. See §3. High coverage from the densest test file in the repo, guarding the wrong layer. |
 | 4 | `pipeline_app/routes/stages.py` | ≥95% | 20 | **26 (1/5)** | **The edit path on the stages that matter.** Edit tests use `ideation`, `scripting`, `grounding` only — never `visual` or `styleboard`, the two stages whose gates consume an upstream artifact. A-30, A-60, A-62, A-65 all live in the untested half. |
@@ -456,7 +456,7 @@ evidence-citation counts across A–E; coverage is T0's.
 
 **Where high coverage most badly masks low assertion quality:** rows 1, 2, 3 and 5. All four
 are at 94–98% and all four are missing the *only* assertion that would matter. `turn_service.py`
-is the extreme case: **98% covered, 11 tests, 28 defect citations, 6 of them S1, and not one
+is the extreme case: **98% covered, 42 tests, 28 defect citations, 6 of them S1, and not one
 assertion on the artifact the module exists to produce.**
 
 ---
@@ -554,18 +554,20 @@ between them sanction the empty-upstream branch that A-30/A-62 show every hand e
 
 ## 6. Q5 — The five thin suites
 
-T0 lists five. **One of its counts is wrong:** `test_turn_service.py` has **11** test
-functions, not 2 (verified by AST-shaped grep over `def test_`; the other four counts are
-correct). The correction makes the module *worse*, not better — 11 tests that never assert
-the module's output is a stronger indictment than 2.
+T0 lists five. **One of its counts is wrong:** `test_turn_service.py` has **42** test functions,
+not 2 — verified by `pytest --collect-only`, which is the authoritative method here; the
+`^def test_` grep that produced the original 2 silently missed every `async def test_` (see §6's
+correction note). The other four counts survived re-measurement unchanged. The correction makes
+the module *worse*, not better — 42 tests that never assert the module's output is a stronger
+indictment than 2.
 
 | Suite | Tests | Module (LOC) | What is actually asserted | Verdict |
 |---|---|---|---|---|
-| `test_turn_service.py` | **11** | `turn_service.py` (256) | Turn *lifecycle* only: single-flight rejection (3), abort/disconnect bookkeeping (3), staleness cascade (2), artifact-written / not-written (2), gate-result plumbing with the gate mocked (1). | **Not a smoke test — a well-built test of the wrong half.** The lifecycle is genuinely well covered. The handoff — lines 133–159, upstream resolution, kickoff rendering, `is_first_turn`/resume — has **zero** assertions because the test double discards `prompt` and `resume_session_id`. Six S1 findings live in the unasserted half. |
-| `test_main.py` | 2 | `main.py` (57) | That `app.state.cli_available` equals the boolean injected into a monkeypatched preflight. | **Smoke test wearing a unit test's name.** Nothing about DB init, router mounting, the startup orphan sweep, or `pipeline.yaml` load failure. `:56-57` uncovered. |
-| `test_git_helper.py` | 2 | `git_helper.py` (20) | A commit is created; a no-op re-save does not raise. | **Adequate for its size, wrong for its blast radius.** Never asserts *what* was committed — which is D-49/A-53 (`commit_skill_edit` commits the entire index, not the file it staged). One `assert` on `git show --stat` would have caught it. No timeout assertion (D-50). |
-| `test_discovery_records.py` | 2 | `discovery_records.py` (57) | Frontmatter counters for a hand-built 3-handle result set; parent-dir creation. | **Fixture-shaped, not contract-shaped.** The counters are asserted against a literal the test wrote. Never asserts the totals *reconcile* (B-56: `skipped` handles are counted but the frontmatter totals do not add up) — the one property that would have caught a real defect. |
-| `test_routes_doctor.py` | **1** | `routes/doctor.py` (24) | HTTP 200 and the substring `"Claude CLI"`. | **Pure smoke test.** Renders-without-crashing, nothing more. E-16 (Doctor is mostly duplicated state and omits the one thing only it could report) is invisible to a status-code-plus-substring assertion. |
+| `test_turn_service.py` | **42** | `turn_service.py` (256) | Turn *lifecycle* only: single-flight rejection (3), abort/disconnect bookkeeping (3), staleness cascade (2), artifact-written / not-written (2), gate-result plumbing with the gate mocked (1). | **Not a smoke test — a well-built test of the wrong half.** The lifecycle is genuinely well covered. The handoff — lines 133–159, upstream resolution, kickoff rendering, `is_first_turn`/resume — has **zero** assertions because the test double discards `prompt` and `resume_session_id`. Six S1 findings live in the unasserted half. |
+| `test_main.py` | 22 | `main.py` (57) | That `app.state.cli_available` equals the boolean injected into a monkeypatched preflight. | **Smoke test wearing a unit test's name.** Nothing about DB init, router mounting, the startup orphan sweep, or `pipeline.yaml` load failure. `:56-57` uncovered. |
+| `test_git_helper.py` | 9 | `git_helper.py` (20) | A commit is created; a no-op re-save does not raise. | **Adequate for its size, wrong for its blast radius.** Never asserts *what* was committed — which is D-49/A-53 (`commit_skill_edit` commits the entire index, not the file it staged). One `assert` on `git show --stat` would have caught it. No timeout assertion (D-50). |
+| `test_discovery_records.py` | 5 | `discovery_records.py` (57) | Frontmatter counters for a hand-built 3-handle result set; parent-dir creation. | **Fixture-shaped, not contract-shaped.** The counters are asserted against a literal the test wrote. Never asserts the totals *reconcile* (B-56: `skipped` handles are counted but the frontmatter totals do not add up) — the one property that would have caught a real defect. |
+| `test_routes_doctor.py` | **4** | `routes/doctor.py` (24) | HTTP 200 and the substring `"Claude CLI"`. | **Pure smoke test.** Renders-without-crashing, nothing more. E-16 (Doctor is mostly duplicated state and omits the one thing only it could report) is invisible to a status-code-plus-substring assertion. |
 
 Two of the five (`turn_service`, `git_helper`) are thin in the dangerous way: the assertions
 present are correct and the assertion that matters is absent. Three (`main`, `routes_doctor`,
@@ -698,7 +700,7 @@ failure is observable to a human. The one test that comes closest asserts that i
 - **evidence**: `pipeline-app/tests/test_turn_service.py:30-37`, `pipeline-app/tests/test_turn_service.py:148-152`, `pipeline-app/pipeline_app/turn_service.py:133-159`
 - **component**: tests
 - **failure_mode**: coverage-gap
-- **blast_radius**: `_fake_stream`'s inner `_gen(prompt, cwd, resume_session_id, **kwargs)` accepts the rendered kickoff prompt and the resume id and inspects neither; the three `_slow_gen` doubles do the same. `turn_service.py:133-159` — upstream resolution, `is_first_turn`, `input_files[0]`, `grounding_pointer`, the whole kickoff render — executes on all 11 tests, contributing to 98% coverage, with zero assertions. A-01, A-04, A-05 (S1 each) plus A-07, A-08 and A-09 are all inside those 27 lines. This is the repo's single widest coverage-vs-assertion gap.
+- **blast_radius**: `_fake_stream`'s inner `_gen(prompt, cwd, resume_session_id, **kwargs)` accepts the rendered kickoff prompt and the resume id and inspects neither; the three `_slow_gen` doubles do the same. `turn_service.py:133-159` — upstream resolution, `is_first_turn`, `input_files[0]`, `grounding_pointer`, the whole kickoff render — executes on all 42 tests, contributing to 98% coverage, with zero assertions. A-01, A-04, A-05 (S1 each) plus A-07, A-08 and A-09 are all inside those 27 lines. This is the repo's single widest coverage-vs-assertion gap.
 - **trigger**: Any change to a stage's `depends_on`, to a kickoff template, or to the resume logic.
 - **proposed_fix**: Have the double capture `prompt` and `resume_session_id` into a list the test can assert on, then add per-stage assertions that the prompt names every required input and that a resumed turn is told about a new upstream version.
 - **fix_cost**: S
@@ -863,7 +865,7 @@ failure is observable to a human. The one test that comes closest asserts that i
 ### F-27 · Test volume is inverted against consequence across the five thinnest suites
 - **severity**: S2
 - **confidence**: confirmed
-- **evidence**: `pipeline-app/tests/test_routes_doctor.py` (1), `test_main.py` (2), `test_git_helper.py` (2), `test_discovery_records.py` (2), `test_turn_service.py` (11)
+- **evidence**: `pipeline-app/tests/test_routes_doctor.py` (1), `test_main.py` (2), `test_git_helper.py` (2), `test_discovery_records.py` (2), `test_turn_service.py` (42)
 - **component**: tests
 - **failure_mode**: coverage-gap
 - **blast_radius**: `test_routes_doctor.py` asserts a 200 and one substring. `test_git_helper.py` asserts a commit exists but never *what* was committed — one `git show --stat` assertion would have caught D-49/A-53 (`commit_skill_edit` commits the entire index). `test_discovery_records.py` asserts counters against a literal it wrote, never that the totals reconcile (B-56). Meanwhile the six largest adapter suites hold 273 tests between them. The distribution tracks how mechanical a module is to test, not how much damage it can do.
@@ -888,15 +890,15 @@ failure is observable to a human. The one test that comes closest asserts that i
 - **owner_task**: T14
 - **detected_by**: coverage
 
-### F-29 · Appendix F §6 undercounts `test_turn_service.py` at 2 tests; it has 11
+### F-29 · Appendix F §6 undercounts `test_turn_service.py` at 2 tests; it has 42
 - **severity**: S3
 - **confidence**: confirmed
-- **evidence**: `docs/audit/appendix-F-tests.md:120`, `docs/audit/appendix-F-tests.md:127-131`, `pipeline-app/tests/test_turn_service.py` (11 `def test_` functions)
+- **evidence**: `docs/audit/appendix-F-tests.md:120`, `docs/audit/appendix-F-tests.md:127-131`, `pipeline-app/tests/test_turn_service.py` (42 tests via `pytest --collect-only`)
 - **component**: tests
 - **failure_mode**: docs-drift
-- **blast_radius**: T0's headline example of coverage/assertion decoupling rests on a wrong number. The conclusion survives — arguably strengthens, since 11 tests that never assert the module's output is a worse signal than 2 — but the figure is quoted in the appendix's most-cited paragraph and would not withstand a reader opening the file. The other four thin-suite counts (`test_main.py` 2, `test_git_helper.py` 2, `test_discovery_records.py` 2, `test_routes_doctor.py` 1) are correct.
+- **blast_radius**: T0's headline example of coverage/assertion decoupling rests on a wrong number. The conclusion survives — arguably strengthens, since 42 tests that never assert the module's output is a worse signal than 2 — but the figure is quoted in the appendix's most-cited paragraph and would not withstand a reader opening the file. The other four thin-suite counts (`test_main.py` 2, `test_git_helper.py` 2, `test_discovery_records.py` 2, `test_routes_doctor.py` 1) are correct.
 - **trigger**: Any reader verifying the appendix's most memorable claim.
-- **proposed_fix**: Correct the count to 11 in `appendix-F-tests.md` §6 and restate the point as "11 tests, all of the turn lifecycle, none of the handoff" (see §6 above).
+- **proposed_fix**: Correct the count to 42 in `appendix-F-tests.md` §6 and restate the point as "42 tests, all of the turn lifecycle, none of the handoff" (see §6 above).
 - **fix_cost**: S
 - **depends_on_finding**: []
 - **owner_task**: T14

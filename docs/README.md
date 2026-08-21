@@ -35,12 +35,13 @@ asset-workflow (§6) and voice-overlay (§5) sections.
 
 ### Vendor runbooks (not corpus-derived)
 
-One further guide sits outside the corpus. It is built from vendor documentation rather than the
-420-video corpus, so it is listed separately and carries an extra provenance marker.
+Two further guides sit outside the corpus. Both are built from vendor documentation rather than
+the 420-video corpus, so they are listed separately and carry an extra provenance marker.
 
 | Runbook | What it is | Size |
 |-------|-----------|------|
 | **[elevenlabs-production-runbook.md](elevenlabs-production-runbook.md)** | **ElevenLabs platform truth** — engine topology and the feature-compatibility matrix, the full API parameter surface, v3's three stability modes, the verified audio-tag catalog, PLS pronunciation dictionaries, chunking and request stitching, credit discipline, and zero-retention. Verified against live ElevenLabs docs **2026-07-26**; §10 is a claim-by-claim verification log recording **eight places the supplied source runbook was wrong**. Backs the `elevenlabs-audio` skill. | ~4,600 words |
+| **[elevenlabs-music-runbook.md](elevenlabs-music-runbook.md)** | **Eleven Music platform truth** — composition-plan structure, prompt craft, the API payload surface, and credit discipline. Verified against live ElevenLabs docs **2026-08-06**; §7 records **two places the supplied design brief was wrong**. Backs the `elevenlabs-music` skill. | ~2,300 words |
 
 This runbook adds **`[T-unverified]`** to the marker key below: *asserted by a supplied source but
 **not** confirmed against live vendor docs.* Treat it as a starting hypothesis, never as fact. The
@@ -53,8 +54,13 @@ creators do; the runbook tells you what the platform actually supports.
 
 Every substantive claim carries one of three markers so you always know how much to trust it:
 
-- **`[C]` Corpus-cited** (default; usually unmarked in the audit) — extracted from a transcript, cited as
-  `(Channel, video_id)`. Two or more channels agreeing = flagged **strongly-supported**.
+- **`[C]` Corpus-cited** — extracted from a transcript, cited as `(Channel, video_id)`. Two or
+  more channels agreeing = flagged **strongly-supported**.
+  **Scope of the "unmarked" shorthand:** inside `docs/*.md` — this folder's corpus documents, and
+  only these — `[C]` is the document-wide default and is usually left off the line: the
+  `(Channel, video_id)` citation *is* the marker. The shorthand does **not** extend to
+  `.claude/skills/**` or to `rgs-briefs/`, where CLAUDE.md's rule is absolute — a normative line
+  with no marker is a bug, not an implied `[C]`.
 - **`[I]` Industry practice** — well-established general craft not specific to this corpus.
 - **`[T]` Tool / policy fact** — product, pricing, or YouTube-policy specifics, **web-verified 2026-07-23**.
   These go stale fast — **re-verify tool pricing before relying on it.**
@@ -90,7 +96,12 @@ is at `../output/brand-intel/youtube/_youtube-content-index.md` / `.csv`.
   `../output/brand-intel/_work/` (git-ignored: `findings_*.json`, `findings_merged.json`,
   `findings_mj_merged.json`, `yt_meta_*.json`, `tool_policy_notes.md`, `midjourney_feature_notes.md`,
   `elevenlabs_notes.md`).
-- This `docs/` folder (the five guides + this README) is the **committed** output.
+- This `docs/` folder is the **committed** output: the three launch-kit documents and two
+  asset-production guides above, the two vendor runbooks, plus `style-library.md` (the style
+  registry Gate C resolves `{style:...}` slot labels against) and `script-language-baseline.md`
+  (the language baseline Gate D lints against) — nine documents and this README.
+  `tests/test_doc_truth.py::test_docs_readme_accounts_for_every_committed_doc` fails if a tenth
+  appears without a line here.
 
 > These are working strategy documents. When a tool price or YouTube policy changes, update the relevant
 > `[T]` line rather than trusting the date stamp.
