@@ -421,3 +421,47 @@ def test_every_kind_value_on_disk_is_enumerated_in_the_readme():
     assert not missing, (
         f"kind: values written to rgs-briefs/ that the README's vocabulary omits: {missing}"
     )
+
+
+GROUNDING_FIELDS = ("thinker", "concept", "research_codes")
+
+
+def _frontmatter(path: Path) -> dict[str, str]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if not text.startswith("---"):
+        return {}
+    block = text.split("---", 2)[1]
+    return dict(re.findall(r"^(\w+):\s*(.*)$", block, re.MULTILINE))
+
+
+# The ten stage artifacts that predate the `kind:` contract. Frozen deliberately:
+# they are immutable (.claude/hooks/protect_briefs.py) and this list is what the
+# negative rule got wrong.
+KIND_LESS_STAGE_ARTIFACTS = 10
+
+
+def test_the_documented_discriminator_is_positive_not_kind_based():
+    readme = (REPO / "rgs-briefs" / "README.md").read_text(encoding="utf-8")
+    assert "MUST skip any file with a `kind:` field" not in readme, (
+        "rgs-briefs/README.md still tells consumers to discriminate on the absence of "
+        "`kind:` -- ten pre-contract stage artifacts have no `kind:` and are not grounding "
+        "briefs (C-53)."
+    )
+    assert all(f"`{field}`" in readme for field in GROUNDING_FIELDS), (
+        "the positive rule must name all three required fields"
+    )
+
+
+def test_positive_and_negative_discriminators_disagree_on_exactly_the_known_ten():
+    briefs = [p for p in (REPO / "rgs-briefs").glob("*.md") if p.name != "README.md"]
+    by_positive = {p.name for p in briefs
+                   if all(f in _frontmatter(p) for f in GROUNDING_FIELDS)}
+    by_negative = {p.name for p in briefs if "kind" not in _frontmatter(p)}
+    difference = by_negative - by_positive
+    assert len(difference) == KIND_LESS_STAGE_ARTIFACTS, (
+        f"expected exactly {KIND_LESS_STAGE_ARTIFACTS} files that the old kind:-skipping rule "
+        f"misclassifies as grounding briefs; found {len(difference)}: {sorted(difference)}"
+    )
+    assert not by_positive - by_negative, (
+        "a file has all three grounding fields AND a kind: -- the two contracts have collided"
+    )
