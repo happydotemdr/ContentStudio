@@ -320,7 +320,7 @@ skills there. `.claude/skills/` is the single source of truth — never hand-edi
 
       cd pipeline-app && python -m pytest
 
-  `python -m pytest tests/` at the repo root is the linter / doc-truth / skill-provenance suite (543 tests).
+  `python -m pytest tests/` at the repo root is the linter / doc-truth / skill-provenance suite (557 tests).
   `cd pipeline-app && python -m pytest` is the app suite (1960 tests).
   **Both must be run; neither is a superset of the other.** Three traps, all measured on 2026-08-20:
 
