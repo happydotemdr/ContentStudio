@@ -316,3 +316,33 @@ def test_no_doc_claims_a_bare_pytest_is_sufficient():
         assert "does the right thing in both places" not in text, (
             f"{doc.name} still carries the retracted bare-pytest claim (F-62)"
         )
+
+
+SETUP_SCRIPT_RE = re.compile(r"`?(?:python -m |python |bash )([\w./-]+)`?")
+
+
+def test_pipeline_app_setup_seeds_the_discovery_roster():
+    text = (REPO / "pipeline-app" / "README.md").read_text(encoding="utf-8")
+    assert "migrate_handles_from_manifest" in text, (
+        "pipeline-app/README.md Setup must document the roster-seeding step (B-80): "
+        "without it the handles table is empty and every discovery run completes having "
+        "fetched nothing."
+    )
+
+
+@pytest.mark.parametrize("doc_name", [
+    "README.md", "pipeline-app/README.md", "docs/README.md", "rgs-briefs/README.md", "CLAUDE.md",
+])
+def test_every_script_path_a_readme_tells_you_to_run_exists(doc_name):
+    text = (REPO / doc_name).read_text(encoding="utf-8")
+    missing = []
+    for token in re.findall(r"`([\w./-]+\.(?:py|sh))`", text):
+        if token.startswith(("http", "<")) or "*" in token:
+            continue
+        candidates = [
+            REPO / token, REPO / "pipeline-app" / token, REPO / "scripts" / token,
+            REPO / "tests" / token, REPO / "pipeline-app" / "tests" / token,
+        ]
+        if not any(c.exists() for c in candidates):
+            missing.append(token)
+    assert not missing, f"{doc_name} names files that do not exist: {sorted(set(missing))}"
