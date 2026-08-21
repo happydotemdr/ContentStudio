@@ -378,3 +378,46 @@ def test_every_familybrain_mention_is_accounted_for_in_origin():
         f"account for them: {unexplained}. Explain them as history or remove them -- "
         "an unexplained mention is indistinguishable from a live dependency (D-53)."
     )
+
+
+def _pipeline_stage_ids() -> list[str]:
+    text = (REPO / "pipeline.yaml").read_text(encoding="utf-8")
+    return re.findall(r"^\s*-\s*id:\s*(\S+)", text, re.MULTILINE)
+
+
+def test_rgs_briefs_readme_enumerates_every_producing_pipeline_stage():
+    readme = (REPO / "rgs-briefs" / "README.md").read_text(encoding="utf-8")
+    # `grounding` produces a grounding brief, not a `<stage>` artifact; every other
+    # stage in pipeline.yaml writes one and must appear in the enumeration.
+    missing = [s for s in _pipeline_stage_ids() if s != "grounding" and s not in readme]
+    assert not missing, (
+        f"rgs-briefs/README.md does not enumerate pipeline stages {missing} (C-52). "
+        "A stage the ledger's contract omits will write frontmatter nobody specified."
+    )
+
+
+# `2026-07-25-let-kids-play-act-specialization-visual-prompts.md` carries the one-off
+# `kind: visual-prompt-sheet` -- immutable, listed in the README as a known deviation
+# rather than a permitted spelling. This allowlist names that one file so it cannot
+# silently absorb a second, unrelated `kind:` value.
+KNOWN_KIND_DEVIATIONS = {
+    "visual-prompt-sheet",  # 2026-07-25-let-kids-play-act-specialization-visual-prompts.md
+}
+
+
+def test_every_kind_value_on_disk_is_enumerated_in_the_readme():
+    briefs = REPO / "rgs-briefs"
+    readme = (briefs / "README.md").read_text(encoding="utf-8")
+    on_disk = set()
+    for path in briefs.glob("*.md"):
+        if path.name == "README.md":
+            continue
+        head = path.read_text(encoding="utf-8", errors="replace")[:600]
+        found = re.search(r"^kind:\s*(\S+)", head, re.MULTILINE)
+        if found:
+            on_disk.add(found.group(1))
+    on_disk -= KNOWN_KIND_DEVIATIONS
+    missing = sorted(k for k in on_disk if f"`{k}`" not in readme)
+    assert not missing, (
+        f"kind: values written to rgs-briefs/ that the README's vocabulary omits: {missing}"
+    )
