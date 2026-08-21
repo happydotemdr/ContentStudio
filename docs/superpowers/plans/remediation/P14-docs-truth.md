@@ -152,6 +152,20 @@ Commit after each task. `docs:` for prose-only tasks, `test:` for the test-first
 The current bullet claims two outbound dependencies. This replaces it with a measured roster, and
 with a test that fails the day the roster and the code disagree in *either* direction.
 
+> **Amendment, 2026-08-21 (P14 kickoff, before T1 dispatch).** The `OUTBOUND_PROBES` list below
+> was corrected after a first implementer dispatch surfaced that the code had been refactored
+> since this plan's `[C]`ode was drafted, in ways the original probes silently mismatched:
+> `discovery_youtube.py`'s three separate inline yt-dlp calls were centralized into one
+> `_run_ytdlp()` helper called from three sites (`:157`, `:262`, `:403`), and the original
+> `["']yt-dlp["']` literal-string probe both missed those call sites entirely (no literal string on
+> the `subprocess.run(cmd, ...)` line itself) and over-matched unrelated label/dict-value strings
+> (`source = "yt-dlp"`, `_SOURCE_RANK = {"yt-dlp": 1}`) that are not call sites. Separately,
+> `comment_draft.py`'s real Anthropic subprocess call builds its argv via `cli_runner.platform_argv(`,
+> not `build_claude_argv(` — the original `claude subprocess` probe never matched it. The corrected
+> probes below were verified against every true- and false-positive line found in the live tree
+> (see `tests/test_doc_truth.py`'s own T1.2 measured roster once T1 lands) before this amendment.
+> No other part of T1 changes.
+
 - [ ] **T1.1 (test first).** Create `tests/test_doc_truth.py` with the enumerator and the first
   check. Run it. It must fail with "call sites in code but not in CLAUDE.md: …" listing every row
   the current two-item bullet omits.
@@ -189,9 +203,10 @@ OUTBOUND_PROBES = [
     (re.compile(r"""<script[^>]+src=["']https?://"""), "third-party CDN"),
     (re.compile(r"\brequests\.(?:get|post|put|patch|delete)\s*\("), "requests"),
     (re.compile(r"\burllib\.request\.urlopen\s*\("), "urllib"),
-    (re.compile(r"""["']yt-dlp["']"""), "yt-dlp subprocess"),
+    (re.compile(r"""\[\s*["']yt-dlp["']|["']yt-dlp["']\s*,\s*["']"""), "yt-dlp subprocess (inline argv)"),
+    (re.compile(r"(?<!def )\b_run_ytdlp\s*\("), "yt-dlp subprocess (centralized helper)"),
     (re.compile(r"\bYouTubeTranscriptApi\s*\("), "youtube-transcript-api"),
-    (re.compile(r"\bbuild_claude_argv\s*\(|\bclaude_argv\b"), "claude subprocess"),
+    (re.compile(r"(?<!def )\bplatform_argv\s*\("), "claude subprocess"),
     (re.compile(r"\bsession\.get\s*\("), "requests session"),
 ]
 
