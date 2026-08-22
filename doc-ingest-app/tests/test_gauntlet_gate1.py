@@ -1,3 +1,5 @@
+import pytest
+
 from doc_ingest.config import Config
 from doc_ingest import frontmatter, gauntlet
 
@@ -156,7 +158,12 @@ def test_xlsx_sheet_and_row_count_parity():
     )
     result = gauntlet.run_gate1(
         "xlsx", 20000, _assembled(body=body),
-        {"source_sheet_count": 1, "source_row_count": 10}, cfg,
+        # 11, not 10, for a body carrying 10 DATA rows: read_xlsx_sheet_and_
+        # row_counts counts every non-empty source row, header included. This
+        # said 10 until 2026-08-21, quietly asserting the source side excludes
+        # headers -- the exact false premise that made Gate 1 reject all six
+        # real gsheets in the corpus. See the regression block at the bottom.
+        {"source_sheet_count": 1, "source_row_count": 11}, cfg,
     )
     assert result.passed is True
 
@@ -215,3 +222,86 @@ def test_txt_md_identity_copy_only_gets_universal_checks():
     cfg = Config(size_ratio_floor=0.5)
     result = gauntlet.run_gate1("md", 100, _assembled(), {}, cfg)  # body is ~60 bytes, ratio ~0.6
     assert result.passed is True
+
+
+# --- Real-corpus gsheet regression (see Phase 0 of the coach-prep plan) ------
+#
+# Every one of the six gsheets in the Freedom2BeU corpus failed Gate 1 in
+# production -- 0 converted, ever -- while the conversions themselves were
+# perfect. Two counters compared the wrong quantities:
+#
+#   1. read_xlsx_sheet_and_row_counts counts EVERY non-empty row, header
+#      included; _count_output_table_rows subtracts the header. Output was
+#      therefore short by exactly one row per sheet, always.
+#   2. _count_output_table_blocks counts markdown TABLES, but firecrawl
+#      splits one sheet into several when the column structure changes
+#      (measured: a 3-sheet workbook rendered as 6 tables). At
+#      sheet_count_tolerance=0 that can never balance.
+#
+# The numbers below were measured on 2026-08-21 by exporting each sheet
+# through drive_client.export_google_sheet and converting it with the real
+# firecrawl path. They are observations, not constructions.
+#
+# Note what let this ship: test_xlsx_sheet_and_row_count_parity above passes
+# source_row_count=10 for a body of 10 data rows PLUS a header -- encoding
+# the false assumption that openpyxl reports data rows only. A test built
+# from a real export instead of a hand-written body would have failed.
+
+_REAL_GSHEET_EXPORTS = [
+    # (label, source_sheet_count, source_row_count, output_table_count, output_data_rows)
+    ("F2BU Coaching Book Recommendations", 1, 18, 1, 17),
+    ("Customer Journey", 2, 27, 3, 25),
+    ("Raising Confident Girls 100 Tips", 3, 125, 6, 120),
+    ("Day 1 outreach", 1, 19, 2, 18),
+    ("Master Coaching Roadmap Table V2", 2, 33, 3, 31),
+    ("Master Coaching Roadmap Table", 1, 13, 1, 12),
+]
+
+
+def _markdown_with_tables(table_count: int, total_data_rows: int) -> str:
+    """A body shaped like firecrawl's real xlsx output: `table_count` tables,
+    each with a header and separator, carrying `total_data_rows` data rows
+    between them."""
+    per_table, remainder = divmod(total_data_rows, table_count)
+    chunks = []
+    for index in range(table_count):
+        rows = per_table + (1 if index < remainder else 0)
+        chunks.append(
+            f"## Sheet{index + 1}\n\n| A | B |\n|---|---|\n"
+            + "".join(f"| {i} | {i * 2} |\n" for i in range(rows))
+        )
+    return "\n".join(chunks)
+
+
+@pytest.mark.parametrize(
+    "label,source_sheets,source_rows,output_tables,output_rows", _REAL_GSHEET_EXPORTS
+)
+def test_real_gsheet_export_passes_sheet_and_row_checks(
+    label, source_sheets, source_rows, output_tables, output_rows
+):
+    cfg = Config(row_count_tolerance_pct=0.05, sheet_count_tolerance=0, size_ratio_floor=0.0)
+    body = _markdown_with_tables(output_tables, output_rows)
+
+    # Guard the fixture itself: if the helper stops producing the measured
+    # shape, the assertion below would pass for the wrong reason.
+    assert gauntlet._count_output_table_blocks(body) == output_tables
+    assert gauntlet._count_output_table_rows(body) == output_rows
+
+    result = gauntlet.run_gate1(
+        "gsheet", 20000, _assembled(body=body),
+        {"source_sheet_count": source_sheets, "source_row_count": source_rows}, cfg,
+    )
+    assert result.passed is True, f"{label} failed Gate 1: {result.failure_reason}"
+
+
+def test_gsheet_with_a_vanished_sheet_still_fails():
+    """The sheet check must keep catching real data loss. A sheet that
+    renders as several tables is fine; a sheet that renders as none is not."""
+    cfg = Config(sheet_count_tolerance=0, size_ratio_floor=0.0)
+    body = _markdown_with_tables(1, 10)  # 3 source sheets, only 1 table out
+    result = gauntlet.run_gate1(
+        "gsheet", 20000, _assembled(body=body),
+        {"source_sheet_count": 3, "source_row_count": 11}, cfg,
+    )
+    assert result.passed is False
+    assert result.failure_reason == "sheet_count_mismatch"

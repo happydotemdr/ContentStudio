@@ -45,7 +45,21 @@ SCANNED = [
     "pipeline-app/pipeline_app/templates/*.html",
     "pipeline-app/tools/*.py",    # post-F-64 rename of pipeline-app/scripts/
     "download_*.py",
+    # coach-prep-app, added 2026-08-21. It sends client material to Anthropic
+    # and mails Ryan a review link, and neither call site was in the roster
+    # CLAUDE.md calls complete -- the globs above covered pipeline-app alone.
+    "coach-prep-app/coach_prep_app/**/*.py",
+    "coach-prep-app/scripts/*.py",
 ]
+
+# NOT yet scanned, and named here so the gap is measured rather than implied:
+# doc-ingest-app reaches Google Drive (drive_client.py) and firecrawl
+# (convert.py) on every ingest wake. Neither is caught by the probes above --
+# a Drive call is `service.files().export(...).execute()` and a firecrawl one
+# is `client.parse(...)`, and no probe matches either shape. Adding the globs
+# without adding those probes would look like coverage while measuring
+# nothing, so the probes come first. Until then, CLAUDE.md's roster is
+# complete for pipeline-app, coach-prep-app and the download scripts only.
 
 # A table row cites one path and one or more line numbers:
 #   `pipeline_app/brightdata_job.py:64` (trigger), `:76` (poll), `:86` (fetch)
@@ -253,8 +267,12 @@ def test_docs_readme_accounts_for_every_committed_doc():
     )
 
 
+# `cd <app> && ` for any app directory. This named pipeline-app alone until
+# 2026-08-21, which is the third of three places that did -- and the one that
+# mattered most: a command block for another suite was not collected at all,
+# so the whole check silently skipped it rather than failing.
 COMMAND_BLOCK_RE = re.compile(
-    r"^\s{4,}((?:cd pipeline-app && )?python -m pytest[^\n]*)$", re.MULTILINE
+    r"^\s{4,}((?:cd [\w.-]+ && )?python -m pytest[^\n]*)$", re.MULTILINE
 )
 
 
@@ -265,27 +283,89 @@ def _documented_commands(doc: Path) -> list[str]:
 def _claimed_counts(doc: Path) -> dict[str, int]:
     """Maps a documented command to the test count the same doc claims for it."""
     text = doc.read_text(encoding="utf-8")
+    # `cd <app> && ` for any app directory, not just pipeline-app. Hardcoding
+    # one directory here meant a count claimed for any other suite was never
+    # compared against anything: the command mapped to no claim at all, and
+    # a deliberately wrong "999 tests" for coach-prep-app passed silently.
     return {
         cmd: int(n)
         for cmd, n in re.findall(
-            r"`((?:cd pipeline-app && )?python -m pytest[^`]*)`[^\n]*?\b([\d,]+) tests",
+            r"`((?:cd [\w.-]+ && )?python -m pytest[^`]*)`[^\n]*?\b([\d,]+) tests",
             text.replace(",", ""),
         )
     }
 
 
-def _pipeline_app_env_available() -> bool:
-    """CI's root-suite job installs only the repo-root requirements-dev.txt,
-    by design (finding F-63's isolation: root-suite must never depend on
-    pipeline-app's own packages). It never installs pytest-asyncio, which
-    pipeline-app/pytest.ini's `asyncio_mode = strict` requires -- collecting
-    from pipeline-app/ with that plugin absent makes pytest.ini's own
-    `filterwarnings = error` turn the resulting PytestConfigWarning fatal.
-    A command run with cwd=pipeline-app can't be verified from an
-    environment missing that plugin; this reports whether the current
-    interpreter has it, so the caller can skip just those commands rather
-    than fail on an absence root-suite's own CI job was built to have."""
-    return importlib.util.find_spec("pytest_asyncio") is not None
+# CI's root-suite job installs only the repo-root requirements-dev.txt, by design
+# (finding F-63's isolation: root-suite must never depend on any app's own packages).
+# Each app's commands can only be verified from an environment that has that app's own
+# dependencies. This started as a pipeline-app-only check (pytest-asyncio, required by
+# pipeline-app/pytest.ini's `asyncio_mode = strict` -- collecting with that plugin
+# absent makes `filterwarnings = error` turn the resulting PytestConfigWarning fatal)
+# and stayed that way through the 2026-08-21 generalization to four suites, which is
+# exactly how `cd doc-ingest-app && ...` and `cd coach-prep-app && ...` commands ended
+# up asserted on unconditionally in root-suite's CI job -- both fail collection there
+# because google-auth (both apps) and firecrawl/python-docx (doc-ingest-app) are never
+# installed outside their own app directories.
+_APP_REQUIRED_MODULES = {
+    "pipeline-app": ("pytest_asyncio",),
+    "doc-ingest-app": ("google.auth", "firecrawl", "docx"),
+    "coach-prep-app": ("google.auth",),
+}
+
+
+def _module_available(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def _app_env_available(app_dir: str) -> bool:
+    """Reports whether the current interpreter has the app's own dependencies, so the
+    caller can skip just that app's commands rather than fail on an absence root-suite's
+    own CI job was built to have. An app_dir with no entry here (none exist today) is
+    treated as always available, matching the pre-2026-08-21 default for every
+    non-pipeline-app command."""
+    modules = _APP_REQUIRED_MODULES.get(app_dir)
+    if modules is None:
+        return True
+    return all(_module_available(m) for m in modules)
+
+
+def test_app_env_available_guards_every_app_directory_claude_md_documents(monkeypatch):
+    """Regression for the root-suite CI failure of 2026-08-21: `cd doc-ingest-app && ...`
+    and `cd coach-prep-app && ...` commands were asserted on unconditionally because only
+    pipeline-app had a readiness guard, and root-suite's CI job never installs either
+    app's own dependencies (google-auth, firecrawl, python-docx). This is the assertion
+    that would have caught it before CI did: every app directory CLAUDE.md documents a
+    `cd <app> && python -m pytest` command for must appear in _APP_REQUIRED_MODULES, and
+    _app_env_available must report False for it when those modules are absent."""
+    documented_app_dirs = {
+        m.group(1)
+        for m in re.finditer(r"cd ([\w.-]+) && python -m pytest", CLAUDE_MD.read_text(encoding="utf-8"))
+    }
+    assert documented_app_dirs, "CLAUDE.md must document at least one `cd <app> && ...` suite command"
+    assert documented_app_dirs <= _APP_REQUIRED_MODULES.keys(), (
+        f"CLAUDE.md documents commands for {documented_app_dirs - _APP_REQUIRED_MODULES.keys()}, "
+        "which have no entry in _APP_REQUIRED_MODULES -- their commands would be asserted "
+        "on unconditionally in root-suite's CI job, which installs no app's own dependencies"
+    )
+
+    real_find_spec = importlib.util.find_spec
+    always_missing = {m for mods in _APP_REQUIRED_MODULES.values() for m in mods}
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name in always_missing:
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    for app_dir in documented_app_dirs:
+        assert not _app_env_available(app_dir), (
+            f"{app_dir} must be treated as unverifiable, not asserted on, when its own "
+            "dependencies are absent from the interpreter"
+        )
 
 
 @pytest.mark.allow_subprocess
@@ -297,17 +377,22 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
     commands = _documented_commands(doc)
     assert commands, f"{doc_name} must document its test invocation as an indented command block"
     env = {**os.environ, "DOC_TRUTH_CHILD": "1"}
-    pipeline_app_ready = _pipeline_app_env_available()
     unverifiable = []
     for command in commands:
-        prefix = "cd pipeline-app && "
-        if command.startswith(prefix):
-            cwd = REPO / "pipeline-app"
-            pytest_part = command[len(prefix):]
+        # `cd <app> && python -m pytest ...` for any app directory, not just
+        # pipeline-app. The repo has four suites, each run from its own
+        # directory, and hardcoding one of them here is how the other three
+        # stayed undocumented and unchecked.
+        cd_prefix = re.match(r"cd ([\w.-]+) && (.+)", command)
+        if cd_prefix:
+            app_dir = cd_prefix.group(1)
+            cwd = REPO / app_dir
+            pytest_part = cd_prefix.group(2)
         else:
-            cwd = REPO / "pipeline-app" if doc_name.startswith("pipeline-app") else REPO
+            app_dir = "pipeline-app" if doc_name.startswith("pipeline-app") else None
+            cwd = REPO / app_dir if app_dir else REPO
             pytest_part = command
-        if cwd == REPO / "pipeline-app" and not pipeline_app_ready:
+        if app_dir and not _app_env_available(app_dir):
             unverifiable.append(command)
             continue
         argv = [sys.executable, "-m", "pytest", "--collect-only", "-q",
@@ -330,13 +415,13 @@ def test_documented_test_commands_collect_what_the_docs_claim(doc_name):
     if unverifiable and len(unverifiable) == len(commands):
         pytest.skip(
             f"{doc_name}: none of its documented commands are verifiable in this "
-            f"environment (pipeline-app's own pytest plugins are not installed here): "
-            f"{unverifiable}. Run from an environment with both toolchains installed."
+            f"environment (the target apps' own dependencies are not installed here): "
+            f"{unverifiable}. Run from an environment with every app's toolchain installed."
         )
     elif unverifiable:
         print(
             f"NOTE: {doc_name} -- skipped verifying {unverifiable} in this environment "
-            "(pipeline-app's own pytest plugins are not installed here); the rest of this "
+            "(the target apps' own dependencies are not installed here); the rest of this "
             "doc's commands were verified normally."
         )
 

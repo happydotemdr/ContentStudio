@@ -50,7 +50,57 @@ CREATE INDEX IF NOT EXISTS idx_generation_inputs_run ON generation_inputs(run_id
 
 SCHEMA_VERSION = 1
 _TXN_DEPTH: dict[int, int] = {}
-_MIGRATIONS: list[tuple[int, str]] = []
+_MIGRATIONS: list[tuple[int, str]] = [
+    (2, """
+        -- The framework activity catalog: one row per usable ACTIVITY across
+        -- the Frameworks-to-consider corpus, not one per file. framework_catalog.yaml
+        -- in the repo is the source of truth and the thing a human edits; this
+        -- table is a query cache, rebuilt from it on load. Never migrate data
+        -- INTO the YAML from here.
+        CREATE TABLE IF NOT EXISTS framework_catalog (
+            id             TEXT PRIMARY KEY,
+            title          TEXT NOT NULL,
+            framework      TEXT NOT NULL,
+            kind           TEXT NOT NULL CHECK (kind IN
+                ('concept','activity','assessment','reading','meditation')),
+            rel_path       TEXT NOT NULL,
+            anchor         TEXT,
+            source_version INTEGER,
+            source_label   TEXT NOT NULL,
+            one_line       TEXT NOT NULL,
+            use_when_json  TEXT NOT NULL DEFAULT '[]',
+            live_ready     INTEGER NOT NULL DEFAULT 0,
+            duration_min   INTEGER,
+            curated        INTEGER NOT NULL DEFAULT 0,
+            loaded_at      TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_framework_catalog_rel_path ON framework_catalog(rel_path);
+        CREATE INDEX IF NOT EXISTS idx_framework_catalog_kind ON framework_catalog(kind);
+    """),
+    (3, """
+        -- generation_inputs.source_kind gains the two kinds the richer bundle
+        -- records: the framework activities selection picked, and the book
+        -- list. SQLite cannot ALTER a CHECK constraint, so the table is
+        -- rebuilt -- 12-step procedure, minus the foreign_keys toggle, which
+        -- get_connection owns and executescript cannot change mid-transaction.
+        CREATE TABLE generation_inputs_new (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id          INTEGER NOT NULL REFERENCES generation_runs(id) ON DELETE CASCADE,
+            source_label    TEXT NOT NULL,
+            source_kind     TEXT NOT NULL CHECK (source_kind IN
+                ('gmail_thread','converted_file','program_source','selected_framework','book_list')),
+            reference       TEXT NOT NULL,
+            version_or_hash TEXT,
+            captured_at     TEXT NOT NULL
+        );
+        INSERT INTO generation_inputs_new
+            SELECT id, run_id, source_label, source_kind, reference, version_or_hash, captured_at
+            FROM generation_inputs;
+        DROP TABLE generation_inputs;
+        ALTER TABLE generation_inputs_new RENAME TO generation_inputs;
+        CREATE INDEX IF NOT EXISTS idx_generation_inputs_run ON generation_inputs(run_id);
+    """),
+]
 
 
 @contextmanager

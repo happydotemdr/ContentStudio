@@ -294,3 +294,33 @@ def test_render_report_email_reports_failed_runs_as_an_issue():
     assert "ISSUES" in subject
     assert "run 5" in text
     assert "gates_failed" in text
+
+
+def test_a_missing_framework_catalog_surfaces_in_the_weekly_audit(conn):
+    """A catalog that is absent or unreadable fails selection on EVERY wake
+    for EVERY client, and nothing alerts on it -- alerts are reserved for gate
+    failures, which are content-safety stops. The weekly audit is the only
+    thing that surfaces it, so it has to: otherwise Ryan gets no prep docs and
+    no explanation until he notices the silence himself."""
+    _seed_run(conn, "sean", status="failed")
+    conn.execute(
+        "UPDATE generation_runs SET failure_reason = 'selection_failed' WHERE client_slug = 'sean'"
+    )
+    conn.commit()
+
+    failures = audit.failed_runs_summary(conn, "2026-08-01T00:00:00+00:00")
+
+    assert [(f["client_slug"], f["failure_reason"]) for f in failures] == [("sean", "selection_failed")]
+
+
+def test_the_audit_reports_a_selection_failure_for_every_affected_client(conn):
+    """One missing catalog is not one client's problem. Reporting a single run
+    would understate it as a transient blip rather than a systemic stop."""
+    for slug in ("sean", "josh", "joanne"):
+        _seed_run(conn, slug, status="failed")
+    conn.execute("UPDATE generation_runs SET failure_reason = 'selection_failed'")
+    conn.commit()
+
+    failures = audit.failed_runs_summary(conn, "2026-08-01T00:00:00+00:00")
+
+    assert sorted(f["client_slug"] for f in failures) == ["joanne", "josh", "sean"]
