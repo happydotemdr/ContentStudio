@@ -74,11 +74,36 @@ def cmd_render(args: argparse.Namespace) -> int:
         print(f"native_pipeline: invalid input: {exc}", file=sys.stderr)
         return EXIT_USAGE
 
+    vo_beat_texts = None
+    if args.vo_mode == "v3_tags":
+        if not args.vo_beat_texts:
+            print("native_pipeline: --vo-beat-texts is required when --vo-mode v3_tags",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        vo_beat_texts_path = Path(args.vo_beat_texts).resolve()
+        try:
+            vo_beat_texts = json.loads(vo_beat_texts_path.read_text(encoding="utf-8"))
+            if not isinstance(vo_beat_texts, list) or not all(isinstance(t, str) for t in vo_beat_texts):
+                raise ValueError(f"--vo-beat-texts must be a JSON list of strings: {vo_beat_texts_path}")
+        except (OSError, ValueError) as exc:
+            print(f"native_pipeline: invalid input: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        if len(vo_beat_texts) != len(beat_texts):
+            print(
+                f"native_pipeline: --vo-beat-texts has {len(vo_beat_texts)} entries but "
+                f"--beat-texts has {len(beat_texts)} -- these must correspond 1:1",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+
     ws = Workspace(root=root, slug=args.slug, mode="final")
     ws.ensure_dirs()
     log_path = ws.log_path("native")
 
-    voice_take, segments = orchestrate.run_vo_stage(ws, vo_payload, args.vo_url, log_path)
+    voice_take, segments = orchestrate.run_vo_stage(
+        ws, vo_payload, args.vo_url, log_path,
+        vo_mode=args.vo_mode, beat_texts=vo_beat_texts,
+    )
     music_bed = orchestrate.run_music_stage(segments, bed_arc, ws, args.music_url, log_path)
 
     orchestrate.run_assemble_stage(
@@ -104,6 +129,17 @@ def build_parser() -> argparse.ArgumentParser:
     render_parser.add_argument("--beat-texts", required=True)
     render_parser.add_argument("--styles", required=True)
     render_parser.add_argument("--captions-style", required=True)
+    render_parser.add_argument(
+        "--vo-mode", choices=["break", "v3_tags"], default="v3_tags",
+        help="eleven_v3 + bracket audio tags is the default VO approach as of "
+        "2026-08-21 (operator decision, channel-voice.md); pass --vo-mode break "
+        "to use the older eleven_multilingual_v2 + <break>-tag path instead.",
+    )
+    render_parser.add_argument(
+        "--vo-beat-texts",
+        help="Path to a JSON list of the exact per-beat strings (tag prefix "
+        "included) submitted to eleven_v3 -- required when --vo-mode v3_tags",
+    )
     render_parser.set_defaults(func=cmd_render)
 
     return parser

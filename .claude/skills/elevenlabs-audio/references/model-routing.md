@@ -45,6 +45,13 @@ the most common and most expensive silent failure on the platform.
 | `language_code` enforcement | yes | **not supported** | yes | yes |
 | Discrete stability modes | **yes** | no — 0–1 float | no — 0–1 float | no — 0–1 float |
 
+**Live-API correction, 2026-08-21** `[T]`: the discrete Creative/Natural/Robust
+mode NAMES are a documented UI/prompting concept, but eleven_v3's actual
+`/text-to-speech` (and `/with-timestamps`) request body rejects a string
+value for `voice_settings.stability` with a 422. Send a float in [0, 1]
+(Natural ≈ 0.5) regardless of which named mode you intend. This corrects
+this file's and `api-payload.md`'s prior guidance to send a mode string.
+
 ### The two rows that trip people up
 
 **Phoneme tags are `eleven_v3` + `eleven_flash_v2` only — *not* `eleven_flash_v2_5`** `[T]`. The

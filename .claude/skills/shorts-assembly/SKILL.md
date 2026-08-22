@@ -27,6 +27,14 @@ Produces the **edit plan** for one Short: the stage of ContentStudio's eight-ski
 2b. **Optional — the `elevenlabs-audio` AUDIO PRODUCTION SPEC**, if the VO was rendered through
    that specialist. Use its `DIRECTORIAL SCRIPT` chunk boundaries and its rendered-asset filename
    in the shot table and the mix section. Absent, treat the VO as one continuous take `[I]`.
+2c. **Optional — a `vo_segments.json` from the native single-take pipeline** `[P]`. If the Short's
+   voiceover was generated as one continuous `eleven_v3` take (`native_pipeline`, `--vo-mode v3_tags`)
+   rather than per-beat chunks, its real measured segment boundaries live in the run's
+   `03-voiceover/vo_segments.json` (`[{"name", "at", "duration"}, ...]`) — use these, not an
+   estimated per-beat second count from the script, as the shot table's actual timing.
+   `native_pipeline.shots.build_shots` already turns these into contiguous `Shot.start`/`end` values
+   (each shot holds through its trailing gap to the next segment's start) — this skill's own
+   shot-table prose should reference the segment name and its real duration, not re-estimate one.
 3. The visual prompt sheet keyed to script beats (which shot uses which asset, generated vs. stock).
 4. **Optional — the music bed brief** (from `music-brief`, and its `elevenlabs-music` MIX HANDOFF
    if one exists). If present, use its bed arc, hook hold-out and asset filename in the loudness/mix

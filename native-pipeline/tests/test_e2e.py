@@ -15,6 +15,8 @@ from stitcher.ffmpeg import measure_loudness
 from stitcher.naming import Workspace
 from stitcher.spec import load_spec, validate_spec
 
+from elevenlabs_tooling.client import send_with_timestamps
+
 from native_pipeline import orchestrate
 from native_pipeline.assemble import DELIVERY_LUFS
 
@@ -30,6 +32,18 @@ BEAT_TEXTS = [
     "This is the first beat of a short test script.",
     "And this is the second beat, after a real pause.",
 ]
+
+VO_URL_V3 = "https://api.elevenlabs.io/v1/text-to-speech/eDwT8Vhp2yxJzAMmuuPA/with-timestamps"
+
+V3_TAG_BEAT_TEXTS = [
+    "[excited] This is the first beat of a real v3 tags test.",
+    "So here's the second beat, after a real pause.",
+]
+
+FIXTURE_PATH = (
+    Path(__file__).resolve().parents[2] / "stitcher" / "tests" / "fixtures"
+    / "v3_tags_alignment_sample.json"
+)
 
 # No font fixture is checked into this repo (see stitcher/tests/fixtures/fonts/); fall
 # back to a system font the same way stitcher/tests/test_preflight.py's own REAL_FONT
@@ -181,3 +195,57 @@ def test_native_pipeline_end_to_end(workspace, tmp_path):
     log_contents = log_path.read_text(encoding="utf-8")
     flag_lines = [line for line in log_contents.splitlines() if line.startswith("FLAG:")]
     assert flag_lines == [], f"unexpected outlier flags on a normal take: {flag_lines}"
+
+
+def test_v3_with_timestamps_returns_expected_alignment_shape():
+    """Live spike: confirms /with-timestamps on eleven_v3, with bracket audio
+    tags in the text and NO previous_text/next_text (eleven_v3 rejects those
+    with a 422 -- "Providing previous_text or next_text is not yet supported
+    with the 'eleven_v3' model", verified live 2026-08-21), returns the same
+    characters/character_start_times_seconds/character_end_times_seconds
+    parallel-array shape stitcher.vo_alignment.derive_segments already
+    consumes for the <break>-tagged path. Captures the real response to
+    stitcher/tests/fixtures/v3_tags_alignment_sample.json so
+    derive_segments_v3's unit tests (Task 2) can assert against real
+    ElevenLabs output, not only synthetic data. Costs a few cents of
+    ElevenLabs credit (a ~110-character eleven_v3 generation)."""
+    if not os.environ.get("ELEVENLABS_API_KEY"):
+        pytest.skip("ELEVENLABS_API_KEY not set")
+
+    text = "\n\n".join(V3_TAG_BEAT_TEXTS)
+    payload = json.dumps({
+        "text": text,
+        "model_id": "eleven_v3",
+        "voice_settings": {
+            # float, NOT the string "natural" -- eleven_v3's /text-to-speech
+            # rejects a string stability with a 422 (verified live, 2026-08-21;
+            # see channel-voice.md)
+            "stability": 0.5,
+            "similarity_boost": 0.80,
+            "style": 0.0,
+            "speed": 1.0,
+            "use_speaker_boost": True,
+        },
+        "seed": 20260821,
+        "apply_text_normalization": "auto",
+        # deliberately no previous_text/next_text -- eleven_v3 rejects them
+    }).encode("utf-8")
+
+    result = send_with_timestamps(VO_URL_V3, payload, os.environ["ELEVENLABS_API_KEY"])
+    assert result.ok, result.error_message
+
+    alignment = result.alignment
+    assert set(alignment.keys()) >= {
+        "characters", "character_start_times_seconds", "character_end_times_seconds",
+    }
+    chars = alignment["characters"]
+    starts = alignment["character_start_times_seconds"]
+    ends = alignment["character_end_times_seconds"]
+    assert len(chars) == len(starts) == len(ends)
+    assert "".join(chars) == text
+
+    FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    FIXTURE_PATH.write_text(
+        json.dumps({"text": text, "alignment": alignment}, indent=2),
+        encoding="utf-8",
+    )
